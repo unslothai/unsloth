@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -132,12 +131,6 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
-def _shard_set_size(path: str) -> Optional[int]:
-    """How many shards ``path``'s name says its set has, or None when it is single."""
-    match = re.search(r"-\d{5}-of-(\d{5})\.gguf$", path, re.IGNORECASE)
-    return int(match.group(1)) if match else None
-
-
 def preferred_dflash_sibling(
     siblings: Sequence,
     weight_name: Optional[str] = None,
@@ -193,7 +186,7 @@ def dflash_plan_files(
     name at the top of the order steps aside for a usable sidecar behind it instead of
     taking the plan down with it.
     """
-    from utils.models.drafters import dflash_repo_preference_key
+    from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
     families: dict[str, list[ExpectedFile]] = {}
     for sibling in siblings:
@@ -207,8 +200,7 @@ def dflash_plan_files(
     eligible: dict[str, tuple[ExpectedFile, ...]] = {}
     for family, files in families.items():
         shards = tuple(sorted(files, key = lambda file: file.path))
-        listed = _shard_set_size(shards[0].path)
-        if listed is not None and len(shards) != listed:
+        if not split_listing_is_complete([f.path for f in shards], shards[0].path):
             continue
         total = sum(max(0, int(file.size or 0)) for file in shards)
         if not total or max_bytes <= 0 or total >= max_bytes:

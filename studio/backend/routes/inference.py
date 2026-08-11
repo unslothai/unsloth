@@ -5449,7 +5449,7 @@ def _remote_gguf_companion_bytes(
             _is_root_dflash_drafter_path,
         )
         from huggingface_hub import model_info
-        from utils.models.drafters import dflash_budget_bytes
+        from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
         from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
@@ -5477,12 +5477,25 @@ def _remote_gguf_companion_bytes(
             # counting it here would price a file the load cannot fetch.
             if include_dflash and _is_root_dflash_drafter_path(name):
                 dflash_sizes[name] = size
-        # Same preference order the download uses, so the budget sizes the file
-        # the launch will actually fetch. DSpark has no post-fetch rejection, so
-        # the best-ranked candidate is the one that lands.
+        # Same preference order the download uses, so the budget sizes the file the
+        # launch will actually fetch, and by whole shard SET: llama-server maps every
+        # shard, so pricing the one the ranking picked halved a two-shard sidecar and
+        # let the guard admit a load that evicts the training run it protects.
+        # Incomplete sets are dropped rather than priced, because the fetch now refuses
+        # them: a listing missing a shard is not a sidecar this load can end up on.
+        _dspark_sizes = dict(dspark_candidates)
+        dspark_families = [
+            (
+                name,
+                size
+                + sum(_dspark_sizes.get(s, 0) for s in _gguf_extra_shards(_dspark_sizes, name)),
+            )
+            for name, size in dspark_candidates
+            if split_listing_is_complete(_dspark_sizes, name)
+        ]
         dspark_bytes = (
-            min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
-            if dspark_candidates
+            min(dspark_families, key = lambda c: dspark_preference_key(c[0]))[1]
+            if dspark_families
             else 0
         )
         # Bounded rather than picked: see dflash_budget_bytes for why the max
@@ -5492,12 +5505,14 @@ def _remote_gguf_companion_bytes(
         dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
-        if dspark_candidates:
+        if dspark_families:
             # DSpark takes first refusal in the Auto promotion, so a listed
             # sidecar settles the load: the DFlash fetch stands down and
             # mtp_draft_path is replaced by the DSpark one. Charging the other
             # two is not the safe over-estimate it is for a repo whose listing
-            # has not answered yet, it is a 409 for a load that fits.
+            # has not answered yet, it is a 409 for a load that fits. Only a
+            # COMPLETE set settles it, since the fetch falls through to DFlash on
+            # one it has to reject, and that one can be the larger of the two.
             return total + dspark_bytes
         if dflash_sizes:
             # DFlash is the other Auto promotion and replaces mtp_draft_path the
@@ -5786,7 +5801,23 @@ def _estimate_gguf_required_gb(
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
             elif dflash_requested:
-                _sized_attrs.append("gguf_dflash_file")
+                # Only when the extras own --spec-type: _build_speculative_flags then
+                # returns before discovery's sidecar is ever emitted, so llama-server
+                # opens the extras' --model-draft alone and charging both billed two
+                # drafters for one. Without --spec-type Studio still emits its own, and
+                # which of the two lands is genuinely unknown, so both stay charged.
+                _manual_draft = (
+                    _extra_args_mtp_draft_path(llama_extra_args, env = {})
+                    if _extra_args_own_spec
+                    else None
+                )
+                _configured = getattr(config, "gguf_dflash_file", None)
+                if not (
+                    _manual_draft
+                    and _configured
+                    and _same_file_key(str(_manual_draft)) != _same_file_key(str(_configured))
+                ):
+                    _sized_attrs.append("gguf_dflash_file")
             else:
                 _sized_attrs.append("gguf_mtp_file")
 

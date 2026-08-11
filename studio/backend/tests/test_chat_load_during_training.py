@@ -1392,6 +1392,46 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(through_link, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(separate, 9000 / (1024**3), places = 9)  # 2000+3000+4000
 
+    def test_extras_owning_spec_type_charge_only_their_own_drafter(self):
+        """--spec-type in the extras ends _build_speculative_flags before discovery's
+        sidecar is emitted, so llama-server opens the extras' --model-draft alone and
+        charging the configured one too billed two drafters for the one that loads."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            custom = p / "custom-dflash.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            custom.write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = None,
+                gguf_dflash_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dflash_capable(),
+            ):
+                owned = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "auto",
+                    llama_extra_args = [
+                        "--spec-type",
+                        "draft-dflash",
+                        "--model-draft",
+                        str(custom),
+                    ],
+                )
+        # 2000 weights + 4000 for the drafter that actually launches, not 9000.
+        self.assertAlmostEqual(owned, 6000 / (1024**3), places = 9)
+
     def test_remote_weights_stay_in_the_estimate_beside_a_local_extra_args_drafter(self):
         """A remote repo has no local main weight, so a local --model-draft was
         the only thing making the local branch fire: it returned ~1.5 GiB and
@@ -1758,6 +1798,50 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 weight_bytes = 10 * 1024**3,
             )
         self.assertEqual(charged, 1024**3)
+
+    def test_remote_dspark_sizing_totals_every_shard_of_a_split_sidecar(self):
+        """llama-server maps every shard, so pricing the one the ranking picked
+        halved a two-shard sidecar and let the guard admit a load that evicts
+        the training run it protects."""
+        siblings = [
+            SimpleNamespace(rfilename = "dspark/dspark-00001-of-00002.gguf", size = 5 * 1024**3),
+            SimpleNamespace(rfilename = "dspark/dspark-00002-of-00002.gguf", size = 5 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+            )
+        self.assertEqual(charged, 10 * 1024**3)
+
+    def test_auto_budgets_dflash_when_the_dspark_set_is_incomplete(self):
+        """A listing missing a DSpark shard is not a load this can end up on: the
+        fetch refuses it and falls through to DFlash, which can be the larger of
+        the two, so granting first refusal on the listing under-charged."""
+        siblings = [
+            SimpleNamespace(rfilename = "dspark/dspark-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+                include_dflash = True,
+                dspark_first = True,
+            )
+        self.assertEqual(charged, 4 * 1024**3)
 
     # ── Auto charges ONE drafter, the one the promotion leaves resident ──
 

@@ -8519,7 +8519,10 @@ class LlamaCppBackend:
             # The rest of the listing supplies the neighbouring weights that make
             # a foreign sidecar recognisable (a sidecar naming no family at all
             # stays eligible, which is what the published one does).
-            from utils.models.drafters import dflash_repo_preference_key
+            from utils.models.drafters import (
+                dflash_repo_preference_key,
+                split_listing_is_complete,
+            )
 
             # Root level only, as the local scan is: a nested dflash-*.gguf is an
             # ordinary weight, and offering it here spends its entire download
@@ -8544,6 +8547,10 @@ class LlamaCppBackend:
                     for name in candidates
                     if _is_root_dflash_drafter_path(name)
                     and Path(name).name not in rejected
+                    # Before the ranking, as dflash_plan_files is: a set the listing
+                    # only half carries is refused by the fetch, and returning it
+                    # ends the loop instead of reaching the complete one behind it.
+                    and split_listing_is_complete(candidates, name)
                     # Whole shard set, not the picked shard: each half of a split
                     # ordinary weight can sit under the target while the set does not.
                     and not (

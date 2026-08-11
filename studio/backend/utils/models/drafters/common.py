@@ -142,3 +142,25 @@ def _drafter_names_other_weight(
     return any(
         _drafter_matches_weight(candidate_name, other, kind = kind) for other in other_weight_names
     )
+
+
+_LISTED_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+
+
+def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
+    """Whether ``names`` carries every shard of the set ``name`` belongs to.
+
+    The listing counterpart of _drafter_split_is_complete, which needs the files on
+    disk. A repo mid-upload lists part of a set, and the fetch refuses that, so the
+    plan and the budget have to agree with it: a half-published sidecar is not one
+    this load can end up on. True for a single-file name, which encodes no set.
+    """
+    match = _LISTED_SHARD_RE.match(Path(name).name)
+    if not match:
+        return True
+    stem, total = match.group(1), match.group(3)
+    sibling = re.compile(
+        r"^" + re.escape(stem) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        re.IGNORECASE,
+    )
+    return sum(1 for other in names if sibling.match(Path(other).name)) == int(total)

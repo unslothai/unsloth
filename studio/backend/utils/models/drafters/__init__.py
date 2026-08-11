@@ -14,6 +14,7 @@ from utils.models.drafters.common import (
     _drafter_names_other_weight,
     _drafter_pairing_stem,
     _drafter_split_is_complete,
+    split_listing_is_complete,
     _drafter_stem_rank,
     _drafter_total_size,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "_drafter_names_other_weight",
     "_drafter_pairing_stem",
     "_drafter_split_is_complete",
+    "split_listing_is_complete",
     "_drafter_stem_rank",
     "_drafter_total_size",
     "detect_dflash_file",

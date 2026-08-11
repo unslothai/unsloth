@@ -3437,3 +3437,28 @@ def test_download_companion_records_an_incomplete_listing_as_settled():
         mp.undo()
     assert got is None
     assert outcome.get("listed") is False
+
+
+def test_download_dflash_reaches_the_complete_family_behind_an_incomplete_one(
+    monkeypatch, tmp_path
+):
+    """A shard from a half-published set makes _download_companion_gguf answer None,
+    which ends the loop, so the complete sidecar behind it was never reached."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    weight = tmp_path / "model-B-Q4_K_M.gguf"
+    weight.write_bytes(b"x" * 10_000)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_remote_root_gguf_sizes", staticmethod(lambda repo, token = None: {})
+    )
+    picked = _dflash_download_pick(
+        monkeypatch,
+        listing = [
+            "model-B-Q4_K_M.gguf",
+            # Ranks first by naming this weight, but the set is missing shard 2.
+            "dflash-model-B-00001-of-00002.gguf",
+            "dflash-kquant.gguf",
+        ],
+        near_path = str(weight),
+    )
+    assert picked == "dflash-kquant.gguf"
