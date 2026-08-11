@@ -89,6 +89,49 @@ except:
 from pathlib import Path
 from peft import PeftModelForCausalLM, PeftModel
 
+try:
+    from unsloth_zoo.saving_utils import sanitize_tokenizer_class_in_config
+except ImportError:
+
+    def sanitize_tokenizer_class_in_config(tokenizer, saved_folder, filename_prefix = None):
+        _UNLOADABLE_TOKENIZER_CLASSES = frozenset({"TokenizersBackend"})
+        if saved_folder is None:
+            return
+
+        tokenizer_config_name = (
+            f"{filename_prefix}-tokenizer_config.json"
+            if filename_prefix
+            else "tokenizer_config.json"
+        )
+        tokenizer_config_path = os.path.join(str(saved_folder), tokenizer_config_name)
+        if not os.path.isfile(tokenizer_config_path):
+            return
+
+        source = tokenizer.tokenizer if tokenizer is not None and hasattr(tokenizer, "tokenizer") else tokenizer
+        replacement = None
+        if source is not None and type(source).__name__ not in _UNLOADABLE_TOKENIZER_CLASSES:
+            replacement = type(source).__name__
+        elif os.path.isfile(os.path.join(str(saved_folder), "tokenizer.json")):
+            replacement = "PreTrainedTokenizerFast"
+        if replacement is None:
+            return
+
+        try:
+            with open(tokenizer_config_path, "r", encoding = "utf-8") as file:
+                config = json.load(file)
+            if config.get("tokenizer_class") not in _UNLOADABLE_TOKENIZER_CLASSES:
+                return
+            if config.get("tokenizer_class") == replacement:
+                return
+            config["tokenizer_class"] = replacement
+            with open(tokenizer_config_path, "w", encoding = "utf-8") as file:
+                json.dump(config, file, indent = 2, ensure_ascii = False)
+                file.write("\n")
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not sanitize tokenizer_class in {tokenizer_config_path}: {error}"
+            )
+
 __all__ = [
     "print_quantization_methods",
     "unsloth_save_model",
@@ -1367,6 +1410,11 @@ def unsloth_save_model(
 
         tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        sanitize_tokenizer_class_in_config(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
@@ -7875,6 +7923,11 @@ def patch_saving_functions(model, vision = False):
             token = kwargs.get("token", None),
         )
         _preserve_tokenizer_eos_token(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
+        )
+        sanitize_tokenizer_class_in_config(
             self,
             save_directory,
             filename_prefix = filename_prefix,
