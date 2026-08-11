@@ -359,7 +359,10 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+    # _version.py, not models/_utils.py: the literal lives in a leaf module so that
+    # pyproject's `attr:` and the torch-free MLX path can both read it. _utils.py now
+    # re-exports it, and an import line does not match the scan below.
+    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "_version.py"
     try:
         for line in version_file.read_text(encoding = "utf-8").splitlines():
             if line.startswith("__version__ = "):

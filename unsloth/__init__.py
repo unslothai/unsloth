@@ -202,7 +202,12 @@ if _IS_MLX:
     import types as _types
     import warnings as _warnings
 
-    __version__ = unsloth_zoo.__version__
+    # unsloth_zoo's number is a different package's, and the two are pinned with `>=`
+    # rather than `==`, so borrowing it reported a version that was neither the
+    # installed core nor the latest zoo. `_version` is a leaf module with no imports,
+    # so reading it here keeps this branch torch-free while agreeing with the GPU path,
+    # with `pip show unsloth`, and with what `unsloth --version` prints.
+    from ._version import __version__
     DEVICE_TYPE = "mlx"
     _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
     _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()
