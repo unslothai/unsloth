@@ -221,6 +221,14 @@ jobs:
       - name: AMD venv repair loop tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
+      # The same file again under Windows PowerShell 5.1, which is the shell the CLI actually
+      # launches setup.ps1 with. Every other step here is `shell: pwsh` (PowerShell 7), and 7
+      # returns `.Count = 1` for the single CimInstance that 5.1 returns `$null` for, so the
+      # pwsh run above passes against the unfixed #8335 code. Only this leg fails on it.
+      - name: AMD venv repair loop tests (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
