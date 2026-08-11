@@ -81,6 +81,7 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      audio: "音频",
       trainChecking: "正在检查此设备是否支持训练...",
       videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
@@ -870,6 +871,11 @@ export const zhCN = {
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      thinking: {
+        collapseByDefault: "默认折叠思考过程",
+        collapseByDefaultDescription:
+          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",
@@ -943,6 +949,10 @@ export const zhCN = {
       description: "管理此设备上保存的聊天记录和上传的文件。",
       archivedChats: "已归档的聊天",
       archivedChatsDescription: "查看和管理你归档的聊天。",
+      archivedImages: "已归档的图片",
+      archivedImagesDescription: "查看和管理你归档的图片。",
+      archivedVideos: "已归档的视频",
+      archivedVideosDescription: "查看和管理你归档的视频。",
       manageAction: "管理",
       exportArchivedChats: "导出",
       exportingArchivedChats: "正在导出...",

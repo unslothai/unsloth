@@ -2507,17 +2507,32 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
+# Apple Silicon venv. The arch-explicit arm64 CPython stops uv reusing a cached
+# x86_64 (Rosetta) build: torch ships no macOS x86_64 wheels since 2.2.2, so an
+# x86_64 venv cannot resolve torch. The arm64 guard below backstops older venvs.
+#
+# only-managed stops uv walking PATH and *executing* every interpreter it finds to
+# read its version. Without CLT, /usr/bin/python3 is Apple's xcode_select shim, so
+# that probe pops the "command line developer tools" dialog for tools this install
+# never needs. Spelled --python-preference, not the --managed-python alias: same
+# effect, accepted since uv 0.4.30 rather than 0.8.16.
+#
+# It also drops uv's system-interpreter fallback, so a host that is offline or has
+# UV_PYTHON_DOWNLOADS=never is left with nothing to resolve. Retry unflagged for
+# them: the dialog is worth removing, a failed install is not.
+_uv_venv_arm64() {  # label
+    run_install_cmd "$1" uv venv "$VENV_DIR" \
+        --python-preference only-managed \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none" \
+    || run_install_cmd "$1 (system Python)" uv venv "$VENV_DIR" \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+}
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
-        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
-        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
-        # wheels since 2.2.2, so an x86_64 venv makes the torch install
-        # unresolvable. The arm64 guard below is kept as a backstop for
-        # migrated / pre-existing venvs.
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "create venv"
     else
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
@@ -2573,8 +2588,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
         _discard_venv_for_recreate "$VENV_DIR"
-        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv (arm64)"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2589,8 +2603,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  Recreating venv with Python 3.12..."
         _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi

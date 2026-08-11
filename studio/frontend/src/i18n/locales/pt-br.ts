@@ -85,6 +85,7 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      audio: "Áudio",
       trainChecking: "Verificando se esta máquina oferece suporte a treino...",
       videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
@@ -907,6 +908,11 @@ export const ptBR = {
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      thinking: {
+        collapseByDefault: "Recolher o raciocínio por padrão",
+        collapseByDefaultDescription:
+          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
@@ -984,6 +990,10 @@ export const ptBR = {
         "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
       archivedChats: "Chats arquivados",
       archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
+      archivedImages: "Imagens arquivadas",
+      archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
+      archivedVideos: "Vídeos arquivados",
+      archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
       manageAction: "Gerenciar",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",

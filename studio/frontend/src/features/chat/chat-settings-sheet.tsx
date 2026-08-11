@@ -730,9 +730,10 @@ export function ChatSettingsPanel({
       externalSelection?.modelId,
     );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const openAiApiKeyForSection = activeExternalProvider
-    ? getExternalProviderApiKey(activeExternalProvider.id) || null
-    : null;
+  const openAiApiKeyForSection =
+    activeExternalProvider && !activeExternalProvider.hasApiKey
+      ? getExternalProviderApiKey(activeExternalProvider.id) || null
+      : null;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
@@ -1210,8 +1211,9 @@ export function ChatSettingsPanel({
                     Fast mode
                   </span>
                   <InfoHint>
-                    Beta. Up to 2.5x higher output tokens per second on
-                    Claude Opus 4.6 and 4.7 at 6x standard Opus pricing.
+                    Research preview. Up to 2.5x higher output tokens per
+                    second on Claude Opus 5 and 4.8 at 2x standard Opus
+                    pricing.
                     Switching between fast and standard invalidates the
                     prompt cache and is incompatible with the Priority
                     service tier.

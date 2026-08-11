@@ -2223,6 +2223,24 @@ exit 0
             return $null
         }
 
+        # Same trust boundary as the VC++ runtime in studio/setup.ps1: $full moves per patch
+        # release, so there is no SHA-256 to pin and the publisher is what we can check.
+        # Inspection itself can fail (antivirus quarantining the download first), and the
+        # script-wide 'Stop' would let that escape the function, skipping the $null fallback
+        # and leaving the executable behind. Unreadable is unverified, so it takes the same
+        # route as a bad signature.
+        $sig = $null
+        try { $sig = Get-AuthenticodeSignature -LiteralPath $dest } catch { $sig = $null }
+        if ($null -eq $sig -or
+            $sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+            $null -eq $sig.SignerCertificate -or
+            $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Python Software Foundation"?(,|$)') {
+            $sigStatus = if ($null -eq $sig) { "could not be read" } else { $sig.Status }
+            substep "python.org installer is not validly signed by the Python Software Foundation (signature status: $sigStatus); not running it." "Yellow"
+            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+            return $null
+        }
+
         # Per-user install => no UAC. PrependPath puts python + py on PATH;
         # Include_launcher installs py.exe (preferred by Find-CompatiblePython).
         substep "installing Python $full (silent, per-user)..."

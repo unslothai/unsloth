@@ -571,9 +571,9 @@ echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
 # Extract the real guard block from install.sh so we exercise the shipped logic
 # (comment header down to its column-0 closing fi).
 _GUARD_FILE=$(mktemp)
-# The guard calls _python_is_skipped and _discard_venv_for_recreate, so the skip
-# list, its reader, and the replacement helpers have to come along or the version
-# check silently never fires and the recreate loses the venv it was handed.
+# The guard calls _python_is_skipped, _discard_venv_for_recreate and _uv_venv_arm64,
+# so the skip list, its reader, and the replacement helpers have to come along or the
+# version check silently never fires and the recreate loses the venv it was handed.
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -581,10 +581,11 @@ _GUARD_FILE=$(mktemp)
     sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH"
     awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
         "$INSTALL_SH"
 } > "$_GUARD_FILE"
-for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate; do
+for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate _uv_venv_arm64; do
     grep -q "^$_needed()" "$_GUARD_FILE" || {
         echo "  FAIL: could not extract $_needed from install.sh"
         FAIL=$((FAIL + 1))

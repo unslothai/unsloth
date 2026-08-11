@@ -348,7 +348,7 @@ from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
-from utils.changelog import get_release_notes, is_supported_version_query
+from utils.release_notes import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -359,13 +359,17 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except (OSError, UnicodeDecodeError):
-        pass
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
+    root = _Path(__file__).resolve().parents[2] / "unsloth"
+    for version_file in (root / "_version.py", root / "models" / "_utils.py"):
+        try:
+            for line in version_file.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("__version__ = "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except (OSError, UnicodeDecodeError):
+            continue
     return "dev"
 
 
@@ -993,17 +997,26 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # The diffusion dataset upload (POST /api/train/diffusion/dataset) is a multipart upload
 # under /api/train; like /api/datasets/upload it enforces its own cap. EXACT path.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
+_STT_MULTIPART_UPLOAD_PATHS = (
+    "/v1/audio/transcriptions",
+    "/api/inference/audio/transcriptions",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
 )
-# Matched by EXACT path (the multipart upload only), so sibling JSON sub-routes keep the normal cap.
-_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
+# Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
+_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
+    _DIFFUSION_DATASET_UPLOAD_PATH,
+    *_STT_MULTIPART_UPLOAD_PATHS,
+)
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1019,6 +1032,9 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
+    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     return default_request_body_limit_bytes()
 
 
@@ -1642,7 +1658,7 @@ def studio_release_notes(
     refresh: bool = Query(False),
     _current_subject: str = Depends(get_current_subject),
 ):
-    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    """Return the newest release's notes. `version` is echoed, not looked up."""
     if not is_supported_version_query(version):
         raise HTTPException(status_code = 422, detail = "Invalid version.")
     return get_release_notes(version, refresh = refresh)

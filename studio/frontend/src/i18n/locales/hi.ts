@@ -86,6 +86,7 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      audio: "ऑडियो",
       trainChecking: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
       videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",
@@ -901,6 +902,11 @@ export const hi = {
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      thinking: {
+        collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML ब्लॉक संक्षिप्त करें",
@@ -979,6 +985,10 @@ export const hi = {
       archivedChats: "संग्रहित चैट",
       archivedChatsDescription:
         "आपने जो चैट संग्रहित की हैं उन्हें देखें और प्रबंधित करें।",
+      archivedImages: "संग्रहित छवियाँ",
+      archivedImagesDescription: "आपके द्वारा संग्रहित की गई छवियाँ देखें और प्रबंधित करें।",
+      archivedVideos: "संग्रहित वीडियो",
+      archivedVideosDescription: "आपके द्वारा संग्रहित किए गए वीडियो देखें और प्रबंधित करें।",
       manageAction: "प्रबंधित करें",
       exportArchivedChats: "एक्सपोर्ट करें",
       exportingArchivedChats: "एक्सपोर्ट हो रहा है...",
