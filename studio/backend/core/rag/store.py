@@ -299,6 +299,25 @@ def delete_document(
         conn.commit()
 
 
+def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
+    """Whether anything on this install can be hidden by the linked-folder filters.
+
+    The two visibility predicates on the retrieval queries exclude a row only when some
+    scope is retired or some document belongs to a folder. With both tables empty they
+    cannot exclude anything, so the plain query returns exactly the same rows, and the
+    plain query is the one SQLite can answer straight out of the FTS index.
+
+    Two `EXISTS` reads of tiny tables, both answered from an index, against a per-matched
+    -row join and two correlated subqueries in the query they gate.
+    """
+    return bool(
+        conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM linked_folders) "
+            "OR EXISTS(SELECT 1 FROM linked_folder_retired_scopes)"
+        ).fetchone()[0]
+    )
+
+
 def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     """BM25 lexical search over one scope or several. Returns
     [(chunk_id, score)], higher = better."""
@@ -309,18 +328,30 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    rows = conn.execute(
-        f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-        f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
-        f"JOIN documents d ON d.id=c.document_id "
-        f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
-        f"AND NOT EXISTS "
-        f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-        f"AND (d.linked_folder_id IS NULL OR EXISTS "
-        f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-        f"ORDER BY s LIMIT ?",
-        (mq, *scopes, k),
-    ).fetchall()
+    # The filtered form joins chunks and documents and evaluates both subqueries for
+    # every row the FTS match returns, BEFORE the LIMIT, so its cost grows with how
+    # common the query terms are rather than with k. On an install with no linked
+    # folders that work is provably wasted (see linked_folder_rows_exist), which is the
+    # normal case for a knowledge base built from uploads.
+    if linked_folder_rows_exist(conn):
+        sql = (
+            f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+            f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
+            f"JOIN documents d ON d.id=c.document_id "
+            f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+            f"AND NOT EXISTS "
+            f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+            f"AND (d.linked_folder_id IS NULL OR EXISTS "
+            f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+            f"ORDER BY s LIMIT ?"
+        )
+    else:
+        sql = (
+            f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+            f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
+            f"ORDER BY s LIMIT ?"
+        )
+    rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
     # bm25() is negative (more negative = better); flip to higher-is-better.
     return [(r["chunk_id"], -r["s"]) for r in rows]
 

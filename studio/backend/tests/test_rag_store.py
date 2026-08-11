@@ -156,3 +156,71 @@ def test_kb_delete_rolls_back_when_document_cleanup_fails(rag_conn, monkeypatch)
         "doc1",
         "doc2",
     ]
+
+
+def _link_folder(conn, folder_id, scope, path = "/tmp/linked"):
+    conn.execute(
+        "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
+        "auto_sync, status, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,1,'idle','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')",
+        (folder_id, "knowledge_base", scope.removeprefix("kb_"), scope, path, "linked"),
+    )
+    conn.commit()
+
+
+def test_lexical_fast_path_only_while_no_folder_rows_exist(rag_conn):
+    """The plain FTS query is used exactly when the filters could not exclude anything."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    assert store.linked_folder_rows_exist(rag_conn) is False
+
+    _link_folder(rag_conn, "f1", "kb_a")
+    assert store.linked_folder_rows_exist(rag_conn) is True
+
+    rag_conn.execute("DELETE FROM linked_folders")
+    rag_conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert store.linked_folder_rows_exist(rag_conn) is True
+
+
+def test_lexical_hides_retired_scope_and_unmapped_linked_document(rag_conn):
+    """The filters still apply once a folder row exists, fast path or not."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["alpha delta echo"])
+    _link_folder(rag_conn, "f1", "kb_a")
+    # d2 belongs to a folder but has no mapping row yet, so it is not searchable.
+    rag_conn.execute("UPDATE documents SET linked_folder_id='f1' WHERE id='d2'")
+    rag_conn.commit()
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
+
+    rag_conn.execute(
+        "INSERT INTO linked_folder_files(folder_id, relative_path, size_bytes, mtime_ns, "
+        "document_id, synced_at) VALUES('f1', 'd2.txt', 1, 1, 'd2', "
+        "'2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert sorted(cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)) == [
+        "d1:0",
+        "d2:0",
+    ]
+
+    rag_conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def test_lexical_results_match_across_both_query_forms(rag_conn):
+    """Same rows, same order, whichever form runs: the fast path is not a shortcut in
+    behaviour, only in work."""
+    for i in range(12):
+        _add_doc(rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}",
+                 [f"alpha bravo {'charlie ' * (i % 4)}"])
+    fast = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
+    _link_folder(rag_conn, "f1", "kb_b")     # another scope, so nothing is excluded
+    filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
+    assert fast == filtered
