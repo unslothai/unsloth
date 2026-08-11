@@ -66,9 +66,18 @@ def _shutdown_quiet_h11_protocol() -> Union[type, None]:
         return None
 
     # our_state CLOSED means we already sent h11.ConnectionClosed(); ERROR means
-    # a previous send violated the state machine. In both cases uvicorn can no
-    # longer write a response on this connection, so feeding it more inbound
-    # bytes can only produce the spurious 400 attempt described above.
+    # a previous send violated the state machine; MUST_CLOSE means h11 will let
+    # us send nothing but ConnectionClosed. In all three uvicorn can no longer
+    # write a response on this connection, so feeding it more inbound bytes can
+    # only produce the spurious 400 attempt described above.
+    #
+    # MUST_CLOSE matters because send_400_response() never sends
+    # ConnectionClosed: it writes the 400 and closes the transport, and h11's
+    # (ERROR, DONE) state-triggered rule then leaves the server at MUST_CLOSE
+    # until connection_lost(). A second proactor read in that window reaches the
+    # same unguarded send_400_response() and raises the same LocalProtocolError,
+    # only with state=MUST_CLOSE. Any non-HTTP bytes spanning more than one read
+    # get there, a browser sent to https://127.0.0.1:<port> included.
     #
     # This deliberately reads our_state and never their_state. A malformed
     # request from a live client is a *remote* violation: h11's next_event()
@@ -76,9 +85,9 @@ def _shutdown_quiet_h11_protocol() -> Union[type, None]:
     # leaves our_state at IDLE or SEND_RESPONSE, exactly so that a server can
     # still answer 400 (h11 docs, "error handling"). So the guard cannot fire
     # on a request uvicorn is still able to reject properly, and h11 only ever
-    # reaches CLOSED from IDLE, DONE or MUST_CLOSE, meaning a response is
+    # reaches CLOSED or MUST_CLOSE from IDLE or DONE, meaning a response is
     # either finished or was never started.
-    terminal_states = (h11.CLOSED, h11.ERROR)
+    terminal_states = (h11.MUST_CLOSE, h11.CLOSED, h11.ERROR)
 
     class _ShutdownQuietH11Protocol(H11Protocol):  # type: ignore[misc, valid-type]
         """H11Protocol that drops reads delivered after the connection closed."""

@@ -212,10 +212,40 @@ def test_malformed_request_still_gets_400(patched_protocol_class, name, raw):
     protocol, transport = asyncio.run(_drive())
 
     assert seen_states and all(
-        state not in (h11.CLOSED, h11.ERROR) for state in seen_states
+        state not in (h11.MUST_CLOSE, h11.CLOSED, h11.ERROR) for state in seen_states
     ), f"{name}: guard would have fired on a live connection, states = {seen_states}"
     assert protocol.conn.their_state is h11.ERROR
     assert b"400 Bad Request" in b"".join(transport.chunks), name
+
+
+async def _reject_then_poll(protocol_class):
+    """One malformed request, answered with a real 400, then a second late read."""
+    protocol = _build_protocol(protocol_class)
+    transport = _FakeTransport()
+    protocol.connection_made(transport)
+
+    protocol.data_received(b"GET\r\n\r\n")
+    await asyncio.sleep(0)
+    assert b"400 Bad Request" in b"".join(transport.chunks)
+    # send_400_response() closes the transport without sending ConnectionClosed,
+    # so h11 parks the server at MUST_CLOSE rather than CLOSED.
+    assert protocol.conn.our_state is h11.MUST_CLOSE
+
+    protocol.data_received(REQUEST)
+    return protocol, transport
+
+
+def test_late_read_after_a_400_is_dropped(patched_protocol_class):
+    """The window after a rejected request is terminal too, and must not retry the 400."""
+    protocol, _transport = asyncio.run(_reject_then_poll(patched_protocol_class))
+    assert protocol.conn.our_state is h11.MUST_CLOSE
+
+
+def test_unpatched_h11_protocol_raises_after_a_400_too():
+    """Pin the upstream behaviour on this path, so the test above cannot go vacuous."""
+    with pytest.raises(h11.LocalProtocolError) as excinfo:
+        asyncio.run(_reject_then_poll(H11Protocol))
+    assert "state=MUST_CLOSE" in str(excinfo.value)
 
 
 def test_httptools_choice_is_left_alone(monkeypatch):
