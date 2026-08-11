@@ -349,9 +349,7 @@ def measure(page, label: str) -> dict:
     for name, seen in (reach or {}).items():
         if seen is None:
             continue
-        reached = (
-            seen["scrollable"] if seen["taller"] else seen["hidden"] <= 1.0
-        )
+        reached = seen["scrollable"] if seen["taller"] else seen["hidden"] <= 1.0
         check(
             f"{label}: the {name} can be scrolled into the rail's view",
             reached and not seen["offscreen"],
