@@ -3495,19 +3495,25 @@ def _bootstrap_uv() -> bool:
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
-    """Return an adjacent temp copy with certain packages removed."""
+    """Return a temp copy, adjacent when writable, with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
         line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
-    tmp = tempfile.NamedTemporaryFile(
+    # Beside the source so relative -r/-c includes resolve; a read-only
+    # requirements dir (root-owned install, non-root user) falls back to
+    # the temp dir rather than aborting the install.
+    kwargs = dict(
         mode = "w",
-        dir = req.parent,
         prefix = f".{req.stem}-filtered-",
         suffix = ".txt",
         delete = False,
         encoding = "utf-8",
     )
+    try:
+        tmp = tempfile.NamedTemporaryFile(dir = req.parent, **kwargs)
+    except OSError:
+        tmp = tempfile.NamedTemporaryFile(**kwargs)
     tmp.writelines(filtered)
     tmp.close()
     return Path(tmp.name)

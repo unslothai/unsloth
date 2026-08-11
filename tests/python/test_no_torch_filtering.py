@@ -133,6 +133,19 @@ class TestFilterRequirements:
         # Blank lines must be preserved.
         assert "\n\n" in content or content.count("\n") >= 3
 
+    @pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else True,
+                        reason = "root ignores directory permissions")
+    def test_read_only_requirements_dir_falls_back(self, tmp_path):
+        """A root-owned install tree must not abort the install (torchcodec/Windows filters)."""
+        req = self._write_req(tmp_path, "numpy\ntorchcodec>=0.1\n")
+        tmp_path.chmod(0o555)
+        try:
+            result = Path(ips._filter_requirements(req, {"torchcodec"}))
+        finally:
+            tmp_path.chmod(0o755)
+        assert result.read_text(encoding = "utf-8").split() == ["numpy"]
+        result.unlink()
+
     def test_stacked_windows_and_no_torch_filters(self, tmp_path):
         """Both WINDOWS_SKIP_PACKAGES and NO_TORCH_SKIP_PACKAGES applied."""
         req = self._write_req(

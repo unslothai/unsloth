@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import glob
 import importlib
 import io
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -123,15 +121,13 @@ class TestUvSafePathHardening:
         assert uvps.uv_safe_path(str(src)) == str(src)
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
-    def test_no_temp_dir_leak_on_alias_failure(self, tmp_path, monkeypatch):
-        """A symlink failure after mkdtemp must not orphan the temp dir."""
+    def test_alias_failure_falls_back_to_a_copy(self, tmp_path, monkeypatch):
+        """A symlink failure must still hand uv a space-free path, and not orphan the dir."""
         from backend.utils import uv_path_safety as uvps
 
         src = tmp_path / "Open Source" / "constraints.txt"
         src.parent.mkdir(parents = True)
         src.write_text("idna\n")
-        pattern = os.path.join(tempfile.gettempdir(), "unsloth_uv_*")
-        before = set(glob.glob(pattern))
 
         def boom(*a, **k):
             raise OSError("boom")
@@ -139,8 +135,9 @@ class TestUvSafePathHardening:
         monkeypatch.setattr(uvps.os, "symlink", boom)
         out = uvps.uv_safe_path(str(src))
 
-        assert out == str(src)
-        assert set(glob.glob(pattern)) == before
+        assert " " not in out
+        assert Path(out).read_text() == "idna\n"
+        assert str(Path(out).parent) in uvps._UV_SAFE_PATH_TMPDIRS
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_cleanup_removes_and_clears_registry(self, tmp_path):
