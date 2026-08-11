@@ -3500,9 +3500,8 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     filtered = [
         line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
-    # Beside the source so relative -r/-c includes resolve; a read-only
-    # requirements dir (root-owned install, non-root user) falls back to
-    # the temp dir rather than aborting the install.
+    # Beside the source so relative -r/-c includes resolve; a read-only tree
+    # (root-owned install, non-root user) falls back rather than aborting.
     kwargs = dict(
         mode = "w",
         prefix = f".{req.stem}-filtered-",
@@ -3525,11 +3524,10 @@ def _shared_base_requirements() -> Path | None:
         return None
     req = REQ_ROOT / "base.txt"
     try:
-        # utf-8-sig: a BOM (Windows editors, PowerShell 5.1 redirection) would
-        # otherwise read as content and schedule a step with nothing in it.
+        # utf-8-sig: a BOM would otherwise read as content, scheduling an empty step.
         text = req.read_text(encoding = "utf-8-sig")
     except OSError:
-        return None  # missing or unreadable: nothing this pass can apply
+        return None  # missing or unreadable: nothing to apply
     for line in text.splitlines():
         if line.split("#", 1)[0].strip():
             return req
@@ -4075,9 +4073,8 @@ def install_python_stack() -> int:
     if not skip_base:
         base_requirements = _shared_base_requirements()
 
-    # Shared torch-bound requirements are independent of the core package
-    # phase. install.sh / install.ps1 may skip the latter after installing the
-    # core distributions inline, but they must still apply this file unchanged.
+    # Independent of the core phase: the shell installers skip that after
+    # installing the two distributions inline, but still apply this file.
     if base_requirements is not None:
         if skip_base:
             _progress("base requirements")
@@ -4278,12 +4275,11 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: that file is applied
-    #      near the start of the dependency pass, while this pin must run after every other
-    #      requirements file so nothing can re-resolve Diffusers back to a release. This step
-    #      is also outside every skip_base / NO_TORCH branch, so it reaches every install path.
-    #      constrain stays on: constraints.txt says nothing about diffusers, and a future
-    #      entry there should win rather than be silently bypassed here.
+    # 11b. The pinned Diffusers revision. NOT in base.txt, which is applied early: this must
+    #      run after every other requirements file so nothing re-resolves Diffusers back to a
+    #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
+    #      constrain stays on: constraints.txt says nothing about diffusers today, and a
+    #      future entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")
     pip_install(
         "Installing the pinned Diffusers revision",
