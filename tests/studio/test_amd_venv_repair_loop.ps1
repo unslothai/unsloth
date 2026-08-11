@@ -443,6 +443,170 @@ Check "the check sits inside the interpreter-present arm" (
 Check "it does not delete that venv either" (-not ($_reuse -match 'Remove-Item'))
 
 Write-Host ""
+Write-Host "=== a present activation script is not the same as an activated venv ==="
+# Both refusals above check that a FILE is there. Neither can tell whether dot-sourcing it took
+# effect, and Activate.ps1 prepends the venv to PATH in its very last statement -- $env:VIRTUAL_ENV
+# is set well before it. So a copy truncated by an interrupted or out-of-disk `python -m venv`
+# runs to its last complete statement and returns having changed nothing that matters, and an
+# unparseable one is a ParserError, which is non-terminating at the "Continue" the pip section
+# runs at. Prove both hazards live before asserting the guard, exactly as the missing-script case
+# above is proven.
+$_actRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-activate-" + [guid]::NewGuid().ToString("N"))
+try {
+    New-Item -ItemType Directory -Path $_actRoot -Force | Out-Null
+
+    $_truncated = Join-Path $_actRoot "truncated.ps1"
+    # Everything Activate.ps1 does BEFORE its final PATH line, and nothing after it.
+    Set-Content -LiteralPath $_truncated -Value '$env:UNSLOTH_ACTIVATE_PROBE = "reached"'
+    $_corrupt = Join-Path $_actRoot "corrupt.ps1"
+    Set-Content -LiteralPath $_corrupt -Value @('$env:UNSLOTH_ACTIVATE_PROBE = "reached"', 'if ( { unclosed')
+
+    $_pathBefore = $env:PATH
+    $env:UNSLOTH_ACTIVATE_PROBE = ""
+    $Error.Clear()
+    $_truncKeptGoing = $false
+    & {
+        $ErrorActionPreference = "Continue"
+        . $_truncated
+        $script:_truncKeptGoing = $true
+    } 2>$null
+    Check "a truncated activation script does not stop the script" $_truncKeptGoing
+    # The worst part of this one: there is no red line to notice, unlike the missing-file case.
+    Check "and raises no error at all" ($Error.Count -eq 0)
+    Check "and leaves PATH exactly as it found it" ($env:PATH -eq $_pathBefore)
+    # It still got far enough to set the state a VIRTUAL_ENV check would have trusted, which is
+    # why the guard has to look at the resolved interpreter instead.
+    Check "while still setting the state that precedes the PATH line" ($env:UNSLOTH_ACTIVATE_PROBE -eq "reached")
+
+    $env:UNSLOTH_ACTIVATE_PROBE = $null
+
+    # The unparseable case has to run in a child host, in setup.ps1's actual shape: script-scope
+    # "Continue" and no enclosing try. A ParserError is non-terminating there, but inside a try
+    # under this file's script-scope "Stop" it converts and unwinds, which would prove the
+    # opposite of what setup.ps1 does. setup.ps1 is itself launched as a fresh host process
+    # (unsloth_cli/commands/studio.py), so the child is the faithful reproduction, not a dodge.
+    $_hostExe = try { [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName } catch { $null }
+    Check "the host executable is known" ($_hostExe -and (Test-Path -LiteralPath $_hostExe))
+    $_child = Join-Path $_actRoot "child.ps1"
+    Set-Content -LiteralPath $_child -Value @(
+        '$ErrorActionPreference = "Continue"',
+        '$before = $env:PATH',
+        ('. ' + "'" + $_corrupt + "'"),
+        'if ($env:PATH -eq $before) { Write-Output "PATH-UNTOUCHED" }',
+        'Write-Output "SURVIVED"',
+        'exit 0')
+    $_childOut = & $_hostExe -NoProfile -File $_child 2>$null | Out-String
+    $_childRc = $LASTEXITCODE
+    Check "an unparseable activation script does not stop the script either" ($_childOut -match 'SURVIVED')
+    Check "and it leaves PATH untouched too" ($_childOut -match 'PATH-UNTOUCHED')
+    # The whole point: the run can still report success over an environment it never entered.
+    Check "and the run still exits 0" ($_childRc -eq 0)
+
+    # ── the guard itself, executed ──
+    # @() then [0]: a one-name request returns a one-element array that unrolls to a String.
+    # Caught rather than thrown, so a tree without the guard reports every check below as FAIL
+    # instead of unwinding at the first one and hiding the rest.
+    $_assertFn = try { @(Get-HelperSources $setup @("Assert-VenvActivated"))[0] } catch { "" }
+    # An empty or wrong extraction would make every case below pass vacuously.
+    Check "extraction kept the interpreter lookup" ($_assertFn -match 'Get-Command python')
+    # A VIRTUAL_ENV check is the tempting wrong answer, and the truncation above is why it fails.
+    # The -ne "" is the anti-vacuity half: -not on an empty region passes against no guard at all.
+    Check "the guard does not settle for VIRTUAL_ENV" (($_assertFn -ne "") -and -not ($_assertFn -match 'VIRTUAL_ENV'))
+
+    # Real directories rather than a Get-Item stub: separator handling, trailing separators and
+    # case folding are the whole risk here, and a stub would just re-implement the bug.
+    $_venvOk = Join-Path $_actRoot "venv"
+    $_venvOkPy = Join-Path (Join-Path $_venvOk "Scripts") "python.exe"
+    New-Item -ItemType File -Path $_venvOkPy -Force | Out-Null
+    $_venvSibling = Join-Path $_actRoot "venv2"
+    $_venvSiblingPy = Join-Path (Join-Path $_venvSibling "Scripts") "python.exe"
+    New-Item -ItemType File -Path $_venvSiblingPy -Force | Out-Null
+    $_ambientPy = Join-Path (Join-Path $_actRoot "WindowsApps") "python.exe"
+    New-Item -ItemType File -Path $_ambientPy -Force | Out-Null
+
+    # Returns the refusal message, or $null when the guard let the run continue.
+    function Invoke-AssertVenv {
+        param([string] $VenvDir, [string] $PythonSource, [string] $CommandType = 'Application', [switch] $NoPython)
+        $sb = [scriptblock]::Create(@"
+param(`$Venv, `$Src, `$Type, `$NoPy)
+function Write-StudioLine { param([string] `$Line, `$ForegroundColor) }
+# Exit-SetupFailure calls `exit`, which is not catchable; a throw is, so the case can be asserted.
+function Exit-SetupFailure { param([string] `$Message, [int] `$Code = 1) throw "REFUSED: `$Message" }
+function Get-Command {
+    [CmdletBinding()] param([Parameter(Position = 0)] `$Name, [Parameter(ValueFromRemainingArguments = `$true)] `$Rest)
+    if (`$NoPy) { return `$null }
+    return [pscustomobject]@{ Source = `$Src; CommandType = `$Type }
+}
+$_assertFn
+Assert-VenvActivated -VenvDir `$Venv
+"@)
+        try { & $sb $VenvDir $PythonSource $CommandType ([bool]$NoPython) | Out-Null; return $null }
+        catch { return $_.Exception.Message }
+    }
+
+    Check "an activated venv is accepted" (
+        $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_venvOkPy))
+    # The state this whole section exists for: activation no-opped, so `python` is still the
+    # ambient one install.ps1 took care to leave on PATH.
+    Check "an ambient interpreter is refused" (
+        (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_ambientPy) -match 'did not put its interpreter on PATH')
+    Check "and the refusal names where python actually resolved" (
+        (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_ambientPy) -match 'WindowsApps')
+    Check "no python at all is refused" (
+        (Invoke-AssertVenv -VenvDir $_venvOk -NoPython) -match 'did not put its interpreter on PATH')
+    # A prefix compare without a separator would call venv2 a child of venv.
+    Check "a sibling venv is not mistaken for this one" (
+        (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_venvSiblingPy) -match 'did not put its interpreter on PATH')
+
+    # ── the false-positive side, which matters more than the true-positive side ──
+    # A guard that refuses a working install is worse than the bug it closes.
+    Check "a trailing separator on the venv path still passes" (
+        $null -eq (Invoke-AssertVenv -VenvDir ($_venvOk + [System.IO.Path]::DirectorySeparatorChar) -PythonSource $_venvOkPy))
+    # Windows paths are case-insensitive, and the two sides can disagree on case.
+    Check "a differently cased venv path still passes" (
+        $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource ($_venvOkPy.ToUpperInvariant())))
+    # An alias or function named python carries no Source, so nothing can be proven about it.
+    Check "a non-application python is left alone" (
+        $null -eq (Invoke-AssertVenv -VenvDir $_venvOk -PythonSource $_ambientPy -CommandType 'Function'))
+    # If the venv root cannot even be resolved the guard has no ground to stand on, and the two
+    # refusals above it already cover a venv that is not there.
+    Check "an unresolvable venv path is left alone" (
+        $null -eq (Invoke-AssertVenv -VenvDir (Join-Path $_actRoot "no-such-venv") -PythonSource $_ambientPy))
+} finally {
+    Remove-Item -LiteralPath $_actRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ── where it is wired in ──
+# Both ends sit immediately after a non-newline token, so a CRLF checkout fails the match rather
+# than yielding an empty region every -not check below would pass against.
+$_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
+$_act = if ($setupText -match $_actPat) { $Matches[1] } else { "" }
+Check "the activation block was found"     ($_act -ne "")
+Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_actPat))
+# A post-condition, so it has to come AFTER the dot-source, not alongside the two pre-conditions.
+Check "the assertion follows the dot-source" (
+    $setupText.IndexOf('. $ActivateScript') -ge 0 -and
+    $setupText.IndexOf('. $ActivateScript') -lt
+    $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
+# Nothing between here and Fast-Install re-checks, and Fast-Install is where a wrong interpreter
+# starts receiving the stack.
+Check "it lands before Fast-Install resolves python" (
+    $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir') -ge 0 -and
+    $setupText.IndexOf('Assert-VenvActivated -VenvDir $VenvDir') -lt
+    $setupText.IndexOf('function Fast-Install'))
+# The re-activation after Refresh-Environment sits inside a catch that swallows everything, so
+# the second call site is not a duplicate of the first.
+Check "the re-activation is covered as well" (
+    ([regex]::Matches($setupText, [regex]::Escape('Assert-VenvActivated -VenvDir $VenvDir'))).Count -ge 2)
+Check "and that one is outside the swallowing catch" (
+    $setupText.IndexOf('} catch { }') -ge 0 -and
+    $setupText.IndexOf('} catch { }') -lt
+    $setupText.LastIndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
+# It refuses; it does not repair, and it does not wipe a venv install.ps1 may still need to
+# restore from.
+Check "the guard does not delete anything" (($_act -ne "") -and -not ($_act -match 'Remove-Item'))
+
+Write-Host ""
 Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
 # install.ps1 resolves the index and installs the torch trio ITSELF, minutes before it invokes
 # setup, and hands over no record of which family it chose -- setup probes the hardware again

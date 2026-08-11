@@ -4175,8 +4175,63 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
+# Existence is not activation. The two refusals above check that a file is THERE; neither can
+# tell whether dot-sourcing it took effect, and the ways it silently does not are ordinary
+# damage on a half-written venv rather than exotica. Activate.ps1 prepends the venv to PATH in
+# its LAST statement -- $env:VIRTUAL_ENV is set well before it -- so a copy truncated by an
+# interrupted or out-of-disk `python -m venv` parses, runs to its last complete statement and
+# returns without printing anything at all, and an unparseable one is a ParserError, which is
+# non-terminating at the "Continue" set just above. Either way the dot-source "succeeds" with
+# the ambient interpreter still first on PATH, and on a real install that is the system or
+# Microsoft Store python, because install.ps1 keeps the venv's Scripts directory off PATH on
+# purpose. Fast-Install then hands exactly that to `uv pip install --python`, the whole stack
+# lands outside the venv, every Exit-SetupFailure below keys off an exit code produced by that
+# same wrong interpreter, and setup exits 0 -- at which point install.ps1 commits over the
+# rollback copy and the previous working environment is gone for good.
+#
+# So assert the post-condition instead of adding a third pre-condition: the `python` now in
+# effect has to live under $VenvDir. Checking $env:VIRTUAL_ENV would not do, precisely because
+# Activate.ps1 sets it before the line that matters.
+function Assert-VenvActivated {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+
+    # Both sides are normalised through Get-Item, which is what Activate.ps1 itself uses to
+    # build the PATH entry ($VenvExecDir = Get-Item -Path $VenvExecPath). Agreeing on the
+    # normaliser is what keeps a short 8.3 path, a substituted drive, a junction or a
+    # differently cased drive letter from reading as "outside": neither side resolves or
+    # expands anything the other leaves alone. A guard that false-positives here would break
+    # every install, so every branch that cannot PROVE the interpreter is wrong returns.
+    $venvRoot = $null
+    try { $venvRoot = (Get-Item -LiteralPath $VenvDir -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { $venvRoot = $null }
+    if (-not $venvRoot) { return }
+
+    $_pyCmd = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+    # A function or alias named python carries no Source to judge, and judging it wrong would
+    # refuse an install that works. Only an application resolved off PATH is decidable here,
+    # and that is also the only shape Fast-Install's -- python hand-off can be aimed at.
+    if ($_pyCmd -and $_pyCmd.CommandType -ne 'Application') { return }
+    $_pyPath = $null
+    if ($_pyCmd -and $_pyCmd.Source) {
+        try { $_pyPath = (Get-Item -LiteralPath $_pyCmd.Source -Force -ErrorAction Stop).FullName } catch { $_pyPath = $_pyCmd.Source }
+    }
+
+    if ($_pyPath) {
+        foreach ($_sep in @('\', '/')) {
+            if ($_pyPath.StartsWith($venvRoot + $_sep, [System.StringComparison]::OrdinalIgnoreCase)) { return }
+        }
+    }
+
+    $_where = if ($_pyPath) { $_pyPath } else { "nothing on PATH" }
+    Write-StudioLine "[ERROR] Activating $VenvDir did not take effect: python resolves to $_where." -ForegroundColor Red
+    Write-StudioLine "        The activation script is present but did not put the environment on PATH," -ForegroundColor Yellow
+    Write-StudioLine "        so the environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+    Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
+}
+
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
@@ -4193,6 +4248,13 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }
+# Refresh-Environment rebuilt PATH from the registry, and the re-activation that was supposed to
+# put the venv back sits inside a catch that swallows everything -- including a dot-source that
+# died after Activate.ps1's own `deactivate -nondestructive` had already restored the pre-venv
+# PATH. Re-check outside the catch, because this is the last statement before Fast-Install starts
+# resolving `python`. On the ordinary path the assertion above already passed and this re-reads
+# the same PATH.
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
