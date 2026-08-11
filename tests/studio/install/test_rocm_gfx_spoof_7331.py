@@ -92,7 +92,11 @@ def _run_install(
     probe.returncode = 0
     probe.stdout = torch_probe_stdout
 
-    def _fake_detect(dedup = True, ignore_hsa_override = False, ignore_visible_masks = False):
+    def _fake_detect(
+        dedup = True,
+        ignore_hsa_override = False,
+        ignore_visible_masks = False,
+    ):
         if ignore_hsa_override and reprobe_devices is not None:
             codes = list(reprobe_devices)
         else:
@@ -119,9 +123,7 @@ def _run_install(
         # the fix raises AttributeError, which "fails" for the wrong reason and
         # proves nothing about behaviour. With it, the old code runs untouched
         # (it simply never calls this) and fails on the assertion instead.
-        patch.object(
-            stack_mod, "_kfd_gfx_targets", return_value = list(kfd_targets), create = True
-        ),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd_targets), create = True),
         patch.dict(os.environ, _env, clear = False),
     ):
         # patch.dict cannot REMOVE a key the outer environment happens to set, and
@@ -285,9 +287,7 @@ class TestPrecedenceStillHolds:
         override stripped, which is evidence FOR the probe, and the correction
         must decline. This is the case the removed static
         HSA_OVERRIDE_GFX_VERSION-names-the-probe fallback used to get wrong."""
-        calls = _run_install(
-            kfd_targets = (), reprobe_devices = ["gfx1100"], rocm_version = (7, 1)
-        )
+        calls = _run_install(kfd_targets = (), reprobe_devices = ["gfx1100"], rocm_version = (7, 1))
         assert "repo.amd.com" not in calls, calls
         assert "gfx1151" not in calls, calls
         assert "rocm7.1" in calls, calls
@@ -543,15 +543,25 @@ class TestInstallShParity:
     @pytest.mark.parametrize(
         "nodes,expected",
         [
-            (["cpu_cores_count 16\nvendor_id 0\ngfx_target_version 0\n",
-              "simd_count 640\nvendor_id 4098\ngfx_target_version 110501\n"], ["gfx1151"]),
-            (["vendor_id 4098\ngfx_target_version 90010\n",
-              "vendor_id 4318\ngfx_target_version 110000\n",
-              "vendor_id 4098\ngfx_target_version 110000\n"], ["gfx90a", "gfx1100"]),
-            (["vendor_id 4098\n"], []),                              # no gtv line
+            (
+                [
+                    "cpu_cores_count 16\nvendor_id 0\ngfx_target_version 0\n",
+                    "simd_count 640\nvendor_id 4098\ngfx_target_version 110501\n",
+                ],
+                ["gfx1151"],
+            ),
+            (
+                [
+                    "vendor_id 4098\ngfx_target_version 90010\n",
+                    "vendor_id 4318\ngfx_target_version 110000\n",
+                    "vendor_id 4098\ngfx_target_version 110000\n",
+                ],
+                ["gfx90a", "gfx1100"],
+            ),
+            (["vendor_id 4098\n"], []),  # no gtv line
             (["vendor_id 4098\ngfx_target_version notanumber\n"], []),  # malformed
-            ([""], []),                                              # empty properties
-            ([], []),                                                # no nodes at all
+            ([""], []),  # empty properties
+            ([], []),  # no nodes at all
         ],
     )
     def test_kfd_reader_matches_python(self, tmp_path, nodes, expected):
@@ -565,9 +575,7 @@ class TestInstallShParity:
         for i, body in enumerate(nodes):
             (root / str(i)).mkdir()
             (root / str(i) / "properties").write_text(body, encoding = "utf-8")
-        body = _sh_func("_kfd_gfx_targets").replace(
-            "/sys/class/kfd/kfd/topology/nodes", str(root)
-        )
+        body = _sh_func("_kfd_gfx_targets").replace("/sys/class/kfd/kfd/topology/nodes", str(root))
         assert str(root) in body, "the sysfs root substitution must have applied"
         got = _run_sh(body + "\n_kfd_gfx_targets\n")
         assert [c for c in got.split("\n") if c] == expected
@@ -579,8 +587,7 @@ class TestInstallShParity:
         the second GPU whose presence is the only thing that vetoes the
         correction on a mixed host."""
         _unset = [
-            ln for ln in _sh_func("_hsa_spoofed_physical_gfx").splitlines()
-            if "(unset " in ln
+            ln for ln in _sh_func("_hsa_spoofed_physical_gfx").splitlines() if "(unset " in ln
         ]
         assert len(_unset) == 1, _unset
         for _var in (
@@ -604,10 +611,15 @@ class TestInstallShParity:
             "ROCR_VISIBLE_DEVICES": "1",
             "HIP_VISIBLE_DEVICES": "1",
         }
-        with patch.dict(os.environ, env, clear = False), patch.object(
-            stack_mod.shutil, "which", side_effect = lambda c: "/usr/bin/rocminfo"
-            if c == "rocminfo" else None
-        ), patch.object(stack_mod.subprocess, "run", side_effect = _fake_run):
+        with (
+            patch.dict(os.environ, env, clear = False),
+            patch.object(
+                stack_mod.shutil,
+                "which",
+                side_effect = lambda c: "/usr/bin/rocminfo" if c == "rocminfo" else None,
+            ),
+            patch.object(stack_mod.subprocess, "run", side_effect = _fake_run),
+        ):
             stack_mod._detect_amd_gfx_codes(
                 dedup = False, ignore_hsa_override = True, ignore_visible_masks = True
             )
@@ -670,9 +682,24 @@ def _shapes(seed: int, count: int):
 
     rng = random.Random(seed)
     overrides = [
-        "", "11.0.0", "11.5.1", "10.3.0", "9.0.10", "9.4.2", "garbage", "11.0",
-        "11.0.0.0", "  11.0.0  ", "11.0.x", "-1.0.0", "999999.0.0", "11.0.16",
-        "0.0.0", "11.10.0", " ", "11..0",
+        "",
+        "11.0.0",
+        "11.5.1",
+        "10.3.0",
+        "9.0.10",
+        "9.4.2",
+        "garbage",
+        "11.0",
+        "11.0.0.0",
+        "  11.0.0  ",
+        "11.0.x",
+        "-1.0.0",
+        "999999.0.0",
+        "11.0.16",
+        "0.0.0",
+        "11.10.0",
+        " ",
+        "11..0",
     ]
     arches = ["gfx1151", "gfx1150", "gfx1152", "gfx1100", "gfx1030", "gfx906", "gfx942"]
     inferreds = arches + [""]
@@ -722,10 +749,12 @@ class TestRandomizedParity:
                 ),
             )
 
-            with patch.dict(os.environ, env, clear = False), patch.object(
-                stack_mod, "_kfd_gfx_targets", return_value = list(shape["kfd"])
-            ), patch.object(stack_mod, "_amd_smi_allowed", return_value = False), \
-                patch.object(stack_mod, "_safe_print"):
+            with (
+                patch.dict(os.environ, env, clear = False),
+                patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(shape["kfd"])),
+                patch.object(stack_mod, "_amd_smi_allowed", return_value = False),
+                patch.object(stack_mod, "_safe_print"),
+            ):
                 for _stale in ("HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES"):
                     if _stale not in env:
                         os.environ.pop(_stale, None)
@@ -753,10 +782,12 @@ class TestRandomizedParity:
                 env["HSA_OVERRIDE_GFX_VERSION"] = shape["override"]
             if shape["mask"]:
                 env["ROCR_VISIBLE_DEVICES"] = shape["mask"]
-            with patch.dict(os.environ, env, clear = False), patch.object(
-                stack_mod, "_kfd_gfx_targets", return_value = list(shape["kfd"])
-            ), patch.object(stack_mod, "_amd_smi_allowed", return_value = False), \
-                patch.object(stack_mod, "_safe_print"):
+            with (
+                patch.dict(os.environ, env, clear = False),
+                patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(shape["kfd"])),
+                patch.object(stack_mod, "_amd_smi_allowed", return_value = False),
+                patch.object(stack_mod, "_safe_print"),
+            ):
                 for _stale in ("HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES"):
                     if _stale not in env:
                         os.environ.pop(_stale, None)
@@ -794,17 +825,20 @@ class TestCallSiteParity:
 
         inferreds = ["gfx1151", "gfx1150", "gfx1100", "gfx1030", ""]
         physicals = [
-            [], ["gfx1151"], ["gfx1100"], ["gfx1030"],
-            ["gfx1151", "gfx1100"], ["gfx1100", "gfx1100"], ["gfx1151", "gfx1151"],
+            [],
+            ["gfx1151"],
+            ["gfx1100"],
+            ["gfx1030"],
+            ["gfx1151", "gfx1100"],
+            ["gfx1100", "gfx1100"],
+            ["gfx1151", "gfx1151"],
         ]
         kfds = [[], ["gfx1151"], ["gfx1100"], ["gfx1151", "gfx1100"]]
         masks = ["", "0", "1"]
 
         _path = fake_rocminfo + ":" + os.environ.get("PATH", "/usr/bin:/bin")
         divergences, corrections, shapes = [], 0, 0
-        for inferred, physical, kfd, mask in itertools.product(
-            inferreds, physicals, kfds, masks
-        ):
+        for inferred, physical, kfd, mask in itertools.product(inferreds, physicals, kfds, masks):
             env = {
                 "FAKE_KFD": "\n".join(kfd),
                 "FAKE_PHYSICAL": " ".join(physical),
@@ -817,36 +851,58 @@ class TestCallSiteParity:
 
             # install.sh's call site, verbatim: raw grep output, duplicates and all.
             sh_probe = _sp.run(
-                ["/bin/sh", "-c",
-                 "rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true"],
-                capture_output = True, text = True, env = env, timeout = 60,
+                [
+                    "/bin/sh",
+                    "-c",
+                    "rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true",
+                ],
+                capture_output = True,
+                text = True,
+                env = env,
+                timeout = 60,
             ).stdout.strip()
-            sh = _run_sh(
-                '_hsa_spoofed_physical_gfx "$SI" "$SP" 2>/dev/null',
-                env = dict(env, SI = inferred, SP = sh_probe),
-            ) if sh_probe else ""
+            sh = (
+                _run_sh(
+                    '_hsa_spoofed_physical_gfx "$SI" "$SP" 2>/dev/null',
+                    env = dict(env, SI = inferred, SP = sh_probe),
+                )
+                if sh_probe
+                else ""
+            )
 
             # install_python_stack.py's call site: one entry per agent.
-            with patch.dict(os.environ, env, clear = False), patch.object(
-                stack_mod, "_kfd_gfx_targets", return_value = list(kfd)
-            ), patch.object(stack_mod, "_amd_smi_allowed", return_value = False), \
-                patch.object(stack_mod, "_safe_print"):
+            with (
+                patch.dict(os.environ, env, clear = False),
+                patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd)),
+                patch.object(stack_mod, "_amd_smi_allowed", return_value = False),
+                patch.object(stack_mod, "_safe_print"),
+            ):
                 for _stale in ("HSA_OVERRIDE_GFX_VERSION", "ROCR_VISIBLE_DEVICES"):
                     if _stale not in env:
                         os.environ.pop(_stale, None)
                 os.environ.pop("HIP_VISIBLE_DEVICES", None)
                 py_probe = stack_mod._detect_amd_gfx_codes(dedup = False)
-                py = stack_mod._hsa_spoofed_physical_gfx(
-                    inferred or None, list(py_probe)
-                ) if py_probe else None
+                py = (
+                    stack_mod._hsa_spoofed_physical_gfx(inferred or None, list(py_probe))
+                    if py_probe
+                    else None
+                )
 
             shapes += 1
             corrections += bool(py)
             if (py or "") != sh:
                 divergences.append(
-                    {"override": override, "inferred": inferred, "physical": physical,
-                     "kfd": kfd, "mask": mask, "sh_probe": sh_probe.split("\n"),
-                     "py_probe": py_probe, "shell_said": sh, "python_said": py}
+                    {
+                        "override": override,
+                        "inferred": inferred,
+                        "physical": physical,
+                        "kfd": kfd,
+                        "mask": mask,
+                        "sh_probe": sh_probe.split("\n"),
+                        "py_probe": py_probe,
+                        "shell_said": sh,
+                        "python_said": py,
+                    }
                 )
         assert not divergences, divergences[:5]
         if override == "11.0.0":
