@@ -2085,7 +2085,15 @@ class TestInstallShStructure:
         the test controls: a real ROCm host would otherwise answer one of the
         probes and make the assertions machine-dependent."""
         parts = []
-        for name in (*self._ROCM_VERSION_SOURCES, "_highest_rocm_tag", "_detect_rocm_version_tag"):
+        # _run_bounded first: _rocm_tag_from_rpm routes its query through it, so
+        # leaving it out would make the rpm source silently answer nothing and
+        # the per-position assertions below pass for the wrong reason.
+        for name in (
+            "_run_bounded",
+            *self._ROCM_VERSION_SOURCES,
+            "_highest_rocm_tag",
+            "_detect_rocm_version_tag",
+        ):
             body = _extract_sh_function_body(source, name)
             assert body, f"install.sh no longer defines {name}()"
             parts.append(body)

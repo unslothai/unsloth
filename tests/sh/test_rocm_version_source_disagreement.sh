@@ -93,7 +93,10 @@ done
 # Minimal tool set: no amd-smi, hipconfig, dpkg-query, rpm or rocminfo unless a
 # scenario supplies one, so an unrelated host package cannot answer a probe.
 _TOOLS_DIR=$(mktemp -d)
-for _cmd in uname grep sed head sh bash cat awk printf tr ls sort; do
+# `timeout` and `sleep` are here for case 14: _run_bounded looks up `timeout` on
+# PATH, so leaving it out of this minimal set would silently turn the bounded
+# probe back into an unbounded one and make that case pass for the wrong reason.
+for _cmd in uname grep sed head sh bash cat awk printf tr ls sort timeout sleep; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
 done
@@ -259,6 +262,27 @@ MOCK
 }
 
 # Run get_torch_index_url against the current scenario. stdout only.
+add_wedged_rpm() {
+    # Stands in for `rpm -q` wedged on the rpmdb: a leftover /var/lib/rpm/__db.00*
+    # from a killed rpm/yum leaves plain queries stuck in futex on the BerkeleyDB
+    # backend (rpm < 4.16, i.e. RHEL 8 / SLES 15), and rpm 6.0.x deadlocks
+    # `rpm --query` against a running dnf transaction. Sleeps rather than really
+    # wedging so the suite stays hermetic and killable.
+    cat > "$_MOCK_DIR/rpm" <<MOCK
+#!/bin/sh
+sleep 30
+MOCK
+    chmod +x "$_MOCK_DIR/rpm"
+}
+
+# run_index under an OUTER bound, so if the probe is ever unbounded again this
+# case fails in $1 seconds instead of hanging the whole suite.
+run_index_outer_bounded() {
+    PATH="$_MOCK_DIR:$_TOOLS_DIR" timeout "$1" bash -c \
+        "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
+         _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+}
+
 run_index() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
         "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
@@ -508,6 +532,36 @@ add_amd_smi_line "N/A"
 add_version_file "6.1.3-42"
 assert_eq "amd-smi N/A beside amdgpu 6.10 does not outvote a real 6.1" \
     "$_BASE/rocm6.1" "$(run_index)"
+
+# ── 14. A wedged rpmdb must not hang the installer ─────────────────────────
+# Highest-wins needs every source's answer, so no source can be short-circuited
+# any more and reordering them cannot help. That makes blast radius the thing to
+# check: `rpm -q` used to be LAST in a first-answer-wins chain, so on any RHEL /
+# SLES host with a normal ROCm install /opt/rocm/.info/version answered at
+# position two and rpm was never invoked at all. Now it always runs, and unlike
+# the other sources it can block indefinitely on the rpmdb (stale BerkeleyDB
+# __db locks on rpm < 4.16; the rpm 6.0.x read-lock deadlock against dnf). An
+# installer that hangs forever is worse than one that mis-detects, so the probe
+# is bounded and a timed-out source simply declines to answer.
+reset_sources
+add_version_file "6.4.0-1"
+add_wedged_rpm
+_t0=$(date +%s)
+# `|| _res=""` so the outer bound firing is reported as a FAIL below rather than
+# taking the suite down through set -e with no verdict printed.
+_res=$(run_index_outer_bounded 20) || _res=""
+_t1=$(date +%s)
+# The wedged source must not take the answer down with it: the version file
+# still resolves the host. Empty here means the outer bound fired, i.e. the
+# rpm probe ran unbounded.
+assert_eq "a wedged rpm does not stop the version file resolving the host" \
+    "$_BASE/rocm6.4" "$_res"
+if [ "$((_t1 - _t0))" -lt 20 ]; then
+    assert_eq "the rpm probe is bounded, not left to block the installer" "ok" "ok"
+else
+    assert_eq "the rpm probe is bounded, not left to block the installer" \
+        "under 20s" "$((_t1 - _t0))s (outer bound fired)"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

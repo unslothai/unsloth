@@ -2963,7 +2963,20 @@ _rocm_tag_from_dpkg() {
 
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    _rt_ver=$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
+    # Bounded: this is the one source highest-wins newly made unconditional that
+    # can block forever. It used to be LAST in a first-answer-wins `||` chain, so
+    # on any RHEL/SLES host with a normal ROCm install /opt/rocm/.info/version
+    # answered at position two and rpm was never invoked; now every source runs.
+    # `rpm -q` is not a lock-free read: on the BerkeleyDB backend (rpm < 4.16,
+    # i.e. RHEL 8 / SLES 15 -- both supported ROCm platforms) a leftover
+    # /var/lib/rpm/__db.00* from any killed rpm/yum leaves plain queries wedged
+    # in futex until the files are deleted (rhbz#485780, rhbz#73097), and rpm
+    # 6.0.x reintroduced a read lock that deadlocks `rpm --query` against a
+    # running dnf transaction (rhbz#2463435). A version probe must not be able to
+    # hang the installer, and a timed-out probe is just a source that declined to
+    # answer. _run_bounded no-ops where `timeout` is absent, so this adds no
+    # dependency the file did not already have.
+    _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
     [ -n "$_rt_ver" ] || return 0
     printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
 }
