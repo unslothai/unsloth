@@ -15,6 +15,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
+from contextlib import contextmanager
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -102,12 +103,22 @@ LLAMA_CPP_TARGETS = [
     "llama-server",
 ]
 
-# Check environments
-keynames = "\n" + "\n".join(os.environ.keys())
-IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
-IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
-KAGGLE_TMP = "/tmp"
-del keynames
+# Check environments. `is_kaggle_environment` needs a real Kaggle kernel, not
+# merely a KAGGLE_* variable: KAGGLE_USERNAME / KAGGLE_KEY / KAGGLE_CONFIG_DIR
+# are what the Kaggle CLI reads on an ordinary laptop, and every one of the
+# Kaggle branches below (rewriting save paths to /tmp, deleting the cached base
+# model) is wrong to take there.
+from .disk_utils import (
+    KAGGLE_TMP,
+    is_colab_environment,
+    is_kaggle_environment,
+    estimate_gguf_export_bytes,
+    free_bytes,
+    kaggle_tmp_redirect,
+)
+
+IS_COLAB_ENVIRONMENT = is_colab_environment()
+IS_KAGGLE_ENVIRONMENT = is_kaggle_environment()
 
 # Weights
 LLAMA_WEIGHTS = (
@@ -2283,6 +2294,14 @@ def unsloth_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
+    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
+    # kernel is measured in terabytes. Relative paths under /kaggle/working that
+    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
+    # machine are untouched.
+    save_directory = _preflight_merge_disk(
+        self, save_directory, save_method, push_to_hub = push_to_hub,
+    )
+
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
@@ -2863,6 +2882,209 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+@contextmanager
+def _hub_cache_prewarm_disabled(disable):
+    """Turn the base-model cache pre-warm off for one export, then restore it.
+
+    The pre-warm is an optimization for the NEXT export, so on a disk that
+    cannot hold the cached base and the export at once, the export wins. The
+    old value goes back afterwards, including on an exception, so nothing
+    leaks into the rest of the session.
+    """
+    if not disable:
+        yield
+        return
+    key = "UNSLOTH_PREWARM_HUB_CACHE"
+    previous = os.environ.get(key, None)
+    os.environ[key] = "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
+def _preflight_merge_disk(model, save_directory, save_method, push_to_hub = False):
+    """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
+
+    Never raises. A merge that is short of space on an ordinary machine is
+    already handled by unsloth_zoo's own guard, which knows about shard
+    streaming and the push_to_hub fallbacks; this exists purely so the ~20GB
+    Kaggle working directory stops being the ceiling when a terabyte of
+    overlay is mounted next to it.
+
+    Skipped entirely when pushing to the hub, because there `save_directory`
+    is a repo id like "user/model", not a filesystem path, and rewriting it
+    would push to the wrong repository.
+    """
+    if push_to_hub:
+        return save_directory
+    if str(save_method).lower() not in ("merged_16bit", "mxfp4"):
+        return save_directory
+    try:
+        need = estimate_gguf_export_bytes(
+            model = model,
+            quantization_methods = (),
+            needs_merge = True,
+            keep_intermediate_gguf = False,
+        )
+        if need <= 0:
+            return save_directory
+        new_directory, message = kaggle_tmp_redirect(
+            save_directory, need_bytes = need, what = "16-bit merge",
+        )
+    except Exception:
+        return save_directory
+    if message is not None:
+        print(message)
+        return new_directory
+    return save_directory
+
+
+def _normalize_quantization_methods(quantization_method):
+    """The list of GGUF types an export will actually write.
+
+    Mirrors the normalisation `save_to_gguf` does, but cheaply and without
+    validating, because this only feeds a size estimate: an unrecognised name
+    is sized as q8_0 rather than rejected here, and the real validation still
+    happens later where it always did.
+    """
+    if quantization_method is None:
+        return []
+    if isinstance(quantization_method, str):
+        methods = [quantization_method]
+    elif isinstance(quantization_method, (list, tuple)):
+        methods = list(quantization_method)
+    else:
+        return []
+    out = []
+    for method in methods:
+        if method is None:
+            method = "q8_0"
+        method = str(method).lower()
+        if method == "not_quantized":
+            method = "f16"
+        elif method == "fast_quantized":
+            method = "q8_0"
+        elif method == "quantized":
+            method = "q4_k_m"
+        out.append(method)
+    return out
+
+
+def _preflight_gguf_disk(
+    model,
+    save_directory,
+    quantization_method,
+    first_conversion = None,
+    model_dtype = "f16",
+    has_imatrix = False,
+    needs_merge = True,
+):
+    """Refuse a GGUF export that cannot fit, before it writes a single byte.
+
+    Returns `(directory, prewarm_ok)`. `directory` differs from the input
+    only when a Kaggle kernel's tiny working directory was swapped for the
+    large /tmp overlay (and then it says so, once). `prewarm_ok` is False when
+    the export fits only if the Hugging Face cache is not pre-warmed with the
+    base model first.
+
+    A GGUF export peaks at more than "the model, twice". It caches the
+    full-precision base, writes the 16-bit HF merge, then an intermediate
+    GGUF at the source dtype, then each requested quant, and every earlier
+    artefact is still on disk while the next is written. Gemma4 (26B A4B)
+    Vision, Gemma4 (31B) Vision and Qwen3 32B each trained, ran inference and
+    completed `merged_16bit` before dying partway through a GGUF shard,
+    because the check in front of them had sized the job at two copies.
+
+    Dropping the pre-warm is tried before refusing, because it is a pure
+    optimization for the NEXT export - the merge downloads what it needs
+    either way - and an export that runs is worth more than a cache.
+
+    Never blocks on a guess: an unmeasurable model or an unmeasurable disk
+    returns the directory untouched. Set UNSLOTH_DISK_PREFLIGHT=0 to disable.
+    """
+    if os.environ.get("UNSLOTH_DISK_PREFLIGHT", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return save_directory, True
+
+    try:
+        methods = _normalize_quantization_methods(quantization_method)
+        if first_conversion is None or not isinstance(first_conversion, str):
+            first_conversion = _choose_first_conversion(
+                methods, model_dtype, has_imatrix = has_imatrix
+            )
+        need = estimate_gguf_export_bytes(
+            model = model,
+            quantization_methods = methods,
+            first_conversion = first_conversion,
+            needs_merge = needs_merge,
+        )
+        # The pre-warm only happens on the merge path, and only when it has
+        # not already been switched off.
+        prewarm_possible = needs_merge and os.environ.get(
+            "UNSLOTH_PREWARM_HUB_CACHE", "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
+        need_with_cache = (
+            estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = methods,
+                first_conversion = first_conversion,
+                needs_merge = needs_merge,
+                base_cache_copy = True,
+            )
+            if prewarm_possible
+            else need
+        )
+    except Exception:
+        # Sizing is best effort. A failure here must not stop an export that
+        # would otherwise have worked.
+        return save_directory, True
+    if need <= 0:
+        return save_directory, True
+
+    new_directory, message = kaggle_tmp_redirect(
+        save_directory, need_bytes = need_with_cache, what = "GGUF export",
+    )
+    if message is not None:
+        print(message)
+        save_directory = new_directory
+
+    free = free_bytes(save_directory)
+    if free is None or free >= need_with_cache:
+        return save_directory, True
+
+    if free >= need:
+        if prewarm_possible:
+            print(
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - "
+                f"{free / 1024**3:.1f}GB free is enough for this GGUF export "
+                f"(~{need / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"model as well. The next export will download the base again."
+            )
+        return save_directory, False
+
+    raise RuntimeError(
+        f"Unsloth: Not enough disk space to convert to GGUF.\n"
+        f"The export needs about {need / 1024**3:.1f}GB on the filesystem holding "
+        f"`{save_directory}`, which has {free / 1024**3:.1f}GB free.\n"
+        f"It writes a 16-bit merge, then a `{first_conversion}` GGUF, then "
+        f"{', '.join(_normalize_quantization_methods(quantization_method)) or 'no'} "
+        f"quants, and the merge and the intermediate are both still on disk while "
+        f"the quants are written.\n"
+        f"Options: free space, export fewer quantization methods, point "
+        f"`save_directory` at a bigger filesystem, or push straight to Hugging Face "
+        f"with `.push_to_hub_gguf(...)`.\n"
+        f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+    )
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -2970,6 +3192,22 @@ def unsloth_save_pretrained_gguf(
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
+
+    # Step 1b: Will this fit? Ask before the merge, not after. Runs here rather
+    # than lower down because `arguments` below snapshots locals(), so a
+    # redirected `save_directory` has to be in place first. gpt-oss takes the
+    # mxfp4 route instead of the merge/convert/quantize one this sizes.
+    _gguf_prewarm_ok = True
+    if not is_gpt_oss:
+        save_directory, _gguf_prewarm_ok = _preflight_gguf_disk(
+            model = self,
+            save_directory = save_directory,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            has_imatrix = imatrix_file is not None,
+            needs_merge = isinstance(self, (PeftModel, PeftModelForCausalLM)),
+        )
+
     # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"] = self
@@ -3003,6 +3241,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["base_model_name"]
     del arguments["is_processor"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
+    del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
@@ -3022,7 +3261,8 @@ def unsloth_save_pretrained_gguf(
         print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
         try:
             # Call unsloth_generic_save directly (it's in the same file)
-            unsloth_generic_save(**arguments)
+            with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
+                unsloth_generic_save(**arguments)
 
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}")
@@ -4318,6 +4558,14 @@ def unsloth_generic_save_pretrained_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
+
+    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
+    # kernel is measured in terabytes. Relative paths under /kaggle/working that
+    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
+    # machine are untouched.
+    save_directory = _preflight_merge_disk(
+        self, save_directory, save_method, push_to_hub = push_to_hub,
+    )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
