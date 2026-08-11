@@ -291,7 +291,14 @@ SPOT = SCOPE == "spot"
 # The two that squeeze the rail hardest, re-run at the largest UI font size.
 # The whole matrix again would not fit the job's budget and would say the same
 # thing three times over.
-FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500)]
+# 320x480 is not a spare small size, it is the one that bites. Below 384px the
+# card's action pair wraps onto a row of its own on top of the notes toggle's,
+# and at the 20px setting that is a whole extra row: 259px where the wide card
+# needs 209. The height matters as much as the width, because the harm needs a
+# rail cap BETWEEN the two. At 320x480 the cap is 293px, so a 209px floor let
+# the card shrink to 209 and its own overflow-hidden surface cut 34px off Copy
+# command; at 320x568 the cap is 528px and nothing is squeezed at all.
+FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
 # appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the
 # persist version. Kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
@@ -401,6 +408,11 @@ MEASURE = """
     // Clipped by the card, not by the rail. What the rail hides is under a
     // fold the reader can scroll to; what the card hides is gone for good.
     card: rect(card), llama: rect(llama),
+    // The same two, as much of them as the rail is SHOWING. Containment is
+    // asked of these: a card the rail has folded away is not on screen at all,
+    // and judging its unclipped rect against the viewport fails it for being
+    // scrolled out of sight, which is what the reach check below is for.
+    cardShown: clip(card, rail), llamaShown: clip(llama, rail),
     notesBody: clip(body, notes),
     toggle: clip(toggle, surface),
     snooze: clip(snooze, surface),
@@ -509,10 +521,16 @@ def measure(page, label: str) -> dict:
         f"card={facts['card']} llama={facts['llama']}",
     )
     for name in ("card", "llama", "footer", "toggle"):
+        # As shown, where the rail can hide it; as measured otherwise. A card
+        # entirely under the fold is None here and is the reach check's to make.
+        shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") \
+            else facts[name]
+        if name in ("card", "llama") and shown is None:
+            continue
         check(
             f"{label}: the {name} stays inside the viewport",
-            inside(facts[name], view),
-            f"{name}={facts[name]} viewport={view}",
+            inside(shown, view),
+            f"{name}={shown} viewport={view}",
         )
     # Anything the rail is holding under its fold has to come back when the
     # rail is scrolled to it, and land on screen when it does.

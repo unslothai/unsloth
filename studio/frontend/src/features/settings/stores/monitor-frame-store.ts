@@ -441,6 +441,21 @@ export function useStackGeometry(): StackPlacement {
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
+      // Taken here, uncapped, and not after the cap goes back on. The tail
+      // panels are min-h-0 with their own scrollers, so under a tight cap they
+      // measure as almost nothing, the placement reads that as a tail it can
+      // safely put in the corner, the corner's larger cap lets them grow, and
+      // the next measurement says the opposite: the two placements would swap
+      // back and forth for as long as a download and an update card share the
+      // rail. One size that does not depend on the answer, as with the two
+      // heights above.
+      let tail = 0;
+      for (let i = node.children.length - 1; i >= 0; i -= 1) {
+        const child = node.children[i];
+        if (child.hasAttribute("data-overlay-dismissible")) break;
+        tail += child.getBoundingClientRect().height + STACK_GAP;
+      }
+      const persistent = Math.round(tail);
       // And the other end of the same measurement: squeezed to nothing, what is
       // left is what the cards refuse to give up. The difference between the two
       // is the height the stack can donate to a dodge, and asking a placement to
@@ -475,13 +490,6 @@ export function useStackGeometry(): StackPlacement {
       // and the tail lands on it; on an empty chat it is centred and the corner
       // below it is free, so the cards that reach it are the dismissible ones
       // and there is nothing to protect.
-      let tail = 0;
-      for (let i = node.children.length - 1; i >= 0; i -= 1) {
-        const child = node.children[i];
-        if (child.hasAttribute("data-overlay-dismissible")) break;
-        tail += child.getBoundingClientRect().height + STACK_GAP;
-      }
-      const persistent = Math.round(tail);
       setPersistentTail((current) =>
         current === persistent ? current : persistent,
       );

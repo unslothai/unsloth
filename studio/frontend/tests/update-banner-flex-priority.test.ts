@@ -122,10 +122,12 @@ test("the two update cards do not drift apart", () => {
     classes(WEB, "flex min-w-0 "),
     "the headers differ between the desktop and browser cards",
   );
+  // Both floors are dropped before comparing, the plain one and the narrow
+  // variant: the two cards measure differently and are meant to differ here.
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => !rule.startsWith("min-h-"))
+      .filter((rule) => !/^(max-\[\d+px\]:)?min-h-/.test(rule))
       .join(" ");
   assert.equal(
     root(TAURI),

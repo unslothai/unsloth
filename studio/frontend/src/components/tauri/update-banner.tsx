@@ -118,18 +118,21 @@ export function UpdateBanner({
                   // one would yield nothing and clip the banner below it.
                   //
                   // Its own constants, not the browser card's: this card
-                  // carries one more status line under the version, worth 19px
-                  // at the default type size and 24px at the largest. Measured
-                  // the same way and exact above the wrap (221px at scale
-                  // 1.125, 227 at 1.1875, 233 at 1.25). See web/update-banner
-                  // for why the floor is split into a fixed and a scaled part.
+                  // carries one more status line under the version, worth about
+                  // 20px at the default type size and 24px at the largest.
+                  // Measured the same way, at every step from 15px to 20px:
+                  // 204, 210, 215, 221, 227, 233 at the widths where the action
+                  // pair holds together, and 204, 210, 262, 269, 277, 304 below
+                  // 384px where it wraps onto a row of its own. See
+                  // web/update-banner for why the floor is split into a fixed
+                  // and a scaled part, and why the narrow regime needs its own.
                   //
                   // The failure card has no notes to give up, so shrinking it
                   // could only clip the diagnostics and the retry button. It
                   // holds its height and the rail scrolls instead.
                   showFailure
                     ? "shrink-0"
-                    : "min-h-[calc(113px+96px*var(--ui-font-scale,1))]",
+                    : "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
           )}
           // See the browser card: dismissible, so it may cover the composer.

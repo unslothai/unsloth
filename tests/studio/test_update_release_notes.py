@@ -1122,7 +1122,11 @@ def test_code_span_closers_ignore_backslashes():
 # scaling one whole box for both asked 256px where 209 was needed, and a floor
 # nothing can meet makes the stack cover the composer for no gain.
 _SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
-_SCALED_FLOOR_TAURI = "min-h-[calc(113px+96px*var(--ui-font-scale,1))]"
+# Below 384px the action pair wraps onto its own row and the card needs a
+# whole extra one: 259px at the 20px setting where the wide card needs 209.
+_NARROW_FLOOR_WEB = "max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+_SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
+_NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
 
 
 def _overlay_stacks(provider: str) -> int:
@@ -1150,6 +1154,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # notes yield, so it floors instead and the stack scrolls past it.
     web = WEB_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
+    assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
@@ -1161,6 +1166,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
     assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
+    assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
 
 
 def test_the_stack_geometry_is_checked_numerically():

@@ -93,14 +93,20 @@ export function WebUpdateBanner({
                 //
                 // A fixed part plus a font-scaled part, the shape index.css
                 // already uses for --picker-control-h, because only some of the
-                // card moves with Settings > Appearance. Measured, not guessed:
-                // the action row wraps between 17px and 18px, and above that
-                // wrap the need is exactly linear (199px at scale 1.125, 204 at
-                // 1.1875, 209 at 1.25), which this reproduces. Below the wrap it
-                // over-reserves by about 40px, the safe direction. Scaling the
-                // whole 12rem box instead asked 256px where 209 was needed, and
-                // a floor nothing can meet covers the composer for no gain.
-                "pointer-events-auto flex min-h-[calc(109px+80px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+                // card moves with Settings > Appearance. Measured at every step
+                // from 15px to 20px rather than guessed, and exact across that
+                // range: 184, 189, 194, 199, 204, 209. Scaling the whole 12rem
+                // box instead asked 256px where 209 was needed, and a floor
+                // nothing can meet covers the composer for no gain.
+                //
+                // Below 384px the action pair wraps onto a row of its own on
+                // top of the notes toggle's, and the card needs a whole extra
+                // row: 259px at 20px where the wide card needs 209. A floor
+                // that misses it lets a dodging placement clip a row of
+                // buttons inside the card's own overflow-hidden surface. The
+                // narrow constants bound that regime (229, 235, 241, 247, 253,
+                // 259) and are exact from 17px up, where the extra wrap starts.
+                "pointer-events-auto flex min-h-[calc(109px+80px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]",
           )}
           // Dismissible, so the stack may cover the composer to show it
           // whole. See useStackGeometry: a card that cannot be got rid of
