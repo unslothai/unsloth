@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """setup.ps1 must report the AMD GPU on a host with exactly one AMD adapter.
 
 `$wmiGpus = if (...) { $healthyGpus } else { $amdGpus }` unrolled a one-element branch into a bare
@@ -69,17 +72,33 @@ def _function(src: str, name: str) -> str:
     return _balanced(src, src.index(f"function {name} {{"), "{", "}")
 
 
-def _setup_source(revision: str | None = None) -> str:
-    """setup.ps1 as shipped, or as of `revision` (e.g. HEAD~1) for the red/green check."""
-    if revision is None:
-        return SETUP_PS1.read_text(encoding = "utf-8")
-    return subprocess.run(
-        ["git", "show", f"{revision}:studio/setup.ps1"],
-        cwd = REPO_ROOT,
-        capture_output = True,
-        text = True,
-        check = True,
-    ).stdout
+def _setup_source() -> str:
+    return SETUP_PS1.read_text(encoding = "utf-8")
+
+
+# The two fixes, as (fixed, unfixed) pairs. Undoing them textually is what the red/green check
+# below runs against, rather than an older commit: a revision that is "before the fix" is only
+# before it until this merges, and reaching for it through git also fails in a shallow CI clone.
+# Reverting the wraps in memory keeps the comparison immutable and isolates the one thing under
+# test, since everything else about the two sources is identical by construction.
+_ARRAY_WRAPS = (
+    (
+        "$wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })",
+        "$wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }",
+    ),
+    (
+        "$gpuNames = @(if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) })",
+        "$gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }",
+    ),
+)
+
+
+def _without_the_array_wraps(src: str) -> str:
+    """setup.ps1 with only the two `@()` wraps undone: the source as it behaved before the fix."""
+    for fixed, unfixed in _ARRAY_WRAPS:
+        assert src.count(fixed) == 1, f"expected exactly one occurrence of {fixed!r}"
+        src = src.replace(fixed, unfixed)
+    return src
 
 
 def _amd_scan_block(src: str) -> str:
@@ -174,13 +193,13 @@ def _run(
     adapters: list[tuple[str, int]],
     *,
     env: dict[str, str] | None = None,
-    revision: str | None = None,
+    source: str | None = None,
     ps51: bool = False,
     strict: bool = False,
 ) -> dict:
     script = tmp_path / "scan.ps1"
     script.write_text(
-        _driver(_setup_source(revision), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
+        _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
     )
     # Only what each case names may reach the child: a developer's own exported
     # UNSLOTH_ROCM_GFX_ARCH would otherwise silently win every inference assertion here.
@@ -491,33 +510,16 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
 
 
 @requires_pwsh
-def test_these_assertions_fail_against_the_source_before_the_fix(tmp_path):
+def test_these_assertions_fail_without_the_array_wraps(tmp_path):
     """A regression test that passes on the unfixed source is not one.
 
     The first version of this file asserted on `.Count`, which pwsh answers as 1 for a scalar, so
-    it was green either way. Pin the two failures to the merge base so a later edit here cannot
-    quietly re-lose them.
+    it was green either way. Undo just the two wraps and confirm the failures come back, so a
+    later edit here cannot quietly re-lose them.
     """
-    # The merge base, not HEAD~1: this branch grows commits, and every one of them already
-    # carries the fix, so a relative ref would compare the fixed source against itself.
-    revision = None
-    for ref in ("origin/main", "upstream/main", "main"):
-        base = subprocess.run(
-            ["git", "merge-base", "HEAD", ref],
-            cwd = REPO_ROOT,
-            capture_output = True,
-            text = True,
-        )
-        if base.returncode == 0 and base.stdout.strip():
-            revision = base.stdout.strip()
-            break
-    if revision is None:
-        pytest.skip("no main branch to compare against (shallow or detached clone)")
-    try:
-        before = _run(tmp_path, [(_RADEON, 0)], revision = revision, ps51 = True)
-        pinned = _run(tmp_path, [(_RADEON, 0)], revision = revision, env = {"HIP_VISIBLE_DEVICES": "0"})
-    except (subprocess.CalledProcessError, AssertionError, ValueError):
-        pytest.skip("parent revision does not carry a comparable scan block")
+    unfixed = _without_the_array_wraps(_setup_source())
+    before = _run(tmp_path, [(_RADEON, 0)], source = unfixed, ps51 = True)
+    pinned = _run(tmp_path, [(_RADEON, 0)], source = unfixed, env = {"HIP_VISIBLE_DEVICES": "0"})
     assert not before["wmi_array"], "the unwrapped scan should collapse to a scalar"
     assert before["label"] is None, "the unwrapped scan should report no GPU under 5.1 semantics"
     assert pinned["arch"] is None, "the unwrapped name list should infer nothing when pinned"
