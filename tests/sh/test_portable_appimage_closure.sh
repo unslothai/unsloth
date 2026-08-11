@@ -228,7 +228,10 @@ mkdir -p "$_wk/injected-bundle" "$_ld"
 chmod 644 "$_wk/injected-bundle/libwebkit2gtkinjectedbundle.so"
 
 # Lift the real find expression out of the script so this cannot drift from it.
-_sweep=$(grep -A1 "find \"\$webkit_exec\" -type f" "$BUILD_SH" | head -1)
+# Match on the sweep wherever it lives: it was three per-directory loops, then one
+# unified loop over $libdir and $webkit_exec. What must not change is that it selects
+# .so files by NAME and not by mode alone.
+_sweep=$(grep -E 'find .*\$webkit_exec.* -type f' "$BUILD_SH" | head -1)
 assert_eq "sweep matches .so by name, not just by mode" "yes" \
     "$(printf '%s' "$_sweep" | grep -q "name '\*\.so\*'" && echo yes || echo no)"
 
