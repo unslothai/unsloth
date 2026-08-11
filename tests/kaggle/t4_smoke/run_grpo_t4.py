@@ -225,6 +225,36 @@ def train(args) -> dict:
     )
     result["load_seconds"] = round(time.time() - t0, 1)
     result["engine_built"] = True
+
+    # `unsloth/Qwen3-4B-Base` is a BASE model and ships no chat template, so
+    # TRL's `maybe_apply_chat_template` raises on the first training step:
+    #
+    #   ValueError: Cannot use chat template functions because
+    #   tokenizer.chat_template is not set
+    #
+    # Measured on kernel unsloth-t4-ci-27b0dc2e, which is the first probe that
+    # got far enough to hit it -- the vLLM engine had already built and the
+    # trainer was inside `_run_epoch`. The notebook this leg comes from does
+    # the same thing a different way: it runs an SFT priming stage that
+    # installs a template before GRPO starts. This leg has no priming stage,
+    # so it sets a minimal ChatML template directly.
+    #
+    # A base model is the RIGHT choice here and is not what to change. GRPO on
+    # an instruct model would be measuring the instruct tuning as much as the
+    # run, and the payload's rewards are format-and-digit rewards that a base
+    # model can learn inside three steps.
+    if not getattr(tokenizer, "chat_template", None):
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + "
+            "'<|im_end|>\n' }}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+        )
+        result["chat_template"] = "set by the payload (base model ships none)"
+    else:
+        result["chat_template"] = "shipped with the tokenizer"
+    _log("chat template: " + result["chat_template"])
     result["memory_after_load"] = memory()
     _log(f"loaded in {result['load_seconds']}s, memory {result['memory_after_load']}")
 

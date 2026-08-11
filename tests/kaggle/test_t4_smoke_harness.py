@@ -1378,9 +1378,9 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
             carried: set = set()
             for index, cell in enumerate(nb["cells"]):
                 missing, bound = _undefined_names("".join(cell["source"]), carried)
-                assert (
-                    not missing
-                ), f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
+                assert not missing, (
+                    f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
+                )
                 carried = bound
 
 
@@ -2362,3 +2362,46 @@ def test_the_searched_directories_are_the_ones_flashinfer_passes():
     These two are what appear as -L on the failing ninja line."""
     source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
     assert '"/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"' in source
+
+
+def test_the_grpo_payload_gives_a_base_model_a_chat_template():
+    """`unsloth/Qwen3-4B-Base` ships none, and TRL raises on the first step.
+
+    Kernel unsloth-t4-ci-27b0dc2e is the first probe that got far enough to
+    find this: the vLLM engine had built, memory was 11.36GB of 14.56, and the
+    trainer was inside `_run_epoch` when `maybe_apply_chat_template` raised
+
+        ValueError: Cannot use chat template functions because
+        tokenizer.chat_template is not set
+
+    The base model is the right choice and is not what to change; GRPO on an
+    instruct model measures the instruct tuning as much as the run.
+    """
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    assert "tokenizer.chat_template = (" in source
+    assert 'if not getattr(tokenizer, "chat_template", None):' in source
+    # And the report has to say which of the two worlds the run was in.
+    assert 'result["chat_template"]' in source
+
+
+def test_the_chat_template_the_payload_installs_actually_renders():
+    """A template that does not render trades a failure at step 1 for a
+    failure at step 1 with a longer traceback."""
+    import re
+
+    jinja2 = pytest.importorskip("jinja2")
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    block = source[source.index("tokenizer.chat_template = (") :]
+    block = block[: block.index("\n        )")]
+    literal = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', block))
+    template = literal.encode().decode("unicode_escape")
+
+    rendered = jinja2.Template(template).render(
+        messages = [{"role": "system", "content": "S"}, {"role": "user", "content": "U"}],
+        add_generation_prompt = True,
+    )
+    assert rendered.startswith("<|im_start|>system\nS<|im_end|>")
+    assert rendered.endswith("<|im_start|>assistant\n")
+    # Both roles must survive; a template that drops the user turn would train
+    # on prompts the model never saw.
+    assert "<|im_start|>user\nU<|im_end|>" in rendered
