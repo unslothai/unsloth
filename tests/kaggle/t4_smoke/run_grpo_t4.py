@@ -419,12 +419,19 @@ def make_libcuda_linkable() -> dict:
         import ctypes.util
         import subprocess
 
-        stub_dirs = ["/usr/local/cuda/lib64/stubs", "/usr/local/cuda/compat"]
-        for d in stub_dirs:
+        # ONLY the directories flashinfer actually passes with -L. Measured on
+        # kernel unsloth-t4-ci-d0d480b6: an earlier version of this check also
+        # accepted /usr/local/cuda/compat, found libcuda.so there, concluded
+        # "already linkable" and did nothing -- and the link failed anyway,
+        # because compat is not on the link command line. A library the linker
+        # will not search for is not a library the linker can find.
+        link_dirs = ["/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"]
+        for d in link_dirs:
             if os.path.exists(os.path.join(d, "libcuda.so")):
                 facts["already_linkable"] = d
                 return facts
         facts["needed"] = True
+        facts["searched"] = link_dirs
 
         # Where the real driver lives. ldconfig is authoritative; the ctypes
         # lookup is the fallback for an image with no ldconfig cache.
@@ -442,6 +449,17 @@ def make_libcuda_linkable() -> dict:
         if real is None or not os.path.exists(real):
             found = ctypes.util.find_library("cuda")
             real = found if found and os.path.exists(found) else None
+        if real is None:
+            # The compat tree is the usual place on Kaggle. It is useless as a
+            # -L target because nothing passes it, but it is a perfectly good
+            # symlink TARGET.
+            for candidate in (
+                "/usr/local/cuda/compat/libcuda.so",
+                "/usr/local/cuda/compat/libcuda.so.1",
+            ):
+                if os.path.exists(candidate):
+                    real = candidate
+                    break
         if real is None:
             facts["error"] = "no libcuda.so.1 on this machine"
             return facts

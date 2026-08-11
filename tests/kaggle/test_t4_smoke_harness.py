@@ -2210,7 +2210,7 @@ def test_the_shim_does_nothing_when_the_stub_is_already_there(monkeypatch):
     """Most images ship it. Touching LIBRARY_PATH anyway would be a change
     with no reason, on a machine that was already fine."""
     grpo = _grpo_module()
-    monkeypatch.setattr(grpo.os.path, "exists", lambda p: "stubs" in str(p))
+    monkeypatch.setattr(grpo.os.path, "exists", lambda p: "lib64" in str(p))
     monkeypatch.delenv("LIBRARY_PATH", raising = False)
     facts = grpo.make_libcuda_linkable()
     assert facts["needed"] is False and facts["applied"] is False
@@ -2316,3 +2316,49 @@ def test_the_traceback_keeps_its_head_as_well_as_its_tail():
     Python frames naming the caller were exactly what got dropped."""
     source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
     assert "middle elided" in source
+
+
+def test_a_libcuda_the_linker_will_not_search_for_does_not_count(monkeypatch, tmp_path):
+    """The bug this check was rewritten for.
+
+    Kernel unsloth-t4-ci-d0d480b6: an earlier version accepted
+    /usr/local/cuda/compat, found libcuda.so there, reported
+    `already_linkable` and did nothing -- and the link failed anyway, because
+    compat is not among the -L directories flashinfer passes. A library the
+    linker will not search for is not a library the linker can find.
+    """
+    grpo = _grpo_module()
+    real_exists = grpo.os.path.exists
+
+    def exists(path):
+        path = str(path)
+        if "compat" in path:
+            return True  # present, and useless as a -L target
+        if "lib64" in path:
+            return False  # the dirs that ARE searched have nothing
+        return real_exists(path)
+
+    monkeypatch.setattr(grpo.os.path, "exists", exists)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.delenv("LIBRARY_PATH", raising = False)
+
+    class Done:
+        stdout = ""
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done())
+    monkeypatch.setattr("ctypes.util.find_library", lambda name: None)
+
+    facts = grpo.make_libcuda_linkable()
+    assert facts["needed"] is True, facts
+    assert "already_linkable" not in facts
+    # compat is a fine symlink TARGET even though it is a useless -L dir.
+    assert facts["applied"] is True and "compat" in facts["real"], facts
+
+
+def test_the_searched_directories_are_the_ones_flashinfer_passes():
+    """Pinned, because widening this list is exactly how the check went wrong.
+    These two are what appear as -L on the failing ninja line."""
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    assert '"/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"' in source
