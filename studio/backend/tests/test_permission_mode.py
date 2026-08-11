@@ -1975,6 +1975,26 @@ def test_high_risk_dispatcher_non_terminal():
         ("import yaml\nyaml.Dumper.ignore_aliases = lambda *_: True\nyaml.safe_load(d)", False),
         ("import yaml\nh.load = yaml.load\nprint(h.load(d, Loader=yaml.SafeLoader))", False),
         ("import yaml\nh.load = yaml.load\nh.load(d, Loader=yaml.Loader)", True),
+        (
+            "import yaml\nSafe: object = yaml.SafeLoader\nsetattr(Safe, 'construct_object', ev)\n"
+            "yaml.load(s, Loader=Safe)",
+            True,
+        ),  # annotated alias, then patched
+        ("import yaml\nchoose = lambda: yaml.load\nld = choose()\nld(s)", True),  # lambda factory
+        ("print((lambda x: x + 1)(2))", False),
+        (
+            "import yaml, operator\ng = operator.attrgetter('yaml_constructors')\n"
+            "r = g(yaml.SafeLoader)\nr['!e'] = ev\nyaml.safe_load(s)",
+            True,
+        ),  # getattr written in two halves
+        ("import operator\ng = operator.attrgetter('name')\nprint(g(obj))", False),
+        (
+            "from yaml import load as py_load\nimport custom_loaders as yaml\n"
+            "py_load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),  # the name yaml bound to another package
+        ("from yaml import __version__ as version\nprint(version)", False),  # a value, not a module
+        ("from yaml import YAMLError\nprint(YAMLError)", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

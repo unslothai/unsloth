@@ -3941,7 +3941,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # their own -- getattr(config, "name") beside a safe_load is ordinary code --
     # so they only count when aimed at a loader.
     _dynamic_access_names = frozenset(
-        {"getattr", "setattr", "vars", "__getattribute__", "__getattr__", "__setattr__"}
+        {
+            "getattr",
+            "setattr",
+            "vars",
+            "__getattribute__",
+            "__getattr__",
+            "__setattr__",
+            # operator.attrgetter("yaml_constructors")(SafeLoader) is getattr
+            # with the two halves written apart.
+            "attrgetter",
+        }
     )
 
     _loader_import_aliases: "set[str]" = set()
@@ -3962,8 +3972,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
 
     for _pass in range(2):
         for _n in ast.walk(tree):
-            if not isinstance(_n, ast.Assign) or not isinstance(
-                _n.value, (ast.Attribute, ast.Name)
+            if not isinstance(_n, (ast.Assign, ast.AnnAssign)) or not isinstance(
+                getattr(_n, "value", None), (ast.Attribute, ast.Name)
             ):
                 continue
             _v = _n.value
@@ -3976,7 +3986,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) or (isinstance(_v, ast.Name) and _v.id in _loader_import_aliases)
             if _is_loader_val:
-                for _t in _n.targets:
+                _tgts = _n.targets if isinstance(_n, ast.Assign) else [_n.target]
+                for _t in _tgts:
                     if isinstance(_t, ast.Name):
                         _loader_import_aliases.add(_t.id)
 
@@ -4015,7 +4026,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             func = node.func
             _name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
             if _name in _dynamic_access_names:
-                return any(_mentions_loader_literal(a) for a in node.args)
+                if any(_mentions_loader_literal(a) for a in node.args):
+                    return True
+                # attrgetter("yaml_constructors") names the registry directly.
+                return any(
+                    isinstance(a, ast.Constant) and a.value in _register_names
+                    for a in node.args
+                )
         return False
 
     def _rebinds_safe_reader(node) -> bool:
@@ -4105,7 +4122,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     rebindable_names.add(sub.id)
     # A seeded module name the snippet itself binds (class yaml: ...) is not the
     # package we assumed, so it stops being a trusted receiver.
-    for _shadowed in _AUTO_UNSAFE_PY_LOAD_MODULES & (rebindable_names | set(assign_counts)):
+    _import_shadowed = set(_AUTO_UNSAFE_PY_LOAD_MODULES & (rebindable_names | set(assign_counts)))
+    for _n in ast.walk(tree):
+        # import custom_loaders as yaml binds the name to something else entirely.
+        if isinstance(_n, ast.Import):
+            for _al in _n.names:
+                _bound = _al.asname or _al.name.split(".")[0]
+                if _bound in _AUTO_UNSAFE_PY_LOAD_MODULES and _al.name.split(".")[0] != _bound:
+                    _import_shadowed.add(_bound)
+        elif isinstance(_n, ast.ImportFrom):
+            for _al in _n.names:
+                _bound = _al.asname or _al.name
+                if _bound in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _import_shadowed.add(_bound)
+    for _shadowed in _import_shadowed:
         load_module_aliases.discard(_shadowed)
         yaml_module_aliases.discard(_shadowed)
     # Alias discovery is order-sensitive: f = g is only recognized once g is
@@ -4224,10 +4254,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                             alias.asname or alias.name
                         ):
                             safe_loader_aliases.add(alias.asname or alias.name)
-                        else:
-                            # Anything else imported from a loader package may be a
-                            # submodule that carries the loaders (from yaml import
-                            # loader as yl), so treat the name as a receiver.
+                        elif alias.name in _AUTO_YAML_SUBMODULES:
+                            # from yaml import loader as yl: a submodule that
+                            # carries the loaders. Other members (__version__,
+                            # YAMLError) are values, not receivers.
                             load_module_aliases.add(alias.asname or alias.name)
                             if node.module.split(".")[0] in _AUTO_YAML_MODULES:
                                 yaml_module_aliases.add(alias.asname or alias.name)
@@ -4596,8 +4626,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # caller's name for it is unknowable here), so returning one asks. Capturing
     # it in a local, which stays visible, is unaffected.
     for node in ast.walk(tree):
+        _escaped = None
         if isinstance(node, ast.Return) and node.value is not None:
-            for sub in ast.walk(node.value):
+            _escaped = node.value
+        elif isinstance(node, ast.Lambda):
+            _escaped = node.body
+        if _escaped is not None:
+            for sub in ast.walk(_escaped):
                 if isinstance(sub, ast.Attribute) and (
                     sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
                 ):
