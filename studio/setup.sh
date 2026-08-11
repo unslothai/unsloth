@@ -1643,6 +1643,33 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    if [ -n "${LATEST_VER:-}" ]; then
+        POST_VER=$("$VENV_DIR/bin/python" -c "
+import sys; from importlib.metadata import version
+print(version(sys.argv[1]))
+" "$_PKG_NAME" 2>/dev/null || echo "")
+        _UPDATE_OK=false
+        if [ "$POST_VER" = "$LATEST_VER" ]; then
+            _UPDATE_OK=true
+        elif [ -n "$POST_VER" ] && "$VENV_DIR/bin/python" -c "
+import re, sys
+def nums(v):
+    m = re.match(r'\d+(\.\d+)*', v)
+    if not m: sys.exit(1)
+    return [int(x) for x in m.group(0).split('.')]
+sys.exit(0 if nums(sys.argv[1]) >= nums(sys.argv[2]) else 1)
+" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
+            # newer than announced is fine (a release can land mid-update)
+            _UPDATE_OK=true
+        fi
+        if [ "$_UPDATE_OK" = false ]; then
+            _POST_STATE="still $POST_VER"
+            [ -n "$POST_VER" ] || _POST_STATE="not installed"
+            step "python" "update ran but $_PKG_NAME is $_POST_STATE (expected $LATEST_VER)" "$C_ERR"
+            setup_fail 1 "update ran but $_PKG_NAME is $_POST_STATE (expected $LATEST_VER)"
+        fi
+        substep "$_PKG_NAME $POST_VER confirmed"
+    fi
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"

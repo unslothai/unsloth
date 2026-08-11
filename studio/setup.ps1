@@ -4076,11 +4076,11 @@ function Fast-Download {
 # Skip all Python dependency work if versions match (fast update path).
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
+$LatestVer = ""
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
-    $LatestVer = ""
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
@@ -4774,6 +4774,26 @@ if ($stackExit -ne 0) {
     Write-StudioLine "[FAILED] Python dependency installation failed (exit code $stackExit)" -ForegroundColor Red
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
+}
+
+if ($LatestVer) {
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from importlib.metadata import version; print('POSTVER=' + version('$_PkgName'))"
+    $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
+    $_updateOk = ($PostVer -eq $LatestVer)
+    if (-not $_updateOk -and $PostVer) {
+        # newer than announced is fine (a release can land mid-update)
+        $_postNum = ($PostVer -replace '[^0-9.].*$', '').TrimEnd('.')
+        $_latestNum = ($LatestVer -replace '[^0-9.].*$', '').TrimEnd('.')
+        if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
+            try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
+        }
+    }
+    if (-not $_updateOk) {
+        $_postState = if ($PostVer) { "still $PostVer" } else { "not installed" }
+        Write-StudioLine "[FAILED] update ran but $_PkgName is $_postState (expected $LatestVer)" -ForegroundColor Red
+        Exit-SetupFailure "update ran but $_PkgName is $_postState (expected $LatestVer)"
+    }
+    substep "$_PkgName $PostVer confirmed"
 }
 
 } else {
