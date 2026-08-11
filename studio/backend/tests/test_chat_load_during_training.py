@@ -2010,6 +2010,19 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(on_gpu, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(on_cpu, 2000 / (1024**3), places = 9)
 
+    def test_a_drafter_repo_with_only_a_partial_set_is_charged_nothing(self):
+        """The bound is deliberately zero when every family is an incomplete split:
+        the fetch refuses all of them, so no draft weights become resident. Turning
+        that into the unreadable-listing reserve 409s a load for VRAM nothing takes."""
+        partial = SimpleNamespace(
+            siblings = [
+                SimpleNamespace(rfilename = "drafter-00001-of-00002.gguf", size = 4 * 1024**3)
+            ]
+        )
+        with patch("huggingface_hub.model_info", return_value = partial):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        self.assertEqual(charged, 0)
+
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a
         listing caught mid-publication must not be billed for its listed half:

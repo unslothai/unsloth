@@ -5754,7 +5754,14 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
             # the basename restores every quant and charges the repo's F16.
             matched = {n: s for n, s in sizes.items() if hint in n.lower()}
             sizes = matched or sizes
-        return dflash_budget_bytes(sizes, _gguf_extra_shards) or _REMOTE_DRAFTER_RESERVE_BYTES
+        # An empty listing is "we learned nothing" and falls through to the cache
+        # and then the reserve. A listing that DID name GGUFs and still bounds at
+        # zero is different: every family was rejected as an incomplete split, so
+        # the fetch can load none of them and no draft weights become resident.
+        # Charging the reserve there 409s a load for VRAM nothing will take.
+        bounded = dflash_budget_bytes(sizes, _gguf_extra_shards)
+        if bounded or sizes:
+            return bounded
     except Exception as e:
         logger.warning(f"Could not size remote drafter repo {spec}: {e}")
     # Unreadable listings are the case where the repo is already in the local HF
