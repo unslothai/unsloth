@@ -677,8 +677,8 @@ def test_the_registration_floor_needs_a_real_torchao(real_prequant_safe_globals)
     resolved = {name for _obj, name in real_prequant_safe_globals()}
     assert "torch.torch_version.TorchVersion" in resolved
     assert [name for name in resolved if name.startswith("torchao.")], (
-        "no torchao constructor resolved, so no pre-quant checkpoint could be opened: " +
-        repr(sorted(resolved))
+        "no torchao constructor resolved, so no pre-quant checkpoint could be opened: "
+        + repr(sorted(resolved))
     )
 
 
