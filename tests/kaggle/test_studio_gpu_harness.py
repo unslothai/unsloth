@@ -791,7 +791,9 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     assert "--percent 5" in studio and "--percent 15" in notebook
     assert "= EXPECTED SPEND           ~28 GPU-h / week" in studio
     assert "busy week   231 x 0.15 x 0.25 =   8.7 GPU-h" in notebook
-    assert "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
+    assert (
+        "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
+    )
 
     # Share of the shared 50h CI allowance, and the stand-down floor that
     # enforces the priority: the cheap leg stops first so the expensive one

@@ -118,7 +118,7 @@ def _code_cell(source: str) -> dict:
 def build_payload_notebook(*, unsloth_ref: str, repo_url: str, payload_args: str) -> dict:
     """The notebook that installs Studio and runs the payload against it."""
 
-    setup = f'''# Where everything lives.
+    setup = f"""# Where everything lives.
 #
 # /kaggle/working is 19.5 GB and is the directory Kaggle ships back, so it
 # holds evidence and nothing else. $HOME and /tmp share a ~1 TB overlay, and
@@ -183,9 +183,9 @@ def sh(cmd, *, cwd=None, timeout=3600, check=True, label=""):
         if check:
             raise SystemExit(f"{{label or cmd[0]}} failed rc={{proc.returncode}}")
     return proc
-'''
+"""
 
-    clone = f'''# The ref under test, pinned to a SHA by the workflow so a push landing
+    clone = f"""# The ref under test, pinned to a SHA by the workflow so a push landing
 # mid-run cannot change what was measured. A blob-filtered clone: the repo's
 # history is large and none of it is needed.
 REPO_URL = {json.dumps(repo_url)}
@@ -200,9 +200,9 @@ sh(["git", "checkout", "--force", "FETCH_HEAD"], cwd=str(REPO), timeout=600,
    label="git checkout")
 head = sh(["git", "rev-parse", "HEAD"], cwd=str(REPO), timeout=60).stdout.strip()
 print("{PAYLOAD_SENTINEL} checkout " + json.dumps({{"ref": REF, "head": head}}), flush=True)
-'''
+"""
 
-    install = f'''# The supported install. Not `pip install unsloth[studio]`: that extra is the
+    install = f"""# The supported install. Not `pip install unsloth[studio]`: that extra is the
 # server's dependency list and does not build the frontend, create the venv or
 # put a llama.cpp on disk, all three of which this payload asserts against.
 #
@@ -215,7 +215,7 @@ VENV_PY = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
 if not VENV_PY.is_file():
     raise SystemExit(f"install.sh left no interpreter at {{VENV_PY}}")
 print("{PAYLOAD_SENTINEL} venv " + str(VENV_PY), flush=True)
-'''
+"""
 
     browser = f"""# Same Playwright install the repo's ubuntu UI job uses, into the venv the
 # payload will run under. Chromium only: the cross-browser matrix is what
@@ -227,7 +227,7 @@ sh([str(VENV_PY), "-m", "playwright", "install", "--with-deps", "chromium"],
    timeout=1800, label="playwright install")
 """
 
-    verify = f'''# Fail fast and fail legibly. Without this, a missing piece surfaces as a
+    verify = f"""# Fail fast and fail legibly. Without this, a missing piece surfaces as a
 # traceback inside a child process forty minutes and one GPU session later.
 #
 # The probe runs under the STUDIO venv, not this notebook's kernel: the Kaggle
@@ -263,9 +263,9 @@ print("{PAYLOAD_SENTINEL} llama_cpp " + json.dumps({{
     "marker": str(marker), "install_kind": info.get("install_kind"),
     "tag": info.get("tag"),
 }}), flush=True)
-'''
+"""
 
-    run = f'''# Run the payload in a child of the Studio venv, not by importing it: it
+    run = f"""# Run the payload in a child of the Studio venv, not by importing it: it
 # starts a server, spawns a browser and can be killed by either, and a child
 # leaves this cell alive to report that.
 cmd = [str(VENV_PY), str(REPO / "tests" / "kaggle" / "studio_gpu" / "run_studio_gpu.py"),
@@ -292,7 +292,7 @@ else:
 print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # Deliberately does not raise: the report is the verdict, and papermill
 # aborting here would lose the cells below it.
-'''
+"""
 
     return {
         "cells": [
