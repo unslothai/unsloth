@@ -1514,12 +1514,10 @@ function Ensure-VCRedist {
         } catch { $_prevProtocol = $null }
         try {
             Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
-            # HTTPS secures the transfer, not the payload: what lands on disk is about to run
-            # with this process's privileges. The evergreen URL rules out a SHA-256 pin (the
-            # bytes change with every VS servicing update, unlike the pinned Node archives in
-            # install_node_prebuilt.py), so verify the publisher instead. Status alone is not
-            # enough -- any code-signing cert from any trusted CA passes it -- so the chain
-            # must also lead back to Microsoft, which no attacker-obtained cert will.
+            # HTTPS secures the transfer, not the payload, and this runs with the setup
+            # process's privileges. The evergreen URL rules out a SHA-256 pin (the bytes
+            # change with every VS servicing update), so check the publisher. Status alone
+            # is not enough: any trusted CA's code-signing cert passes it.
             $sig = Get-AuthenticodeSignature -LiteralPath $dst
             if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
                 $null -eq $sig.SignerCertificate -or

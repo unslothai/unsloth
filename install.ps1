@@ -2223,16 +2223,12 @@ exit 0
             return $null
         }
 
-        # $full comes from the python.org listing, so the bytes differ per patch release and
-        # cannot be pinned to a committed SHA-256 the way install_node_prebuilt.py pins Node.
-        # Verify the publisher instead: this executable is about to run with this process's
-        # privileges, and HTTPS only vouches for the transfer, not for what arrived. Status
-        # alone would accept any trusted CA's code-signing cert, including an attacker's.
-        # Inspecting the file can itself fail (antivirus quarantines the download before we
-        # look at it, the path becomes unreadable), and the script-wide 'Stop' at the top
-        # would turn that into a terminating error that escapes the function, skipping the
-        # $null fallback and leaving the executable behind. Unreadable is unverified, so it
-        # takes the same route as a bad signature.
+        # Same trust boundary as the VC++ runtime in studio/setup.ps1: $full moves per patch
+        # release, so there is no SHA-256 to pin and the publisher is what we can check.
+        # Inspection itself can fail (antivirus quarantining the download first), and the
+        # script-wide 'Stop' would let that escape the function, skipping the $null fallback
+        # and leaving the executable behind. Unreadable is unverified, so it takes the same
+        # route as a bad signature.
         $sig = $null
         try { $sig = Get-AuthenticodeSignature -LiteralPath $dest } catch { $sig = $null }
         if ($null -eq $sig -or
