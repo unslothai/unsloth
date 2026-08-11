@@ -39,6 +39,8 @@ from core.inference.chat_template_helpers import (
     detect_think_prefill,
     neutralize_control_markup_in_messages,
     neutralize_tts_prompt_text,
+    prompt_opens_reasoning_channel,
+    trailing_assistant_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -206,11 +208,12 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
+        in_reasoning: bool = False,
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
         super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
-        self._normalizer = make_reasoning_normalizer(markers)
+        self._normalizer = make_reasoning_normalizer(markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -416,9 +419,7 @@ class InferenceBackend:
                         else:
                             # base_model is an HF ID — download it.
                             from huggingface_hub import snapshot_download
-
-                            local_dir = base_path.split("/")[-1]
-                            repo_path = snapshot_download(base_path, local_dir = local_dir)
+                            repo_path = snapshot_download(base_path)
                             abs_repo_path = os.path.abspath(repo_path)
 
                         logger.info(
@@ -432,19 +433,70 @@ class InferenceBackend:
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
+                    elif config.is_local and os.path.isdir(config.path):
+                        # A merged export saves the LLM straight into the export directory, so
+                        # there is no repo to download and no LLM/ child. snapshot_download on
+                        # an absolute path is not a repo id and fails outright. BiCodec weights
+                        # are not exported alongside it, so resolve those from the base model
+                        # recorded at export time, as the processor fallback below does.
+                        llm_path = os.path.join(config.path, "LLM")
+                        if not os.path.isdir(llm_path):
+                            llm_path = config.path
+                        base_repo = None
+                        try:
+                            meta_path = Path(config.path) / "export_metadata.json"
+                            if meta_path.exists():
+                                base_repo = json.loads(
+                                    meta_path.read_text(encoding = "utf-8-sig")
+                                ).get("base_model")
+                        except Exception:
+                            base_repo = None
+                        if base_repo and os.path.isdir(base_repo):
+                            # A base recorded as .../Spark-TTS-0.5B/LLM keeps BiCodec in its parent.
+                            abs_repo_path = os.path.abspath(
+                                os.path.dirname(base_repo)
+                                if os.path.basename(base_repo.rstrip("/\\")) == "LLM"
+                                else base_repo
+                            )
+                        elif base_repo:
+                            from huggingface_hub import snapshot_download
+
+                            # Registry alias ("Spark-TTS-0.5B/LLM") names a load
+                            # subdirectory, not a repo, so snapshot_download rejects it.
+                            # Same resolver the capability probe and the trainer preflight
+                            # use, rather than a second copy of the mapping.
+                            from utils.security import load_scan_target
+                            from utils.utils import canonical_model_repo_id
+
+                            hf_repo, _load_subdirs = load_scan_target(
+                                canonical_model_repo_id(base_repo), ()
+                            )
+                            hf_repo = hf_repo or base_repo
+                            # Same token as the load below: a private or gated base would
+                            # otherwise 401 here while resolving the BiCodec assets.
+                            abs_repo_path = os.path.abspath(
+                                snapshot_download(
+                                    hf_repo,
+                                    token = hf_token if hf_token and hf_token.strip() else None,
+                                )
+                            )
+                        else:
+                            abs_repo_path = os.path.abspath(config.path)
+                        logger.info(
+                            f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
+                        )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
                         from huggingface_hub import snapshot_download
 
-                        hf_repo = config.path
-                        local_dir = hf_repo.split("/")[-1]
-                        repo_path = snapshot_download(hf_repo, local_dir = local_dir)
+                        repo_path = snapshot_download(config.path)
                         abs_repo_path = os.path.abspath(repo_path)
                         llm_path = os.path.join(abs_repo_path, "LLM")
-                        logger.info(
-                            f"Spark-TTS: downloaded repo to {repo_path}, loading LLM from {llm_path}"
-                        )
+                        logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
 
+                    if not (config.is_lora and config.base_model):
+                        # Shared by the merged-export and repo-root branches above: both resolve
+                        # an llm_path and then load it the same way.
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,
@@ -1211,6 +1263,7 @@ class InferenceBackend:
             presence_penalty = presence_penalty,
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
+            continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
         )
 
     def _generate_vision_response(
@@ -1344,6 +1397,8 @@ class InferenceBackend:
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
+                prompt = prompt_text,
+                continued = bool(continue_partial),
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,
@@ -1692,6 +1747,8 @@ class InferenceBackend:
         protocol_source = None,
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
+        prompt: Optional[str] = None,
+        continued: bool = False,
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -1727,6 +1784,7 @@ class InferenceBackend:
                 skip_prompt = skip_prompt,
                 timeout = timeout,
                 cancel_event = cancel_event,
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
         return TextIteratorStreamer(
             tokenizer,
@@ -1779,6 +1837,7 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
+        continued: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1819,6 +1878,8 @@ class InferenceBackend:
                 protocol_source = model_info.get("tokenizer"),
                 reasoning_channel_markers = reasoning_channel_markers,
                 reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
+                prompt = prompt,
+                continued = continued,
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,
@@ -1971,6 +2032,7 @@ class InferenceBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
+        cancel_event = None,
     ) -> Tuple[bytes, int]:
         """Generate audio from text for TTS models.
         Returns (wav_bytes, sample_rate). Blocking — full audio before return.
@@ -1991,12 +2053,17 @@ class InferenceBackend:
         # is the one choke point for all four (#7066).
         text = neutralize_tts_prompt_text(text, audio_type)
 
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
         with self._generation_lock:
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Audio generation cancelled")
             if use_adapter is not None:
                 self._apply_adapter_state(use_adapter)
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
 
             if audio_type == "snac":
-                return self._generate_snac(
+                result = self._generate_snac(
                     model,
                     tokenizer,
                     text,
@@ -2004,16 +2071,32 @@ class InferenceBackend:
                     top_p,
                     max_new_tokens,
                     repetition_penalty,
+                    stopping_criteria = stopping_criteria,
+                    cancel_event = cancel_event,
                 )
             elif audio_type == "csm":
                 processor = model_info.get("processor", tokenizer)
-                return self._generate_csm(model, processor, text, max_new_tokens)
+                result = self._generate_csm(
+                    model,
+                    processor,
+                    text,
+                    max_new_tokens,
+                    stopping_criteria = stopping_criteria,
+                    cancel_event = cancel_event,
+                )
             elif audio_type == "bicodec":
-                return self._generate_bicodec(
-                    model, tokenizer, text, temperature, top_k, max_new_tokens
+                result = self._generate_bicodec(
+                    model,
+                    tokenizer,
+                    text,
+                    temperature,
+                    top_k,
+                    max_new_tokens,
+                    stopping_criteria = stopping_criteria,
+                    cancel_event = cancel_event,
                 )
             elif audio_type == "dac":
-                return self._generate_dac(
+                result = self._generate_dac(
                     model,
                     tokenizer,
                     text,
@@ -2023,12 +2106,27 @@ class InferenceBackend:
                     min_p,
                     max_new_tokens,
                     repetition_penalty,
+                    stopping_criteria = stopping_criteria,
+                    cancel_event = cancel_event,
                 )
             else:
                 raise RuntimeError(f"Unknown audio_type: {audio_type}")
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Audio generation cancelled")
+            return result
 
     def _generate_snac(
-        self, model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty
+        self,
+        model,
+        tokenizer,
+        text,
+        temperature,
+        top_p,
+        max_new_tokens,
+        repetition_penalty,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
     ):
         """Generate audio using SNAC codec (Orpheus)."""
         device = model.device
@@ -2048,19 +2146,49 @@ class InferenceBackend:
             repetition_penalty = repetition_penalty,
             eos_token_id = 128258,  # END_OF_SPEECH
             use_cache = True,
+            **({"stopping_criteria": stopping_criteria} if stopping_criteria is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
-    def _generate_csm(self, model, processor, text, max_new_tokens):
+    def _generate_csm(
+        self,
+        model,
+        processor,
+        text,
+        max_new_tokens,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
+    ):
         """Generate audio using CSM (Sesame)."""
         speaker_id = 0
         inputs = processor(
             f"[{speaker_id}]{text}", add_special_tokens = True, return_tensors = "pt"
         ).to(model.device)
-        audio_values = model.generate(**inputs, max_new_tokens = max_new_tokens, output_audio = True)
+        audio_values = model.generate(
+            **inputs,
+            max_new_tokens = max_new_tokens,
+            output_audio = True,
+            **({"stopping_criteria": stopping_criteria} if stopping_criteria is not None else {}),
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
         return self._audio_codec_manager.decode_csm(audio_values)
 
-    def _generate_bicodec(self, model, tokenizer, text, temperature, top_k, max_new_tokens):
+    def _generate_bicodec(
+        self,
+        model,
+        tokenizer,
+        text,
+        temperature,
+        top_k,
+        max_new_tokens,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
+    ):
         """Generate audio using BiCodec (Spark-TTS)."""
         prompt = "<|task_tts|><|start_content|>" + text + "<|end_content|><|start_global_token|>"
         inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
@@ -2072,7 +2200,10 @@ class InferenceBackend:
             top_k = top_k,
             eos_token_id = tokenizer.eos_token_id,
             pad_token_id = tokenizer.pad_token_id,
+            **({"stopping_criteria": stopping_criteria} if stopping_criteria is not None else {}),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
         new_tokens = generated[:, inputs.input_ids.shape[1] :]
         decoded_text = tokenizer.batch_decode(new_tokens, skip_special_tokens = False)[0]
         return self._audio_codec_manager.decode_bicodec(decoded_text, str(model.device))
@@ -2088,6 +2219,9 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
     ):
         """Generate audio using DAC (OuteTTS). Follows Oute_TTS_(1B).ipynb exactly."""
         # Monkey-patch RepetitionPenaltyLogitsProcessor with a 64-token window
@@ -2132,7 +2266,14 @@ class InferenceBackend:
                     min_p = min_p,
                     repetition_penalty = repetition_penalty,
                     max_new_tokens = max_new_tokens,
+                    **(
+                        {"stopping_criteria": stopping_criteria}
+                        if stopping_criteria is not None
+                        else {}
+                    ),
                 )
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Audio generation cancelled")
         decoded_text = tokenizer.batch_decode(generated, skip_special_tokens = False)[0]
         return self._audio_codec_manager.decode_dac(decoded_text, str(model.device))
 

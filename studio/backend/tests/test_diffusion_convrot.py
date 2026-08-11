@@ -398,3 +398,32 @@ def test_loader_refuses_a_rotation_it_cannot_apply(monkeypatch, tmp_path, fmt, m
     # None means "fall back to the dense download": slower and bigger, but never wrong. The
     # alternative -- loading it anyway -- has no symptom at all.
     assert _load_rotated(monkeypatch, tmp_path, _ckpt(fmt, metadata)) is None
+
+
+def test_every_rotated_projection_shares_one_class():
+    """The rotation is a class SWAP, so the class has to be a singleton.
+
+    ``torch.compile`` guards each frame on ``___check_type_id`` of the modules it closes over. A
+    class defined inside a function is a new class object per call, so giving each of the 350
+    rotated projections its own ConvRotLinear made every one of them look like a different type
+    and retraced the block it lives in: 23 recompiles against bfloat16's 1, and 178 s of
+    first-call compile against 14 s. Identity, not equality: two classes with identical bodies
+    still fail the guard."""
+    import torch
+    from torch import nn
+
+    from core.inference.diffusion_convrot import _install_rotation, convrot_linear_class
+
+    first, second = nn.Linear(256, 8, bias = False), nn.Linear(256, 8, bias = False)
+    _install_rotation(first, 256)
+    _install_rotation(second, 256)
+    assert type(first) is type(second)
+    assert type(first) is convrot_linear_class()
+    # Still an nn.Linear, which is what keeps torchao's filter and the checkpoint keys working.
+    assert isinstance(first, nn.Linear)
+    assert is_rotated_linear(first) and is_rotated_linear(second)
+    # And the swap is per instance, so a shared class must not leak one module's group to another.
+    third = nn.Linear(512, 8, bias = False)
+    _install_rotation(third, 128)
+    assert (first.convrot_groupsize, third.convrot_groupsize) == (256, 128)
+    assert torch.is_tensor(first.weight)
