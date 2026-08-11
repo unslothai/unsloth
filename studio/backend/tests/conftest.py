@@ -158,6 +158,20 @@ def _isolate_xet_health_state():
 
 
 @pytest.fixture(autouse = True)
+def _isolate_audio_gallery(monkeypatch, tmp_path):
+    """Keep generated-clip persistence out of the developer's real gallery.
+
+    /audio/generate persists every clip, so a route test with a fake TTS core left silent
+    wavs in ``studio_root()/audio`` for the Audio page to list. Here, not per-suite, so
+    no test can leak.
+    """
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(audio_gallery, "studio_root", lambda: tmp_path)
+    yield
+
+
+@pytest.fixture(autouse = True)
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 
@@ -804,7 +818,11 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            if name.endswith("Pipeline"):
+            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
+            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
+            # pipeline. Answering only pipelines let that probe miss and turned routing tests
+            # into the 400 about diffusers this proxy exists to prevent.
+            if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
 

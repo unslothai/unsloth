@@ -3181,7 +3181,12 @@ const Composer: FC<{
   // The composer docks to the bottom of the viewport once a thread has turns,
   // in the same column the corner overlay stack occupies. Published so the
   // stack lifts above it rather than covering the Send button.
-  usePublishedFrame(composerEl);
+  //
+  // Coverable, though: in a window too short to hold the update cards above it
+  // there is no arrangement that dodges the composer AND shows them whole, and
+  // a card clipped at the rail's edge looks like it has slid behind the page.
+  // The stack takes the corner and paints over the composer there instead.
+  usePublishedFrame(composerEl, { coverable: true });
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it

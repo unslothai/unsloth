@@ -85,6 +85,7 @@ export const ru = {
       recipes: "Рецепты",
       images: "Изображения",
       video: "Видео",
+      audio: "Аудио",
       trainChecking: "Проверка поддержки обучения на этой машине...",
       videoChecking: "Проверка поддержки видео на этой машине...",
       more: "Ещё",
@@ -905,6 +906,11 @@ export const ru = {
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      thinking: {
+        collapseByDefault: "Сворачивать размышления по умолчанию",
+        collapseByDefaultDescription:
+          "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",
@@ -982,6 +988,10 @@ export const ru = {
       archivedChats: "Архивные чаты",
       archivedChatsDescription:
         "Просматривайте чаты, отправленные в архив, и управляйте ими.",
+      archivedImages: "Архивные изображения",
+      archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
+      archivedVideos: "Архивные видео",
+      archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
       manageAction: "Управлять",
       exportArchivedChats: "Экспорт",
       exportingArchivedChats: "Экспорт…",

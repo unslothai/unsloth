@@ -1669,16 +1669,15 @@ def test_mlx_audio_probe_that_answered_no_still_retracts_audio_vlm(monkeypatch):
         ("gemma4", True),
         ("phi4mm", True),
         ("minicpmo", True),
-        ("qwen3_omni_moe", False),
+        ("qwen3_omni_moe", True),
     ],
 )
 def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
     """Pins which mlx-vlm message builders honour num_audios.
 
     This is the message-construction layer, not the final template render:
-    qwen3_omni_moe is registered but its formatter drops audio here, so
-    classifying on registry membership alone would advertise a model whose
-    prompt can never carry an audio marker.
+    Every currently registered native-audio formatter preserves the requested
+    audio count under mlx-vlm 0.6.10.
     """
     pu = pytest.importorskip("mlx_vlm.prompt_utils")
     render = lambda n: pu.apply_chat_template(
@@ -1690,6 +1689,114 @@ def test_mlx_vlm_renderer_audio_marker_contract(model_type, places_marker):
         return_messages = True,
     )
     assert (render(1) != render(0)) is places_marker
+
+
+def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
+    """The official checkpoint capitalizes its model type while mlx-vlm's
+    registry uses lowercase. Studio must reach the registered renderer rather
+    than rejecting the checkpoint before the loader's normalization can run."""
+    # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
+    # backend CI ships neither, so skip rather than error.
+    pytest.importorskip("mlx_vlm.prompt_utils")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    loader._ensure_vlm_prompt_utils_patched()
+    published = "NemotronH_Nano_Omni_Reasoning_V3"
+    config = {"model_type": published}
+    model = SimpleNamespace(config = config)
+    messages = [{"role": "user", "content": "Transcribe this audio."}]
+
+    plain = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 0,
+    )
+    marked = _render_registered_vlm_prompt(
+        None,
+        model,
+        messages,
+        num_images = 0,
+        num_audios = 1,
+    )
+
+    assert plain and marked and plain != marked
+    # Later capability and export logic must not see a value the config
+    # never carried.
+    assert config["model_type"] == published
+    assert model.config is config
+
+
+@pytest.mark.parametrize(
+    ("published", "resolves"),
+    [
+        ("NemotronH_Nano_Omni_Reasoning_V3", True),  # the real published case
+        ("SMOLVLM", True),  # ordinary ASCII case shift
+        ("smolvlm", True),  # already canonical
+        ("ſmolvlm", False),  # casefold("ſ") == "s"
+        ("smolvlẞ", False),  # casefold("ẞ") == "ss"
+        ("no_such_renderer_anywhere", False),
+    ],
+)
+def test_mlx_renderer_canonicalization_is_ascii_only(monkeypatch, published, resolves):
+    """casefold maps U+017F onto "s" and U+1E9E onto "ss", so a checkpoint
+    publishing those would reach a renderer it never named."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    rendered = []
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"smolvlm": object(), "nemotronh_nano_omni_reasoning_v3": object()}
+
+    def _apply_chat_template(_processor, config, _messages, **kwargs):
+        rendered.append(config["model_type"])
+        return f"prompt<{config['model_type']}>"
+
+    prompt_utils.apply_chat_template = _apply_chat_template
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": published})
+    out = _render_registered_vlm_prompt(
+        None,
+        model,
+        [{"role": "user", "content": "hi"}],
+        num_images = 0,
+    )
+
+    if resolves:
+        assert out and rendered and rendered[0].isascii() and rendered[0].islower()
+    else:
+        assert out is None and rendered == []
+    # Never mutate what the checkpoint published.
+    assert model.config["model_type"] == published
+
+
+def test_mlx_renderer_refuses_ambiguous_case_insensitive_registry(monkeypatch):
+    """Two keys folding to the same value is not evidence for either one."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"dupe_model": object(), "Dupe_Model": object()}
+    prompt_utils.apply_chat_template = lambda *a, **k: "should not be reached"
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": "DUPE_MODEL"})
+    assert (
+        _render_registered_vlm_prompt(
+            None,
+            model,
+            [{"role": "user", "content": "hi"}],
+            num_images = 0,
+        )
+        is None
+    )
 
 
 def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
@@ -1746,6 +1853,69 @@ def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
     backend.models["m"]["audio_type"] = None
     with pytest.raises(RuntimeError, match = "not supported .* MLX"):
         next(backend.generate_audio_input_response(**args))
+
+
+def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    stats = dict(prompt_tokens = 3, prompt_tps = 1.0, generation_tokens = 6, generation_tps = 1.0)
+
+    def _fake_stream(*_args, **_kwargs):
+        for text in ("<|chan", "nel>thought\n", "transcript", "<chan", "nel|>", " answer"):
+            yield SimpleNamespace(text = text, **stats)
+
+    fake_vlm = types.ModuleType("mlx_vlm")
+    fake_vlm.stream_generate = _fake_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake_vlm)
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda *a, num_images = 0, num_audios = 0: "P<audio>",
+    )
+
+    backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+    backend._generation_lock = __import__("threading").Lock()
+    # Protocol selection follows the template, never a Gemma model-name branch.
+    backend._model = _audio_model(model_type = "template_declared_audio")
+    backend._processor = _audio_processor()
+    backend._processor.chat_template = "...<|channel>thought\n...<channel|>"
+    backend.active_model_name = "m"
+    backend.last_generation_stats = None
+    backend.models = {"m": {"audio_type": "audio_vlm"}}
+
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            max_new_tokens = 8,
+        )
+    ) == ["<think>", "transcript", "</think>", " answer"]
+
+    def _open_stream(*_args, **_kwargs):
+        for text in ("<|channel>thought\n", "unfinished"):
+            yield SimpleNamespace(text = text, **stats)
+
+    fake_vlm.stream_generate = _open_stream
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+        )
+    ) == ["<think>", "unfinished", "</think>"]
+
+    cancelled = __import__("threading").Event()
+    cancelled.set()
+    assert list(
+        backend.generate_audio_input_response(
+            messages = [{"role": "user", "content": "transcribe"}],
+            system_prompt = "",
+            audio_array = [0.0],
+            cancel_event = cancelled,
+        )
+    ) == ["<think>"]
 
 
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch):

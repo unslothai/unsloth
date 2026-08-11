@@ -20,6 +20,8 @@ import {
   setShowLoadedModels,
   useShowLoadedModels,
 } from "@/features/loaded-models";
+
+import { useHfTokenStore } from "@/features/hub";
 import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
@@ -170,6 +172,10 @@ export function GeneralTab() {
   });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
+
+  const hfTokenPersistenceError = useHfTokenStore(
+    (s) => s.persistenceError,
+  );
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
@@ -592,7 +598,11 @@ export function GeneralTab() {
                 {t("settings.general.clearToken")}
               </Button>
             </div>
-            {tokenValidation.isChecking ? (
+            {hfTokenPersistenceError ? (
+              <p className="max-w-[330px] text-right text-xs text-destructive">
+                {hfTokenPersistenceError}
+              </p>
+            ) : tokenValidation.isChecking ? (
               <p className="text-xs text-muted-foreground">
                 {t("settings.general.checkingToken")}
               </p>

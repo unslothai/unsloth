@@ -34,6 +34,7 @@ from typing import Callable, List, Tuple, Union
 import hashlib
 import json
 import threading
+import time
 import yaml
 
 
@@ -1107,12 +1108,37 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
+# An offline probe cannot answer for an adapter directory without its own tokenizer, nor
+# for a base repo that is not downloaded, and a non-definitive answer is deliberately
+# never cached, so /loras redid both for every checkpoint on every poll. Remembered for a
+# short while rather than permanently, because both can become answerable without a
+# restart: the base gets downloaded, or a training run finishes writing its output.
+_AUDIO_OFFLINE_MISS_TTL_S = 60.0
+_audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
+
+
+def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
+    """Whether more than ``threshold`` tokens start with ``prefix``.
+
+    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
+    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
+    """
+    count = 0
+    for token in tokens:
+        if token.startswith(prefix):
+            count += 1
+            if count > threshold:
+                return True
+    return False
+
+
+# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
+# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
+# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
+# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
 _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
     "dac": lambda tokens: (
         "<|audio_start|>" in tokens
@@ -1120,8 +1146,38 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
+    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
+    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
+    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
+# Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
+# these cannot match any pattern, whatever it holds, so the answer is settled without
+# parsing it. That matters because an ordinary text checkpoint carries a large
+# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
+# MUST cover every pattern: _AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
+# from them, and a codec added there without its marker here would silently stop being
+# detected. test_audio_token_detection.py fails if the two drift.
+_AUDIO_TOKEN_MARKERS = (
+    "<|AUDIO|>",  # csm
+    "<|startoftranscript|>",  # whisper
+    "<|bicodec_",  # bicodec
+    "<|audio_start|>",  # dac
+    "<custom_token_",  # snac
+    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
+    "<|audio|>",  # audio_vlm (Gemma 4)
+)
+
+
+def _may_hold_audio_tokens(raw: str) -> bool:
+    """Whether a tokenizer_config's raw text is worth parsing.
+
+    Conservative: a false True only costs the parse that would have happened anyway.
+    A false False would misclassify, which is why the markers are pinned by a test.
+    """
+    return any(marker in raw for marker in _AUDIO_TOKEN_MARKERS)
+
+
 _AUDIO_TOKENIZER_CONFIG_PATHS = (
     "tokenizer_config.json",
     "LLM/tokenizer_config.json",
@@ -1140,10 +1196,58 @@ def detect_audio_type(
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
 
+    A None here is ambiguous: it covers both "not an audio model" and "the repo
+    could not be read". Callers that gate a user action on the answer want
+    detect_audio_type_checked instead, so a gated or offline repo is not reported
+    as a definitively non-audio one.
+
     When local_files_only is True (offline export) the remote HuggingFace fetch
     is skipped so detection never blocks on a network read; only the local HF
     cache is consulted.
     """
+    return detect_audio_type_checked(
+        model_name,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        revision = revision,
+    )[0]
+
+
+def detect_audio_type_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[Optional[str], bool]:
+    """detect_audio_type, plus whether the answer is definitive.
+
+    Returns (audio_type_or_None, definitive). definitive is False when every read
+    failed for a reason that is not "the file is absent" -- a 401 on a gated repo,
+    a 5xx, a timeout -- so a None means unknown rather than "not audio".
+    """
+    # No model is definitively not an audio model. Without this the name is
+    # interpolated into the Hub URL and every poll fetches /None/resolve/main/...
+    if not model_name:
+        return None, True
+
+    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
+    effective_offline = bool(local_files_only or _env_offline())
+    # Checked on the RAW name, before the casing resolution below, because resolving a
+    # repo id that is not in the cache walks every cache directory, and that walk is the
+    # cost this cache exists to avoid. A casing variant just takes its own entry, which
+    # for a short-lived negative is harmless.
+    miss_key: _CapabilityCacheKey = (
+        model_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+    )
+    if revision is not None:
+        miss_key += (revision,)
+    if effective_offline:
+        seen_at = _audio_offline_miss_cache.get(miss_key)
+        if seen_at is not None and time.monotonic() - seen_at < _AUDIO_OFFLINE_MISS_TTL_S:
+            return None, False
+
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
         if is_local_path(model_name):
@@ -1152,8 +1256,6 @@ def detect_audio_type(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
-    effective_offline = bool(local_files_only or _env_offline())
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1162,7 +1264,8 @@ def detect_audio_type(
     if revision is not None:
         cache_key += (revision,)
     if cache_key in _audio_detection_cache:
-        return _audio_detection_cache[cache_key]
+        # Only definitive results are cached, so a hit is definitive by construction.
+        return _audio_detection_cache[cache_key], True
 
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
@@ -1171,9 +1274,20 @@ def detect_audio_type(
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+    elif effective_offline:
+        _audio_offline_miss_cache[miss_key] = time.monotonic()
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
-    return result
+    elif not definitive:
+        # Offline, this is the ordinary answer for any base that is not downloaded, and
+        # /loras asks once per checkpoint, so info level made it one log line per row per
+        # poll. Online it is worth surfacing: it means gated or an upstream error.
+        (logger.debug if effective_offline else logger.info)(
+            f"Could not determine whether {model_name} is an audio model: "
+            f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
+        )
+    return result, definitive
 
 
 def _detect_audio_from_tokenizer(
@@ -1238,7 +1352,17 @@ def _detect_audio_from_tokenizer(
                 try:
                     if not tok_file.is_file():
                         continue
-                    tok_config = json.loads(tok_file.read_text(encoding = "utf-8-sig"))
+                    raw = tok_file.read_text(encoding = "utf-8-sig")
+                    if not _may_hold_audio_tokens(raw):
+                        # No marker anywhere, so no pattern can match. Counted as read
+                        # only when the file looks whole: a training run part-way through
+                        # writing its tokenizer would otherwise be a definitive "not
+                        # audio" and cached for the life of the process. A truncated file
+                        # stays unknown, exactly as it did when json.loads raised on it.
+                        if raw.rstrip().endswith("}"):
+                            read_any = True
+                        continue
+                    tok_config = json.loads(raw)
                     read_any = True
                     result = _check_token_patterns(tok_config)
                     if result:
@@ -1251,6 +1375,13 @@ def _detect_audio_from_tokenizer(
     # 2) Fall back to the HuggingFace API. This raw requests.get ignores the HF offline
     #    flag, so gate it on local_files_only OR the env vars to skip the network offline.
     if local_files_only or _env_offline():
+        return None, read_any
+
+    # A filesystem path is not a repo id, so the URL below would be nonsense. The /loras scan
+    # reaches here for every adapter directory without its own tokenizer, and since a transient
+    # failure is never cached it paid two 15s timeouts per checkpoint on every pass, blocking
+    # the event loop that calls it. The local read above is the whole answer for a local path.
+    if is_local_path(model_name):
         return None, read_any
 
     try:
@@ -2435,11 +2566,11 @@ def _qualified_variant_name(filename: str, label: str) -> str:
     if _gguf_variant_token(filename) is None:
         return label
     key = _gguf_variant_key(filename)
-    # Only a PATH-qualified key. Without the slash the key is the bare quant token, and this
-    # module's label is the richer of the two: it carries the bpw modifier that keeps
-    # ``model-IQ4_XS-3.53bpw.gguf`` and ``model-IQ4_XS-3.97bpw.gguf`` separately selectable, which
-    # the token extractor drops. Swapping in the token would merge them.
-    return key if "/" in key else label
+    # A qualified key carries more identity than the bare quant: usually a directory, but H3's
+    # root-level partitions use the full stem. Compare against the plain key rather than look for
+    # a slash, keeping bpw-only keys on the label that separates 3.53bpw from 3.97bpw.
+    plain = _quant_token_with_bpw(filename)
+    return key if plain is not None and key.lower() != plain.lower() else label
 
 
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:

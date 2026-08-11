@@ -110,12 +110,20 @@ jobs:
         shell: bash
         env:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
+          # Reading releases unauthenticated spends a quota shared by every runner.
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 <<'PY'
+          import json
           import os
           import pathlib
           import re
           import sys
+          import urllib.request
+
+          RELEASES_API_URL = (
+              'https://api.github.com/repos/unslothai/unsloth/releases?per_page=30'
+          )
 
           studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
           if not studio_version:
@@ -146,6 +154,63 @@ jobs:
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
+
+          # Both updater paths compare SemVer, so a tag whose numbers go backwards
+          # strands its own clients: 60 < 527, so v0.1.60-beta offered no one.
+          def semver_key(version):
+              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc
+              # both beat v0.1.528-beta, and the updater knows it.
+              version = version.strip().removeprefix('v')
+              match = semver_tag.fullmatch(f'v{version}')
+              if not match:
+                  return None
+              release = tuple(int(part) for part in match.groups())
+              pre = version.partition('-')[2]
+              if not pre:
+                  return release, (1,)  # a release outranks its own prereleases
+              # SemVer: numeric identifiers sort below alphanumeric, as numbers.
+              return release, (0, *(
+                  (0, int(part), '') if part.isdigit() else (1, 0, part)
+                  for part in pre.split('.')
+              ))
+
+          def fetch(url):
+              headers = {'Accept': 'application/vnd.github+json'}
+              token = os.environ.get('GH_TOKEN', '')
+              if token:
+                  headers['Authorization'] = f'Bearer {token}'
+              with urllib.request.urlopen(
+                  urllib.request.Request(url, headers = headers), timeout = 30
+              ) as response:
+                  return json.loads(response.read())
+
+          def published_desktop_version():
+              # Not /releases/latest: an llama.cpp prebuilt can hold that slot
+              # and ships no manifest, so the read would 404 and skip this check.
+              studio = [
+                  release for release in fetch(RELEASES_API_URL)
+                  if not release['draft'] and semver_tag.fullmatch(release['tag_name'])
+              ]
+              studio.sort(key = lambda release: release['published_at'], reverse = True)
+              for release in studio:
+                  for asset in release['assets']:
+                      if asset['name'] == 'latest.json':
+                          return fetch(asset['browser_download_url']).get('version', '')
+              return ''
+
+          try:
+              published = published_desktop_version()
+          except (OSError, ValueError, KeyError) as error:
+              # An unreachable manifest is not a bad tag, and the first has none.
+              print(f'::warning::could not read the published desktop version: {error}')
+              published = ''
+
+          published_key = semver_key(published)
+          if published_key and published_key >= semver_key(app_version):
+              sys.exit(
+                  f'studio_version {studio_version} is not newer than the published '
+                  f'v{published}, so clients on it would never be offered this release'
+              )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
@@ -1213,18 +1278,18 @@ jobs:
           if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
           if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
 
-          # Absent scanner vs. bad verdict. Everything below this point assumes a
-          # Defender that answers; when it does not answer at all there is no scan
-          # to interpret, so skip instead of failing closed. This is deliberately
-          # narrow: it triggers only when the cmdlets themselves fail, which is an
-          # unavailable engine. A Defender that IS present but misconfigured still
-          # fails below, and an actual detection still fails the job.
-          if ($unavailable) {
-            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
-            exit 0
+          # Absent scanner vs. bad verdict: only a missing scanner may skip; a
+          # misconfigured one or a real detection still fails. Dead cmdlets are not
+          # a missing scanner - WMI and service RPC back them, MpCmdRun talks to
+          # the engine directly - and conflating the two shipped three releases
+          # unscanned since 2026-08-06. Let the EICAR control below decide.
+          $cmdletsDown = [bool]$unavailable
+          if ($cmdletsDown) {
+            Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
           }
-
-          Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+          if ($status) {
+            Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+          }
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
           # Split by whether the gap invalidates the verdict: cloud-delivered
@@ -1232,14 +1297,21 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
+          # Guard each check on the cmdlet that read it, not a blanket flag: the
+          # two fail independently (live WMI call vs. registry), so a blanket
+          # guard drops a readable $pref's MAPS and block-at-first-sight checks.
           $fatal = @()
           $degraded = @()
-          if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
-          if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
-          if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
-          if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-          if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
-          if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          if ($status) {
+            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          }
+          if ($pref) {
+            if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+            if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
+            if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
+            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          }
 
           # Configuration is not connectivity. Retried, so one network blip does
           # not block a release.
@@ -1250,7 +1322,12 @@ jobs:
             Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
             Start-Sleep -Seconds (5 * $try)
           }
-          if (-not $maps) { $fatal += 'cannot reach the Defender cloud service' }
+          # Cmdlets down: losing the cloud degrades rather than blocks the release
+          # outright - signature detections still fire, only "!ml" verdicts do not.
+          if (-not $maps) {
+            if ($cmdletsDown) { $degraded += 'cannot reach the Defender cloud service, so "!ml" cloud verdicts cannot fire' }
+            else              { $fatal += 'cannot reach the Defender cloud service' }
+          }
 
           # Positive control: clean and broken-scanner look identical. Split into
           # fragments so this file is not itself a sample.
@@ -1265,12 +1342,32 @@ jobs:
           if (Test-Path $eicarPath) {
             $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
             $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            # Remediation is asynchronous: the sample can pass Test-Path and still
+            # be quarantined mid-scan. Vanishing means the control fired, not a
+            # missing scanner - nothing else deletes it and -DisableRemediation
+            # stops this scan from doing so, so a dead engine leaves it on disk.
+            if (-not $controlPassed -and -not (Test-Path $eicarPath)) {
+              Write-Host 'EICAR positive control quarantined before the scan could open it; real-time protection is live.'
+              $controlPassed = $true
+            }
             Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
           } else {
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
             $controlPassed = $true
           }
-          if (-not $controlPassed) { $fatal += 'EICAR positive control did not fire' }
+          # The real test of whether a scanner exists, and the only one left with
+          # the cmdlets down: a control that does not fire means MpCmdRun cannot
+          # scan either, so skip as before rather than fail on a missing engine.
+          if (-not $controlPassed) {
+            if ($cmdletsDown) {
+              Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')) and MpCmdRun could not fire the EICAR positive control either; skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+              exit 0
+            }
+            $fatal += 'EICAR positive control did not fire'
+          }
+          if ($cmdletsDown) {
+            Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
 
           if ($degraded) {
             Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
@@ -1321,12 +1418,17 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
-          $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
-          $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
-          if ($notApplied) {
-            Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
-            exit 1
+          # Keyed on the reading cmdlet, not the blanket flag: $pref can be live
+          # while $status is down. With $pref unreadable there is nothing to read
+          # back, and a mid-scan quarantine still fails below as unscannable.
+          if ($pref) {
+            $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+            $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+            $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+            if ($notApplied) {
+              Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+              exit 1
+            }
           }
 
           $detected = @()
@@ -1774,7 +1876,7 @@ jobs:
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
               'version': os.environ['APP_VERSION'],
-              # App version is SemVer; CHANGELOG.md is keyed by the backend release.
+              # App version is SemVer; this is the backend release it pins.
               'pypi_version': os.environ['PYPI_VERSION'],
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),

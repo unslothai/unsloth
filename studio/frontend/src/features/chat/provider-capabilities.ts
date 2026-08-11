@@ -89,13 +89,24 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   cap: number;
 }> = [
   // OpenAI
-  { providerType: "openai", prefixes: ["gpt-5.5-pro", "gpt-5.5"], cap: 128000 },
+  {
+    providerType: "openai",
+    prefixes: ["gpt-5.6", "gpt-5.5-pro", "gpt-5.5"],
+    cap: 128000,
+  },
   { providerType: "openai", prefixes: ["gpt-5.4-pro", "gpt-5.4"], cap: 65536 },
   { providerType: "openai", prefixes: ["gpt-5.3"], cap: 16384 },
   // Anthropic
   {
     providerType: "anthropic",
-    prefixes: ["claude-opus-4-7"],
+    prefixes: [
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-fable-5",
+      "claude-mythos-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+    ],
     cap: 128000,
   },
   {
@@ -229,13 +240,15 @@ export function providerSupportsBuiltinWebFetch(
 
 /**
  * Whether the active provider + model supports Anthropic fast-mode
- * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 4.6 / 4.7
- * only per https://platform.claude.com/docs/en/build-with-claude/fast-mode.
+ * (`speed: "fast"` + `fast-mode-2026-02-01` header). Opus 5 / Opus 4.8 only
+ * per https://platform.claude.com/docs/en/build-with-claude/fast-mode: 4.7
+ * errors on `speed`, and 4.6 accepts it but runs at standard speed, so the
+ * toggle there promises a speed-up that never arrives.
  * Backend silently drops on unsupported models as a second defence.
  */
 const ANTHROPIC_FAST_MODE_MODEL_PREFIXES = [
-  "claude-opus-4-7",
-  "claude-opus-4-6",
+  "claude-opus-5",
+  "claude-opus-4-8",
 ] as const;
 
 export function providerSupportsFastMode(
@@ -275,6 +288,11 @@ export function providerSupportsFastMode(
  * `input_file`) are a deliberate follow-up.
  */
 const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "claude-fable-5",
+  "claude-mythos-5",
+  "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-opus-4-6",
   "claude-sonnet-4-6",
@@ -288,10 +306,12 @@ const ANTHROPIC_CODE_EXECUTION_MODEL_PREFIXES = [
   "claude-sonnet-4",
 ] as const;
 
-// OpenAI cloud shell-tool gating. Docs only show gpt-5.5; gpt-5.5-pro shares
-// the same /v1/responses contract. `gpt-5.5-pro` is checked first so the prefix
-// match doesn't collide with e.g. a hypothetical `gpt-5.5-turbo`.
+// OpenAI cloud shell-tool gating. The gpt-5.6 family (sol/terra/luna) lists the
+// hosted shell under its supported tools; gpt-5.5-pro shares the same
+// /v1/responses contract as gpt-5.5. `gpt-5.5-pro` is checked first so the
+// prefix match doesn't collide with e.g. a hypothetical `gpt-5.5-turbo`.
 const OPENAI_CODE_EXECUTION_MODEL_PREFIXES = [
+  "gpt-5.6",
   "gpt-5.5-pro",
   "gpt-5.5",
 ] as const;
@@ -606,16 +626,31 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 
 const ANTHROPIC_REASONING_MODELS = [
   {
-    prefixes: ["claude-opus-4-7"],
+    // Fable / Mythos 5 think in adaptive mode always: `thinking.type
+    // "disabled"` 400s, so there is no off switch to offer.
+    prefixes: ["claude-fable-5", "claude-mythos-5"],
+    supportsOff: false,
+    levels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    prefixes: [
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7",
+    ],
+    supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh", "max"],
   },
   {
     prefixes: ["claude-opus-4-6", "claude-sonnet-4-6"],
+    supportsOff: true,
     levels: ["none", "low", "medium", "high", "max"],
   },
   {
     prefixes: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
     // Backend maps semantic levels to manual budget_tokens.
+    supportsOff: true,
     levels: ["none", "low", "medium", "high"],
   },
 ] as const;
@@ -635,7 +670,7 @@ function resolveAnthropicReasoningEffortCapabilities(modelId: string): Reasoning
   if (matched) {
     return {
       supportsReasoning: true,
-      supportsReasoningOff: true,
+      supportsReasoningOff: matched.supportsOff,
       reasoningEffortLevels: matched.levels,
     };
   }
@@ -649,7 +684,9 @@ const OPENAI_REASONING_MODELS = [
     levels: ["medium", "high", "xhigh"],
   },
   {
-    prefixes: ["gpt-5.5", "gpt-5.4"],
+    // gpt-5.6 (sol/terra/luna) rejects "minimal"; the ladder is the same as
+    // gpt-5.5 / gpt-5.4.
+    prefixes: ["gpt-5.6", "gpt-5.5", "gpt-5.4"],
     supportsOff: true,
     levels: ["none", "low", "medium", "high", "xhigh"],
   },
@@ -739,16 +776,14 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
 //     (0=off on Flash, -1=dynamic, N>0=cap; Pro rejects 0).
 //   - 2.5 Flash-Lite: no native thinking surfaced; leave off.
 //   - Image-tier ids: image generation path -- no reasoning controls.
-const GEMINI3_PRO_PREFIXES = [
-  "gemini-3.5-pro",
-  "gemini-3.1-pro",
-  "gemini-3-pro-preview",
-  "gemini-pro-latest",
-];
+// Match the 3.x minors by pattern rather than enumerating them: a new
+// `gemini-3.6-flash` otherwise falls through to the 2.5 branch and gets the
+// integer thinkingBudget ladder, which Gemini 3 rejects. Mirrors
+// `_GEMINI3_FAMILY` / `_GEMINI3_PRO` in the backend's external_provider.py.
+const GEMINI3_PRO_PATTERN = /^gemini-3(\.\d+)?-pro/;
+const GEMINI3_FLASH_PATTERN = /^gemini-3(\.\d+)?-flash/;
+const GEMINI3_PRO_PREFIXES = ["gemini-pro-latest"];
 const GEMINI3_FLASH_PREFIXES = [
-  "gemini-3.5-flash",
-  "gemini-3.1-flash",
-  "gemini-3-flash",
   "gemini-flash-latest",
   "gemini-flash-lite-latest",
 ];
@@ -788,7 +823,7 @@ function resolveGeminiReasoningCapabilities(
       ] as const,
     });
   }
-  if (GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+  if (GEMINI3_PRO_PATTERN.test(m) || GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
     // Gemini 3.x Pro: thinkingLevel low/medium/high; cannot fully disable, and
     // "minimal" is rejected on Pro. Refs:
     // https://ai.google.dev/gemini-api/docs/thinking and
@@ -799,7 +834,7 @@ function resolveGeminiReasoningCapabilities(
       reasoningEffortLevels: ["low", "medium", "high"] as const,
     });
   }
-  if (GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+  if (GEMINI3_FLASH_PATTERN.test(m) || GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
     // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal is the
     // closest to "off" Google offers on Gemini 3.
     return withReasoningEffortStyle({

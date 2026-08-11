@@ -1213,16 +1213,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1233,8 +1237,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
@@ -2154,7 +2163,7 @@ async def get_model_config(
                 model_name = resolved
 
             logger.info(f"Getting model config for: {model_name}")
-            from utils.models.model_config import detect_audio_type
+            from utils.models.model_config import detect_audio_type_checked
 
             inspection_target = _model_config_inspection_target(
                 model_name,
@@ -2169,8 +2178,8 @@ async def get_model_config(
                 local_files_only = prefer_local_cache,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-            audio_type = detect_audio_type(
-                inspection_target,
+            audio_type, audio_type_definitive = detect_audio_type_checked(
+                _audio_probe_target(inspection_target),
                 hf_token = hf_token,
                 local_files_only = prefer_local_cache,
             )
@@ -2208,7 +2217,7 @@ async def get_model_config(
                     pass
 
             logger.info(
-                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
             return ModelDetails(
                 id = model_name,
@@ -2219,6 +2228,7 @@ async def get_model_config(
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
+                audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
@@ -2539,6 +2549,59 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
+def _audio_probe_target(inspection_target: str) -> str:
+    """Repo to ask about audio capability, resolving a registry alias first.
+
+    A curated entry like "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so
+    the probe fetched a repo that does not exist, got a 404 on every path, and read that
+    as "definitely not an audio model" rather than "not a repo id". Spark-TTS then looked
+    like a text model, and picking it with an audio dataset hit the modality gate. Same
+    resolution routes/training.py already uses for the trainer's own preflight.
+    """
+    if is_local_path(inspection_target):
+        return inspection_target
+    try:
+        from utils.security import load_scan_target
+        repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(inspection_target), ())
+        return repo_id or inspection_target
+    except Exception:  # noqa: BLE001 - a probe target must never fail the handler
+        return inspection_target
+
+
+def _audio_type_of_checkpoint(
+    model_path: str,
+    base_model: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Codec a trained checkpoint speaks, or None for a text one.
+
+    A scan row carries no modality, so without this every trained audio model reads
+    as text: the Audio page filters it out and chat routes it to the GGUF auto-switch,
+    which cannot resolve a local adapter directory. Detection reads the checkpoint
+    itself first (a merged export has its own tokenizer) and falls back to the base
+    repo an adapter names. Cached per model, so the scan stays one pass.
+    """
+    from utils.models.model_config import detect_audio_type
+
+    for candidate in (model_path, base_model):
+        if not candidate:
+            continue
+        try:
+            # local_files_only: this route was a filesystem scan. A trained checkpoint's
+            # base is already cached, and a non-definitive miss is deliberately not cached,
+            # so a gated or offline base would re-fetch on every poll.
+            # hf_token even under local_files_only: a gated base resolves through the same
+            # hub helpers, and the capability caches are keyed by token fingerprint, so a
+            # token-less probe would both misclassify and poison the cache for the rest.
+            audio_type = detect_audio_type(candidate, hf_token = hf_token, local_files_only = True)
+        except Exception as exc:  # never let a scan row fail the whole listing
+            logger.debug("audio detection failed for %r: %s", candidate, exc)
+            continue
+        if audio_type:
+            return audio_type
+    return None
+
+
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
@@ -2547,6 +2610,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -2557,33 +2621,12 @@ async def scan_loras(
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
-        lora_list = []
-
-        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
-        for display_name, model_path, model_type in trained_models:
-            base_model = get_base_model_from_checkpoint(model_path)
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "training",
-                    export_type = model_type,
-                )
-            )
-
-        # Scan exported models (merged, LoRA, base — skips GGUF)
-        exported = scan_exported_models(exports_dir = resolved_exports_dir)
-        for display_name, model_path, export_type, base_model in exported:
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "exported",
-                    export_type = export_type,
-                )
-            )
+        # Off the event loop: this is a directory walk plus, per checkpoint, a tokenizer
+        # read. It was already blocking before the audio probe was added; the probe made
+        # the block long enough to delay unrelated requests, streamed tokens included.
+        lora_list = await asyncio.to_thread(
+            _scan_loras_sync, resolved_outputs_dir, resolved_exports_dir, hf_token
+        )
 
         return LoRAScanResponse(loras = lora_list, outputs_dir = resolved_outputs_dir)
 
@@ -2595,6 +2638,43 @@ async def scan_loras(
             event = "models.scan_loras_failed",
             log = logger,
         )
+
+
+def _scan_loras_sync(
+    resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
+) -> List[LoRAInfo]:
+    """The filesystem half of scan_loras, so it can run in a worker thread."""
+    lora_list: List[LoRAInfo] = []
+
+    trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+    for display_name, model_path, model_type in trained_models:
+        base_model = get_base_model_from_checkpoint(model_path)
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "training",
+                export_type = model_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    # Scan exported models (merged, LoRA, base — skips GGUF)
+    exported = scan_exported_models(exports_dir = resolved_exports_dir)
+    for display_name, model_path, export_type, base_model in exported:
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "exported",
+                export_type = export_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    return lora_list
 
 
 @router.get("/diffusion-loras")
@@ -2766,7 +2846,7 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
     refuses a delete, a false miss loses weights.
     """
-    from hub.utils.gguf import bare_quant_alias
+    from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
 
     left = (a or "").strip().lower()
     right = (b or "").strip().lower()
@@ -2775,7 +2855,11 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     if left == right:
         return True
     for key, bare in ((left, right), (right, left)):
-        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
             return True
     return False
 
@@ -3716,19 +3800,22 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
     *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
     doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
-    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
-    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
-    files too and then took whichever sorted first. Exact keys are used alone whenever any
-    exist, and the label is the fallback for the rows that have no qualified spelling.
+    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
+    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    first file would load a different task. Exact keys are used alone whenever any exist, and the
+    label is the fallback for rows with no root-stem identity.
     """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
-    if _variant_keys_match(_gguf_variant_key(rel_path), want):
+    key = _gguf_variant_key(rel_path)
+    if _variant_keys_match(key, want):
         return 0
+    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+        return None
     return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
 
 
@@ -3741,7 +3828,9 @@ def _variant_keys_match(key: str, want: str) -> bool:
     key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
     bare aliases it was written for.
     """
-    if "/" in key or "/" in want:
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+
+    if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
         return key.strip().lower() == want.strip().lower()
     return _normalized_quant_label(key) == _normalized_quant_label(want)
 
