@@ -137,20 +137,32 @@ test("a growing download never settles", () => {
   assert.equal(second.settled, false);
 });
 
-test("a settled resource stays settled while the run consumes it", () => {
-  const settled = state({ settled: true, downloadedBytes: 42.3 * MB });
-  const next = downloadStateFromProgress(
-    {
-      downloaded_bytes: 42.3 * MB,
-      completed_bytes: 0,
-      expected_bytes: 42.3 * MB,
-      progress: 0.99,
-      complete_on_disk: false,
-      cache_path: "/home/u/.cache/huggingface/hub/datasets--unsloth--alpaca-cleaned",
-    },
-    settled,
+test("a transfer that stalled and resumed stops reading as settled", () => {
+  // A slow multi-file download can go quiet for two polls between files. Latching settlement
+  // would then show Ready, with no rate or progress, for the rest of the transfer.
+  const reading: DownloadProgressReading = {
+    downloaded_bytes: 5 * GB,
+    completed_bytes: 5 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.25,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--unsloth--gpt-oss-120b",
+  };
+  const stalled = pollTwice(reading);
+  assert.equal(stalled.settled, true);
+
+  const resumed = downloadStateFromProgress(
+    { ...reading, downloaded_bytes: 5.2 * GB, completed_bytes: 5 * GB, progress: 0.26 },
+    stalled,
   );
-  assert.equal(next.settled, true);
+  assert.equal(resumed.settled, false);
+  assert.equal(coerceCachedStateReady(resumed).percent, 26);
+});
+
+test("a cache dir with bytes still expected is not ready", () => {
+  // The repo dir exists from an earlier attempt, but nothing has arrived for this one.
+  const empty = state({ downloadedBytes: 0, completedBytes: 0, totalBytes: 20 * GB });
+  assert.deepEqual(coerceCachedStateReady(empty), empty);
 });
 
 test("a resource with no cache path is never coerced", () => {

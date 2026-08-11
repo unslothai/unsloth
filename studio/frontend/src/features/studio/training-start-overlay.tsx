@@ -73,9 +73,8 @@ type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
 /**
  * Polls a HF repo's download progress on a 1.5s tick. Serves both model weights
- * and dataset blobs by swapping the fetcher. Stops once the backend verifies the
- * snapshot; the bar freezes at the final value rather than disappearing, matching
- * chat flow.
+ * and dataset blobs by swapping the fetcher. Stops once `progress >= 1.0`; the
+ * bar freezes at the final value rather than disappearing, matching chat flow.
  */
 function useHfDownloadProgress(
   repoId: string | null,
@@ -103,8 +102,7 @@ function useHfDownloadProgress(
     let cancelled = false;
     let finished = false;
     let interval: ReturnType<typeof setInterval> | null = null;
-    // Settling compares each reading against the one before it, so the poll carries the
-    // previous state rather than reading it back out of React.
+    // settling compares against the previous reading, so the poll carries it rather than reading it back out of React.
     let latest = EMPTY_DOWNLOAD_STATE;
 
     const poll = async () => {
@@ -115,8 +113,7 @@ function useHfDownloadProgress(
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
         setState(next);
-        // Only a verified snapshot stops the tick: a settled row can still be waiting on
-        // files, and a stopped poll could never notice them arrive.
+        // only a verified snapshot stops the tick; a settled row can still be waiting on files.
         if (next.completeOnDisk) {
           finished = true;
           if (interval) {
@@ -158,11 +155,8 @@ type ResourceRowProps = {
   preparation: PreparationProgress | null;
 };
 
-/**
- * One row per resource for the whole of its setup. It reports the transfer while bytes are
- * moving, then carries that resource's preparation step once they stop, so tokenizing a
- * dataset reuses the dataset's row instead of opening another one.
- */
+// one row per resource for its whole setup: the transfer while bytes move, then that
+// resource's preparation step once they stop.
 function ResourceRow({
   label,
   state,
@@ -173,9 +167,11 @@ function ResourceRow({
   // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
-  if (state.downloadedBytes <= 0 && !state.cachePath) return null;
+  if (!preparation && state.downloadedBytes <= 0 && !state.cachePath) return null;
   const isComplete = state.settled;
-  const preparing = isComplete ? preparation : null;
+  // uploaded and S3 datasets never produce a transfer, so preparation is all this row has.
+  const preparing =
+    state.downloadedBytes > 0 && !state.settled ? null : preparation;
   const statusLabel = preparing
     ? preparing.title
     : isComplete
@@ -311,6 +307,10 @@ export function TrainingStartOverlay({
   const preparationTarget = preparationProgress
     ? classifyPreparation(preparationProgress.title, { modelName, datasetName })
     : null;
+  const datasetPreparation =
+    preparationTarget === "dataset" ? preparationProgress : null;
+  const modelPreparation =
+    preparationTarget === "model" ? preparationProgress : null;
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -406,28 +406,22 @@ export function TrainingStartOverlay({
             <AnimatedSpan className="mt-3 text-muted-foreground">
               {t("studio.trainingStart.datasetStreaming")}
             </AnimatedSpan>
-          ) : datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
+          ) : (
             <AnimatedSpan className="mt-3">
               <ResourceRow
                 label={t("studio.trainingStart.dataset")}
                 state={datasetDownload}
-                preparation={
-                  preparationTarget === "dataset" ? preparationProgress : null
-                }
+                preparation={datasetPreparation}
               />
             </AnimatedSpan>
-          ) : null}
-          {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
-            <AnimatedSpan className="mt-3">
-              <ResourceRow
-                label={t("studio.trainingStart.modelWeights")}
-                state={modelDownload}
-                preparation={
-                  preparationTarget === "model" ? preparationProgress : null
-                }
-              />
-            </AnimatedSpan>
-          ) : null}
+          )}
+          <AnimatedSpan className="mt-3">
+            <ResourceRow
+              label={t("studio.trainingStart.modelWeights")}
+              state={modelDownload}
+              preparation={modelPreparation}
+            />
+          </AnimatedSpan>
           </Terminal>
         </div>
       </div>

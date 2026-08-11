@@ -16,7 +16,7 @@ function Progress({
   ...props
 }: React.ComponentProps<typeof ProgressPrimitive.Root> & {
   indicatorClassName?: string;
-  /** Work of unknown length: sweep a segment across the track instead of filling it. */
+  // work of unknown length: sweep a segment across the track instead of filling it.
   indeterminate?: boolean;
 }) {
   return (
@@ -27,16 +27,14 @@ function Progress({
         className,
       )}
       {...props}
-      // Radix reads a missing value as the indeterminate state, which is what assistive
-      // tech should announce here, so it is dropped rather than passed through as 0.
+      // radix reads a missing value as the indeterminate state, which is what belongs here.
       value={indeterminate ? undefined : value}
     >
       <ProgressPrimitive.Indicator
         data-slot="progress-indicator"
         className={cn(
           "bg-control-accent",
-          // One branch owns the width: tailwind-merge keeps both `size-full` and `w-1/3`,
-          // which would leave the sweeping segment full-width on a utility-order change.
+          // one branch owns the width: tailwind-merge keeps both `size-full` and `w-1/3`.
           indeterminate
             ? "h-full w-1/3 loading-bar-slide"
             : "size-full flex-1 transition-all",

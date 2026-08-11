@@ -110,9 +110,8 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
         return 0
 
 
-# Repo metadata plus the OS clutter a file browser leaves behind. Anything else in a snapshot
-# counts as payload, so formats the app has never heard of are never mistaken for an empty one.
-# The Windows names are spelled out because huggingface_hub only added them after 0.36.
+# anything not named here counts as payload, so unknown formats are never read as an empty
+# snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36.
 _DATASET_NON_PAYLOAD_FILENAMES = frozenset(
     {
         ".ds_store",
@@ -132,9 +131,8 @@ _DATASET_NON_PAYLOAD_FILENAMES = frozenset(
 def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
     """Whether the snapshot holds anything beyond repo metadata.
 
-    A cancelled download can leave the dataset card and nothing else, which every
-    structural check reads as a complete snapshot, so the repo was offered On Device and
-    then failed inside ``load_dataset()``.
+    A cancelled download can leave the dataset card and nothing else, which every structural
+    check reads as complete, so the repo was offered On Device and then failed in load_dataset().
     """
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:
@@ -178,7 +176,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.resolve()),
-                # snapshot_count == 0 catches blobs-but-no-snapshot, is_snapshot_partial adds row-state checks, and the data check rejects a card-only snapshot.
+                # blobs-but-no-snapshot, then row state, then a card-only snapshot.
                 "partial": snapshot_partial,
                 "partial_transport": (
                     hf_cache_scan.partial_transport_for(
@@ -372,8 +370,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
         if row.get("processed_cache"):
             existing["processed_cache"] = True
             existing["load_cache_path"] = row.get("cache_path")
-        # The Arrow cache loads on its own, so it settles a raw row that cannot. Annotating
-        # rather than replacing keeps the hub cache_path that scoped deletion needs.
+        # annotating rather than replacing keeps the hub cache_path that scoped deletion needs.
         if existing.get("partial") and not row.get("partial"):
             existing["partial"] = False
             existing["partial_transport"] = None

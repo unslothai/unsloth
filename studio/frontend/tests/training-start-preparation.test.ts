@@ -53,6 +53,16 @@ test("every status the worker sends reaches a row", () => {
     "Encoding audio with SNAC...",
     'Tokenizing ["text"] (num_proc=4) 15% (32,000/207,865)',
   ];
+  const audioSteps = [
+    // loaded only to preprocess the dataset, so they belong to its row; routing them to the
+    // model made the display flip between rows partway through one encoding pass.
+    "Loading SNAC codec model...",
+    "Loading BiCodec tokenizer...",
+    "Loading OuteTTS AudioProcessor...",
+    "Loading Whisper model for word timings...",
+    "Encoding audio with BiCodec... 100/1000",
+    "Preprocessing CSM... 5/100",
+  ];
   const modelSteps = [
     "Importing Unsloth...",
     "Detecting model type...",
@@ -67,7 +77,7 @@ test("every status the worker sends reaches a row", () => {
     "Starting training...",
     "Saving model...",
   ];
-  for (const message of datasetSteps) {
+  for (const message of [...datasetSteps, ...audioSteps]) {
     const { title } = parsePreparationProgress(message, "Preparing");
     assert.equal(classifyPreparation(title, resources), "dataset", message);
   }
@@ -145,6 +155,19 @@ test("a counted message draws a determinate bar from the worker's own percent", 
     parsePreparationProgress("Filter (num_proc=4) 7% (16,000/207,865)", "Preparing")
       .percent,
     7,
+  );
+});
+
+test("the audio loops report bare counts and still draw a bar", () => {
+  // `Encoding audio... {i}/{n}` and friends carry no percent, so the tqdm shape misses them
+  // and a long preprocessing pass swept indeterminately with the counts already in hand.
+  assert.deepEqual(
+    parsePreparationProgress("Encoding audio... 100/1000", "Preparing"),
+    { title: "Encoding audio", detail: "100 / 1000", percent: 10 },
+  );
+  assert.deepEqual(
+    parsePreparationProgress("Processing train audio... 1,500/12,000", "Preparing"),
+    { title: "Processing train audio", detail: "1,500 / 12,000", percent: 12 },
   );
 });
 
