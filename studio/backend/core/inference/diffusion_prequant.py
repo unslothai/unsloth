@@ -137,36 +137,44 @@ _RESOLVED_SAFE_GLOBALS: set = set()
 # each scheme from scripts/build_prequant_checkpoint.py for the two no repo hosts. Only these are
 # required, so a torchao that drops a name nothing serializes does not fail a scheme that works.
 _SCHEME_REQUIRED_GLOBALS: dict = {
-    "int8": frozenset({
-        "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
-        "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
-        "torchao.dtypes.utils.PlainLayout",
-        "torchao.quantization.linear_activation_quantized_tensor."
-        "LinearActivationQuantizedTensor",
-        "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant",
-        "torchao.quantization.quant_primitives.ZeroPointDomain",
-        "torch.torch_version.TorchVersion",
-    }),
-    "fp8": frozenset({
-        # The ALIAS spelling, which is what the fp8 pickles record.
-        "torchao.quantization.Float8Tensor",
-        "torchao.quantization.quantize_.workflows.float8.float8_tensor."
-        "QuantizeTensorToFloat8Kwargs",
-        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
-        "torchao.quantization.granularity.PerRow",
-        "torchao.float8.inference.Float8MMConfig",
-        "torch.torch_version.TorchVersion",
-    }),
-    "mxfp8": frozenset({
-        "torchao.prototype.mx_formats.mx_tensor.MXTensor",
-        "torchao.prototype.mx_formats.mx_tensor.QuantizeTensorToMXKwargs",
-        "torchao.prototype.mx_formats.config.ScaleCalculationMode",
-        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
-    }),
-    "nvfp4": frozenset({
-        "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
-        "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
-    }),
+    "int8": frozenset(
+        {
+            "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
+            "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
+            "torchao.dtypes.utils.PlainLayout",
+            "torchao.quantization.linear_activation_quantized_tensor."
+            "LinearActivationQuantizedTensor",
+            "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant",
+            "torchao.quantization.quant_primitives.ZeroPointDomain",
+            "torch.torch_version.TorchVersion",
+        }
+    ),
+    "fp8": frozenset(
+        {
+            # The ALIAS spelling, which is what the fp8 pickles record.
+            "torchao.quantization.Float8Tensor",
+            "torchao.quantization.quantize_.workflows.float8.float8_tensor."
+            "QuantizeTensorToFloat8Kwargs",
+            "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+            "torchao.quantization.granularity.PerRow",
+            "torchao.float8.inference.Float8MMConfig",
+            "torch.torch_version.TorchVersion",
+        }
+    ),
+    "mxfp8": frozenset(
+        {
+            "torchao.prototype.mx_formats.mx_tensor.MXTensor",
+            "torchao.prototype.mx_formats.mx_tensor.QuantizeTensorToMXKwargs",
+            "torchao.prototype.mx_formats.config.ScaleCalculationMode",
+            "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+        }
+    ),
+    "nvfp4": frozenset(
+        {
+            "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
+            "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
+        }
+    ),
 }
 
 

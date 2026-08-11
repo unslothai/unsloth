@@ -34,10 +34,7 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     runs where it may not be. These tests are about the load/plan decisions, so pin the capability
     on; it is covered on its own in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
-
     monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
-
-
 
 
 class _FakeDtype:

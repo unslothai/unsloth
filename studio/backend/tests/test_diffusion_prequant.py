@@ -192,7 +192,9 @@ def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch, restrict
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
 
 
-def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, monkeypatch, restricted_load_available):
+def test_usable_source_rejects_an_override_baked_for_another_scheme(
+    tmp_path, monkeypatch, restricted_load_available
+):
     """An int8 checkpoint must not read as an available fp8 pre-quant.
 
     resolve_prequant_source hands back a path source for ANY override without inspecting the file,
