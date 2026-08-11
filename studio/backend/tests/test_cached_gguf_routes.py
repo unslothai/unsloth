@@ -4908,3 +4908,30 @@ def test_reading_the_index_first_leaves_remote_picks_and_overrides_alone(tmp_pat
     assert families.detect_family_for_pick(
         str(tmp_path / "anon"), gguf_filename = "flux1-dev-Q4_K_M.gguf"
     ) is families.detect_family("x/flux1-dev-Q4_K_M.gguf", None)
+
+
+def test_a_saved_inpaint_pipeline_is_not_tagged_as_its_base_family():
+    """Reading the index must not expose a checkpoint the loader would then mis-instantiate.
+
+    The loader picks ``fam.pipeline_class`` (``diffusion.py:2946``) and never the class the index
+    declared, so answering SDXL for a ``StableDiffusionXLInpaintPipeline`` would list it as
+    text-to-image and then load it through the four-channel base pipeline. An inpaint checkpoint
+    carries its own UNet input shape, so that fails after selection, which is the very
+    listing-versus-loader split this helper exists to close.
+
+    A variant stays untagged, exactly as it was before the index was consulted at all: nothing that
+    used to load stops loading, and nothing becomes visible that cannot.
+    """
+    from core.inference import diffusion_families as families
+
+    # The base classes still answer, so the moved-pipeline fix (#8407) is intact.
+    for base in ("FluxPipeline", "QwenImagePipeline", "StableDiffusionXLPipeline"):
+        assert families.detect_family_by_pipeline_class(base) is not None, base
+
+    for variant in (
+        "StableDiffusionXLInpaintPipeline",
+        "StableDiffusionXLImg2ImgPipeline",
+        "FluxInpaintPipeline",
+        "FluxImg2ImgPipeline",
+    ):
+        assert families.detect_family_by_pipeline_class(variant) is None, variant

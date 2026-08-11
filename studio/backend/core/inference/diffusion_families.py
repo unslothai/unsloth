@@ -518,21 +518,24 @@ def detect_family_by_pipeline_class(class_name: Optional[str]) -> Optional[Diffu
     (#8407) -- has no name left to match, so the listing dropped it as task=null and the Images
     picker hid a model the load path accepts.
 
-    The task variants are matched too, so a checkpoint saved as an img2img/inpaint/controlnet
-    pipeline resolves to the same family. Exact class names only: this cannot fire on a checkpoint
-    that is not the family it claims to be."""
+    Only the BASE pipeline class matches. The task variants deliberately do not: the loader
+    instantiates ``fam.pipeline_class`` (``diffusion.py:2946``) and never the class the index
+    declared, so answering a family for an inpaint or img2img checkpoint would tag it visible and
+    then load it through the wrong pipeline. An inpaint checkpoint is not merely a differently
+    named base one, it carries its own UNet input shape, so that load fails after selection. This
+    function exists to stop exactly that split between what the listing shows and what the loader
+    accepts, and matching a variant here would reintroduce it one layer down.
+
+    A variant checkpoint therefore stays untagged, which is the same answer it got before the index
+    was consulted at all: no model that used to load stops loading, and none becomes visible that
+    cannot. Exact class names only: this cannot fire on a checkpoint that is not the family it
+    claims to be."""
     key = (class_name or "").strip()
     if not key:
         return None
     for fam in _FAMILIES:
-        for candidate in (
-            fam.pipeline_class,
-            fam.img2img_pipeline_class,
-            fam.inpaint_pipeline_class,
-            fam.controlnet_pipeline_class,
-        ):
-            if candidate and candidate == key:
-                return fam
+        if fam.pipeline_class and fam.pipeline_class == key:
+            return fam
     return None
 
 
