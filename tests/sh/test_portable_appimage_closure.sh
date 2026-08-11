@@ -249,6 +249,39 @@ assert_eq "every swept object's RUNPATH resolves to libdir" "yes" "$_ok"
 assert_eq "depth is computed, not hardcoded" "yes" \
     "$(grep -q 'realpath --relative-to' "$BUILD_SH" && echo yes || echo no)"
 
+echo "=== behavioural: the pixbuf loader cache survives relocation ==="
+# Two faults in one file. gdk-pixbuf resolves a RELATIVE module path against the
+# process CWD -- not the cache, not GDK_PIXBUF_MODULEDIR -- and AppRun keeps whatever
+# directory the user launched from, so './libpixbufloader-svg.so' was found only by
+# luck. And gdk-pixbuf-query-loaders writes an absolute LoaderDir header, so rewriting
+# only the module lines left the build host's path in the shipped bundle, which the
+# CI leak check caught.
+_pb="$_TMP/pbcache"; mkdir -p "$_pb"
+_fake_appdir="/build/AppDir"
+cat > "$_pb/in" <<EOF
+# LoaderDir = $_fake_appdir/usr/lib/unsloth/gdk-pixbuf
+#
+"$_fake_appdir/usr/lib/unsloth/gdk-pixbuf/libpixbufloader-svg.so"
+EOF
+sed "s|$_fake_appdir|@APPDIR@|g" "$_pb/in" > "$_pb/cache"
+assert_eq "no build-host path survives the build" "0" \
+    "$(grep -c "$_fake_appdir" "$_pb/cache" || true)"
+sed "s|@APPDIR@|/tmp/.mount_ABC|g" "$_pb/cache" > "$_pb/expanded"
+_rel=0
+while IFS= read -r _m; do
+    case "$_m" in /*) ;; *) _rel=$((_rel + 1)) ;; esac
+done < <(grep -oE '^"[^"]+\.so"' "$_pb/expanded" | tr -d '"')
+assert_eq "every module path is absolute after expansion" "0" "$_rel"
+assert_eq "the LoaderDir header is relocated too" "yes" \
+    "$(grep -q 'LoaderDir = /tmp/.mount_ABC' "$_pb/expanded" && echo yes || echo no)"
+
+assert_eq "build writes the token, not a relative path" "yes" \
+    "$(grep -q 's|\$app_dir|@APPDIR@|g' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "build fails if a build path survives" "yes" \
+    "$(grep -q 'still contains build-host paths' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "AppRun expands the token at launch" "yes" \
+    "$(grep -q 's|@APPDIR@|\$appdir|g' "$BUILD_SH" && echo yes || echo no)"
+
 echo "=== structural: the tauri bundle-type stamp ==="
 assert_eq "tauri bundle-type stamped" "yes" \
     "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"

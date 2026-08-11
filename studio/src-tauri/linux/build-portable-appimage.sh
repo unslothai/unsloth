@@ -547,7 +547,18 @@ if command -v patchelf >/dev/null 2>&1; then
   ( cd "$pixbuf_dir" && GDK_PIXBUF_MODULEDIR="$pixbuf_dir" \
       "$pixbuf_query" > "$pixbuf_dir/loaders.cache" ) \
     || die "gdk-pixbuf-query-loaders failed to write the loader cache"
-  sed -i "s|$pixbuf_dir/|./|g" "$pixbuf_dir/loaders.cache"
+  # Write a token, not a relative path, and let AppRun expand it at launch.
+  #
+  # Two reasons. gdk-pixbuf resolves a relative module path in the cache against the
+  # process CWD, not against the cache or GDK_PIXBUF_MODULEDIR, and AppRun keeps
+  # whatever directory the user launched from -- so './libpixbufloader-svg.so' is
+  # found only by luck. And the query tool also writes an absolute LoaderDir header,
+  # which a rewrite of the module lines alone leaves pointing at the build host.
+  # Replacing $app_dir everywhere covers both, and the mount point is only knowable
+  # at launch anyway.
+  sed -i "s|$app_dir|@APPDIR@|g" "$pixbuf_dir/loaders.cache"
+  ! grep -q "$app_dir" "$pixbuf_dir/loaders.cache" \
+    || die "the pixbuf loader cache still contains build-host paths"
   # An empty cache is the same failure wearing a file name: the tool can exit 0 having
   # found nothing when it is pointed at the wrong module directory.
   grep -q 'LoaderDir\|"[a-z]' "$pixbuf_dir/loaders.cache" 2>/dev/null \
@@ -750,7 +761,17 @@ export PATH="$appdir/usr/bin${PATH:+:$PATH}"
 #   libGLX_mesa.so.0    -> libstdc++.so.6: version `GLIBCXX_3.4.32' not found
 #       (required by libLLVM.so.20.1)
 export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-export GDK_PIXBUF_MODULE_FILE="$libdir/gdk-pixbuf/loaders.cache"
+# The loader cache carries @APPDIR@ tokens: gdk-pixbuf needs absolute module paths
+# (it resolves relative ones against the CWD, which is wherever the user launched
+# from), and the mount point is different every run. Expand into a private copy --
+# mktemp rather than a fixed name, since this lands in a world-writable directory.
+_pixbuf_cache="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/unsloth-pixbuf.XXXXXX" 2>/dev/null)"
+if [ -n "$_pixbuf_cache" ] \
+   && sed "s|@APPDIR@|$appdir|g" "$libdir/gdk-pixbuf/loaders.cache" > "$_pixbuf_cache" 2>/dev/null; then
+  export GDK_PIXBUF_MODULE_FILE="$_pixbuf_cache"
+else
+  export GDK_PIXBUF_MODULE_FILE="$libdir/gdk-pixbuf/loaders.cache"
+fi
 export GDK_PIXBUF_MODULEDIR="$libdir/gdk-pixbuf"
 export GIO_MODULE_DIR="$libdir/gio-modules"
 export GSETTINGS_SCHEMA_DIR="$appdir/usr/share/glib-2.0/schemas"
