@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import forge from "node-forge";
-import { authFetch } from "@/features/auth";
+import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
 export interface ProviderRegistryEntry {
@@ -23,6 +23,8 @@ export interface ProviderConfig {
   display_name: string;
   base_url: string;
   is_enabled: boolean;
+
+  has_api_key: boolean;
   models?: string[];
   available_models?: string[];
   created_at: string;
@@ -127,19 +129,23 @@ export async function createProviderConfig(payload: {
   baseUrl?: string | null;
   models?: string[];
   availableModels?: string[];
+  apiKey?: string;
 }): Promise<ProviderConfig> {
-  const response = await authFetch("/api/providers/", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      provider_type: payload.providerType,
-      display_name: payload.displayName,
-      base_url: payload.baseUrl ?? null,
-      models: payload.models ?? [],
-      available_models: payload.availableModels ?? [],
-    }),
+  return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+        display_name: payload.displayName,
+        base_url: payload.baseUrl ?? null,
+        models: payload.models ?? [],
+        available_models: payload.availableModels ?? [],
+        encrypted_api_key: encryptedApiKey,
+      }),
+    });
+    return parseJsonOrThrow<ProviderConfig>(response);
   });
-  return parseJsonOrThrow<ProviderConfig>(response);
 }
 
 export async function deleteProviderConfig(providerId: string): Promise<void> {
@@ -166,23 +172,44 @@ export async function updateProviderConfig(
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
+    apiKey?: string;
+    clearApiKey?: boolean;
   },
 ): Promise<ProviderConfig> {
-  const response = await authFetch(`/api/providers/${providerId}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
-      ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
-      ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
-      ...(payload.models === undefined ? {} : { models: payload.models }),
-      ...(payload.availableModels === undefined
-        ? {}
-        : { available_models: payload.availableModels }),
-    }),
+  return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
+    const response = await authFetch(`/api/providers/${providerId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
+        ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
+        ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
+        ...(payload.models === undefined ? {} : { models: payload.models }),
+        ...(payload.availableModels === undefined
+          ? {}
+          : { available_models: payload.availableModels }),
+        ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
+        ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
+      }),
+    });
+    return parseJsonOrThrow<ProviderConfig>(response);
   });
-  return parseJsonOrThrow<ProviderConfig>(response);
 }
+
+export async function migrateProviderApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<ProviderConfig> {
+  return withApiKeyEncryptionRetry(apiKey, async (encryptedApiKey) => {
+    const response = await authFetch(`/api/providers/${providerId}/api-key/migrate`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ encrypted_api_key: encryptedApiKey }),
+    });
+    return parseJsonOrThrow<ProviderConfig>(response);
+  });
+}
+
 
 async function withApiKeyEncryptionRetry<T>(
   plaintextApiKey: string,
@@ -207,6 +234,8 @@ async function withApiKeyEncryptionRetry<T>(
 
 export async function testProviderConnection(payload: {
   providerType: string;
+
+  providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
   modelId?: string | null;
@@ -217,6 +246,8 @@ export async function testProviderConnection(payload: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider_type: payload.providerType,
+
+        provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
         model_id: payload.modelId ?? null,
@@ -228,6 +259,8 @@ export async function testProviderConnection(payload: {
 
 export async function listProviderModels(payload: {
   providerType: string;
+
+  providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
 }): Promise<ProviderModelInfo[]> {
@@ -237,6 +270,8 @@ export async function listProviderModels(payload: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider_type: payload.providerType,
+
+        provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
       }),

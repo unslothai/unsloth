@@ -12,6 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -2326,8 +2327,13 @@ export function HubModelPicker({
   }, []);
 
   const pickerInventory = useChatPickerInventory({ enabled: true });
-  const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
-    pickerInventory;
+  const {
+    cachedGguf,
+    cachedModels,
+    cachedReady,
+    refreshInventory,
+    refreshInventoryIfOlderThan,
+  } = pickerInventory;
   const cachedReadyAtMount = useRef(cachedReady);
   const lmStudioModels = useMemo(
     () =>
@@ -2519,8 +2525,8 @@ export function HubModelPicker({
     if (!shouldRefreshPickerInventoryOnMount(cachedReadyAtMount.current)) {
       return;
     }
-    void refreshInventory();
-  }, [refreshInventory]);
+    void refreshInventoryIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
+  }, [refreshInventoryIfOlderThan]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.

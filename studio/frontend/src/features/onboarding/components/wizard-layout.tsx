@@ -9,6 +9,7 @@ import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import type { ConfettiRef } from "@/components/ui/confetti";
 import { STEPS } from "@/config/training";
 import { isOnboardingDone, markOnboardingDone } from "@/features/auth";
+import { waitForHfTokenPersistence } from "@/features/hub/stores/hf-token-store";
 import { prefersReducedMotion } from "@/features/settings";
 import { useTrainingConfigStore } from "@/features/training";
 import { SplashScreen } from "./splash-screen";
@@ -82,7 +83,12 @@ export function WizardLayout() {
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
-          onSkipOnboarding={() => {
+          onSkipOnboarding={async () => {
+            try {
+              await waitForHfTokenPersistence();
+            } catch {
+              return;
+            }
             markOnboardingDone();
             exitToReturnTo();
           }}
