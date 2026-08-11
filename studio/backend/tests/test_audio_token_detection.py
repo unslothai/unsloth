@@ -235,7 +235,12 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
 
     # Fails when a codec is added, which is the point: add its marker too.
     assert set(_AUDIO_TOKEN_PATTERNS) == {
-        "csm", "whisper", "bicodec", "dac", "snac", "audio_vlm",
+        "csm",
+        "whisper",
+        "bicodec",
+        "dac",
+        "snac",
+        "audio_vlm",
     }
 
     # Whatever each pattern matches, the marker scan must let it through to the parse.
@@ -268,8 +273,7 @@ def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
 
     config = {
         "added_tokens_decoder": {
-            str(i): {"content": f"<|extra_token_{i}|>", "special": True}
-            for i in range(5000)
+            str(i): {"content": f"<|extra_token_{i}|>", "special": True} for i in range(5000)
         }
     }
     checkpoint = tmp_path / "run"
@@ -312,6 +316,7 @@ def test_a_half_written_tokenizer_stays_unknown(tmp_path):
     assert definitive is False
 
     (checkpoint / "tokenizer_config.json").write_text(whole)
-    assert model_config._detect_audio_from_tokenizer(
-        str(checkpoint), local_files_only = True
-    ) == (None, True)
+    assert model_config._detect_audio_from_tokenizer(str(checkpoint), local_files_only = True) == (
+        None,
+        True,
+    )
