@@ -92,6 +92,35 @@ class TestSharedBaseSelection:
     def test_current_base_file_adds_no_install_step(self):
         assert ips._shared_base_requirements() is None
 
+    def test_a_bom_does_not_read_as_content(self, tmp_path, monkeypatch):
+        """PowerShell 5.1 redirection and some Windows editors prepend a UTF-8 BOM."""
+        req = tmp_path / "base.txt"
+        req.write_text("# shared\n", encoding = "utf-8-sig")
+        monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+        monkeypatch.setattr(ips, "NO_TORCH", False)
+        assert ips._shared_base_requirements() is None
+
+    def test_crlf_entry_is_still_seen(self, tmp_path, monkeypatch):
+        (tmp_path / "base.txt").write_bytes(b"# shared\r\n" + _EXTRA_PIN.encode() + b"\r\n")
+        monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+        monkeypatch.setattr(ips, "NO_TORCH", False)
+        assert ips._shared_base_requirements() == tmp_path / "base.txt"
+
+    @pytest.mark.parametrize("mode", ["missing", "unreadable"])
+    def test_an_unusable_file_does_not_take_down_the_install(self, tmp_path, monkeypatch, mode):
+        """This runs before the manifest is dropped, so raising here aborts with a traceback."""
+        if mode == "unreadable":
+            req = tmp_path / "base.txt"
+            req.write_text(_EXTRA_PIN, encoding = "utf-8")
+            req.chmod(0o000)
+        monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+        monkeypatch.setattr(ips, "NO_TORCH", False)
+        try:
+            assert ips._shared_base_requirements() is None
+        finally:
+            if mode == "unreadable":
+                req.chmod(0o644)
+
 
 class TestSharedBasePhase:
     def _run(self, req: Path | None, *, skip_base: bool) -> tuple[list[Path], list[str]]:

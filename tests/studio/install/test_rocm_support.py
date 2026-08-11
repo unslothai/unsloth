@@ -4509,7 +4509,7 @@ class TestProgressStepCountMatchesTotal:
     base_total. Regression for a repair step added without incrementing base_total,
     which pushed _STEP past _TOTAL (Codex P2)."""
 
-    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm):
+    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm, skip_base = True):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
         unstructured_plugin.mkdir()
@@ -4518,7 +4518,9 @@ class TestProgressStepCountMatchesTotal:
         sub.returncode = 0
         sub.stdout = ""
         with (
-            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1" if skip_base else "0"}),
+            patch.object(stack_mod, "_report_mlx_stack_health"),
+            patch.object(stack_mod, "_bitsandbytes_installed", return_value = False),
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
@@ -4545,6 +4547,26 @@ class TestProgressStepCountMatchesTotal:
     def test_linux_progress_reaches_total(self, tmp_path):
         step, total = self._run_stack(tmp_path, is_windows = False, is_macos = False, is_mac_arm = False)
         assert step == total, f"Linux progress {step} != total {total}"
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    @pytest.mark.parametrize(
+        "is_windows, is_macos, is_mac_arm",
+        [(False, False, False), (True, False, False), (False, True, True), (False, True, False)],
+        ids = ["linux", "windows", "macos_arm", "macos_intel"],
+    )
+    def test_progress_reaches_total_on_both_core_paths(
+        self, tmp_path, is_windows, is_macos, is_mac_arm, skip_base
+    ):
+        """Both the installer handoff and `studio update`, on every platform.
+
+        The update path on Apple Silicon runs the MLX step, which the earlier
+        SKIP_STUDIO_BASE=1-only cases never reached, so its slot went uncounted.
+        """
+        step, total = self._run_stack(
+            tmp_path, is_windows = is_windows, is_macos = is_macos,
+            is_mac_arm = is_mac_arm, skip_base = skip_base,
+        )
+        assert step == total, f"progress {step} != total {total}"
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)

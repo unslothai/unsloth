@@ -3524,7 +3524,13 @@ def _shared_base_requirements() -> Path | None:
     if NO_TORCH:
         return None
     req = REQ_ROOT / "base.txt"
-    for line in req.read_text(encoding = "utf-8").splitlines():
+    try:
+        # utf-8-sig: a BOM (Windows editors, PowerShell 5.1 redirection) would
+        # otherwise read as content and schedule a step with nothing in it.
+        text = req.read_text(encoding = "utf-8-sig")
+    except OSError:
+        return None  # missing or unreadable: nothing this pass can apply
+    for line in text.splitlines():
         if line.split("#", 1)[0].strip():
             return req
     return None
@@ -3871,6 +3877,8 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
+    if IS_MAC_ARM and not skip_base:
+        base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
