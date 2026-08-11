@@ -965,7 +965,9 @@
         "kind": "assign"
       },
       "_balanced_bracket_end": {
-        "kind": "assign"
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str, start: int"
       },
       "_bare_json_call_shaped": {
         "decorators": [],
@@ -1377,7 +1379,7 @@
       "_balanced_bracket_end": {
         "decorators": [],
         "kind": "def",
-        "signature": "src: str, start: int"
+        "signature": "src: str, start: int, *, braces_count: bool=True"
       },
       "_balanced_json_span": {
         "decorators": [],

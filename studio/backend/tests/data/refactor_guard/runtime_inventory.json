@@ -143,7 +143,7 @@
     ],
     "functions": {
       "_balanced_brace_end": "core.tool_healing._balanced_brace_end(content: 'str', brace_start: 'int', *, gemma_quotes: 'bool' = False) -> 'int | None'",
-      "_balanced_bracket_end": "core.tool_healing._balanced_bracket_end(src: 'str', start: 'int') -> 'int | None'",
+      "_balanced_bracket_end": "core.inference.tool_call_parser._balanced_bracket_end(src: 'str', start: 'int') -> \"'int | None'\"",
       "_bare_json_call_shaped": "core.inference.tool_call_parser._bare_json_call_shaped(obj) -> 'bool'",
       "_consume_mistral_call": "core.inference.tool_call_parser._consume_mistral_call(obj_text: 'str', out: 'list[dict]', id_offset: 'int') -> 'None'",
       "_disabled_gemma_call_end_containing_signal": "core.inference.tool_call_parser._disabled_gemma_call_end_containing_signal(content: 'str', enabled_tool_names: 'Optional[set]') -> 'int | None'",
@@ -273,7 +273,7 @@
     ],
     "functions": {
       "_balanced_brace_end": "core.tool_healing._balanced_brace_end(content: 'str', brace_start: 'int', *, gemma_quotes: 'bool' = False) -> 'int | None'",
-      "_balanced_bracket_end": "core.tool_healing._balanced_bracket_end(src: 'str', start: 'int') -> 'int | None'",
+      "_balanced_bracket_end": "core.tool_healing._balanced_bracket_end(src: 'str', start: 'int', *, braces_count: 'bool' = True) -> 'int | None'",
       "_balanced_json_span": "core.tool_healing._balanced_json_span(text: 'str', start: 'int') -> 'int | None'",
       "_build_markers": "core.tool_healing._build_markers(content: 'str')",
       "_code_spans": "core.tool_healing._code_spans(text: 'str') -> 'list[tuple[int, int]]'",

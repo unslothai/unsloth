@@ -1,5 +1,6 @@
 {
   "core.inference.tool_call_parser": {
+    "_balanced_bracket_end": "d4e37088f769dcbf1cff9b602f5b9d8e04b1ff926206b7b34dcf28758f3047ce",
     "_consume_mistral_call": "2c6a79f5b820a7c69254638d50a283eee7363a3a6271e0ed72c0e7a3b04804b9",
     "_disabled_gemma_call_end_containing_signal": "57f9fd7c9345f34aff4ca7c420ea4e2da5d2199c3e39537a3329d2639edb2f75",
     "_find_outside_json_strings": "2c6a79f5b820a7c69254638d50a283eee7363a3a6271e0ed72c0e7a3b04804b9",

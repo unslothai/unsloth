@@ -362,9 +362,12 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
-# Shared with the healer rather than copied. The healer's version also counts ``{``/``}``
-# toward the depth, so a truncated object inside an array cannot close the array early.
-_balanced_bracket_end = _tool_healing._balanced_bracket_end
+# Shared with the healer rather than copied, but keeping this module's depth rule: only
+# ``[``/``]`` count here. Letting a stray ``}`` decrement the depth would end the span at
+# that brace and leave the rest of a malformed call, closing bracket included, on screen.
+# The healer counts braces too, which is what its Gemma array normalizer needs.
+def _balanced_bracket_end(src: str, start: int) -> "int | None":
+    return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
 
 
 def _skip_mistral_call_id(text: str, pos: int) -> int:

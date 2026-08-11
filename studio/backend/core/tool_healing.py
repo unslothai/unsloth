@@ -297,16 +297,26 @@ def _balanced_brace_end(
     return None
 
 
-def _balanced_bracket_end(src: str, start: int) -> int | None:
-    """Index of the ``]`` matching the ``[`` at ``start``, or None. Tracks nested
-    ``[]``/``{}`` and double-quoted strings.
+def _balanced_bracket_end(
+    src: str,
+    start: int,
+    *,
+    braces_count: bool = True,
+) -> int | None:
+    """Index of the ``]`` matching the ``[`` at ``start``, or None. Tracks nesting and
+    double-quoted strings.
 
-    ``{`` and ``}`` count toward the same depth as ``[`` and ``]`` so a truncated
-    object inside an array does not let the scan close the array early; the Gemma
-    array normalizer relies on that. Shared with ``tool_call_parser.py``.
+    With ``braces_count`` (the default) ``{`` and ``}`` count toward the same depth as
+    ``[`` and ``]``, so a truncated object inside an array does not let the scan close
+    the array early; the Gemma array normalizer relies on that. The display strip in
+    ``tool_call_parser.py`` passes ``braces_count = False`` and counts brackets only,
+    which is what it has always done: a stray ``}`` before the real ``]`` would otherwise
+    end the span early and leave the rest of a malformed call visible.
     """
     if start >= len(src) or src[start] != "[":
         return None
+    openers = "[{" if braces_count else "["
+    closers = "]}" if braces_count else "]"
     depth = 0
     i = start
     in_string = False
@@ -320,9 +330,9 @@ def _balanced_bracket_end(src: str, start: int) -> int | None:
                 in_string = False
         elif ch == '"':
             in_string = True
-        elif ch in "[{":
+        elif ch in openers:
             depth += 1
-        elif ch in "]}":
+        elif ch in closers:
             depth -= 1
             if depth == 0:
                 return i
