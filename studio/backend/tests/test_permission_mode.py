@@ -1928,6 +1928,24 @@ def test_high_risk_dispatcher_non_terminal():
             "yaml.safe_load(s)",
             True,
         ),
+        # getattr/vars/setattr only count when aimed at a loader: ordinary
+        # introspection beside a config read stays auto-approved.
+        ("import yaml\ncfg = yaml.safe_load(open('c.yml'))\nprint(getattr(cfg, 'name'))", False),
+        ("import yaml\ncfg = yaml.safe_load(open('c.yml'))\nprint(vars(cfg))", False),
+        ("import yaml\ncfg = yaml.safe_load(open('c.yml'))\nsetattr(cfg, 'a', 1)", False),
+        (
+            "import yaml, os\nr = type.__getattribute__(yaml.SafeLoader, 'yaml_constructors')\n"
+            "r['!e'] = type(os).__getattribute__(os, 'system')\nyaml.safe_load('!e x')",
+            True,
+        ),  # the registry read by dynamic attribute access
+        # A yaml-only loader name asks on any receiver, so a module that arrived
+        # indirectly needs no tracing.
+        ("import yaml\ndef get(): return yaml\ny = get()\ny.unsafe_load(s)", True),
+        (
+            "import yaml\ndef getl(): return yaml.load\nf = getl()\nL = yaml.__dict__['Loader']\n"
+            "f(s, Loader=L)",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

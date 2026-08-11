@@ -2573,6 +2573,11 @@ _AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_C
 _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS = (
     _AUTO_UNSAFE_PY_LOAD_FUNCS - {"load", "load_all"}
 ) | _AUTO_UNSAFE_PY_LOAD_CLASSES
+# The subset nothing but PyYAML uses. These are matched on any receiver, so a
+# module reached indirectly (y = get_yaml(); y.unsafe_load(s)) is still caught
+# without tracing where the module came from. The generic "Loader" and
+# "Constructor" keep the receiver check, since other libraries use those words.
+_AUTO_YAML_ONLY_LOADERS = _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS - {"Loader", "Constructor"}
 # Loader classes that cannot construct arbitrary callables in any PyYAML
 # version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
 # absent on purpose: it was an RCE before PyYAML 5.4 (CVE-2020-14343).
@@ -3909,6 +3914,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # call, an alias (reg = SafeLoader.add_constructor) or a direct write to the
     # registry, and chasing each spelling is a losing game; snippets that mention
     # them are rare, so the exemption simply steps aside.
+    # Names that are PyYAML's own: mentioning one is a registration, whatever
+    # shape it takes (a call, an alias, a metaclass declaration).
     _register_names = {
         "add_constructor",
         "add_multi_constructor",
@@ -3919,24 +3926,59 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         "YAMLObject",
         "yaml_loader",
         "from_yaml",
-        # SafeLoader.__dict__["yaml_constructors"] and vars(SafeLoader) are the
-        # same registration with the name spelled at runtime.
-        "__dict__",
-        "vars",
-        # getattr(SafeLoader, "yaml_" + "constructors") spells it at runtime.
-        "getattr",
     }
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
             for _al in _n.names:
                 if _al.name in _register_names:
                     _register_names.add(_al.asname or _al.name)
-    registers_constructor = any(
-        (isinstance(n, ast.Attribute) and n.attr in _register_names)
-        or (isinstance(n, ast.Name) and n.id in _register_names)
-        for n in ast.walk(tree)
+    # Generic ways to read or write an attribute by name. These say nothing on
+    # their own -- getattr(config, "name") beside a safe_load is ordinary code --
+    # so they only count when aimed at a loader.
+    _dynamic_access_names = frozenset(
+        {"getattr", "setattr", "vars", "__getattribute__", "__getattr__", "__setattr__"}
     )
-    uses_setattr = any(isinstance(n, ast.Name) and n.id == "setattr" for n in ast.walk(tree))
+
+    def _mentions_loader_literal(node) -> bool:
+        # A loader named anywhere in this expression, by module, class or
+        # function. Literal names only, so this holds before aliases are known.
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Attribute) and (
+                sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                or sub.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+            ):
+                return True
+            if isinstance(sub, ast.Name) and (
+                sub.id in _AUTO_UNSAFE_PY_LOAD_MODULES
+                or sub.id in _AUTO_SAFE_PY_LOAD_CLASSES
+                or sub.id in _AUTO_UNSAFE_PY_LOAD_CLASSES
+            ):
+                return True
+        return False
+
+    def _is_loader_registration(node) -> bool:
+        if isinstance(node, ast.Attribute):
+            if node.attr in _register_names:
+                return True
+            # SafeLoader.__dict__ / SafeLoader.__getattribute__ reach the registry
+            # only when the receiver is a loader.
+            if node.attr in _dynamic_access_names or node.attr == "__dict__":
+                return _mentions_loader_literal(node.value)
+            return False
+        if isinstance(node, ast.Name):
+            return node.id in _register_names
+        if isinstance(node, ast.Call):
+            func = node.func
+            _name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+            if _name in _dynamic_access_names:
+                return any(_mentions_loader_literal(a) for a in node.args)
+        return False
+
+    registers_constructor = any(_is_loader_registration(n) for n in ast.walk(tree))
+    # Kept separate only because the messages below distinguish them; both mean
+    # the loader may not be the stock one any more.
+    uses_setattr = registers_constructor
     # Binding forms that assign_counts does not see (for x in ..., with ... as x,
     # a comprehension target, a walrus). A safe-loader alias touched by one of
     # these could point anywhere, so it never earns the exemption.
@@ -4465,7 +4507,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # starred base, a rebound alias). The safe reads never mention these names.
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
+            if node.attr in _AUTO_YAML_ONLY_LOADERS:
+                return True
             if node.attr in _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS and _is_load_module(node.value):
+                return True
+            # yaml.__dict__["Loader"] reads the module's namespace by name, which
+            # no ordinary config read does.
+            if node.attr == "__dict__" and _is_load_module(node.value):
                 return True
         elif isinstance(node, ast.Name) and node.id in always_unsafe_aliases:
             return True
