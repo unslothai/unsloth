@@ -122,7 +122,8 @@ def test_release_appimage_passes_the_bundled_host_library_guard():
         line for line in package["run"].splitlines() if not line.strip().startswith("#")
     )
     invoked = [
-        name for name in ("build-thin-appimage.sh", "build-portable-appimage.sh")
+        name
+        for name in ("build-thin-appimage.sh", "build-portable-appimage.sh")
         if name in commands
     ]
     assert invoked == ["build-thin-appimage.sh"], (
