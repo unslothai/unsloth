@@ -35,7 +35,7 @@ Download the native Unsloth desktop app for your operating system:
   </tr>
   <tr>
     <td><b>Linux (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.61-beta/Unsloth-Desktop-0_1_61_beta-Linux.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.61-beta/Unsloth-Desktop-0_1_61_beta-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
