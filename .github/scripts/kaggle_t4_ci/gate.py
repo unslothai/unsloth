@@ -21,7 +21,9 @@ a "yes" through four independent checks, in this order:
 4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, and that
    cap is per ACCOUNT, not per workflow. If anything of this account's is
    already QUEUED or RUNNING, this invocation stands down rather than
-   queueing behind it or failing on a push rejection.
+   queueing behind it or failing on a push rejection. The search for such a
+   kernel is bounded by how long a session is allowed to last rather than by
+   a kernel count, which is what makes it exhaustive; see LOOKBACK_HOURS.
 
 Every negative answer is a SKIP, and a skip exits 0. Not spending quota is
 the designed behaviour, not a fault, and must never colour a pull request
@@ -40,6 +42,7 @@ import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 # Kaggle's cap on simultaneous batch (committed) GPU kernels per account.
 # Measured, not documented: exceeding it fails the push with
@@ -49,11 +52,37 @@ MAX_CONCURRENT_GPU_KERNELS = 2
 # Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
 
-# How many of the account's most recently run kernels to status-check. The
-# listing is sorted by last run time, so anything still running is at the
-# top; this bounds the API calls without bounding the correctness in
-# practice.
-RECENT_KERNELS_TO_CHECK = 12
+# How far back the in-flight survey has to look, and why that bound is
+# COMPLETE rather than merely convenient.
+#
+# Kaggle exposes no "list my running sessions" call, so the only way to find
+# an in-flight kernel is to list kernels and status-check them. The listing
+# is sorted by last run time, descending, and for a kernel that has not
+# finished, that timestamp is when the run STARTED (measured: a kernel
+# pushed at 10:05:19Z listed as last_run_time 10:05:19.297).
+#
+# Kaggle kills a notebook session at 12 hours (CPU/GPU; 9 for TPU). So a
+# kernel that is still QUEUED or RUNNING cannot have started more than 12
+# hours ago, and once the walk reaches an entry older than that, every
+# remaining entry is older still and none of them can be in flight. Stopping
+# there is therefore exhaustive, not a sample -- which the previous fixed
+# bound of "the 12 most recent kernels" was not: a kernel that started three
+# hours ago and is still running would be missed the moment twelve newer
+# ones had since run, and the push would then fail at the capacity cap and
+# be reported as infra.
+MAX_SESSION_HOURS = 12.0
+
+# Slack on top, for clock skew between Kaggle's timestamps and this runner,
+# and for any future raise of the session ceiling.
+CLOCK_SKEW_HOURS = 1.0
+LOOKBACK_HOURS = MAX_SESSION_HOURS + CLOCK_SKEW_HOURS
+
+# Paging for that walk. The cap on pages exists so a pathological account
+# cannot make the gate walk forever; reaching it means the survey did NOT
+# cover the whole window, which is reported as an incomplete survey and
+# treated as "unknown", never as "idle".
+KERNELS_PAGE_SIZE = 100
+MAX_KERNEL_PAGES = 5
 
 
 def _out(key: str, value: str) -> None:
@@ -113,30 +142,112 @@ def remaining_gpu_hours(api) -> dict:
     }
 
 
-def busy_kernels(api, limit: int = RECENT_KERNELS_TO_CHECK) -> list[str]:
-    """Refs of this account's kernels that are QUEUED or RUNNING.
+def _as_naive_utc(value):
+    """Kaggle's timestamps, normalised so they can be compared at all."""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
-    Kaggle exposes no "list my running sessions" call, so this walks the
-    account's kernels most-recently-run first and asks each for its status.
+
+def survey_kernels(api, now: datetime | None = None,
+                   lookback_hours: float = LOOKBACK_HOURS,
+                   page_size: int = KERNELS_PAGE_SIZE,
+                   max_pages: int = MAX_KERNEL_PAGES) -> dict:
+    """Status-check every kernel that could still be in flight.
+
+    Walks the account's kernels most-recently-run first and stops at the
+    first one that started longer ago than any session is allowed to last.
+    See LOOKBACK_HOURS for why that makes the walk exhaustive.
+
+    Returns the busy refs plus enough bookkeeping for the caller to tell
+    "nothing is running" from "the question could not be answered":
+
+    ``complete``
+        the walk either ran off the end of the listing or reached an entry
+        outside the window. False means the page cap was hit first and some
+        candidate kernels were never looked at.
+    ``surveyed`` / ``unreadable``
+        how many in-window kernels were status-checked, and how many of
+        those answers came back as an error. All of them unreadable means
+        the status API is down, which is not evidence of an idle account.
     """
+    # Naive UTC, to match what Kaggle returns. utcnow() would do the same
+    # thing and is deprecated from 3.12.
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=lookback_hours)
     busy: list[str] = []
-    kernels = api.kernels_list(mine=True, page_size=limit, sort_by="dateRun")
-    for kernel in kernels[:limit]:
-        ref = getattr(kernel, "ref", None)
-        if not ref:
-            continue
-        try:
-            status = str(getattr(api.kernels_status(ref), "status", ""))
-        except Exception as exc:  # noqa: BLE001
-            # An unreadable status is not evidence of an idle account. Say so
-            # and keep going; the caller treats any busy hit as blocking.
-            print(f"[gate] status unreadable for {ref}: "
-                  f"{type(exc).__name__}", flush=True)
-            continue
-        state = status.rsplit(".", 1)[-1].upper()
-        if state in BUSY_STATES:
-            busy.append(f"{ref} ({state})")
-    return busy
+    surveyed = 0
+    unreadable = 0
+    complete = False
+
+    for page in range(1, max_pages + 1):
+        kernels = api.kernels_list(mine=True, page=page, page_size=page_size,
+                                   sort_by="dateRun") or []
+        for kernel in kernels:
+            ref = getattr(kernel, "ref", None)
+            if not ref:
+                continue
+            last_run = _as_naive_utc(getattr(kernel, "last_run_time", None))
+            # A missing timestamp cannot end the walk (it says nothing about
+            # age) but it can still be checked, so check it.
+            if last_run is not None and last_run < cutoff:
+                complete = True
+                break
+            surveyed += 1
+            try:
+                status = str(getattr(api.kernels_status(ref), "status", ""))
+            except Exception as exc:  # noqa: BLE001
+                # An unreadable status is not evidence of an idle account.
+                # Count it, say so, and keep going.
+                unreadable += 1
+                print(f"[gate] status unreadable for {ref}: "
+                      f"{type(exc).__name__}", flush=True)
+                continue
+            state = status.rsplit(".", 1)[-1].upper()
+            if state in BUSY_STATES:
+                busy.append(f"{ref} ({state})")
+        if complete:
+            break
+        if len(kernels) < page_size:
+            # Ran off the end of the account's kernels; nothing is left to
+            # miss, so the survey covered everything it needed to.
+            complete = True
+            break
+
+    return {"busy": busy, "surveyed": surveyed, "unreadable": unreadable,
+            "complete": complete,
+            "window_hours": lookback_hours}
+
+
+def concurrency_verdict(survey: dict) -> tuple[bool, str]:
+    """Is the account demonstrably idle? Returns (clear_to_launch, why not).
+
+    "No busy kernel was found" is only worth acting on if the search could
+    actually have found one. An unanswerable question is a skip here, never
+    a go-ahead: the cost of standing down is a few minutes until the next
+    commit draws again, and the cost of guessing wrong is a push rejected at
+    the capacity cap.
+    """
+    busy = survey["busy"]
+    if busy:
+        return False, (
+            f"the Kaggle account already has {len(busy)} kernel(s) in flight "
+            f"and the cap is {MAX_CONCURRENT_GPU_KERNELS}: "
+            f"{', '.join(busy)}. Standing down rather than queueing.")
+    if not survey["complete"]:
+        return False, (
+            "the in-flight survey did not reach the end of its "
+            f"{survey['window_hours']}h window within {MAX_KERNEL_PAGES} "
+            "pages, so an older kernel of this account could still be "
+            "running unseen")
+    if survey["surveyed"] and survey["unreadable"] == survey["surveyed"]:
+        return False, (
+            f"no kernel status could be read at all ({survey['unreadable']} "
+            f"of {survey['surveyed']} unreadable), so whether the account is "
+            "busy is unknown")
+    return True, ""
 
 
 def main() -> int:
@@ -219,17 +330,18 @@ def main() -> int:
                               "so the remaining budget is unknown")
 
     try:
-        busy = busy_kernels(api)
+        survey = survey_kernels(api)
     except Exception as exc:  # noqa: BLE001
         return _decide(False, "could not list this account's kernels "
                               f"({type(exc).__name__}), so concurrency cannot "
                               "be established")
-    if busy:
-        return _decide(
-            False,
-            f"the Kaggle account already has {len(busy)} kernel(s) in flight "
-            f"and the cap is {MAX_CONCURRENT_GPU_KERNELS}: "
-            f"{', '.join(busy)}. Standing down rather than queueing.")
+    print("[gate] concurrency " + json.dumps(
+        {k: v for k, v in survey.items() if k != "busy"}
+        | {"busy": len(survey["busy"])}), flush=True)
+
+    clear, why_not = concurrency_verdict(survey)
+    if not clear:
+        return _decide(False, why_not)
 
     why = "forced by override" if override else \
         f"sampled in (draw {draw} of 100, threshold {args.percent})"
