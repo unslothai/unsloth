@@ -303,8 +303,59 @@ class TestEnsureFlashAttn:
 
         assert (
             "warning",
-            "flash-attn wheel installed but is not importable on this GPU",
+            "flash-attn wheel installed but is not importable on this GPU; removed it",
         ) in step_messages
+        assert ("warning", "Continuing without flash-attn") in step_messages
+
+    def test_rejected_wheel_is_uninstalled(self):
+        """Leaving it installed is not "continuing without flash-attn".
+
+        unsloth/models/_utils.py finds it by metadata (_package_available) and then imports
+        the native module in process, so a wheel that killed the probe kills training too.
+        """
+        step_messages: list[tuple[str, str]] = []
+        removals: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0)
+            return self._import_check()
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+            ),
+            mock.patch.object(
+                ips,
+                "_step",
+                side_effect = lambda label, value, color_fn = None: step_messages.append(
+                    (label, value)
+                ),
+            ),
+            mock.patch("subprocess.run", side_effect = fake_run),
+        ):
+            ips._ensure_flash_attn()
+
+        assert removals, "the rejected wheel must be uninstalled, not left in site-packages"
+        assert any("flash-attn" in cmd for cmd in removals), removals
         assert ("warning", "Continuing without flash-attn") in step_messages
 
     def test_working_wheel_reports_no_warning(self):

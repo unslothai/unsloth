@@ -3671,6 +3671,17 @@ def _flash_attn_importable() -> bool:
     return result.returncode == 0
 
 
+def _remove_rejected_flash_attn() -> None:
+    """Uninstall a flash-attn that installed but will not import."""
+    if USE_UV and shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, "flash-attn"]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    if removed.returncode != 0:
+        _step("warning", "Could not remove the unusable flash-attn install", _cyan)
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
@@ -3694,9 +3705,13 @@ def _ensure_flash_attn() -> None:
                 # Verify rather than trust the exit code, so setup reports what happened.
                 if _flash_attn_importable():
                     return
+                # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
+                # it by metadata (_package_available) and then imports the native module
+                # in process, so a wheel that killed the probe would kill training too.
+                _remove_rejected_flash_attn()
                 _step(
                     "warning",
-                    "flash-attn wheel installed but is not importable on this GPU",
+                    "flash-attn wheel installed but is not importable on this GPU; removed it",
                     _cyan,
                 )
                 break
