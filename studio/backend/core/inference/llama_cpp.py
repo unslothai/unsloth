@@ -12661,8 +12661,7 @@ class LlamaCppBackend:
                 # any llama-server capability. The result is already cached from the
                 # gates themselves, so this costs nothing on the path that reaches it.
                 self._capability_probe_inconclusive = bool(
-                    binary
-                    and self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
+                    binary and self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
                 )
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
