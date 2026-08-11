@@ -792,17 +792,23 @@ class Payload:
     def assert_chat_ui(self) -> bool:
         """Drive the repo's own chat UI driver. Runs last: it stops the server."""
         driver = self.repo_root / "tests" / "studio" / "playwright_chat_ui.py"
-        password = self.studio_home / "auth" / ".bootstrap_password"
         failures: list[str] = []
         detail: dict = {"driver": str(driver)}
 
-        if not password.is_file():
-            failures.append("the bootstrap password is gone, so the driver cannot log in")
+        # The CURRENT password, not the seeded one. authenticate() has to
+        # retire the bootstrap value to get past Studio's forced password
+        # change, so the file on disk is stale by the time the driver runs --
+        # reading it here is what failed the driver with "the bootstrap
+        # password is gone" on kernel unsloth-t4-ci-9ddd8ae4, in the same run
+        # that the retirement fixed inference, tool calling and training.
+        current = self.studio.password or self.remember_bootstrap() or ""
+        if not current:
+            failures.append("no password is known for this session, so the driver cannot log in")
             detail["failures"] = failures
             return self.record("chat_ui_driver", False, detail)
+        self.secrets.add(current)
 
         self.art_dir.mkdir(parents = True, exist_ok = True)
-        bootstrap = self.remember_bootstrap() or ""
         rotated = "KaggleT4-Studio-" + os.urandom(8).hex()
         self.secrets.add(rotated)
         env = dict(os.environ)
@@ -810,10 +816,10 @@ class Payload:
             {
                 "BASE_URL": self.base_url,
                 # The driver's first phase rotates the password itself and then
-                # asserts the old one stops working, so it needs the bootstrap
-                # value. It is passed through the environment of one child and
-                # is not written anywhere.
-                "STUDIO_OLD_PW": bootstrap,
+                # asserts the old one stops working, so it needs the value the
+                # session is CURRENTLY authenticated by. It is passed through
+                # the environment of one child and is not written anywhere.
+                "STUDIO_OLD_PW": current,
                 "STUDIO_NEW_PW": rotated,
                 "PW_ART_DIR": str(self.art_dir),
                 "GGUF_REPO": self.args.chat_model,

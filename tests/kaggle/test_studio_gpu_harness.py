@@ -1029,3 +1029,19 @@ def test_a_password_change_without_a_token_is_refused():
     with pytest.raises(studio_client.StudioError) as excinfo:
         studio.login("bootstrap-secret")
     assert "no access_token" in str(excinfo.value)
+
+
+def test_the_session_remembers_which_password_is_current():
+    """The Playwright driver rotates the password itself and asserts the old one
+    stops working, so it needs whatever the session is CURRENTLY authenticated
+    by. Reading the seeded file instead is how kernel unsloth-t4-ci-9ddd8ae4
+    failed the driver with "the bootstrap password is gone" in the same run
+    where retiring it fixed inference, tool calling and training."""
+    changed = _RecordingStudio([_login_ok(True), (200, {"access_token": "t2"})])
+    changed.login("bootstrap-secret")
+    assert changed.password not in (None, "", "bootstrap-secret")
+    assert changed.password == changed.calls[1][2]["new_password"]
+
+    untouched = _RecordingStudio([_login_ok(False)])
+    untouched.login("already-changed")
+    assert untouched.password == "already-changed"

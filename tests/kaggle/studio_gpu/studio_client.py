@@ -10,9 +10,12 @@ polling predicates in particular are where a green result gets fabricated:
 same ``phase`` for the first few seconds, and an export that failed reports
 the same ``is_export_active: false`` as one that succeeded.
 
-Nothing here prints, and nothing here holds a credential longer than the call
-that needs it. ``Studio.token`` is set once from the bootstrap password and is
-never logged, echoed or written to a report.
+Nothing here prints. ``Studio.token`` is set from the bootstrap password and is
+never logged, echoed or written to a report, and neither is ``Studio.password``
+-- which IS held for the run, because Studio forces a password change on the
+bootstrap account and the repo's Playwright driver needs whatever the current
+password is. Scrubbing it out of anything that leaves the machine is the
+caller's job.
 """
 
 from __future__ import annotations
@@ -60,6 +63,8 @@ class Studio:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.token: str | None = None
+        # The password this session is currently authenticated by. See login().
+        self.password: str | None = None
 
     def request(
         self,
@@ -136,9 +141,17 @@ class Studio:
         itself reported success. The token is only useful once the change is
         done, so it is done here rather than left for each caller to discover.
 
-        The replacement is random per run and is never returned or stored:
-        nothing needs it again, since ``/api/auth/change-password`` answers with
-        a fresh ``Token`` and that is what the rest of the run carries.
+        The replacement is random per run and is left on ``self.password``,
+        because something DOES need it again: the repo's Playwright chat driver
+        rotates the password itself as its first phase and asserts the old one
+        stops working, so it has to be handed whatever the current password is.
+        The first version of this change dropped the replacement on the floor
+        and the driver failed with "the bootstrap password is gone, so the
+        driver cannot log in" -- three assertions fixed and a fourth broken.
+
+        ``self.password`` is therefore a credential held for the run, unlike
+        every other value here. The caller is responsible for adding it to
+        whatever scrubs the logs.
 
         The passwords reach this function and Studio and go nowhere else. A
         StudioError from here is raised with the status code only.
@@ -154,6 +167,7 @@ class Studio:
         if not token:
             raise StudioError("login returned no access_token")
         self.token = str(token)
+        self.password = password
         if payload.get("must_change_password"):
             self._retire_bootstrap_password(password)
 
@@ -163,9 +177,10 @@ class Studio:
 
         # token_urlsafe never yields whitespace, which change-password rejects,
         # and never collides with the bootstrap value it has to differ from.
+        replacement = secrets.token_urlsafe(24)
         status, payload = self.post(
             "/api/auth/change-password",
-            {"current_password": current_password, "new_password": secrets.token_urlsafe(24)},
+            {"current_password": current_password, "new_password": replacement},
         )
         if status != 200 or not isinstance(payload, dict):
             raise StudioError(f"forced password change failed with HTTP {status}")
@@ -173,6 +188,7 @@ class Studio:
         if not token:
             raise StudioError("forced password change returned no access_token")
         self.token = str(token)
+        self.password = replacement
 
 
 def health_is_ready(payload: Any) -> bool:
