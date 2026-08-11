@@ -751,6 +751,7 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
     memory nothing allocates. One definition now serves both.
     """
     backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+
     def _meta(_path):
         backend._nextn_predict_layers = 1
         backend._context_length = 8192

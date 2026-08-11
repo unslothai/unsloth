@@ -1878,12 +1878,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             revisions = [
                 SimpleNamespace(
                     files = [
-                        SimpleNamespace(
-                            file_name = "drafter-F16.gguf", size_on_disk = 20 * 1024**3
-                        ),
-                        SimpleNamespace(
-                            file_name = "drafter-Q4_K_M.gguf", size_on_disk = 3 * 1024**3
-                        ),
+                        SimpleNamespace(file_name = "drafter-F16.gguf", size_on_disk = 20 * 1024**3),
+                        SimpleNamespace(file_name = "drafter-Q4_K_M.gguf", size_on_disk = 3 * 1024**3),
                     ]
                 )
             ],
@@ -1895,9 +1891,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 return_value = SimpleNamespace(repos = [cached]),
             ),
         ):
-            charged = self.route._remote_drafter_repo_bytes(
-                "org/drafter:Q4_K_M", hf_token = None
-            )
+            charged = self.route._remote_drafter_repo_bytes("org/drafter:Q4_K_M", hf_token = None)
         self.assertEqual(charged, 3 * 1024**3)
 
     def test_a_cpu_offloaded_extras_drafter_is_not_charged_vram(self):
