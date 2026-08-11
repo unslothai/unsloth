@@ -663,6 +663,12 @@ def test_reap_recorded_pid_no_pidfile(tmp_path):
         assert LlamaCppBackend._reap_recorded_pid() == 0
 
 
+def _stat_bytes(pid, comm, start_time = 1000):
+    """A /proc/<pid>/stat line. starttime is field 22, so the filler matters."""
+    filler = " ".join(["0"] * 18)  # fields 4..21
+    return f"{pid} ({comm}) S {filler} {start_time}".encode("utf-8")
+
+
 def _write_fake_procfs(tmp_path, entries):
     """Build a /proc-shaped tree. entries is [(pid, comm, exe_target)]."""
     root = tmp_path / "fake-proc"
@@ -670,7 +676,7 @@ def _write_fake_procfs(tmp_path, entries):
     for pid, comm, exe_target in entries:
         d = root / str(pid)
         d.mkdir()
-        (d / "stat").write_bytes(f"{pid} ({comm}) S 1 0 0".encode("utf-8"))
+        (d / "stat").write_bytes(_stat_bytes(pid, comm))
         if exe_target is not None:
             (d / "exe").symlink_to(exe_target)
     return root
@@ -785,3 +791,71 @@ def test_kill_orphaned_servers_procfs_handles_a_deleted_binary(tmp_path):
 
     assert n == 1
     assert killed == [mypid + 1]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
+    """psutil.Process.kill() refuses to signal a PID that has been reused. The
+    procfs sweep must do the same, or an orphan that exits between the scan and
+    the signal takes an unrelated replacement process with it."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+
+    root = _write_fake_procfs(tmp_path, [(mypid + 1, "llama-server", str(fake_path))])
+    stat_file = root / str(mypid + 1) / "stat"
+
+    killed = []
+
+    def _pid_reused_between_scan_and_kill(pid):
+        # Runs after the scan and before the kill: stand in a different process
+        # on the same PID by giving it a later starttime.
+        stat_file.write_bytes(_stat_bytes(pid, "some-daemon", start_time = 9999))
+        return False
+
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(
+            LlamaCppBackend,
+            "_pid_parent_is_alive",
+            staticmethod(_pid_reused_between_scan_and_kill),
+        ),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert killed == [], "a reused PID must never be signalled"
+    assert n == 0
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
+def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
+    """Control for the test above: an unchanged starttime is still reaped, so
+    the identity check is not simply refusing everything."""
+    import os
+
+    mypid = os.getpid()
+    owned_dir = tmp_path / "unsloth-test-llama"
+    owned_dir.mkdir()
+    fake_path = owned_dir / "llama-server"
+    fake_path.write_text("x")
+
+    root = _write_fake_procfs(tmp_path, [(mypid + 1, "llama-server", str(fake_path))])
+    killed = []
+    with (
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": str(fake_path)}),
+        patch.object(llama_cpp_module, "_PROC_ROOT", str(root)),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(os, "kill", lambda pid, sig: killed.append(pid)),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+
+    assert killed == [mypid + 1]
+    assert n == 1

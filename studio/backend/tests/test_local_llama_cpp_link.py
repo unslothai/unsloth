@@ -106,14 +106,17 @@ def _fake_procfs(tmp_path: Path, fake: _FakeProc) -> Path:
     root = tmp_path / "fake-proc"
     entry = root / str(fake.info["pid"])
     entry.mkdir(parents = True)
-    # comm sits between the first "(" and the last ")" of the stat line.
-    (entry / "stat").write_bytes(f"{fake.info['pid']} (llama-server) S 1 0 0".encode("utf-8"))
+    # comm sits between the first "(" and the last ")"; starttime is field 22.
+    filler = " ".join(["0"] * 18)  # fields 4..21
+    (entry / "stat").write_bytes(
+        f"{fake.info['pid']} (llama-server) S {filler} 1000".encode("utf-8")
+    )
     (entry / "exe").symlink_to(fake.info["exe"])
     # A non-numeric sibling and a process with a different name must be ignored.
     (root / "self").mkdir()
     other = root / str(fake.info["pid"] + 1)
     other.mkdir()
-    (other / "stat").write_bytes(b"1 (python3) S 1 0 0")
+    (other / "stat").write_bytes(f"1 (python3) S {filler} 1000".encode("utf-8"))
     return root
 
 

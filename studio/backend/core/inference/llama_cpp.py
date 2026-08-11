@@ -14665,8 +14665,33 @@ class LlamaCppBackend:
             def _looks_like_server(name):
                 return bool(name) and name.lower().startswith("llama-server")
 
-            def _make_signal_killer(pid):
+            def _stat_start_time(line):
+                right = line.rfind(b")")
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
+
+            def _proc_start_time(proc_dir):
+                """Field 22 of /proc/<pid>/stat, in jiffies since boot."""
+                try:
+                    with open(f"{proc_dir}/stat", "rb") as fh:
+                        line = fh.read()
+                except OSError:
+                    return None
+                right = line.rfind(b")")
+                if right < 0:
+                    return None
+                # Fields after comm start at field 3, so starttime is index 19.
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
+
+            def _make_signal_killer(proc_dir, pid, start_time):
                 def _kill():
+                    # psutil.Process.kill() refuses to signal a reused PID, so
+                    # re-check identity here too. starttime never changes for a
+                    # process and a reused PID gets a later one, so a mismatch
+                    # means this is no longer the process we selected.
+                    if start_time is None or _proc_start_time(proc_dir) != start_time:
+                        return False
                     try:
                         os.kill(pid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
@@ -14731,7 +14756,15 @@ class LlamaCppBackend:
                         exe_path = _proc_exe(entry.path)
                         if exe_path is None:
                             continue
-                        candidates.append((pid, exe_path, _make_signal_killer(pid)))
+                        candidates.append(
+                            (
+                                pid,
+                                exe_path,
+                                _make_signal_killer(
+                                    entry.path, pid, _stat_start_time(stat_line)
+                                ),
+                            )
+                        )
             else:
                 try:
                     import psutil
