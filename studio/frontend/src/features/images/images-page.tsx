@@ -321,6 +321,10 @@ const galleryCache: {
 // Images loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
+// Passes a window resync may make before giving up. Each extra pass only happens when pagination
+// moved while it was fetching, which cannot repeat indefinitely without the user scrolling along.
+const RESYNC_MAX_ATTEMPTS = 3;
+
 // Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
@@ -1477,15 +1481,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // Bumped by every local change to the strip: a pin, an archive, a delete, a merged generation,
-  // a page appended. A resync started before one of those cannot tell that its snapshot is now
-  // behind, so it compares this instead of applying a window the user has already moved off.
+  // Bumped by every LOCAL change to the strip: a pin, an archive, a delete, a merged generation.
+  // A resync started before one of those holds a snapshot the server listing cannot reconcile with
+  // what the user just did, so it drops it rather than applying a window they have moved off.
   const stripEpoch = useRef(0);
+  // Bumped by the window growing from the server instead: a load, an appended page. That is not a
+  // conflict, it just means the resync sized itself against a smaller window, so it refetches.
+  const pageEpoch = useRef(0);
+  // Only the most recently started resync may apply. Two restores in a row start two of them, and
+  // the older snapshot arriving last would drop whatever the newer one had already shown.
+  const resyncSeq = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
       const page = await getGallery(0, PAGE_SIZE);
-      stripEpoch.current += 1;
+      pageEpoch.current += 1;
       galleryCache.images = page.images;
       galleryCache.hasMore = page.has_more;
       setImages(page.images);
@@ -1505,7 +1515,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadingMore.current = true;
     try {
       const page = await getGallery(galleryCache.images.length, PAGE_SIZE);
-      stripEpoch.current += 1;
+      pageEpoch.current += 1;
       setImages((prev) => {
         const seen = new Set(prev.map((i) => i.id));
         const next = [...prev, ...page.images.filter((i) => !seen.has(i.id))];
@@ -1612,24 +1622,35 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
    */
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
-      const wanted = Math.max(count, PAGE_SIZE);
-      const collected: GalleryImage[] = [];
-      let more = false;
-      while (collected.length < wanted) {
-        const page = await getGallery(collected.length, PAGE_SIZE);
-        collected.push(...page.images);
-        more = page.has_more;
-        if (!page.has_more || page.images.length === 0) break;
-      }
-      // Checked here, not by the caller: by the time this returns the window is already applied,
-      // so a stale snapshot has to be dropped before it overwrites a newer local change.
-      if (stillFresh && !stillFresh()) return;
-      galleryCache.images = collected;
-      galleryCache.hasMore = more;
-      setImages(collected);
-      setHasMore(more);
-      if (typeof IntersectionObserver === "undefined") {
-        collected.forEach((image) => void ensureSrc(image));
+      const ticket = (resyncSeq.current += 1);
+      for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
+        const paged = pageEpoch.current;
+        // Sized against the live window, so a page appended while this ran is covered rather than
+        // cut back off the bottom of the strip when the snapshot lands.
+        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
+        const collected: GalleryImage[] = [];
+        let more = false;
+        while (collected.length < wanted) {
+          const page = await getGallery(collected.length, PAGE_SIZE);
+          collected.push(...page.images);
+          more = page.has_more;
+          if (!page.has_more || page.images.length === 0) break;
+        }
+        // Checked here, not by the caller: by the time this returns the window is already applied,
+        // so a stale snapshot has to be dropped before it overwrites a newer local change.
+        if (stillFresh && !stillFresh()) return;
+        if (resyncSeq.current !== ticket) return;
+        // Pagination moved under this pass. That is only server data, so cover it with another
+        // pass instead of giving up: giving up is what left an unpin's promoted image missing.
+        if (pageEpoch.current !== paged) continue;
+        galleryCache.images = collected;
+        galleryCache.hasMore = more;
+        setImages(collected);
+        setHasMore(more);
+        if (typeof IntersectionObserver === "undefined") {
+          collected.forEach((image) => void ensureSrc(image));
+        }
+        return;
       }
     },
     [ensureSrc],

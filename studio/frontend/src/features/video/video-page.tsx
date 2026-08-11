@@ -202,6 +202,10 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
+// Passes a window resync may make before giving up. Each extra pass only happens when pagination
+// moved while it was fetching, which cannot repeat indefinitely without the user scrolling along.
+const RESYNC_MAX_ATTEMPTS = 3;
+
 // Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
 type VideoExportFormat = "mp4" | "webm" | "gif";
 
@@ -1220,15 +1224,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     })();
   }, [selected, ensureSrc]);
 
-  // Bumped by every local change to the strip: a pin, an archive, a delete, a merged generation,
-  // a page appended. A resync started before one of those cannot tell that its snapshot is now
-  // behind, so it compares this instead of applying a window the user has already moved off.
+  // Bumped by every LOCAL change to the strip: a pin, an archive, a delete, a merged generation.
+  // A resync started before one of those holds a snapshot the server listing cannot reconcile with
+  // what the user just did, so it drops it rather than applying a window they have moved off.
   const stripEpoch = useRef(0);
+  // Bumped by the window growing from the server instead: a load, an appended page. That is not a
+  // conflict, it just means the resync sized itself against a smaller window, so it refetches.
+  const pageEpoch = useRef(0);
+  // Only the most recently started resync may apply. Two restores in a row start two of them, and
+  // the older snapshot arriving last would drop whatever the newer one had already shown.
+  const resyncSeq = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
       const page = await getVideoGallery(0, PAGE_SIZE);
-      stripEpoch.current += 1;
+      pageEpoch.current += 1;
       galleryCache.videos = page.videos;
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
@@ -1247,7 +1257,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     loadingMore.current = true;
     try {
       const page = await getVideoGallery(galleryCache.videos.length, PAGE_SIZE);
-      stripEpoch.current += 1;
+      pageEpoch.current += 1;
       setVideos((prev) => {
         const seen = new Set(prev.map((v) => v.id));
         const next = [...prev, ...page.videos.filter((v) => !seen.has(v.id))];
@@ -1340,24 +1350,35 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
    */
   const resyncWindow = useCallback(
     async (count: number, stillFresh?: () => boolean) => {
-      const wanted = Math.max(count, PAGE_SIZE);
-      const collected: GalleryVideo[] = [];
-      let more = false;
-      while (collected.length < wanted) {
-        const page = await getVideoGallery(collected.length, PAGE_SIZE);
-        collected.push(...page.videos);
-        more = page.has_more;
-        if (!page.has_more || page.videos.length === 0) break;
-      }
-      // Checked here, not by the caller: by the time this returns the window is already applied,
-      // so a stale snapshot has to be dropped before it overwrites a newer local change.
-      if (stillFresh && !stillFresh()) return;
-      galleryCache.videos = collected;
-      galleryCache.hasMore = more;
-      setVideos(collected);
-      setHasMore(more);
-      if (typeof IntersectionObserver === "undefined") {
-        collected.forEach((video) => void ensureSrc(video));
+      const ticket = (resyncSeq.current += 1);
+      for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
+        const paged = pageEpoch.current;
+        // Sized against the live window, so a page appended while this ran is covered rather than
+        // cut back off the bottom of the strip when the snapshot lands.
+        const wanted = Math.max(count, galleryCache.videos.length, PAGE_SIZE);
+        const collected: GalleryVideo[] = [];
+        let more = false;
+        while (collected.length < wanted) {
+          const page = await getVideoGallery(collected.length, PAGE_SIZE);
+          collected.push(...page.videos);
+          more = page.has_more;
+          if (!page.has_more || page.videos.length === 0) break;
+        }
+        // Checked here, not by the caller: by the time this returns the window is already applied,
+        // so a stale snapshot has to be dropped before it overwrites a newer local change.
+        if (stillFresh && !stillFresh()) return;
+        if (resyncSeq.current !== ticket) return;
+        // Pagination moved under this pass. That is only server data, so cover it with another
+        // pass instead of giving up: giving up is what left an unpin's promoted clip missing.
+        if (pageEpoch.current !== paged) continue;
+        galleryCache.videos = collected;
+        galleryCache.hasMore = more;
+        setVideos(collected);
+        setHasMore(more);
+        if (typeof IntersectionObserver === "undefined") {
+          collected.forEach((video) => void ensureSrc(video));
+        }
+        return;
       }
     },
     [ensureSrc],

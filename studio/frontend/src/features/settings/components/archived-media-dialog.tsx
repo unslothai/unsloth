@@ -178,6 +178,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // Thumbnails for VISIBLE rows that do not have one yet. `requested` is a ref, not state, so a
   // landing thumbnail cannot re-enter this effect and refetch the rest.
   const requested = useRef<Set<string>>(new Set());
+  // The latest visibility set. A fetch that lands after the user scrolled would otherwise prune
+  // against the set its own effect run closed over, protecting a row that has since gone off
+  // screen and evicting one that is on it.
+  const visibleRef = useRef<ReadonlySet<string>>(visible);
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
   // Failed attempts per row. Clearing `requested` on a failure changes nothing this effect
   // watches, so a visible row would stay blank until the user happened to scroll it away and
   // back. The tick schedules the retry; the count stops a permanently broken row from looping.
@@ -215,10 +222,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               return;
             }
             blobs.current.set(row.id, url, bytes);
+            // Successful load: forget the earlier failures, or a single transient one after an
+            // eviction would land past the cap and leave the row blank with no retry scheduled.
+            failures.current.delete(row.id);
             // Evict the coldest thumbnails back within budget, never one that is on screen. Since
             // only visible rows are fetched, an evicted row is off screen by definition; clearing
             // it from `requested` lets it fetch again when it scrolls back and this effect re-runs.
-            const evicted = blobs.current.prune(visible);
+            const evicted = blobs.current.prune(visibleRef.current);
             setThumbs((prev) => {
               const next = { ...prev, [row.id]: url };
               for (const id of evicted) {
@@ -237,6 +247,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             requested.current.delete(row.id);
             return;
           }
+          failures.current.delete(row.id);
           setThumbs((prev) => ({ ...prev, [row.id]: src }));
           if (cancelled) return;
         } catch {
