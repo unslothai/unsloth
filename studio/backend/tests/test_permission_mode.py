@@ -1995,6 +1995,11 @@ def test_high_risk_dispatcher_non_terminal():
         ),  # the name yaml bound to another package
         ("from yaml import __version__ as version\nprint(version)", False),  # a value, not a module
         ("from yaml import YAMLError\nprint(YAMLError)", False),
+        ("import yaml\ndef get(): return yaml\nm = get()\nm.load(s, Loader=m.Loader)", True),
+        ("import yaml\ndef read(p): return yaml.safe_load(open(p))\nprint(read('a.yml'))", False),
+        ("import yaml\nSL = yaml.SafeLoader\nSL.construct_scalar = cb\nyaml.safe_load(s)", True),
+        # Reflection on an unrelated PyYAML class is not a loader access.
+        ("import yaml\nprint(getattr(yaml.Dumper, 'ignore_aliases'))\nyaml.safe_load(d)", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

@@ -3877,6 +3877,33 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # otherwise mask the earlier sensitive value and auto-approve. Count every
     # binding target up front and poison multiply-bound names to the escape
     # sentinel so any path folded from them fails closed (asks) instead.
+    # Names that refer to a loader class, by import or by simple assignment.
+    # Built before the scans below, which ask whether a receiver is one.
+    _loader_class_names: "set[str]" = set()
+    for _n in ast.walk(tree):
+        if isinstance(_n, (ast.Import, ast.ImportFrom)):
+            for _al in _n.names:
+                if (
+                    _al.name in _AUTO_SAFE_PY_LOAD_CLASSES
+                    or _al.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                ):
+                    _loader_class_names.add(_al.asname or _al.name)
+    for _ in range(2):
+        for _n in ast.walk(tree):
+            if not isinstance(_n, (ast.Assign, ast.AnnAssign)):
+                continue
+            _v = getattr(_n, "value", None)
+            _hit = (
+                isinstance(_v, ast.Attribute)
+                and (
+                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                    or _v.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                )
+            ) or (isinstance(_v, ast.Name) and _v.id in _loader_class_names)
+            if _hit:
+                _tg = _n.targets if isinstance(_n, ast.Assign) else [_n.target]
+                _loader_class_names.update(t.id for t in _tg if isinstance(t, ast.Name))
+
     assign_counts: "dict[str, int]" = {}
     # Attribute names assigned anywhere, so a rebound loader class
     # (yaml.SafeLoader = yaml.Loader) cannot buy the safe-loader exemption below.
@@ -3911,6 +3938,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         if _recv.attr in _AUTO_SAFE_PY_LOAD_CLASSES:
                             patches_loader = True
                         _recv = _recv.value
+                    # SL = yaml.SafeLoader; SL.construct_scalar = cb
+                    if isinstance(_recv, ast.Name) and _recv.id in _loader_class_names:
+                        patches_loader = True
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     # A registered constructor is a callback the YAML tags choose, so a loader
     # that has one is no longer the stock safe loader and loses the exemption.
@@ -4001,12 +4031,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 or sub.attr in _AUTO_SAFE_PY_LOAD_FUNCS
             ):
                 return True
+            # A bare module name is not a loader: getattr(yaml.Dumper, ...) is
+            # reflection on an unrelated class. The loaders on it are matched
+            # above, and getattr(yaml, "unsafe_load")(s) is already a call on a
+            # call result, which fails closed on its own.
             if isinstance(sub, ast.Name) and (
-                sub.id in _AUTO_UNSAFE_PY_LOAD_MODULES
-                or sub.id in _AUTO_SAFE_PY_LOAD_CLASSES
+                sub.id in _AUTO_SAFE_PY_LOAD_CLASSES
                 or sub.id in _AUTO_UNSAFE_PY_LOAD_CLASSES
                 # from yaml import SafeLoader as SL
-                or sub.id in _loader_import_aliases
+                or sub.id in _loader_class_names
             ):
                 return True
         return False
@@ -4631,9 +4664,21 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         elif isinstance(node, ast.Lambda):
             _escaped = node.body
         if _escaped is not None:
-            for sub in ast.walk(_escaped):
+            # The value handed back, not every name in the expression that
+            # computes it: return yaml.safe_load(path) returns data, not a loader.
+            _returned = (
+                list(_escaped.elts)
+                if isinstance(_escaped, (ast.Tuple, ast.List, ast.Set))
+                else [_escaped]
+            )
+            for sub in _returned:
                 if isinstance(sub, ast.Attribute) and (
                     sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                ):
+                    return True
+                # Handing back the module is handing back every loader on it.
+                if isinstance(sub, ast.Name) and (
+                    sub.id in _AUTO_UNSAFE_PY_LOAD_MODULES or sub.id in _loader_class_names
                 ):
                     return True
     # Naming an always-unsafe loader anywhere asks, no matter what expression
