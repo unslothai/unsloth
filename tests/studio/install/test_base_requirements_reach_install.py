@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""base.txt must reach the venv on the install.sh / install.ps1 paths too.
-
-install.sh and install.ps1 install unsloth + unsloth-zoo inline and then export
-SKIP_STUDIO_BASE=1 so setup.sh / setup.ps1 do not install them a second time.
-install_python_stack.py used to read that flag as "skip base.txt", which was the
-same thing only for as long as base.txt held nothing but those two names. Add a
-third, pinned entry to base.txt and it reached no fresh install on any platform:
-the installers never read the file, and the one branch that does was skipped.
-
-These tests pin the distinction: the core packages stay skipped, everything else
-in base.txt is applied.
-"""
+"""Core-package skipping must not skip shared base requirements."""
 
 from __future__ import annotations
 
@@ -21,262 +10,165 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
+import install_manifest
 import install_python_stack as ips
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_STACK = _REPO_ROOT / "studio" / "install_python_stack.py"
+_REQ_ROOT = _REPO_ROOT / "studio" / "backend" / "requirements"
 _EXTRA_PIN = "studio-extra @ https://example.invalid/studio-extra.zip " '; python_version >= "3.10"'
 
 
-class TestRequirementProjectName:
-    """The name parser the core-package filter keys off."""
-
-    @pytest.mark.parametrize(
-        "line, expected",
-        [
-            ("unsloth\n", "unsloth"),
-            ("unsloth-zoo\n", "unsloth-zoo"),
-            ("unsloth_zoo\n", "unsloth-zoo"),  # PEP 503 normalisation
-            ("unsloth.zoo\n", "unsloth-zoo"),
-            ("Unsloth--_..Zoo\n", "unsloth-zoo"),
-            ("  unsloth  \n", "unsloth"),
-            ("unsloth>=2026.8.9\n", "unsloth"),
-            ("unsloth[all]==1.0\n", "unsloth"),
-            ("diffusers ; python_version < '3.10'\n", "diffusers"),
-            # PEP 508 allows the marker and the URL with no surrounding space
-            ('diffusers;python_version<"3.10"\n', "diffusers"),
-            ("diffusers@https://example.invalid/d.zip\n", "diffusers"),
-            (_EXTRA_PIN + "\n", "studio-extra"),  # direct URL + marker
-            ("# a comment\n", ""),
-            ("\n", ""),
-            ("--no-deps\n", ""),
-            ("torch  # trailing comment\n", "torch"),
-        ],
+def _install_function() -> ast.FunctionDef:
+    tree = ast.parse(_STACK.read_text(encoding = "utf-8"))
+    return next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "install_python_stack"
     )
-    def test_parses(self, line, expected):
-        assert ips._requirement_project_name(line) == expected
 
 
-class TestRequirementsBeyond:
-    def _write(self, tmp_path: Path, body: str) -> Path:
+def _core_branch() -> ast.If:
+    return next(
+        node
+        for node in _install_function().body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "skip_base"
+    )
+
+
+def _shared_base_branch() -> ast.If:
+    return next(
+        node
+        for node in _install_function().body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "base_requirements"
+    )
+
+
+class TestSharedBaseSelection:
+    def _select(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: str,
+        *,
+        no_torch: bool = False,
+    ) -> Path | None:
         req = tmp_path / "base.txt"
         req.write_text(textwrap.dedent(body).lstrip(), encoding = "utf-8")
-        return req
+        monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
+        monkeypatch.setattr(ips, "NO_TORCH", no_torch)
+        return ips._shared_base_requirements()
 
-    def test_core_only_file_yields_nothing_to_install(self, tmp_path):
-        """Today's base.txt: the filter must return None, not an empty file.
-
-        Handing pip a requirements file with no requirements in it is a pointless
-        subprocess on every single install.
-        """
-        req = self._write(
-            tmp_path,
-            """
-            # Core unsloth packages
-            unsloth-zoo
-            unsloth
-        """,
-        )
-        assert ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES) is None
-
-    def test_pinned_entry_survives_and_core_packages_do_not(self, tmp_path):
-        req = self._write(
-            tmp_path,
-            f"""
-            unsloth-zoo
-            unsloth
-            {_EXTRA_PIN}
-        """,
-        )
-        out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
-        assert out is not None
-        try:
-            text = out.read_text(encoding = "utf-8")
-            assert _EXTRA_PIN in text
-            names = [ips._requirement_project_name(line) for line in text.splitlines()]
-            assert "unsloth" not in names and "unsloth-zoo" not in names
-        finally:
-            out.unlink(missing_ok = True)
+    def test_comments_only_add_no_subprocess(self, tmp_path, monkeypatch):
+        assert self._select(tmp_path, monkeypatch, "# reserved for shared requirements\n\n") is None
 
     @pytest.mark.parametrize(
-        "include",
+        "entry",
         [
+            _EXTRA_PIN,
             "-r child.txt",
-            "--requirement child.txt",
+            "--requirement=https://example.invalid/base.txt",
             "-c constraints.txt",
-            "--constraint=constraints.txt",
         ],
     )
-    def test_relative_include_keeps_the_source_directory(self, tmp_path, include):
-        req = self._write(
-            tmp_path,
-            f"""
-            unsloth-zoo
-            unsloth
-            {include}
-        """,
-        )
-        out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
-        assert out is not None
-        try:
-            assert out.parent == req.parent
-            assert include in out.read_text(encoding = "utf-8")
-        finally:
-            out.unlink(missing_ok = True)
+    def test_any_pip_entry_uses_the_original_file_unchanged(self, tmp_path, monkeypatch, entry):
+        selected = self._select(tmp_path, monkeypatch, f"# shared\n{entry}\n")
+        assert selected == tmp_path / "base.txt"
+        assert selected.read_text(encoding = "utf-8") == f"# shared\n{entry}\n"
+        assert not list(tmp_path.glob(".*-filtered-*.txt"))
 
-    def test_platform_filter_keeps_the_source_directory(self, tmp_path):
-        """A later Windows/no-torch filter must not break the same relative include."""
-        req = self._write(tmp_path, "-r child.txt\ntriton_kernels\n")
-        out = ips._filter_requirements(req, {"triton_kernels"})
-        try:
-            assert out.parent == req.parent
-            assert out.read_text(encoding = "utf-8") == "-r child.txt\n"
-        finally:
-            out.unlink(missing_ok = True)
+    def test_no_torch_keeps_its_own_runtime_list(self, tmp_path, monkeypatch):
+        selected = self._select(tmp_path, monkeypatch, _EXTRA_PIN, no_torch = True)
+        assert selected is None
 
-    def test_a_prefixed_package_is_not_swallowed(self, tmp_path):
-        """`unsloth-something` is not `unsloth`.
-
-        _filter_requirements matches on startswith(), which would drop this line.
-        """
-        req = self._write(
-            tmp_path,
-            """
-            unsloth
-            unsloth-zoo
-            unsloth-studio-extras==1.2.3
-        """,
-        )
-        out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
-        assert out is not None
-        try:
-            assert "unsloth-studio-extras==1.2.3" in out.read_text(encoding = "utf-8")
-        finally:
-            out.unlink(missing_ok = True)
+    def test_current_base_file_adds_no_install_step(self):
+        assert ips._shared_base_requirements() is None
 
 
-def _skip_base_branch_body() -> list[ast.stmt]:
-    """The shipped `if skip_base:` body from install_python_stack()."""
-    tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
-    fn = next(
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "install_python_stack"
-    )
-    branch = next(
-        n
-        for n in ast.walk(fn)
-        if isinstance(n, ast.If)
-        and isinstance(n.test, ast.Name)
-        and n.test.id == "skip_base"
-        and any(isinstance(h, ast.If) for h in n.orelse)  # the base-packages chain
-    )
-    return branch.body
+class TestSharedBasePhase:
+    def _run(self, req: Path | None, *, skip_base: bool) -> tuple[list[Path], list[str]]:
+        installs: list[Path] = []
+        progress: list[str] = []
+
+        def record_install(
+            _label,
+            *_args,
+            req = None,
+            **_kwargs,
+        ):
+            installs.append(req)
+
+        module = ast.Module(body = [_shared_base_branch()], type_ignores = [])
+        namespace = {
+            "base_requirements": req,
+            "skip_base": skip_base,
+            "_progress": progress.append,
+            "_step": lambda *_args, **_kwargs: None,
+            "_LABEL": "python",
+            "pip_install": record_install,
+        }
+        exec(compile(module, "<shared base phase>", "exec"), namespace)
+        return installs, progress
+
+    @pytest.mark.parametrize("skip_base", [False, True])
+    def test_shared_file_is_applied_once_on_both_core_paths(self, tmp_path, skip_base):
+        req = tmp_path / "base.txt"
+        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
+        installs, _progress = self._run(req, skip_base = skip_base)
+        assert installs == [req]
+
+    def test_shell_handoff_owns_the_progress_slot_when_shared_work_exists(self, tmp_path):
+        req = tmp_path / "base.txt"
+        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
+        _installs, progress = self._run(req, skip_base = True)
+        assert progress == ["base requirements"]
+
+    def test_no_selected_file_installs_nothing(self):
+        assert self._run(None, skip_base = True) == ([], [])
+
+    def test_shared_phase_is_after_and_outside_the_core_branch(self):
+        core = _core_branch()
+        shared = _shared_base_branch()
+        assert shared.lineno > core.lineno
+        assert all(isinstance(node, ast.Pass) for node in core.body)
 
 
-def _run_skip_base_branch(req_root: Path, *, no_torch: bool) -> list[dict]:
-    """Execute that branch verbatim, recording what it hands to pip."""
-    calls: list[dict] = []
+class TestCorePackageOwnership:
+    def test_update_calls_name_both_core_distributions_directly(self):
+        calls = [
+            node
+            for node in ast.walk(_install_function())
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "pip_install"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "Updating core packages"
+        ]
+        assert len(calls) == 2
+        for call in calls:
+            values = [arg.value for arg in call.args if isinstance(arg, ast.Constant)]
+            assert "unsloth" in values and "unsloth-zoo" in values
+            assert not any(keyword.arg == "req" for keyword in call.keywords)
 
-    def _record_pip_install(
-        label,
-        *args,
-        req = None,
-        constrain = True,
-    ):
-        calls.append(
-            {
-                "label": label,
-                "args": args,
-                "req_text": Path(req).read_text(encoding = "utf-8") if req else None,
-                "constrain": constrain,
-            }
-        )
-
-    module = ast.Module(body = _skip_base_branch_body(), type_ignores = [])
-    namespace = {
-        "NO_TORCH": no_torch,
-        "REQ_ROOT": req_root,
-        "_CORE_BASE_PACKAGES": ips._CORE_BASE_PACKAGES,
-        "_requirements_beyond": ips._requirements_beyond,
-        "_step": lambda *a, **k: None,
-        "_LABEL": "python",
-        "pip_install": _record_pip_install,
-    }
-    exec(compile(module, "<skip_base branch>", "exec"), namespace)
-    return calls
+    def test_base_file_does_not_own_core_distributions(self):
+        names = []
+        for line in (_REQ_ROOT / "base.txt").read_text(encoding = "utf-8").splitlines():
+            text = line.split("#", 1)[0].strip()
+            if text and not text.startswith("-"):
+                names.append(canonicalize_name(Requirement(text).name))
+        assert {"unsloth", "unsloth-zoo"}.isdisjoint(names)
 
 
-class TestSkipStudioBaseStillAppliesBaseTxt:
-    """The regression itself."""
-
-    def _req_root(self, tmp_path: Path, body: str) -> Path:
-        (tmp_path / "base.txt").write_text(textwrap.dedent(body).lstrip(), encoding = "utf-8")
-        return tmp_path
-
-    def test_a_pinned_entry_is_installed_under_skip_studio_base(self, tmp_path):
-        """A direct URL pin must survive a fresh install."""
-        root = self._req_root(
-            tmp_path,
-            f"""
-            unsloth-zoo
-            unsloth
-            {_EXTRA_PIN}
-        """,
-        )
-        calls = _run_skip_base_branch(root, no_torch = False)
-        assert len(calls) == 1, "the pinned base requirements were never installed"
-        assert _EXTRA_PIN in calls[0]["req_text"]
-
-    def test_the_core_packages_are_still_not_reinstalled(self, tmp_path):
-        """SKIP_STUDIO_BASE=1 exists to avoid that; keep it working."""
-        root = self._req_root(
-            tmp_path,
-            f"""
-            unsloth-zoo
-            unsloth
-            {_EXTRA_PIN}
-        """,
-        )
-        calls = _run_skip_base_branch(root, no_torch = False)
-        names = [ips._requirement_project_name(line) for line in calls[0]["req_text"].splitlines()]
-        assert "unsloth" not in names and "unsloth-zoo" not in names
-
-    def test_todays_core_only_base_txt_installs_nothing(self, tmp_path):
-        """No new subprocess on installs that have nothing extra to apply."""
-        root = self._req_root(
-            tmp_path,
-            """
-            # Core unsloth packages
-            unsloth-zoo
-            unsloth
-        """,
-        )
-        assert _run_skip_base_branch(root, no_torch = False) == []
-
-    def test_no_torch_mode_is_left_to_its_own_requirements_file(self, tmp_path):
-        """no-torch installs apply no-torch-runtime.txt inline; base.txt is torch-bound."""
-        root = self._req_root(
-            tmp_path,
-            f"""
-            unsloth-zoo
-            unsloth
-            {_EXTRA_PIN}
-        """,
-        )
-        assert _run_skip_base_branch(root, no_torch = True) == []
-
-    def test_the_real_base_txt_round_trips(self):
-        """Whatever base.txt currently holds, the branch must not raise on it."""
-        _run_skip_base_branch(
-            _REPO_ROOT / "studio" / "backend" / "requirements",
-            no_torch = False,
-        )
-
-
-class TestInstallersStillHandOverTheFlag:
-    """The precondition the branch above is written against."""
-
+class TestInstallerHandoff:
     @pytest.mark.parametrize(
         "path, needle",
         [
@@ -284,15 +176,12 @@ class TestInstallersStillHandOverTheFlag:
             ("install.ps1", '$env:SKIP_STUDIO_BASE = "1"'),
         ],
     )
-    def test_both_installers_set_skip_studio_base(self, path, needle):
+    def test_both_installers_delegate_the_core_skip(self, path, needle):
         assert needle in (_REPO_ROOT / path).read_text(encoding = "utf-8")
 
     @pytest.mark.parametrize("path", ["install.sh", "install.ps1"])
-    def test_neither_installer_applies_base_txt_itself(self, path):
-        """If one ever does, this branch would install it twice."""
+    def test_python_stack_owns_shared_base_requirements(self, path):
         assert "base.txt" not in (_REPO_ROOT / path).read_text(encoding = "utf-8")
 
-    def test_editing_base_txt_forces_a_dependency_pass(self):
-        """Covers `unsloth studio update`'s fast path, which skips the stack entirely."""
-        import install_manifest
+    def test_base_changes_invalidate_the_install_manifest(self):
         assert "base.txt" in install_manifest.TRACKED_REQUIREMENT_FILES

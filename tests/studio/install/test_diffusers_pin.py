@@ -6,8 +6,8 @@
 MiniMax-H3 needs a Diffusers revision newer than any published release, and Studio
 refuses to load it otherwise. The pin originally lived in
 studio/backend/requirements/base.txt, which did not reach fresh install.sh installs at
-the time. base.txt now reaches those installs after filtering out the core packages,
-but it still runs too early to hold this pin safely.
+the time. base.txt now reaches those installs as an independent shared phase, but it
+still runs too early to hold this pin safely.
 
 These tests pin the shape that fixes it: exactly one file names diffusers, and the step
 that installs it sits outside every skip.

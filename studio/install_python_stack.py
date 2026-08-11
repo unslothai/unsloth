@@ -3513,56 +3513,15 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     return Path(tmp.name)
 
 
-# The two names install.sh / install.ps1 install inline, before handing over to
-# setup.sh / setup.ps1. Everything else base.txt lists is theirs to apply.
-_CORE_BASE_PACKAGES = frozenset({"unsloth", "unsloth-zoo"})
-
-
-def _requirement_project_name(line: str) -> str:
-    """Project name of a single requirements line ("" for blanks/comments/flags).
-
-    Deliberately stricter than _filter_requirements' startswith() match, which
-    would also swallow a future `unsloth-<something>` pin.
-    """
-    stripped = line.split("#", 1)[0].strip()
-    if not stripped or stripped.startswith("-"):
-        return ""
-    # Ends at the first extras bracket, version specifier, direct URL (`@`) or
-    # environment marker (`;`). PEP 508 allows all of them with no surrounding
-    # whitespace, so splitting on whitespace alone is not enough.
-    name = re.split(r"[\[\s(<>=!~;@]", stripped, maxsplit = 1)[0]
-    return re.sub(r"[-_.]+", "-", name.strip()).lower()
-
-
-def _requirements_beyond(req: Path, names: frozenset[str]) -> Path | None:
-    """Temp copy of `req` keeping only the entries whose project is not in `names`.
-
-    None when nothing is left, so the caller skips the install rather than
-    handing pip a file with no requirements in it.
-    """
-    kept = [
-        line
-        for line in req.read_text(encoding = "utf-8").splitlines(keepends = True)
-        if _requirement_project_name(line) not in names
-    ]
-    # Comments and blanks do not count as something to install; a `-r`/`-c`
-    # include does, so it is not silently dropped if base.txt ever grows one.
-    if not any(line.split("#", 1)[0].strip() for line in kept):
+def _shared_base_requirements() -> Path | None:
+    """The shared torch-bound requirements file, or None when it has no work."""
+    if NO_TORCH:
         return None
-    # pip resolves relative -r / -c paths from the containing requirements
-    # file. Keep the filtered copy beside the source so those paths retain
-    # their meaning.
-    tmp = tempfile.NamedTemporaryFile(
-        mode = "w",
-        dir = req.parent,
-        prefix = f".{req.stem}-filtered-",
-        suffix = ".txt",
-        delete = False,
-        encoding = "utf-8",
-    )
-    tmp.writelines(kept)
-    tmp.close()
-    return Path(tmp.name)
+    req = REQ_ROOT / "base.txt"
+    for line in req.read_text(encoding = "utf-8").splitlines():
+        if line.split("#", 1)[0].strip():
+            return req
+    return None
 
 
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
@@ -3582,11 +3541,10 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
     """Build a standard pip install command.
 
     pip has no --upgrade-package, so uv's flag is translated rather than
-    dropped. Dropping it made this fallback a no-op on the update path:
-    `studio update` passes --upgrade-package unsloth with a base.txt that lists
-    a bare unsloth, so pip found the requirement already satisfied, installed
-    nothing, and the update still reported success. Any uv failure reached that,
-    not just the Windows in-use launcher.
+    dropped. Dropping it made this fallback a no-op on the update path: pip saw
+    the named distributions as already satisfied, installed nothing, and the
+    update still reported success. Any uv failure reached that, not just the
+    Windows in-use launcher.
 
     --upgrade-strategy is pinned to only-if-needed rather than left to pip's
     default, because that default is the load-bearing part: it upgrades the
@@ -3891,9 +3849,9 @@ def install_python_stack() -> int:
     # the first message would get a stray newline.
     _PROGRESS_LINE_ACTIVE = False
 
-    # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling base packages;
+    # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling the core packages;
     # `studio update` does NOT, so unsloth + unsloth-zoo are reinstalled to pick
-    # up new versions.
+    # up new versions. Shared base.txt requirements are handled independently.
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
     # --package installs a different package name (for testing).
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
@@ -3907,7 +3865,10 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
-    _TOTAL = (base_total - 1) if skip_base else base_total
+    base_requirements = _shared_base_requirements()
+    # Core packages and shared base requirements occupy one progress slot. A
+    # shell-installer handoff skips that slot only while base.txt has no work.
+    _TOTAL = base_total - int(skip_base and base_requirements is None)
 
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
@@ -3991,30 +3952,8 @@ def install_python_stack() -> int:
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
-        # SKIP_STUDIO_BASE=1 means "install.sh / install.ps1 already installed
-        # unsloth + unsloth-zoo inline, with their own version floors and torch
-        # overrides -- do not repeat that". It used to be the same thing as
-        # "skip base.txt", because those two names were the file's entire
-        # content. They are not the same thing: anything else pinned in base.txt
-        # (an exact revision Studio needs) reached no install.sh / install.ps1
-        # install at all, on any platform, because neither installer reads the
-        # file. It only landed later, if the user ran `unsloth studio update`.
-        # So skip the two core packages and apply whatever else base.txt asks
-        # for. No-torch mode keeps its own list (no-torch-runtime.txt, which the
-        # installers do apply inline), so leave that mode alone.
-        extra_base = (
-            None if NO_TORCH else _requirements_beyond(REQ_ROOT / "base.txt", _CORE_BASE_PACKAGES)
-        )
-        if extra_base is not None:
-            try:
-                _step(_LABEL, "applying pinned base requirements")
-                pip_install(
-                    "Applying pinned base requirements",
-                    "--no-cache-dir",
-                    req = extra_base,
-                )
-            finally:
-                extra_base.unlink(missing_ok = True)
+        # install.sh / install.ps1 already installed both core distributions.
+        pass
     elif NO_TORCH:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
@@ -4064,17 +4003,18 @@ def install_python_stack() -> int:
                 constrain = False,
             )
     elif local_repo:
-        # Local dev install: update deps from base.txt, then overlay the local
+        # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
         _progress("base packages")
         pip_install(
-            "Updating base packages",
+            "Updating core packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
+            "unsloth",
+            "unsloth-zoo",
         )
         _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
         pip_install(
@@ -4108,13 +4048,28 @@ def install_python_stack() -> int:
         # --upgrade-package targets only base pkgs.
         _progress("base packages")
         pip_install(
-            "Updating base packages",
+            "Updating core packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
+            "unsloth",
+            "unsloth-zoo",
+        )
+
+    # Shared torch-bound requirements are independent of the core package
+    # phase. install.sh / install.ps1 may skip the latter after installing the
+    # core distributions inline, but they must still apply this file unchanged.
+    if base_requirements is not None:
+        if skip_base:
+            _progress("base requirements")
+        else:
+            _step(_LABEL, "applying shared base requirements")
+        pip_install(
+            "Applying shared base requirements",
+            "--no-cache-dir",
+            req = base_requirements,
         )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the

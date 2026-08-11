@@ -1,7 +1,8 @@
-# Base ML requirements. The shell installers install these two core packages inline;
-# install_python_stack.py filters their names before applying any additional entries here.
-unsloth-zoo
-unsloth
+# Shared torch-bound ML requirements. This file is applied unchanged on fresh
+# install.sh / install.ps1 installs and on `unsloth studio update`.
+#
+# Do not list unsloth or unsloth-zoo here. They are the independently skippable
+# core-package phase because the shell installers install them inline first.
 # diffusers is deliberately NOT here: its pin must run after every other requirements
 # file so a later dependency pass cannot replace it. It lives in diffusers-pin.txt,
 # installed by its own late step in install_python_stack.py.

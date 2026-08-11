@@ -516,9 +516,9 @@ class TestProgressLineNotes:
 class TestBuildPipCmdUpgradeIntent:
     """pip has no --upgrade-package, so uv's flag must be translated, not dropped.
 
-    Dropping it made the fallback a no-op on the update path: `studio update`
-    passes --upgrade-package unsloth with a base.txt listing a bare unsloth, so
-    pip found it satisfied, installed nothing, and the update reported success.
+    Dropping it made the fallback a no-op on the update path: pip saw the named
+    distributions as already satisfied, installed nothing, and the update
+    reported success.
     """
 
     def test_update_path_keeps_the_upgrade_intent(self):
