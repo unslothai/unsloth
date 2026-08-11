@@ -988,8 +988,12 @@ def _is_importable_isolated(import_name: str) -> bool:
     """
     try:
         result = _sp.run(
-            [sys.executable, "-c", "import importlib, sys; importlib.import_module(sys.argv[1])",
-             import_name],
+            [
+                sys.executable,
+                "-c",
+                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                import_name,
+            ],
             stdout = _sp.DEVNULL,
             stderr = _sp.DEVNULL,
             timeout = 300,

@@ -103,15 +103,11 @@ class TestIsImportableIsolated:
     """The probe runs in a child so a bad native extension cannot take the worker with it."""
 
     def test_clean_exit_is_importable(self, monkeypatch):
-        monkeypatch.setattr(
-            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0)
-        )
+        monkeypatch.setattr(worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0))
         assert worker._is_importable_isolated("flash_attn") is True
 
     def test_import_error_exit_is_not_importable(self, monkeypatch):
-        monkeypatch.setattr(
-            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 1)
-        )
+        monkeypatch.setattr(worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 1))
         assert worker._is_importable_isolated("flash_attn") is False
 
     def test_fatal_signal_is_not_importable(self, monkeypatch):
