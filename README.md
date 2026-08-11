@@ -122,7 +122,12 @@ unsloth start claude --as-subagent --model unsloth/model-GGUF:quant
 ```
 
 ## 📥 Install
-Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
+Unsloth can be used in three ways: **Unsloth Desktop**, the desktop app, **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or **Unsloth Core**, the code-based version.
+
+### Unsloth Desktop (recommended)
+The easiest way to use Unsloth — no setup required. We recommend starting here.
+
+Download the app for Windows, macOS or Linux at [unsloth.ai/download](https://unsloth.ai/download).
 
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
