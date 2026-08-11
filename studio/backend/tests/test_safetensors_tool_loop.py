@@ -661,11 +661,14 @@ class TestParser:
     def test_streaming_strip_handles_nested_wrapperless_gemma(self):
         # Same class of bug for the wrapper-less Gemma call:NAME{...} form with a
         # nested object argument.
-        raw = "ok call:f{loc:{city:NYC},n:3} tail"
+        raw = "ok\ncall:f{loc:{city:NYC},n:3} tail"
         out = strip_tool_markup_streaming(raw)
         assert "call:f" not in out
         assert "}" not in out
-        assert "ok " in out and "tail" in out
+        assert "ok" in out and "tail" in out
+        # Mid-sentence the same shape is prose: streaming display keeps it.
+        inline = "ok call:f{loc:{city:NYC},n:3} tail"
+        assert strip_tool_markup_streaming(inline) == inline
 
     def test_streaming_strip_keeps_prose_after_function_xml_with_literal_marker(self):
         # A literal ``<function=...>`` in a value is data: the strip must close at the REAL
@@ -1099,8 +1102,11 @@ class TestParserMultiFormat:
         assert result == []
 
     def test_gemma4_bare_strip_markup_final(self):
-        text = "Here you go: call:web_search{query:weather today}"
+        text = "Here you go:\ncall:web_search{query:weather today}"
         assert "call:web_search" not in strip_tool_markup(text, final = True)
+        # Mid-sentence: prose, kept whole.
+        inline = "Here you go: call:web_search{query:weather today}"
+        assert strip_tool_markup(inline, final = True) == inline
 
     # ── Cross-format sentinels ────────────────────────────────────
 
