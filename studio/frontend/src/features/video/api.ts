@@ -54,6 +54,8 @@ export interface VideoStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Null when not loaded.
   model_kind?: string | null;
+  // Exact single-file checkpoint identity, so a resident GGUF/safetensors model can be reapplied after refresh.
+  gguf_filename?: string | null;
   engine?: "diffusers" | "sd_cpp" | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;

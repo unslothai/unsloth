@@ -2362,6 +2362,8 @@ class SdCppDiffusionBackend:
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
+                "model_kind": None,
+                "gguf_filename": None,
                 "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
@@ -2389,6 +2391,8 @@ class SdCppDiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": "gguf",
+            "model_kind": "gguf",
+            "gguf_filename": state.gguf_filename,
             "gguf_variant": extract_quant_token(state.gguf_filename)
             if state.gguf_filename
             else None,

@@ -5100,6 +5100,7 @@ def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
     )
     status = backend.status()
     assert status["model_kind"] == "gguf"
+    assert status["gguf_filename"] == "z-image-turbo-Q8_0.gguf"
     assert status["transformer_quant"] is None  # the GGUF ran as-is
     assert status["gguf_variant"] == "Q8_0"
 
@@ -5171,7 +5172,13 @@ def test_diffusion_status_response_carries_requested_precision():
 
 def test_diffusion_status_response_carries_gguf_variant():
     from models.inference import DiffusionStatusResponse
-    assert DiffusionStatusResponse(loaded = True, gguf_variant = "Q8_0").gguf_variant == "Q8_0"
+    response = DiffusionStatusResponse(
+        loaded = True,
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        gguf_variant = "Q8_0",
+    )
+    assert response.gguf_filename == "z-image-turbo-Q8_0.gguf"
+    assert response.gguf_variant == "Q8_0"
 
 
 def test_companion_cache_bytes_local_dir_excludes_transformer(tmp_path):

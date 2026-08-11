@@ -69,6 +69,15 @@ import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_TABS } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import {
+  type ImageGenerationPresetLoadConfig,
+  type ImageGenerationPresetParams,
+  type DynamicDefaultRollback,
+  MediaGenerationPresetControl,
+  chainDynamicDefaultRollback,
+  reapplyTargetFromStatus,
+  useMediaGenerationPresets,
+} from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
@@ -1064,7 +1073,12 @@ type Busy = "loading" | "unloading" | "generating" | null;
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
-type PickRevert = { prev: string | null; steps: number; guidance: number };
+type PickRevert = {
+  prev: string | null;
+  steps: number;
+  guidance: number;
+  presetDefaultRollback?: DynamicDefaultRollback<ImageGenerationPresetParams>;
+};
 
 // The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
 type LoadAdvanced = Pick<
@@ -1104,8 +1118,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    setSteps(r.steps);
-    setGuidance(r.guidance);
+    r.presetDefaultRollback?.((current) => ({
+      ...current,
+      steps: r.steps,
+      guidance: r.guidance,
+    }));
   }, []);
   const [seed, setSeed] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
@@ -1176,8 +1193,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
     null,
   );
-  // Render-safe mirror of "lastLoad.current was set by a user-initiated load": a resident GGUF discovered by refresh carries
-  // no filename, so lastLoad stays null and Reapply would be dead. Set only from handlers; the resident case derives from status.
+  // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed once and never clobber a manual edit.
   const seededResident = useRef<string | null>(null);
@@ -1191,6 +1207,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
+  const residentReapplyTarget = useMemo(
+    () => reapplyTargetFromStatus(status),
+    [
+      status?.gguf_filename,
+      status?.loaded,
+      status?.model_kind,
+      status?.repo_id,
+    ],
+  );
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
@@ -1253,6 +1278,97 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Which pick owns the page: resolving and staging are requests that do not set `busy`, so a pick can land on an awaiting
   // one. Lazy state, not a ref: a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
+
+  const imagePresetParams = useMemo<ImageGenerationPresetParams>(
+    () => ({
+      negativePrompt,
+      width,
+      height,
+      steps,
+      guidance,
+      batchSize,
+      runs: count,
+    }),
+    [batchSize, count, guidance, height, negativePrompt, steps, width],
+  );
+  const imagePresetLoadConfig = useMemo<ImageGenerationPresetLoadConfig | undefined>(() => {
+    if (
+      speedMode === "auto" &&
+      transformerQuant === "auto" &&
+      attentionBackend === "auto" &&
+      memoryMode === "auto" &&
+      transformerCache === "auto" &&
+      !cpuOffload
+    ) return undefined;
+    return {
+      speedMode,
+      transformerQuant,
+      attentionBackend,
+      memoryMode,
+      transformerCache,
+      cpuOffload,
+    };
+  }, [attentionBackend, cpuOffload, memoryMode, speedMode, transformerCache, transformerQuant]);
+  const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
+    const recommended = defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+    return {
+      negativePrompt: "",
+      width: 1024,
+      height: 1024,
+      steps: recommended.steps,
+      guidance: recommended.guidance,
+      batchSize: 1,
+      runs: 1,
+    };
+  }, [status?.base_repo, status?.repo_id]);
+  const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
+    setNegativePrompt(params.negativePrompt);
+    setWidth(params.width);
+    setHeight(params.height);
+    const matched = matchAspect(params.width, params.height);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+    setSteps(params.steps);
+    setGuidance(params.guidance);
+    setBatchSize(params.batchSize);
+    setCount(params.runs);
+    return params;
+  }, []);
+  const applyImagePresetLoadConfig = useCallback((config?: ImageGenerationPresetLoadConfig) => {
+    setSpeedMode(config?.speedMode ?? "auto");
+    setTransformerQuant(config?.transformerQuant ?? "auto");
+    setAttentionBackend(config?.attentionBackend ?? "auto");
+    setMemoryMode(config?.memoryMode ?? "auto");
+    setTransformerCache(config?.transformerCache ?? "auto");
+    setCpuOffload(config?.cpuOffload ?? false);
+  }, []);
+  const imagePresets = useMediaGenerationPresets({
+    kind: "image",
+    defaultParams: imageDefaultRecipe,
+    currentParams: imagePresetParams,
+    currentLoadConfig: imagePresetLoadConfig,
+    applyParams: applyImagePresetParams,
+    applyLoadConfig: applyImagePresetLoadConfig,
+    modelLoaded: Boolean(status?.loaded),
+  });
+  const applyImageDynamicDefault = imagePresets.applyDynamicDefault;
+  const applyImageModelDefaults = useCallback(
+    (repoId: string) => {
+      const recommended = defaultsFor(repoId);
+      const rollback = applyImageDynamicDefault({
+        steps: recommended.steps,
+        guidance: recommended.guidance,
+      });
+      const revert = quantRevert.current;
+      if (rollback && revert) {
+        revert.presetDefaultRollback = chainDynamicDefaultRollback(
+          revert.presetDefaultRollback,
+          rollback,
+        );
+      }
+    },
+    [applyImageDynamicDefault],
+  );
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -1894,16 +2010,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    const d = defaultsFor(status?.base_repo ?? repoId);
-    setSteps(d.steps);
-    setGuidance(d.guidance);
-    // Wire "Reapply" to the resident model too, so an advanced-option reload works without re-picking. Only a full pipeline
-    // needs no checkpoint filename; a resident GGUF/single_file carries none, so leave lastLoad null for those.
-    const kind = status?.model_kind;
-    if (kind === "pipeline") {
-      lastLoad.current = { repoId, kind };
-    }
-  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+    applyImageModelDefaults(status?.base_repo ?? repoId);
+  }, [applyImageModelDefaults, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -1913,9 +2021,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
   // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  const initialResolvedSeedHandled = useRef(false);
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    if (
+      !imagePresets.hydrated ||
+      busy === "loading" ||
+      busy === "unloading" ||
+      !record
+    ) {
+      return;
+    }
+    if (!initialResolvedSeedHandled.current) {
+      initialResolvedSeedHandled.current = true;
+      if (imagePresets.hasPersistedSettings && !canReapply) return;
+    }
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -1934,8 +2054,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+    // resolvedKey stands for the record. busy and canReapply are sampled only when that record or
+    // hydration changes, so unrelated work cannot replay a resident seed over a pending edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imagePresets.hasPersistedSettings, imagePresets.hydrated, resolvedKey]);
 
   // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
   // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
@@ -2315,9 +2437,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         onResolved: (filename) => {
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
-          const d = defaultsFor(repoId);
-          setSteps(d.steps);
-          setGuidance(d.guidance);
+          applyImageModelDefaults(repoId);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -2329,7 +2449,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
+    [applyImageModelDefaults, guidance, loadOrStage, pickGuard, quant, revertPick, steps],
   );
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
@@ -2387,9 +2507,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
-    void loadOrStage(pick.repoId, pick.opts, "hub", token);
+    // Match every direct picker branch: the routed intent owns both the visible build label and
+    // the model-specific Default recipe, and a load that never becomes resident rolls both back.
+    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+    quantRevert.current = revert;
+    setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
+    applyImageModelDefaults(wanted);
+    void loadOrStage(pick.repoId, pick.opts, "hub", token).then((started) => {
+      if (!started && pickGuard.holds(token) && quantRevert.current === revert) {
+        revertPick(revert);
+        quantRevert.current = null;
+      }
+    });
   }, [
     active,
+    applyImageModelDefaults,
+    guidance,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.ggufQuant,
@@ -2397,13 +2530,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadGgufRepoPick,
     navigateSelf,
     pickGuard,
+    quant,
+    revertPick,
+    steps,
   ]);
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
-    const l = lastLoad.current;
+    // Status is authoritative when another client replaced the resident model. The ref remains
+    // the fallback while this page's own load is committing and status has not caught up yet.
+    const l = residentReapplyTarget ?? lastLoad.current;
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
-  }, [handleLoad]);
+  }, [handleLoad, residentReapplyTarget]);
 
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
   // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
@@ -2447,9 +2585,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
-        const d = defaultsFor(id);
-        setSteps(d.steps);
-        setGuidance(d.guidance);
+        applyImageModelDefaults(id);
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
@@ -2469,9 +2605,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
-        const dq = defaultsFor(id);
-        setSteps(dq.steps);
-        setGuidance(dq.guidance);
+        applyImageModelDefaults(id);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2508,9 +2642,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dq2 = defaultsFor(id);
-        setSteps(dq2.steps);
-        setGuidance(dq2.guidance);
+        applyImageModelDefaults(id);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2529,9 +2661,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dsf = defaultsFor(id);
-        setSteps(dsf.steps);
-        setGuidance(dsf.guidance);
+        applyImageModelDefaults(id);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2562,9 +2692,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(id);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
+      applyImageModelDefaults(id);
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
@@ -2574,6 +2702,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     },
     [
       abandonPick,
+      applyImageModelDefaults,
       beginPick,
       busy,
       guidance,
@@ -2606,15 +2735,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(args.baseRepo);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
+      applyImageModelDefaults(args.baseRepo);
       void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
-        if (!started) pendingDeploy.current = null;
+        if (!started) {
+          pendingDeploy.current = null;
+          if (quantRevert.current === revert) {
+            revertPick(revert);
+            quantRevert.current = null;
+          }
+        }
       });
     },
-    [busy, handleLoad, pickGuard, setPageMode],
+    [applyImageModelDefaults, busy, guidance, handleLoad, pickGuard, quant, revertPick, setPageMode, steps],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
@@ -3086,8 +3221,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
       <LoadedBuildSummary status={status} />
-      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
-      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+      {status?.loaded && (canReapply || residentReapplyTarget) && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
@@ -3236,18 +3370,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
             {/* Icon rides the heading; the line below runs the full width.
                 Same shape on the Video page, so the two stay level. */}
-            <div className="mb-2 grid gap-1.5">
-              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-                {/* Same icon the sidebar submenu uses for this workflow. */}
-                <HugeiconsIcon
-                  icon={activeWorkflowTab.icon}
-                  className="size-[18px] shrink-0"
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <div className="min-w-0 grid gap-1.5">
+                <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+                  {/* Same icon the sidebar submenu uses for this workflow. */}
+                  <HugeiconsIcon
+                    icon={activeWorkflowTab.icon}
+                    className="size-[18px] shrink-0"
+                  />
+                  {activeWorkflowTab.heading ?? activeWorkflowTab.label}
+                </h2>
+                <p className="text-xs leading-snug text-muted-foreground">
+                  {activeWorkflowTab.hint}
+                </p>
+              </div>
+
+              {workflow === "create" && (
+                <MediaGenerationPresetControl
+                  key={imagePresets.activePreset}
+                  kind="image"
+                  presets={imagePresets.presets}
+                  activePreset={imagePresets.activePreset}
+                  hydrated={imagePresets.hydrated}
+                  hasUnsavedChanges={imagePresets.hasUnsavedChanges}
+                  onSelect={imagePresets.selectPreset}
+                  onSave={imagePresets.savePreset}
+                  onDelete={imagePresets.deletePreset}
                 />
-                {activeWorkflowTab.heading ?? activeWorkflowTab.label}
-              </h2>
-              <p className="text-xs leading-snug text-muted-foreground">
-                {activeWorkflowTab.hint}
-              </p>
+              )}
             </div>
 
             {workflow === "transform" && (

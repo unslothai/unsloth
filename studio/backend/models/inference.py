@@ -3010,6 +3010,11 @@ class DiffusionStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "Exact checkpoint filename for a gguf or single_file load, so clients can "
+        "reload the resident build; null for a pipeline",
+    )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
     )
@@ -3634,6 +3639,11 @@ class VideoStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "Exact checkpoint filename for a gguf or single_file load, so clients can "
+        "reload the resident build; null for a pipeline",
     )
     engine: Optional[str] = Field(None, description = "Active video engine: diffusers | sd_cpp")
     gguf_variant: Optional[str] = Field(

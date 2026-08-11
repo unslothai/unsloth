@@ -67,6 +67,17 @@ import type {
 } from "@/features/model-picker/components/model-selector/types";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import {
+  MediaGenerationPresetControl,
+  chainDynamicDefaultRollback,
+  type DynamicDefaultRollback,
+  type VideoGenerationPresetLoadConfig,
+  type VideoGenerationPresetParams,
+  closestDurationIndex,
+  closestResolutionIndex,
+  reapplyTargetFromStatus,
+  useMediaGenerationPresets,
+} from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -706,7 +717,12 @@ function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boole
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
-type PickRevert = { prev: string | null; steps: number; guidance: number };
+type PickRevert = {
+  prev: string | null;
+  steps: number;
+  guidance: number;
+  presetDefaultRollback?: DynamicDefaultRollback<VideoGenerationPresetParams>;
+};
 // Resolved Advanced controls pinned across preflight, staging, and load.
 type VideoLoadAdvanced = Pick<
   VideoLoadRequest,
@@ -781,12 +797,18 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    setSteps(r.steps);
-    setGuidance(r.guidance);
+    r.presetDefaultRollback?.((current) => ({
+      ...current,
+      steps: r.steps,
+      guidance: r.guidance,
+    }));
   }, []);
   const [seed, setSeed] = useState("");
   // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
   const [resolutionIdx, setResolutionIdx] = useState(0);
+  const [resolutionIntent, setResolutionIntent] = useState<[number, number]>(
+    FALLBACK_RESOLUTION_PRESETS[0]!,
+  );
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
@@ -806,6 +828,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [numFrames, setNumFrames] = useState(
     FALLBACK_FRAME_STEP * 3 + FALLBACK_FRAME_OFFSET,
   );
+  const [durationIntentSeconds, setDurationIntentSeconds] = useState(
+    numFrames / FALLBACK_FPS,
+  );
   // Advanced options live in a right-docked panel, closed by default; a single fixed top-bar toggle opens it.
   // Sits inline under Seed; the open state is remembered across visits.
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
@@ -823,7 +848,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
-  // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
+  // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
 
   const [busy, setBusy] = useState<Busy>(null);
@@ -833,6 +858,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
+  const residentReapplyTarget = useMemo<
+    ({ repoId: string } & VideoLoadOptions) | null
+  >(() => {
+    const target = reapplyTargetFromStatus(status);
+    if (!target) return null;
+    const h3Task =
+      status?.h3_task === "fl2va" || status?.h3_task === "ref2va"
+        ? status.h3_task
+        : undefined;
+    return { ...target, h3Task };
+  }, [
+    status?.gguf_filename,
+    status?.h3_task,
+    status?.loaded,
+    status?.model_kind,
+    status?.repo_id,
+  ]);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -1049,6 +1091,160 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [keyframeAspect, status?.defaults],
   );
 
+  const videoPresetParams = useMemo<VideoGenerationPresetParams>(() => {
+    const resolution =
+      resolutionIdx === MATCH_SOURCE_RESOLUTION && matchedResolution
+        ? matchedResolution
+        : resolutionIntent;
+    return {
+      negativePrompt,
+      width: resolution[0],
+      height: resolution[1],
+      durationSeconds: durationIntentSeconds,
+      steps,
+      guidance,
+      flowShift,
+      audioFlowShift,
+    };
+  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, resolutionIdx, resolutionIntent, steps]);
+  const videoPresetLoadConfig = useMemo<VideoGenerationPresetLoadConfig | undefined>(() => {
+    if (
+      memoryMode === "auto" &&
+      speedMode === "auto" &&
+      attentionBackend === "auto" &&
+      transformerCache === "auto" &&
+      transformerQuant === "auto"
+    ) return undefined;
+    return {
+      memoryMode,
+      speedMode,
+      attentionBackend,
+      transformerCache,
+      transformerQuant,
+    };
+  }, [attentionBackend, memoryMode, speedMode, transformerCache, transformerQuant]);
+  const defaultSteps = status?.defaults?.steps;
+  const defaultGuidance = status?.defaults?.guidance;
+  const familyDefaultFrames = status?.defaults?.num_frames;
+  const defaultFlowShift = status?.defaults?.flow_shift ?? null;
+  const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
+  const presetRepoId = status?.repo_id ?? "";
+  const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
+    const resolution = resolutionPresets[0] ?? [768, 512];
+    const recommended =
+      defaultSteps != null && defaultGuidance != null
+        ? { steps: defaultSteps, guidance: defaultGuidance }
+        : defaultsFor(presetRepoId);
+    const defaultDuration = familyDefaultFrames
+      ? durationOptions[
+          closestDurationIndex(durationOptions, familyDefaultFrames / fps)
+        ]?.seconds
+      : status?.loaded
+        ? durationOptions[2]?.seconds ?? durationOptions[0]?.seconds ?? 3
+        : durationOptions[0]?.seconds ?? 1;
+    return {
+      negativePrompt: "",
+      width: resolution[0],
+      height: resolution[1],
+      durationSeconds: defaultDuration,
+      steps: recommended.steps,
+      guidance: recommended.guidance,
+      flowShift: defaultFlowShift,
+      audioFlowShift: defaultAudioFlowShift,
+    };
+  }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, presetRepoId, resolutionPresets, status?.loaded]);
+  const applyVideoPresetParams = useCallback(
+    (params: VideoGenerationPresetParams) => {
+      const resolutionIndex = closestResolutionIndex(
+        resolutionPresets,
+        params.width,
+        params.height,
+      );
+      const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
+      const durationFrames =
+        durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
+      setResolutionIntent([params.width, params.height]);
+      setDurationIntentSeconds(params.durationSeconds);
+      setNegativePrompt(params.negativePrompt);
+      setResolutionIdx(resolutionIndex);
+      setNumFrames(durationFrames);
+      setSteps(params.steps);
+      setGuidance(params.guidance);
+      setFlowShift(params.flowShift);
+      setAudioFlowShift(params.audioFlowShift);
+      return params;
+    },
+    [durationOptions, numFrames, resolutionPresets],
+  );
+  const applyVideoPresetLoadConfig = useCallback((config?: VideoGenerationPresetLoadConfig) => {
+    setMemoryMode(config?.memoryMode ?? "auto");
+    setSpeedMode(config?.speedMode ?? "auto");
+    setAttentionBackend(config?.attentionBackend ?? "auto");
+    setTransformerCache(config?.transformerCache ?? "auto");
+    setTransformerQuant(config?.transformerQuant ?? "auto");
+  }, []);
+  const normalizeVideoPresetParams = useCallback(
+    (params: VideoGenerationPresetParams) => {
+      const resolution =
+        resolutionPresets[
+          closestResolutionIndex(resolutionPresets, params.width, params.height)
+        ] ?? resolutionPresets[0] ?? [768, 512];
+      const duration =
+        durationOptions[
+          closestDurationIndex(durationOptions, params.durationSeconds)
+        ]?.seconds ?? params.durationSeconds;
+      return {
+        ...params,
+        width: resolution[0],
+        height: resolution[1],
+        durationSeconds: duration,
+      };
+    },
+    [durationOptions, resolutionPresets],
+  );
+  const videoPresets = useMediaGenerationPresets({
+    kind: "video",
+    defaultParams: videoDefaultRecipe,
+    currentParams: videoPresetParams,
+    currentLoadConfig: videoPresetLoadConfig,
+    applyParams: applyVideoPresetParams,
+    applyLoadConfig: applyVideoPresetLoadConfig,
+    modelLoaded: Boolean(status?.loaded),
+    normalizeParams: normalizeVideoPresetParams,
+  });
+  const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
+  const applyVideoModelDefaults = useCallback(
+    (repoId: string) => {
+      const recommended = defaultsFor(repoId);
+      const rollback = applyVideoDynamicDefault({
+        steps: recommended.steps,
+        guidance: recommended.guidance,
+      });
+      const revert = quantRevert.current;
+      if (rollback && revert) {
+        revert.presetDefaultRollback = chainDynamicDefaultRollback(
+          revert.presetDefaultRollback,
+          rollback,
+        );
+      }
+    },
+    [applyVideoDynamicDefault],
+  );
+
+  useEffect(() => {
+    setResolutionIdx((current) => {
+      if (current === MATCH_SOURCE_RESOLUTION) return current;
+      if (videoPresets.activePresetSourceRef.current === "builtin-default") {
+        return 0;
+      }
+      return closestResolutionIndex(
+        resolutionPresets,
+        resolutionIntent[0],
+        resolutionIntent[1],
+      );
+    });
+  }, [resolutionIntent, resolutionPresets, videoPresets.activePresetSourceRef]);
+
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
@@ -1063,55 +1259,61 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [canvasKeyframe, matchedResolution]);
 
   const loadedFamily = status?.loaded ? status.family : null;
-  const familyDefaultFrames = status?.defaults?.num_frames;
   const prevFamilyRef = useRef<string | null>(null);
   useEffect(() => {
     const familyChanged = loadedFamily !== prevFamilyRef.current;
     prevFamilyRef.current = loadedFamily;
     setNumFrames((cur) => {
       // A newly loaded family brings its own default clip length; without this the pre-load fallback sticks and every default run is a ~1s clip.
-      if (familyChanged && loadedFamily && familyDefaultFrames) {
-        const best = durationOptions.reduce((a, b) =>
-          Math.abs(b.frames - familyDefaultFrames) < Math.abs(a.frames - familyDefaultFrames)
-            ? b
-            : a,
+      if (
+        familyChanged &&
+        loadedFamily &&
+        familyDefaultFrames &&
+        videoPresets.activePresetSourceRef.current === "builtin-default"
+      ) {
+        // The loaded-model effect below applies the complete dynamic Default recipe in one batch.
+        return cur;
+      }
+      if (familyChanged) {
+        return (
+          durationOptions[
+            closestDurationIndex(durationOptions, durationIntentSeconds)
+          ]?.frames ?? cur
         );
-        return best?.frames ?? cur;
       }
       if (durationOptions.some((o) => o.frames === cur)) return cur;
-      // Prefer the ~3s preset (index 2) as a sensible default, else the first.
-      return durationOptions[2]?.frames ?? durationOptions[0]?.frames ?? cur;
+      return (
+        durationOptions[
+          closestDurationIndex(durationOptions, durationIntentSeconds)
+        ]?.frames ?? cur
+      );
     });
-  }, [durationOptions, loadedFamily, familyDefaultFrames]);
+  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, loadedFamily, videoPresets.activePresetSourceRef]);
 
   // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs, so the
   // controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip. Keyed on the resolved
   // schedule, not the repo alone: a GGUF repo holds several variants, so another client swapping builds changes the defaults in place.
-  const defaultSteps = status?.defaults?.steps;
-  const defaultGuidance = status?.defaults?.guidance;
   const loadedModelKey = status?.loaded
-    ? `${status.repo_id ?? ""}|${defaultSteps ?? ""}|${defaultGuidance ?? ""}`
+    ? `${status.repo_id ?? ""}|${defaultSteps ?? ""}|${defaultGuidance ?? ""}|${defaultFlowShift ?? ""}|${defaultAudioFlowShift ?? ""}`
     : null;
   const prevLoadedModelRef = useRef<string | null>(null);
   useEffect(() => {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
     prevLoadedModelRef.current = loadedModelKey;
     if (modelChanged && loadedModelKey && defaultSteps != null && defaultGuidance != null) {
-      setSteps(defaultSteps);
-      setGuidance(defaultGuidance);
+      applyVideoDynamicDefault({
+        width: videoDefaultRecipe.width,
+        height: videoDefaultRecipe.height,
+        durationSeconds: videoDefaultRecipe.durationSeconds,
+        steps: videoDefaultRecipe.steps,
+        guidance: videoDefaultRecipe.guidance,
+        flowShift: videoDefaultRecipe.flowShift,
+        audioFlowShift: videoDefaultRecipe.audioFlowShift,
+      });
     }
-  }, [loadedModelKey, defaultSteps, defaultGuidance]);
+  }, [applyVideoDynamicDefault, defaultGuidance, defaultSteps, loadedModelKey, videoDefaultRecipe]);
 
-  // Reset schedule shifts when the loaded model changes.
-  const defaultFlowShift = status?.defaults?.flow_shift ?? null;
-  const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const canPickAudioFlowShift = status?.defaults?.supports_audio_flow_shift === true;
-  useEffect(() => {
-    setFlowShift(defaultFlowShift);
-  }, [defaultFlowShift, loadedModelKey]);
-  useEffect(() => {
-    setAudioFlowShift(defaultAudioFlowShift);
-  }, [defaultAudioFlowShift, loadedModelKey]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself; a declined one snaps to what actually engaged, so the
@@ -1119,9 +1321,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // the LOAD-TIME half of the record: the backend rewrites the transformer_cache entry at GENERATION
   // time, so serializing the whole record let a step-cache toggle discard a pending Advanced edit.
   const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  const initialResolvedSeedHandled = useRef(false);
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
-    if (!record) return;
+    if (
+      !videoPresets.hydrated ||
+      busy === "loading" ||
+      busy === "unloading" ||
+      !record
+    ) {
+      return;
+    }
+    if (!initialResolvedSeedHandled.current) {
+      initialResolvedSeedHandled.current = true;
+      if (videoPresets.hasPersistedSettings && !canReapply) return;
+    }
     const quant = resolvedSelectValue(record.transformer_quant, (v) =>
       // The engaged value spells "no quant" as "off"; the select's option for it is "none".
       (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
@@ -1140,8 +1354,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       ) ?? null,
     );
     if (attention) setAttentionBackend(attention);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
-  }, [resolvedKey]);
+    // resolvedKey stands for the record. busy and canReapply are sampled only when that record or
+    // hydration changes, so unrelated work cannot replay a resident seed over a pending edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedKey, videoPresets.hasPersistedSettings, videoPresets.hydrated]);
 
   // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download
   // the file: the link goes straight into the <video> element, which streams ranges, so playback starts and seeking works.
@@ -1331,14 +1547,18 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const presetIdx = resolutionPresets.findIndex(
         ([w, h]) => w === video.width && h === video.height,
       );
-      if (presetIdx >= 0) setResolutionIdx(presetIdx);
+      if (presetIdx >= 0) {
+        setResolutionIntent([video.width, video.height]);
+        setResolutionIdx(presetIdx);
+      }
       // Restore the frame count when it lies on the current lattice.
       if (durationOptions.some((o) => o.frames === video.num_frames)) {
+        setDurationIntentSeconds(video.num_frames / fps);
         setNumFrames(video.num_frames);
       }
       toast.success("Settings restored to inputs");
     },
-    [resolutionPresets, durationOptions],
+    [resolutionPresets, durationOptions, fps],
   );
 
   // A status read started before an eject can answer after the one that
@@ -1964,9 +2184,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
-          const d = defaultsFor(`${repoId}/${filename}`);
-          setSteps(d.steps);
-          setGuidance(d.guidance);
+          applyVideoModelDefaults(`${repoId}/${filename}`);
         },
         onNotStarted: () => {
           if (quantRevert.current === revert) {
@@ -1978,7 +2196,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
+    [applyVideoModelDefaults, guidance, loadOrStage, pickGuard, quant, revertPick, steps],
   );
 
   // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
@@ -2112,7 +2330,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
-    const l = lastLoad.current;
+    // Status is authoritative when another client replaced the resident model. The ref remains
+    // the fallback while this page's own load is committing and status has not caught up yet.
+    const l = residentReapplyTarget ?? lastLoad.current;
     if (l) {
       void handleLoad(l.repoId, {
         kind: l.kind,
@@ -2120,7 +2340,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         h3Task: l.h3Task,
       });
     }
-  }, [handleLoad]);
+  }, [handleLoad, residentReapplyTarget]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
@@ -2156,9 +2376,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
-        const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
-        setSteps(d.steps);
-        setGuidance(d.guidance);
+        applyVideoModelDefaults(spec.filename ? `${id}/${spec.filename}` : id);
         if (isH3PipelinePick(id, spec.kind)) {
           setPendingH3Load({
             repoId: id,
@@ -2187,9 +2405,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
-        const dq = defaultsFor(`${id}/${meta.ggufFilename}`);
-        setSteps(dq.steps);
-        setGuidance(dq.guidance);
+        applyVideoModelDefaults(`${id}/${meta.ggufFilename}`);
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
@@ -2224,9 +2440,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dq2 = defaultsFor(id);
-        setSteps(dq2.steps);
-        setGuidance(dq2.guidance);
+        applyVideoModelDefaults(id);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2244,9 +2458,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
-        const dsf = defaultsFor(id);
-        setSteps(dsf.steps);
-        setGuidance(dsf.guidance);
+        applyVideoModelDefaults(id);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
             revertPick(revert);
@@ -2278,9 +2490,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      const d = defaultsFor(id);
-      setSteps(d.steps);
-      setGuidance(d.guidance);
+      applyVideoModelDefaults(id);
       // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
       // it needs the same partition question: without it the load silently takes fl2va.
       if (isH3PipelinePick(id, "pipeline")) {
@@ -2301,6 +2511,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     },
     [
       abandonPick,
+      applyVideoModelDefaults,
       beginPick,
       busy,
       guidance,
@@ -2452,7 +2663,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         reference_image_size: canPickReferenceSize ? referenceImageSize : undefined,
         // Send only overrides of the released schedule.
         flow_shift:
-          flowShift != null && flowShift !== defaultFlowShift ? flowShift : undefined,
+          defaultFlowShift != null && flowShift != null && flowShift !== defaultFlowShift
+            ? flowShift
+            : undefined,
         audio_flow_shift:
           canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
             ? audioFlowShift
@@ -2577,7 +2790,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         ]}
       />
       <LoadedBuildSummary status={status} />
-      {status?.loaded && canReapply && (
+      {status?.loaded && (canReapply || residentReapplyTarget) && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
@@ -2724,19 +2937,33 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           >
           {/* Names the pane, as the Images column does. Same shape there, so
               the two pages stay level. */}
-          <div className="mb-2 grid gap-1.5">
-            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-              {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
-              Create videos
-            </h2>
-            <p className="text-xs leading-snug text-muted-foreground">
-              {supportsReferences
-                ? "Generate a video from a prompt and reference pictures, videos or audio"
-                : supportsKeyframes
-                  ? "Generate a video from a prompt, or from a start and end frame"
-                  : "Generate a video from a prompt"}
-            </p>
+          <div className="mb-2 flex items-start justify-between gap-3">
+            <div className="min-w-0 grid gap-1.5">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+                {/* The app's Video icon, same as the sidebar row. */}
+                <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
+                Create videos
+              </h2>
+              <p className="text-xs leading-snug text-muted-foreground">
+                {supportsReferences
+                  ? "Generate a video from a prompt and reference pictures, videos or audio"
+                  : supportsKeyframes
+                    ? "Generate a video from a prompt, or from a start and end frame"
+                    : "Generate a video from a prompt"}
+              </p>
+            </div>
+
+            <MediaGenerationPresetControl
+              key={videoPresets.activePreset}
+              kind="video"
+              presets={videoPresets.presets}
+              activePreset={videoPresets.activePreset}
+              hydrated={videoPresets.hydrated}
+              hasUnsavedChanges={videoPresets.hasUnsavedChanges}
+              onSelect={videoPresets.selectPreset}
+              onSave={videoPresets.savePreset}
+              onDelete={videoPresets.deletePreset}
+            />
           </div>
 
           <Field label="Prompt">
@@ -2957,7 +3184,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           >
             <Select
               value={String(resolutionIdx)}
-              onValueChange={(v) => setResolutionIdx(Number(v))}
+              onValueChange={(v) => {
+                const index = Number(v);
+                const resolution = resolutionPresets[index];
+                if (resolution) setResolutionIntent(resolution);
+                setResolutionIdx(index);
+              }}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -2987,7 +3219,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           >
             <Select
               value={String(numFrames)}
-              onValueChange={(v) => setNumFrames(Number(v))}
+              onValueChange={(v) => {
+                const frames = Number(v);
+                setDurationIntentSeconds(frames / fps);
+                setNumFrames(frames);
+              }}
             >
               <SelectTrigger>
                 <SelectValue />
@@ -3030,11 +3266,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               onChange={setGuidance}
             />
           )}
-          {flowShift != null && (
+          {defaultFlowShift != null && (
             <SliderField
               label="Motion shift"
               hint="Sigma shift of the video schedule. Higher spends more of the schedule at high noise, which reads as more motion and less fine detail. MiniMax-H3 ships 12."
-              value={flowShift}
+              value={flowShift ?? defaultFlowShift}
               min={1}
               max={30}
               step={0.5}

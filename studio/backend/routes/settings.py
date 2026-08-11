@@ -7,7 +7,7 @@ import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -92,10 +92,195 @@ from utils.embedding_model_settings import (
     validate_embedding_model,
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
+from utils.media_generation_preset_settings import (
+    PresetWriteOrder,
+    delete_media_generation_preset,
+    get_media_generation_preset_settings,
+    set_media_generation_preset_settings,
+    upsert_media_generation_preset,
+)
 
 router = APIRouter()
 
 logger = get_logger(__name__)
+
+
+def _preset_write_order(
+    preset_writer: Optional[str] = Header(default = None, max_length = 80),
+    preset_sequence: Optional[int] = Header(default = None, ge = 0),
+) -> PresetWriteOrder:
+    if (preset_writer is None) != (preset_sequence is None):
+        raise HTTPException(status_code = 422, detail = "Incomplete preset write order")
+    return preset_writer, preset_sequence
+
+
+class ImageGenerationPresetParams(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = Field(default = "", max_length = 20_000)
+    width: int = Field(default = 1024, ge = 64, le = 8192)
+    height: int = Field(default = 1024, ge = 64, le = 8192)
+    steps: int = Field(default = 9, ge = 1, le = 500)
+    guidance: float = Field(default = 0, ge = 0, le = 100)
+    batchSize: int = Field(default = 1, ge = 1, le = 32)
+    runs: int = Field(default = 1, ge = 1, le = 128)
+
+
+class VideoGenerationPresetParams(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    negativePrompt: str = Field(default = "", max_length = 20_000)
+    width: int = Field(default = 768, ge = 64, le = 8192)
+    height: int = Field(default = 512, ge = 64, le = 8192)
+    durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
+    steps: int = Field(default = 8, ge = 1, le = 500)
+    guidance: float = Field(default = 1, ge = 0, le = 100)
+    flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+
+
+class MediaGenerationPresetLoadConfig(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    speedMode: Literal["auto", "off", "eager", "default", "max"] = "auto"
+    transformerQuant: Literal["auto", "none", "fp8", "int8", "nvfp4", "mxfp8"] = "auto"
+    attentionBackend: Literal["auto", "native", "cudnn", "flash3", "sage"] = "auto"
+    memoryMode: Literal["auto", "fast", "balanced", "low_vram"] = "auto"
+    transformerCache: Literal["auto", "off", "fbcache"] = "auto"
+
+
+class ImageGenerationPresetLoadConfig(MediaGenerationPresetLoadConfig):
+    cpuOffload: bool = False
+
+
+class VideoGenerationPresetLoadConfig(MediaGenerationPresetLoadConfig):
+    pass
+
+
+class MediaGenerationPreset(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 80)
+
+
+class ImageGenerationPreset(MediaGenerationPreset):
+    params: ImageGenerationPresetParams
+    loadConfig: Optional[ImageGenerationPresetLoadConfig] = None
+
+
+class VideoGenerationPreset(MediaGenerationPreset):
+    params: VideoGenerationPresetParams
+    loadConfig: Optional[VideoGenerationPresetLoadConfig] = None
+
+
+class MediaGenerationPresetSettings(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
+    activePresetSource: Literal["builtin-default", "custom", "modified"] = "builtin-default"
+    saved: bool = False
+
+
+class ImageGenerationPresetSettings(MediaGenerationPresetSettings):
+    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+    currentLoadConfig: Optional[ImageGenerationPresetLoadConfig] = None
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list, max_length = 100)
+
+
+class VideoGenerationPresetSettings(MediaGenerationPresetSettings):
+    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+    currentLoadConfig: Optional[VideoGenerationPresetLoadConfig] = None
+    customPresets: list[VideoGenerationPreset] = Field(default_factory = list, max_length = 100)
+
+
+@router.get(
+    "/generation-presets/image",
+    response_model = ImageGenerationPresetSettings,
+)
+def get_image_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> ImageGenerationPresetSettings:
+    stored = get_media_generation_preset_settings("image")
+    response = ImageGenerationPresetSettings.model_validate(stored)
+    response.saved = bool(stored)
+    return response
+
+
+@router.put(
+    "/generation-presets/image",
+    response_model = ImageGenerationPresetSettings,
+)
+def update_image_generation_preset_settings(
+    payload: ImageGenerationPresetSettings,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> ImageGenerationPresetSettings:
+    stored = set_media_generation_preset_settings(
+        "image",
+        payload.model_dump(exclude = {"saved"}),
+        write,
+    )
+    return ImageGenerationPresetSettings.model_validate({**stored, "saved": True})
+
+
+@router.get(
+    "/generation-presets/video",
+    response_model = VideoGenerationPresetSettings,
+)
+def get_video_generation_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> VideoGenerationPresetSettings:
+    stored = get_media_generation_preset_settings("video")
+    response = VideoGenerationPresetSettings.model_validate(stored)
+    response.saved = bool(stored)
+    return response
+
+
+@router.put(
+    "/generation-presets/video",
+    response_model = VideoGenerationPresetSettings,
+)
+def update_video_generation_preset_settings(
+    payload: VideoGenerationPresetSettings,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> VideoGenerationPresetSettings:
+    stored = set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(exclude = {"saved"}),
+        write,
+    )
+    return VideoGenerationPresetSettings.model_validate({**stored, "saved": True})
+
+
+@router.put("/generation-presets/{kind}/custom")
+def upsert_custom_generation_preset(
+    kind: Literal["image", "video"],
+    payload: ImageGenerationPreset | VideoGenerationPreset,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    expected = ImageGenerationPreset if kind == "image" else VideoGenerationPreset
+    if not isinstance(payload, expected):
+        raise HTTPException(status_code = 422, detail = f"Invalid {kind} preset")
+    try:
+        upsert_media_generation_preset(kind, payload.model_dump(), write)
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return {"saved": True}
+
+
+@router.delete("/generation-presets/{kind}/custom")
+def delete_custom_generation_preset(
+    kind: Literal["image", "video"],
+    name: str,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    if not name or len(name) > 80:
+        raise HTTPException(status_code = 422, detail = "Invalid preset name")
+    delete_media_generation_preset(kind, name, write)
+    return {"deleted": True}
 
 
 class UploadLimitPayload(BaseModel):
