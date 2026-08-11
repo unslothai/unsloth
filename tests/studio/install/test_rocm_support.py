@@ -2636,13 +2636,37 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        # The version chain lives in its own helpers, so they have to be extracted
+        # too. Without them get_torch_index_url calls a command that does not
+        # exist, the guarded assignment swallows the 127, and the no-version
+        # endpoint is reached for the wrong reason -- the test would then pass no
+        # matter what the resolver did. Verified by mutation: making
+        # _detect_rocm_version_tag return a real tag left this test green.
+        version_fns = [
+            _extract_sh_function_body(source, name)
+            for name in (
+                "_rocm_tag_from_amd_smi",
+                "_rocm_tag_from_version_file",
+                "_rocm_tag_from_hipconfig",
+                "_rocm_tag_from_dpkg",
+                "_rocm_tag_from_rpm",
+                "_highest_rocm_tag",
+                "_detect_rocm_version_tag",
+            )
+        ]
         assert fn and probe_fn and family_fn
+        assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
             # /opt/rocm/.info/version directly (no tool to shim), which resolves
             # a tag on a real ROCm box and skips the no-version endpoint under
             # test. Same path-substitution technique as the KFD topology tests.
-            fn = fn.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+            # The read lives in _rocm_tag_from_version_file, so the rewrite has to
+            # land on the helper text; applying it to fn alone became a no-op.
+            version_fns = [
+                body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+                for body in version_fns
+            ]
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
             # Silence every ROCm version source, not just amd-smi: a dev box with
@@ -2665,6 +2689,8 @@ class TestInstallShStructure:
                 + probe_fn
                 + "\n"
                 + family_fn
+                + "\n"
+                + "\n".join(version_fns)
                 + "\n"
                 + fn
                 + "\n"
