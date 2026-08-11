@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import zlib
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -51,6 +52,27 @@ def normalize_domain(value: Any) -> str:
     return ascii_domain
 
 
+@lru_cache(maxsize = 256)
+def _normalized_domain_tuple(raw_domains: tuple) -> tuple:
+    """``normalize_domain`` over an all-``str`` list, deduplicated, order preserved.
+
+    ``normalize_domain`` is a pure function of its argument (lowercase, IDNA encode,
+    validate), so the result for a given tuple of exact ``str`` domains is invariant and
+    safe to memoise. One restricted web search checks the same policy against every
+    candidate URL, which re-normalised both lists (up to 100 domains each) every time.
+    An invalid domain still raises from inside here, and ``lru_cache`` does not memoise
+    exceptions, so the same ``ValueError`` is raised on every call as before.
+    """
+    domains: list = []
+    seen: set = set()
+    for raw_domain in raw_domains:
+        domain = normalize_domain(raw_domain)
+        if domain not in seen:
+            seen.add(domain)
+            domains.append(domain)
+    return tuple(domains)
+
+
 def normalize_website_policy(value: Any) -> dict[str, list[str]]:
     if value is None:
         return {"allowedDomains": [], "blockedDomains": []}
@@ -67,6 +89,12 @@ def normalize_website_policy(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"{key} must be a list")
         if len(raw_domains) > _MAX_DOMAINS_PER_LIST:
             raise ValueError(f"{key} supports at most {_MAX_DOMAINS_PER_LIST} domains")
+        # Exact ``str`` entries only: anything else is unhashable or reaches
+        # ``normalize_domain`` through ``str(value or "")``, and its error message
+        # carries the original repr, so those stay on the uncached path.
+        if all(type(raw_domain) is str for raw_domain in raw_domains):
+            normalized[key] = list(_normalized_domain_tuple(tuple(raw_domains)))
+            continue
         domains: list[str] = []
         for raw_domain in raw_domains:
             domain = normalize_domain(raw_domain)
