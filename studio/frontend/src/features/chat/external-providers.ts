@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -14,6 +13,9 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+
+  /** Whether the backend has an installation-saved key. */
+  hasApiKey?: boolean;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**
@@ -421,8 +423,9 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
   }
 }
 
-/** Load the raw key map from localStorage. Values are opaque strings: either
- * AES-GCM ciphertext or legacy plaintext. */
+
+
+/** Load legacy browser keys for retry-safe backend migration. */
 function loadRawKeyMap(): Record<string, string> {
   if (!canUseStorage()) return {};
   try {
@@ -457,44 +460,50 @@ export function saveExternalProviders(
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
-    // Prune keys for removed providers (works on raw ciphertext, no decryption)
-    const allowedIds = new Set(providers.map((provider) => provider.id));
-    const keys = loadRawKeyMap();
-    const pruned: Record<string, string> = {};
-    for (const [providerId, value] of Object.entries(keys)) {
-      if (allowedIds.has(providerId)) {
-        pruned[providerId] = value;
-      }
-    }
-    saveRawKeyMap(pruned);
+    // Legacy keys are migration input. Preserve unmatched entries until the
+    // backend confirms the exact key was stored.
   } catch {
     // ignore
   }
 }
 
-/** Retrieve a provider API key from localStorage; "" if none stored. */
+/** Retrieve a legacy provider key used only as migration/request fallback. */
 export function getExternalProviderApiKey(
   providerId: string,
 ): string {
+
   const keys = loadRawKeyMap();
   return keys[providerId] ?? "";
 }
 
-/** Store a provider API key in localStorage. */
-export function setExternalProviderApiKey(
-  providerId: string,
-  apiKey: string,
-): void {
+export function pruneExternalProviderApiKeys(providerIds: Iterable<string>): void {
   if (!canUseStorage()) return;
-  const keys = loadRawKeyMap();
-  keys[providerId] = apiKey;
-  saveRawKeyMap(keys);
+  const retainedIds = new Set(providerIds);
+  try {
+    const keys = loadRawKeyMap();
+    let changed = false;
+    for (const providerId of Object.keys(keys)) {
+      if (retainedIds.has(providerId)) continue;
+      delete keys[providerId];
+      changed = true;
+    }
+    if (changed) saveRawKeyMap(keys);
+  } catch {
+    // Keep legacy data untouched when storage is unavailable.
+  }
 }
 
-export function removeExternalProviderApiKey(providerId: string): void {
+
+
+export function removeExternalProviderApiKey(
+  providerId: string,
+  expectedApiKey?: string,
+): void {
   if (!canUseStorage()) return;
   try {
     const keys = loadRawKeyMap();
+
+    if (expectedApiKey !== undefined && keys[providerId] !== expectedApiKey) return;
     delete keys[providerId];
     saveRawKeyMap(keys);
   } catch {

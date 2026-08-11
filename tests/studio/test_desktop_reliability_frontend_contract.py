@@ -509,15 +509,22 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only.
-    assert source.count("{showSidebarSurface && pinned && (") == 2
+
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
-        in source
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in source
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
     )
 
 
@@ -730,7 +737,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    assert (
+        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name

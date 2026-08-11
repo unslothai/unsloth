@@ -1407,8 +1407,9 @@ def studio_default(
     disable_dns_pinning: bool = typer.Option(
         False,
         "--disable-dns-pinning",
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     password: str = typer.Option(
         "",
@@ -1926,8 +1927,9 @@ def run(
         False,
         "--disable-dns-pinning",
         rich_help_panel = _RUN_PANEL_TOOLS,
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,

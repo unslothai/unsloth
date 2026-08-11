@@ -233,16 +233,22 @@ def boot(
     state: Runtime,
     *,
     seed: dict | None = None,
+    show: bool = True,
 ) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
     page.goto(BASE, wait_until = "domcontentloaded")
+    # The indicator ships off, so every check that wants the card has to switch
+    # it on. Pass show = False to exercise the default.
+    seeded = dict(seed or {})
+    if show:
+        seeded.setdefault(SHOW_KEY, "true")
     page.evaluate(
         """([seed, keys]) => {
             for (const k of keys) localStorage.removeItem(k);
             for (const [k, v] of Object.entries(seed || {}))
                 localStorage.setItem(k, v);
         }""",
-        [seed or {}, [POSITION_KEY, COLLAPSED_KEY, SHOW_KEY]],
+        [seeded, [POSITION_KEY, COLLAPSED_KEY, SHOW_KEY]],
     )
     page.reload(wait_until = "domcontentloaded")
     page.wait_for_timeout(SETTLE_MS // 2)
@@ -705,15 +711,19 @@ def run(page, state: Runtime) -> None:
     # ── The preference ──────────────────────────────────────────────────
     state.reset()
     state.chat = chat(active_model = "unsloth/Qwen3-4B", loaded = ["unsloth/Qwen3-4B"])
-    boot(page, state, seed = {SHOW_KEY: "false"})
-    check("the preference hides the card", page.locator(CARD).count() == 0)
+    # Nothing stored: a fresh install shows no card even with a model resident.
+    boot(page, state, show = False)
+    check("the card is off by default", page.locator(CARD).count() == 0)
     state.status_reads = 0
     page.wait_for_timeout(SETTLE_MS)
     check(
-        "the preference stops the poll",
+        "the default stops the poll",
         state.status_reads <= 1,
         f"{state.status_reads} status reads while off",
     )
+    # What the old default wrote when it was turned down; still off.
+    boot(page, state, seed = {SHOW_KEY: "false"}, show = False)
+    check("an older explicit false still hides the card", page.locator(CARD).count() == 0)
 
 
 if __name__ == "__main__":

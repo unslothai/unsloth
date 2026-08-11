@@ -42,19 +42,14 @@ dependencies = [
 unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = {attr = "unsloth._version.__version__"}
 
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.cmdclass]
-# Snapshots CHANGELOG.md into studio/ so every build path ships it.
-build_py = "_changelog_build.build_py"
-
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
-    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",
@@ -74,6 +69,9 @@ studio = [
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
+    # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
+    # /docs and /redoc pages render blank in an installed Studio.
+    "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]

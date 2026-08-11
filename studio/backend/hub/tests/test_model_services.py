@@ -1717,6 +1717,34 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat-GGUF"]
 
 
+def test_cached_gguf_scan_emits_curated_asr_as_non_chat_audio_inventory(monkeypatch, tmp_path):
+    asr = _repo(
+        "unslothai/Qwen3-ASR-0.6B-GGUF",
+        [
+            _file("Qwen3-ASR-0.6B-Q8_0.gguf", 800_000_000),
+            _file("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", 200_000_000),
+        ],
+        tmp_path / "asr",
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [asr])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path, **_kw: False,
+    )
+
+    [row] = cache_inventory._scan_cached_gguf()
+
+    assert row["repo_id"] == "unslothai/Qwen3-ASR-0.6B-GGUF"
+    assert row["size_bytes"] == 800_000_000
+    assert row["capabilities"]["can_chat"] is False
+    assert row["capabilities"]["supports_vision"] is False
+
+
 def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     embedder = _repo(
@@ -1781,6 +1809,45 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
+
+
+def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch, tmp_path):
+    curated_path = tmp_path / "hub" / "models--unsloth--whisper-tiny"
+    curated_path.mkdir(parents = True)
+    curated = _repo(
+        "unsloth/whisper-tiny",
+        [_file("config.json", 12), _file("model.safetensors", 80_000_000)],
+        curated_path,
+    )
+    custom_path = tmp_path / "hub" / "models--Org--custom-whisper"
+    custom_path.mkdir(parents = True)
+    custom = _repo(
+        "Org/custom-whisper",
+        [_file("config.json", 12), _file("model.safetensors", 90_000_000)],
+        custom_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [curated, custom])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path, **_kw: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_cached_model_local_metadata",
+        lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
+    )
+
+    rows = cache_inventory._scan_cached_models()
+
+    rows_by_repo = {row["repo_id"]: row for row in rows}
+    assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
+    assert rows_by_repo["Org/custom-whisper"]["task"] == "automatic-speech-recognition"
+    assert all(row["capabilities"]["can_chat"] is False for row in rows_by_repo.values())
 
 
 _SNAPSHOT_SHA = "a" * 40
@@ -4849,6 +4916,10 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
+    """Only a hub that can still append to the partial earns the same-transport reprieve."""
+    # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
+    # be a no-op here.
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -4860,7 +4931,11 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
         only_blob_hashes = frozenset({"q4-main"}),
         companion_blob_hashes = companion,
     )
-    (blobs / "shared-mmproj.incomplete").write_bytes(b"resumable")
+    partial = blobs / "shared-mmproj.incomplete"
+    partial.write_bytes(b"resumable")
+    # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
+    old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
+    os.utime(partial, (old, old))
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4872,7 +4947,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     )
 
     assert purged == 0
-    assert (blobs / "shared-mmproj.incomplete").exists()
+    assert partial.exists()
 
 
 def test_prepare_cache_for_transport_protects_peer_companion(monkeypatch, tmp_path):

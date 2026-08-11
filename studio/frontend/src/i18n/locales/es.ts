@@ -85,6 +85,7 @@ export const es = {
       recipes: "Recetas",
       images: "Imágenes",
       video: "Vídeo",
+      audio: "Audio",
       trainChecking: "Comprobando si este equipo admite entrenamiento...",
       videoChecking: "Comprobando si este equipo admite vídeo...",
       more: "Más",
@@ -389,6 +390,9 @@ export const es = {
         keepKv: "Conservar el contexto del chat al liberar el modelo por inactividad",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad para que los chats reanudados no vuelvan a leer el historial. Hasta 10 GB en disco.",
+        apiOnly: "Liberar solo los modelos cargados por la API",
+        apiOnlyDescription:
+          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Studio y solo libera los que cargó una solicitud a la API.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",
@@ -916,6 +920,11 @@ export const es = {
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',
+      thinking: {
+        collapseByDefault: "Contraer el razonamiento de forma predeterminada",
+        collapseByDefaultDescription:
+          "Mantén el razonamiento contraído mientras el modelo piensa, en lugar de abrirlo automáticamente. Expande cualquier bloque para leerlo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Contraer bloques HTML",
@@ -996,6 +1005,10 @@ export const es = {
       archivedChats: "Chats archivados",
       archivedChatsDescription:
         "Consulta y gestiona los chats que has archivado.",
+      archivedImages: "Imágenes archivadas",
+      archivedImagesDescription: "Consulta y gestiona las imágenes que has archivado.",
+      archivedVideos: "Vídeos archivados",
+      archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
       manageAction: "Gestionar",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",

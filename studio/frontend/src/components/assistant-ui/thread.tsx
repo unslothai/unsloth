@@ -3181,7 +3181,12 @@ const Composer: FC<{
   // The composer docks to the bottom of the viewport once a thread has turns,
   // in the same column the corner overlay stack occupies. Published so the
   // stack lifts above it rather than covering the Send button.
-  usePublishedFrame(composerEl);
+  //
+  // Coverable, though: in a window too short to hold the update cards above it
+  // there is no arrangement that dodges the composer AND shows them whole, and
+  // a card clipped at the rail's edge looks like it has slid behind the page.
+  // The stack takes the corner and paints over the composer there instead.
+  usePublishedFrame(composerEl, { coverable: true });
   const dictationBaseTextRef = useRef("");
   const dictationComposerRef = useRef("");
   // Thread switches reuse this composer, so the send has to know where it
@@ -5337,9 +5342,10 @@ const CancelledIndicator: FC = () => {
 
 /** Text of an assistant turn: what a continuation resumes from.
  *
- * Text parts only, matching replay: reasoning is not sent back. Joined with nothing,
- * like the backend's `trailing_assistant_text`: a turn split around a reasoning part
- * never had a newline between its halves, and inventing one moves the boundary. */
+ * Text parts only: a continuation resumes the visible answer, not its private reasoning.
+ * Joined with nothing, like the backend's `trailing_assistant_text`: a turn split around
+ * a reasoning part never had a newline between its halves, and inventing one moves the
+ * boundary. */
 function assistantMessageText(content: readonly unknown[] | undefined): string {
   if (!content) {
     return "";

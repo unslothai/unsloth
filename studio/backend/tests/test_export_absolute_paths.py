@@ -712,7 +712,7 @@ def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch
     monkeypatch.setattr(
         export_route,
         "_try_register_external_export",
-        lambda path: (registered.append(path) is None, str(path)),
+        lambda path, **_kwargs: (registered.append(path) is None, str(path)),
     )
     monkeypatch.setattr(
         "utils.paths.storage_roots.exports_root",
@@ -727,6 +727,42 @@ def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch
         "scan_folder_path": str(output),
     }
     assert registered == [output]
+
+
+def test_recovered_external_export_invalidates_only_when_first_registered(tmp_path, monkeypatch):
+    _install_lightweight_backend_stubs(monkeypatch)
+    export_route = _load_module(
+        "test_routes_export_registration_invalidation",
+        "routes/export.py",
+        monkeypatch,
+    )
+    output = tmp_path / "Gemma4_26B_gguf"
+    output.mkdir()
+    insertions = iter((True, False, False))
+    invalidations = []
+    warms = []
+
+    storage_pkg = types.ModuleType("storage")
+    studio_db = types.ModuleType("storage.studio_db")
+    studio_db.add_scan_folder_with_status = lambda path: (
+        {"id": 1, "path": path, "created_at": "fake"},
+        next(insertions),
+    )
+    resolver = types.ModuleType("core.inference.local_model_resolver")
+    resolver.invalidate_index = lambda: invalidations.append(1)
+    resolver.warm_index_soon = lambda: warms.append(1)
+    monkeypatch.setitem(sys.modules, "storage", storage_pkg)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", studio_db)
+    monkeypatch.setitem(sys.modules, "core.inference.local_model_resolver", resolver)
+
+    assert export_route._try_register_external_export(output) == (True, str(output))
+    assert export_route._try_register_external_export(output) == (True, str(output))
+    assert export_route._try_register_external_export(output, refresh_index = True) == (
+        True,
+        str(output),
+    )
+    assert invalidations == [1, 1]
+    assert warms == [1, 1]
 
 
 def test_export_details_does_not_register_contained_exports(tmp_path, monkeypatch):

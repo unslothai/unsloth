@@ -78,6 +78,7 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      audio: "Audio",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
@@ -372,6 +373,9 @@ export const en = {
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        apiOnly: "Only unload models loaded by the API",
+        apiOnlyDescription:
+          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -886,6 +890,11 @@ export const en = {
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      thinking: {
+        collapseByDefault: "Collapse Thinking by default",
+        collapseByDefaultDescription:
+          "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
@@ -962,6 +971,10 @@ export const en = {
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
+      archivedImages: "Archived images",
+      archivedImagesDescription: "View and manage images you have archived.",
+      archivedVideos: "Archived videos",
+      archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",

@@ -209,6 +209,18 @@ class _FakeBackend(video_module.VideoBackend):
         }
 
 
+@pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """These tests are about the route, not about the runner's diffusers.
+
+    The module docstring promises they run without diffusers, and most do, but the
+    MiniMax-H3 download plan reaches `import diffusers` in video.py's modular-workflow
+    branch. Backend CI installs no diffusers (it lives in requirements/diffusers-pin.txt,
+    which only install_python_stack.py applies), so without the proxy that one test dies
+    on ModuleNotFoundError. Same fixture the diffusion test modules already use.
+    """
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
@@ -1273,6 +1285,15 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
     # pick rather than a keyframe checkpoint wearing the wrong name. A scheme with no checkpoint
     # at all is still refused BEFORE staging, which is the failure this route check was added for
     # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
+    #
+    # The host-level precision gate is a DIFFERENT question from the one under test, and on a
+    # box with no CUDA and no torchao it answers 409 before the partition check is ever reached.
+    # Stubbing it keeps the availability refusal (a 400, raised by validate_load_request below)
+    # under test everywhere, including the Backend CI matrix that installs no torchao. Same stub
+    # the neighbouring route tests use; test_video_h3_te_quant.py covers the gate itself.
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
         backend,

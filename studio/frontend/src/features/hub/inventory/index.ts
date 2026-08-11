@@ -71,6 +71,7 @@ export {
   type DeviceInventorySource,
   type DeviceInventorySourceState,
 } from "./use-device-inventory";
+export { INVENTORY_FRESHNESS_WINDOW_MS } from "./inventory-freshness";
 export {
   useHubInventory,
   type HubInventoryKind,
