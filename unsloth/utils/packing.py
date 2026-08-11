@@ -37,7 +37,9 @@ except Exception:
         _XFormersBlockMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[
+    Tuple[torch.device, Tuple[int, ...], int], Any
+] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -55,12 +57,56 @@ def _window_cache_key(sliding_window: Optional[int]) -> int:
     return int(sliding_window)
 
 
-def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[int]):
+def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
+    """Return an xFormers attention bias whose tensor metadata is on ``device``."""
+    if attn_bias is None:
+        return None
+
+    device = torch.device(device)
+    q_seqinfo = getattr(attn_bias, "q_seqinfo", None)
+    k_seqinfo = getattr(attn_bias, "k_seqinfo", None)
+    if q_seqinfo is not None and k_seqinfo is not None:
+        q_seqstart = getattr(q_seqinfo, "seqstart", None)
+        k_seqstart = getattr(k_seqinfo, "seqstart", None)
+        if (
+            getattr(q_seqstart, "device", None) == device
+            and getattr(k_seqstart, "device", None) == device
+        ):
+            return attn_bias
+
+    move = getattr(attn_bias, "to", None)
+    if callable(move):
+        moved = move(device)
+        return attn_bias if moved is None else moved
+
+    # xFormers before 0.0.27 exposes ``to`` only on the sequence metadata and
+    # mutates it in place. Keep that compatibility path while newer versions
+    # return a new attention-bias object from ``attn_bias.to(device)`` above.
+    seen = set()
+    for name in ("q_seqinfo", "k_seqinfo"):
+        seqinfo = getattr(attn_bias, name, None)
+        if seqinfo is None or id(seqinfo) in seen:
+            continue
+        seen.add(id(seqinfo))
+        move = getattr(seqinfo, "to", None)
+        if callable(move):
+            moved = move(device)
+            if moved is not None:
+                setattr(attn_bias, name, moved)
+    return attn_bias
+
+
+def _get_cached_block_mask(
+    lengths: Tuple[int, ...],
+    sliding_window: Optional[int],
+    device: torch.device,
+):
     if _XFormersBlockMask is None:
         return None
 
+    device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (lengths, window_key)
+    cache_key = (device, lengths, window_key)
     cached = _XFORMERS_MASK_CACHE.get(cache_key)
     if cached is not None:
         _XFORMERS_MASK_CACHE.move_to_end(cache_key)
@@ -69,6 +115,7 @@ def _get_cached_block_mask(lengths: Tuple[int, ...], sliding_window: Optional[in
     mask = _XFormersBlockMask.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
         mask = mask.make_local_attention(window_size = window_key)
+    mask = move_xformers_attention_bias(mask, device)
 
     _XFORMERS_MASK_CACHE[cache_key] = mask
     if len(_XFORMERS_MASK_CACHE) > _XFORMERS_MASK_CACHE_MAXSIZE:
@@ -564,7 +611,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
-        mask = _get_cached_block_mask(lengths, sliding_window)
+        mask = _get_cached_block_mask(lengths, sliding_window, device)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
@@ -669,6 +716,7 @@ def mask_packed_sequence_boundaries(
 
 def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
+    _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
@@ -679,6 +727,7 @@ __all__ = [
     "configure_padding_free",
     "enable_sample_packing",
     "enable_padding_free_metadata",
+    "move_xformers_attention_bias",
     "mark_allow_overlength",
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",

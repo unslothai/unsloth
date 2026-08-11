@@ -29,6 +29,7 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    move_xformers_attention_bias,
 )
 
 flash_attn_func = None
@@ -320,6 +321,7 @@ def run_attention(
             sliding_window = sliding_window,
             base_mask = context.causal_mask,
         )
+        attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
         Q_t = Q.transpose(1, 2)
         K_t = K.transpose(1, 2)
