@@ -1285,7 +1285,9 @@ def test_the_overlay_stack_fits_the_viewport():
     it. The cap is `stackGeometry` now, checked numerically in
     studio/frontend/tests/monitor-stack-inset.test.ts; here the stack must read it."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    stacks = _overlay_stacks(provider)
+    # Counted by the layer they sit on, not by a literal z-index: the
+    # overlay rail reads its depth from Z_LAYER now.
+    stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert stacks, "the bottom-right overlay stack is gone"
     # Counted, not merely present: capping only one of the stacks is the bug here.
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
@@ -1511,7 +1513,9 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
-    stacks = _overlay_stacks(provider)
+    # Counted by the layer they sit on, not by a literal z-index: the
+    # overlay rail reads its depth from Z_LAYER now.
+    stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "the cap this has to absorb"
 
 

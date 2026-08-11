@@ -9,6 +9,10 @@ import {
 } from "@/features/settings";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
+import {
+  useFloatingPanelOrderStore,
+  useFloatingPanelZIndex,
+} from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { CpuIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -433,6 +437,15 @@ function FloatingMonitorPanel({
     finishDrag,
   } = useMonitorLayout(constraintsElement);
 
+  const zIndex = useFloatingPanelZIndex("resource-monitor");
+  const raisePanel = useFloatingPanelOrderStore((state) => state.raise);
+
+  // Opening the monitor puts it in front of the API monitor panel; touching
+  // either afterwards brings that one forward instead.
+  useEffect(() => {
+    raisePanel("resource-monitor");
+  }, [raisePanel]);
+
   const ramTotal = systemInfo.memory?.total_gb ?? 0;
   const ramAvailable = systemInfo.memory?.available_gb ?? 0;
   const ramUsed = Math.max(0, ramTotal - ramAvailable);
@@ -467,20 +480,26 @@ function FloatingMonitorPanel({
 
   const hasGpu = (displayedGpu?.available ?? false) && devices.length > 0;
 
-  // The container's z sits above the bottom-right overlay stack (z-[9998]). That
-  // stack normally dodges this monitor, but the dodge has a floor: drag the monitor
-  // to the corner and resize it to fill the viewport and there is nowhere left to
-  // dodge to, so stackBottomInset clamps at MIN_STACK_ROOM and parks the stack at
-  // the top of the screen, directly over this monitor's title bar and Close button.
-  // The stack is passive status; this is a window the user is dragging, resizing and
-  // closing, so it wins. Still below the startup screen and tooltips.
+  // The container sits on the floating panel layer, above the bottom-right
+  // overlay stack. That stack normally dodges this monitor, but the dodge has a
+  // floor: drag the monitor to the corner and resize it to fill the viewport and
+  // there is nowhere left to dodge to, so stackBottomInset clamps at
+  // MIN_STACK_ROOM and parks the stack at the top of the screen, directly over
+  // this monitor's title bar and Close button. The stack is passive status; this
+  // is a window the user is dragging, resizing and closing, so it wins. Still
+  // below the startup screen and tooltips. See lib/z-layers.
+  //
+  // The API monitor panel shares this layer rather than sitting under it, and
+  // whichever of the two the user touched last is the one in front.
   return (
     <div
       ref={setConstraintsElement}
-      className="pointer-events-none fixed inset-4 z-[9999]"
+      className="pointer-events-none fixed inset-4"
+      style={{ zIndex }}
     >
       <motion.div
         ref={monitorRef}
+        onPointerDownCapture={() => raisePanel("resource-monitor")}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}

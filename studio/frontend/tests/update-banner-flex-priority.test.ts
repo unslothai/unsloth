@@ -232,7 +232,7 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
 });
 
 test("the rail scrolls rather than spilling its cards", () => {
-  const rails = PROVIDER.split("fixed right-4 z-[9998]");
+  const rails = PROVIDER.split('"fixed right-4 ');
   // The desktop rail and the browser rail.
   assert.equal(rails.length - 1, 2, "the rail count changed");
   for (const rail of rails.slice(1)) {
@@ -260,7 +260,7 @@ test("the rail scrolls rather than spilling its cards", () => {
 // opt back in, so a scrolling rail nobody can drag hides the cards under the
 // fold. It is click-through only while there is nothing to scroll to.
 test("a scrolling rail takes pointer input, a fitting one stays click-through", () => {
-  const rails = PROVIDER.split("fixed right-4 z-[9998]");
+  const rails = PROVIDER.split('"fixed right-4 ');
   assert.equal(rails.length - 1, 2, "the rail count changed");
   for (const rail of rails.slice(1)) {
     const branch = rail.slice(0, rail.indexOf("style={{"));
