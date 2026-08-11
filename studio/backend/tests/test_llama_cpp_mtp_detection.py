@@ -777,7 +777,9 @@ _NEEDS_BASH = pytest.mark.skipif(
 
 
 def _clear_caps_cache():
-    LlamaCppBackend._capability_cache.clear()
+    with LlamaCppBackend._capability_cache_lock:
+        LlamaCppBackend._capability_cache.clear()
+        LlamaCppBackend._capability_retry_after.clear()
 
 
 @_NEEDS_BASH
@@ -842,8 +844,13 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
 
     monkeypatch.setattr(
         "core.inference.llama_cpp.child_env_without_native_path_secret",
-        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+        lambda: {
+            "LD_LIBRARY_PATH": "/already-there",
+            "LLAMA_ARG_DEVICE": "MTL0",
+            "LLAMA_ARG_OVERRIDE_TENSOR": ".*=MTL0",
+        },
     )
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "darwin")
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
@@ -861,9 +868,34 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert caps["supports_mtp"] is True
     assert captured["cmd"] == [str(fake), "--help"]
     assert captured["env"] is not None
+    assert captured["env"]["GGML_METAL_DEVICES"] == "0"
+    assert not any(name.startswith("LLAMA_ARG_") for name in captured["env"])
     ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
     assert str(fake.parent) in ld_dirs
     assert "/already-there" in ld_dirs
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_does_not_disable_devices_off_macos(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,mtp,ngram-simple\n",
+    )
+    captured = {}
+    monkeypatch.setattr("core.inference.llama_cpp.child_env_without_native_path_secret", dict)
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "linux")
+
+    def fake_run(_cmd, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
+        )
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
+    _clear_caps_cache()
+    LlamaCppBackend.probe_server_capabilities(str(fake))
+
+    assert "GGML_METAL_DEVICES" not in captured["env"]
 
 
 @_NEEDS_BASH
@@ -2602,10 +2634,9 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
 
 
 @_NEEDS_BASH
-def test_inconclusive_probe_is_not_cached_so_a_later_help_retries(tmp_path, monkeypatch):
-    """A transient --help timeout must not pin "loading without speculative
-    decoding" for the whole process (#8317). The inconclusive result must not be
-    cached, so once --help succeeds the next probe re-runs and reports MTP."""
+def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monkeypatch):
+    """A transient timeout may not be pinned for the whole process, while a
+    persistent failure may not make every capability caller wait again (#8317)."""
     import subprocess as _subprocess
 
     fake = _make_fake_llama_server(
@@ -2613,18 +2644,99 @@ def test_inconclusive_probe_is_not_cached_so_a_later_help_retries(tmp_path, monk
         "--spec-type none,draft-mtp,ngram-mod",
     )
     _clear_caps_cache()
+    now = [100.0]
+    calls = []
 
-    def _timeout(cmd, **kwargs):
-        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) <= 2:
+            raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+            stderr = "",
+            returncode = 0,
+        )
 
-    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _timeout)
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
     first = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert first["mtp_probe_inconclusive"] is True
     assert first["supports_mtp"] is False
 
-    # The timeout is gone; --help now succeeds. A cached inconclusive result
-    # would keep MTP disabled until Studio restarts.
-    monkeypatch.undo()
+    # Immediate callers reuse the inconclusive answer instead of each paying
+    # the subprocess timeout again.
     second = LlamaCppBackend.probe_server_capabilities(str(fake))
-    assert second["mtp_probe_inconclusive"] is False
-    assert second["supports_mtp"] is True
+    assert second is first
+    assert len(calls) == 1
+
+    # Every failed retry receives a fresh bounded window; persistent failures
+    # still do not make every caller pay the subprocess timeout.
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    retried = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert retried["mtp_probe_inconclusive"] is True
+    assert len(calls) == 2
+    assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
+    assert len(calls) == 2
+
+    # Once a later retry succeeds, the result returns to the normal long-lived
+    # cache.
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert recovered["mtp_probe_inconclusive"] is False
+    assert recovered["supports_mtp"] is True
+    assert len(calls) == 3
+    assert LlamaCppBackend.probe_server_capabilities(str(fake)) is recovered
+    assert len(calls) == 3
+
+
+@_NEEDS_BASH
+def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkeypatch):
+    """A late, lower-confidence result may not replace a conclusive result."""
+    import subprocess as _subprocess
+    import threading as _threading
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    barrier = _threading.Barrier(2)
+    assignment_lock = _threading.Lock()
+    success_published = _threading.Event()
+    call_ids = []
+    results = []
+
+    def _run(cmd, **kwargs):
+        with assignment_lock:
+            call_id = len(call_ids)
+            call_ids.append(call_id)
+        barrier.wait(timeout = 2)
+        if call_id == 0:
+            return _types.SimpleNamespace(
+                stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+                stderr = "",
+                returncode = 0,
+            )
+        assert success_published.wait(timeout = 2)
+        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+    def _probe():
+        result = LlamaCppBackend.probe_server_capabilities(str(fake))
+        results.append(result)
+        if not result["mtp_probe_inconclusive"]:
+            success_published.set()
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    threads = [_threading.Thread(target = _probe) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 3)
+
+    assert not any(thread.is_alive() for thread in threads)
+    assert len(call_ids) == 2
+    assert len(results) == 2
+    assert all(result["supports_mtp"] for result in results)
+    cached = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert cached["supports_mtp"] is True
+    assert cached["mtp_probe_inconclusive"] is False

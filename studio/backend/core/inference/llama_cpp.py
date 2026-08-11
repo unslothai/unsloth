@@ -4263,7 +4263,10 @@ class LlamaCppBackend:
         return bool(match) and int(match.group(1)) in cls._BROKEN_DSPARK_BUILDS
 
     # Cached on (path, mtime); `unsloth studio update` bumps mtime.
+    _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
     _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+    _capability_retry_after: dict[tuple[str, int], float] = {}
+    _capability_cache_lock = threading.Lock()
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
@@ -4311,9 +4314,16 @@ class LlamaCppBackend:
         except OSError:
             mtime = 0
         cache_key = (bin_path, mtime)
-        cached = cls._capability_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with cls._capability_cache_lock:
+            cached = cls._capability_cache.get(cache_key)
+            if cached is not None:
+                if not cached.get("mtp_probe_inconclusive"):
+                    return cached
+                retry_after = cls._capability_retry_after.get(cache_key)
+                if retry_after is not None and time.monotonic() < retry_after:
+                    return cached
+                cls._capability_cache.pop(cache_key, None)
+                cls._capability_retry_after.pop(cache_key, None)
 
         mtp_token: Optional[str] = None
         supports_dspark = False
@@ -4335,6 +4345,18 @@ class LlamaCppBackend:
         help_text = ""
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
+            # Capability detection describes the binary, independently of the
+            # user's launch defaults. In particular, a device selected through
+            # LLAMA_ARG_* becomes invalid when the macOS probe disables Metal.
+            for name in tuple(probe_env):
+                if name.startswith("LLAMA_ARG_"):
+                    probe_env.pop(name, None)
+            if sys.platform == "darwin":
+                # Building --help asks llama_supports_rpc(), which otherwise
+                # initializes Metal and compiles its embedded shaders. A cold
+                # compile exceeds this probe's timeout; no device is needed to
+                # enumerate the command-line flags.
+                probe_env["GGML_METAL_DEVICES"] = "0"
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
@@ -4510,14 +4532,26 @@ class LlamaCppBackend:
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
-        # A transient --help timeout/crash yields an inconclusive probe (#8317).
-        # Caching it would pin "loading without speculative decoding" for the
-        # whole Studio process even after llama-server --help starts succeeding,
-        # since the cache key (path, mtime) never changes. Only cache a
-        # conclusive result so a later call re-probes and can recover.
-        if not mtp_probe_inconclusive:
+        with cls._capability_cache_lock:
+            published = cls._capability_cache.get(cache_key)
+            if published is not None and (
+                not published.get("mtp_probe_inconclusive") or mtp_probe_inconclusive
+            ):
+                # Concurrent callers may finish out of order. Never replace a
+                # conclusive result with a timeout, or a newer retry result with
+                # another result of the same confidence.
+                return published
             cls._capability_cache[cache_key] = info
-        return info
+            if mtp_probe_inconclusive:
+                # Bound both failure modes: do not pin a transient failure for
+                # the process lifetime, and do not make every caller repeat a
+                # 10-second timeout while a persistent failure remains (#8317).
+                cls._capability_retry_after[cache_key] = (
+                    time.monotonic() + cls._CAPABILITY_PROBE_RETRY_SECONDS
+                )
+            else:
+                cls._capability_retry_after.pop(cache_key, None)
+            return info
 
     @staticmethod
     def _mtp_token_from_spec_help(spec_help: str) -> Optional[str]:
