@@ -7,6 +7,7 @@ atomic writes and orphan pruning."""
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -64,6 +65,24 @@ def test_pin_rank_orders_most_recently_pinned_first(gdir):
     assert flags.pin_rank(items, "second") > flags.pin_rank(items, "first")
     # An unpinned id must sort behind every pinned one.
     assert flags.pin_rank(items, "unpinned") == float("-inf")
+
+
+def test_a_coarse_clock_still_orders_two_pins(gdir, monkeypatch):
+    # Windows advances time.time() in ~16 ms steps, so two pins a click apart read the same wall
+    # clock and the pinned group loses the order the client serializes its PATCHes to preserve.
+    import time as _time
+
+    monkeypatch.setattr(_time, "time", lambda: 1000.0)
+    flags.set_flags(gdir, "first", pinned = True)
+    flags.set_flags(gdir, "second", pinned = True)
+    flags.set_flags(gdir, "third", pinned = True)
+    items = flags.read(gdir)
+    ranks = [flags.pin_rank(items, i) for i in ("first", "second", "third")]
+    assert ranks[0] < ranks[1] < ranks[2], ranks
+    # Re-pinning an already pinned id still moves it to the front of the group.
+    flags.set_flags(gdir, "first", pinned = True)
+    items = flags.read(gdir)
+    assert flags.pin_rank(items, "first") > flags.pin_rank(items, "third")
 
 
 @pytest.mark.parametrize(
@@ -325,15 +344,24 @@ def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):
 
 
 def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypatch):
-    # Some network filesystems refuse flock. Acquisition already tolerated that, but the matching
+    # Some network filesystems refuse to lock. Acquisition already tolerated that, but the matching
     # unlock did not, so the store was written and the call still raised, failing a PATCH whose
     # work had landed (and, through clear(), one that had already deleted files).
-    import fcntl
+    # Whichever primitive this platform uses: fcntl does not exist on Windows, and importing it
+    # unconditionally failed the test there rather than exercising the branch that runs.
+    if os.name == "nt":
+        import msvcrt as locking
 
-    def _unsupported(fd, op):
+        primitive = "locking"
+    else:
+        import fcntl as locking
+
+        primitive = "flock"
+
+    def _unsupported(*_args):
         raise OSError(45, "Operation not supported")
 
-    monkeypatch.setattr(fcntl, "flock", _unsupported)
+    monkeypatch.setattr(locking, primitive, _unsupported)
     assert flags.set_flags(gdir, "a", pinned = True) == {"pinned": True, "archived": False}
     flags.forget(gdir, ["a"])
     with flags.exclusive(gdir):

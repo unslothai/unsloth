@@ -351,7 +351,16 @@ def set_flags_locked(
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            entry["pinned_at"] = time.time()
+            # Strictly ahead of every stamp already stored, not just the wall clock. Windows'
+            # time.time() advances in ~16 ms steps, so two pins a click apart can land on the SAME
+            # value and "most recently pinned leads" quietly stops holding for them -- which is the
+            # ordering the client serializes its PATCHes to preserve.
+            latest = max(
+                (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
+                default = float("-inf"),
+            )
+            now = time.time()
+            entry["pinned_at"] = now if now > latest else math.nextafter(latest, math.inf)
         else:
             entry.pop("pinned_at", None)
     if archived is not None:
