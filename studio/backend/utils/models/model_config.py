@@ -1107,6 +1107,7 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
+
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
 def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     """Whether more than ``threshold`` tokens start with ``prefix``.
@@ -1145,13 +1146,13 @@ _AUDIO_TOKEN_PATTERNS = {
 # from them, and a codec added there without its marker here would silently stop being
 # detected. test_audio_marker_prescan.py fails if the two drift.
 _AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",              # csm
+    "<|AUDIO|>",  # csm
     "<|startoftranscript|>",  # whisper
-    "<|bicodec_",             # bicodec
-    "<|audio_start|>",        # dac
-    "<custom_token_",         # snac
-    "<audio_soft_token>",     # audio_vlm (Gemma 3n)
-    "<|audio|>",              # audio_vlm (Gemma 4)
+    "<|bicodec_",  # bicodec
+    "<|audio_start|>",  # dac
+    "<custom_token_",  # snac
+    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
+    "<|audio|>",  # audio_vlm (Gemma 4)
 )
 
 

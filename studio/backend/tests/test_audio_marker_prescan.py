@@ -32,7 +32,12 @@ def test_every_pattern_has_a_marker():
     added there without a marker here would silently stop being detected."""
     # Fails when a codec is added, which is the point: add its marker too.
     assert set(_AUDIO_TOKEN_PATTERNS) == {
-        "csm", "whisper", "bicodec", "dac", "snac", "audio_vlm",
+        "csm",
+        "whisper",
+        "bicodec",
+        "dac",
+        "snac",
+        "audio_vlm",
     }
 
     samples = {
@@ -56,8 +61,7 @@ def test_an_ordinary_text_tokenizer_is_settled_without_a_parse(monkeypatch, tmp_
 
     config = {
         "added_tokens_decoder": {
-            str(i): {"content": f"<|extra_token_{i}|>", "special": True}
-            for i in range(5000)
+            str(i): {"content": f"<|extra_token_{i}|>", "special": True} for i in range(5000)
         }
     }
     checkpoint = tmp_path / "run"
@@ -67,7 +71,8 @@ def test_an_ordinary_text_tokenizer_is_settled_without_a_parse(monkeypatch, tmp_
     parsed = []
     real_loads = model_config.json.loads
     monkeypatch.setattr(
-        model_config.json, "loads",
+        model_config.json,
+        "loads",
         lambda raw, *a, **kw: (parsed.append(len(raw)), real_loads(raw, *a, **kw))[1],
     )
 
@@ -85,14 +90,19 @@ def test_an_audio_tokenizer_is_still_detected(tmp_path):
 
     checkpoint = tmp_path / "orpheus"
     checkpoint.mkdir()
-    (checkpoint / "tokenizer_config.json").write_text(json.dumps({
-        "added_tokens_decoder": {
-            str(i): {"content": f"<custom_token_{i}>"} for i in range(10500)
-        }
-    }))
-    assert model_config._detect_audio_from_tokenizer(
-        str(checkpoint), local_files_only = True
-    ) == ("snac", True)
+    (checkpoint / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "added_tokens_decoder": {
+                    str(i): {"content": f"<custom_token_{i}>"} for i in range(10500)
+                }
+            }
+        )
+    )
+    assert model_config._detect_audio_from_tokenizer(str(checkpoint), local_files_only = True) == (
+        "snac",
+        True,
+    )
 
 
 def test_a_half_written_tokenizer_stays_unknown(tmp_path):
@@ -106,11 +116,13 @@ def test_a_half_written_tokenizer_stays_unknown(tmp_path):
     whole = json.dumps({"added_tokens_decoder": {"0": {"content": "<|plain|>"}}})
     (checkpoint / "tokenizer_config.json").write_text(whole[: len(whole) // 2])
 
-    assert model_config._detect_audio_from_tokenizer(
-        str(checkpoint), local_files_only = True
-    ) == (None, False)
+    assert model_config._detect_audio_from_tokenizer(str(checkpoint), local_files_only = True) == (
+        None,
+        False,
+    )
 
     (checkpoint / "tokenizer_config.json").write_text(whole)
-    assert model_config._detect_audio_from_tokenizer(
-        str(checkpoint), local_files_only = True
-    ) == (None, True)
+    assert model_config._detect_audio_from_tokenizer(str(checkpoint), local_files_only = True) == (
+        None,
+        True,
+    )
