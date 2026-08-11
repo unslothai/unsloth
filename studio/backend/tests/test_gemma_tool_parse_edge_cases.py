@@ -418,7 +418,6 @@ def test_malformed_gemma_mapping_value_does_not_hang():
 
 def _strip(text: str, enabled = None) -> str:
     from core.inference.tool_call_parser import strip_tool_markup
-
     return strip_tool_markup(text, final = True, enabled_tool_names = enabled)
 
 

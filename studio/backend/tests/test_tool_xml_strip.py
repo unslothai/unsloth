@@ -836,11 +836,11 @@ def test_route_strip_gates_wrapperless_gemma_by_enabled_tools():
         "Answer.\ncall:web_search{query:x}", {"web_search"}
     )
     # Mid-sentence the shape is prose whatever the name, so the answer is kept whole.
-    assert "call:web_search" in _strip_tool_xml(
-        "Answer. call:web_search{query:x}", {"web_search"}
-    )
+    assert "call:web_search" in _strip_tool_xml("Answer. call:web_search{query:x}", {"web_search"})
     # No gate (legacy) strips every closed call that owns its position.
-    assert "call:foo" not in _strip_tool_xml("To document syntax you write\ncall:foo{query:example}")
+    assert "call:foo" not in _strip_tool_xml(
+        "To document syntax you write\ncall:foo{query:example}"
+    )
 
 
 def test_gemma_strip_gate_empty_tools_preserves_prose():

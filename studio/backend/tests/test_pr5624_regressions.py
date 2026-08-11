@@ -560,9 +560,7 @@ def test_wrapperless_gemma_call_gated_by_enabled_tools():
     inline = "Answer. call:web_search{query:hi}"
     inline_calls = parse_tool_calls_from_text(inline, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in inline_calls] == ["web_search"], inline_calls
-    assert (
-        strip_tool_markup(inline, final = True, enabled_tool_names = {"web_search"}) == inline
-    )
+    assert strip_tool_markup(inline, final = True, enabled_tool_names = {"web_search"}) == inline
 
 
 def test_kimi_section_end_inside_arg_string_is_not_a_truncation():
