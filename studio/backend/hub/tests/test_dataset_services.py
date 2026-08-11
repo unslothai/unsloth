@@ -209,9 +209,7 @@ def test_raw_dataset_cache_has_data_ignores_appledouble_sidecars(monkeypatch, tm
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(
-    monkeypatch, tmp_path
-):
+def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(monkeypatch, tmp_path):
     """A repo whose only non-card files are `CITATION.cff` and a legacy loading script has no
     rows to give: neither suffix is in `datasets`' extension map, and a script needs
     `trust_remote_code`, which no dataset load path here passes and `datasets>=4` removed."""
@@ -224,9 +222,7 @@ def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(
-    monkeypatch, tmp_path
-):
+def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monkeypatch, tmp_path):
     """The suffix rule is for files only. A script sitting next to real data, or a directory
     that merely happens to be named like one, must still read as payload."""
     repo_root = _dataset_snapshot(
@@ -238,9 +234,7 @@ def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
-def test_raw_dataset_cache_has_data_ignores_payload_links_whose_blob_is_gone(
-    monkeypatch, tmp_path
-):
+def test_raw_dataset_cache_has_data_ignores_payload_links_whose_blob_is_gone(monkeypatch, tmp_path):
     """A pruned blob leaves its snapshot link behind. `is_snapshot_partial` catches that on the
     newest snapshot, but this check judges the pinned revision, so it must not depend on the two
     agreeing -- a link that resolves to nothing cannot be opened and is not payload."""
