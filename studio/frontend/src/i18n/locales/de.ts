@@ -18,7 +18,7 @@ export const de = {
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
     pickModelFile: "Modelldatei vom Datenträger auswählen",
-    modelDropped: "Nicht mehr verfügbar",
+    modelDropped: "Nicht mehr angeboten",
     modelDroppedByProvider: "{provider} · nicht mehr angeboten",
     multipleMatches:
       "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",

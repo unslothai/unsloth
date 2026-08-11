@@ -18,7 +18,7 @@ export const es = {
     modelSourceAriaLabel: "Origen del modelo",
     hubSectionAriaLabel: "Sección del Hub",
     pickModelFile: "Elegir un archivo de modelo del disco",
-    modelDropped: "Ya no está disponible",
+    modelDropped: "Ya no se ofrece",
     modelDroppedByProvider: "{provider} · ya no se ofrece",
     multipleMatches:
       "Hay varios {noun} coincidentes. Elige uno de la lista.",
