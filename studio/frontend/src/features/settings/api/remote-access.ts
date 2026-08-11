@@ -58,8 +58,17 @@ export const remoteAccessProvisionRequest = (
   },
 });
 
-export const remoteAccessCancelRequest = (): RemoteAccessRequest =>
-  post("/custom/cancel");
+export const remoteAccessCancelRequest = (
+  expectedRevision: number,
+): RemoteAccessRequest => ({
+  path: "/custom/cancel",
+  init: {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // biome-ignore lint/style/useNamingConvention: API schema
+    body: JSON.stringify({ expected_revision: expectedRevision }),
+  },
+});
 
 export const remoteAccessTeardownRequest = (): RemoteAccessRequest =>
   post("/custom/teardown");
@@ -77,7 +86,8 @@ export function createRemoteAccessOperations<Result>(
       dispatch(remoteAccessMethodRequest(method)),
     provision: (hostname: string) =>
       dispatch(remoteAccessProvisionRequest(hostname)),
-    cancel: () => dispatch(remoteAccessCancelRequest()),
+    cancel: (expectedRevision: number) =>
+      dispatch(remoteAccessCancelRequest(expectedRevision)),
     teardown: () => dispatch(remoteAccessTeardownRequest()),
   };
 }

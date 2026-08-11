@@ -11,16 +11,19 @@ register("./helpers/settings-api-resolver.mjs", import.meta.url);
 // cannot be imported here. These drive the pure state helpers it consumes.
 import {
   type ApiRemoteAccessStatus,
+  closeUnusedRemoteAccessWindow,
   normalizeRemoteAccessStatus,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
   remoteAccessHeaderActionDisabled,
   remoteAccessIsReady,
+  remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
-  remoteAccessProgressSteps,
+  remoteAccessProgressStep,
   remoteAccessSelfStopPoll,
+  remoteAccessSetupDialogShouldOpen,
   remoteAccessShowsCustomPanel,
   remoteAccessStopDisconnectsOrigin,
   remoteApiOrigin,
@@ -87,6 +90,8 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       // biome-ignore lint/style/useNamingConvention: API schema
       custom_state: "configured",
       // biome-ignore lint/style/useNamingConvention: API schema
+      custom_operation_revision: 7,
+      // biome-ignore lint/style/useNamingConvention: API schema
       custom_hostname: "studio.example.com",
       // biome-ignore lint/style/useNamingConvention: API schema
       custom_tunnel_name: "unsloth-AB12CD",
@@ -125,6 +130,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
     autoStartKind: "custom",
     autoStartBlockReason: "launch_managed",
     customState: "configured",
+    customOperationRevision: 7,
     customHostname: "studio.example.com",
     customTunnelName: "unsloth-AB12CD",
     customRunnable: true,
@@ -155,6 +161,7 @@ test("normalize defaults the optional fields an older backend may omit", () => {
   assert.equal(s.autoStartKind, null);
   assert.equal(s.autoStartBlockReason, null);
   assert.equal(s.customState, "unconfigured");
+  assert.equal(s.customOperationRevision, 0);
   assert.equal(s.customHostname, null);
   assert.equal(s.customTunnelName, null);
   assert.equal(s.customRunnable, false);
@@ -212,19 +219,22 @@ test("poll delay is fast while a lifecycle or custom transition is in flight", (
   }
 });
 
-test("connection progress follows each method until it is ready", () => {
+test("connection progress reports only the current step", () => {
   const temporary = normalizeRemoteAccessStatus(
     apiStatus({
       state: "starting",
       kind: "temporary",
       // biome-ignore lint/style/useNamingConvention: API schema
-      tunnel_serving: true,
+      connector_registered: true,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      tunnel_serving: false,
     }),
   );
-  assert.deepEqual(remoteAccessProgressSteps(temporary), [
-    { id: "connecting", complete: false },
-    { id: "openingLink", complete: true },
-  ]);
+  assert.equal(remoteAccessProgressStep(temporary), "openingLink");
+  assert.equal(
+    remoteAccessProgressStep({ ...temporary, connectorRegistered: false }),
+    "connecting",
+  );
   assert.equal(remoteAccessIsReady(temporary), false);
 
   const custom = normalizeRemoteAccessStatus(
@@ -238,19 +248,21 @@ test("connection progress follows each method until it is ready", () => {
       dns: "pending",
     }),
   );
-  assert.deepEqual(remoteAccessProgressSteps(custom), [
-    { id: "connecting", complete: true },
-    { id: "openingLink", complete: false },
-    { id: "checkingHostname", complete: false },
-  ]);
+  assert.equal(remoteAccessProgressStep(custom), "openingLink");
   assert.equal(remoteAccessIsReady(custom), false);
 
   const ready = { ...custom, tunnelServing: true, dns: "resolved" as const };
-  assert.deepEqual(remoteAccessProgressSteps(ready), []);
+  assert.equal(remoteAccessProgressStep(ready), null);
   assert.equal(remoteAccessIsReady(ready), true);
-  assert.deepEqual(remoteAccessProgressSteps({ ...ready, state: "stopping" }), [
-    { id: "disconnecting", complete: false },
-  ]);
+  assert.equal(
+    remoteAccessProgressStep({ ...ready, state: "stopping" }),
+    "disconnecting",
+  );
+
+  assert.equal(
+    remoteAccessProgressStep({ ...custom, tunnelServing: true }),
+    "checkingHostname",
+  );
 });
 
 test("the saved method is authoritative even when Custom is configured", () => {
@@ -294,9 +306,72 @@ test("an active Custom operation stays visible after a concurrent method change"
   );
 });
 
-test("start and auto-start requests leave method selection to the saved setting", async () => {
+test("setup dialog resumes provisioning unless this view cancelled it", () => {
+  const provisioning = normalizeRemoteAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_state: "provisioning",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_hostname: "studio.example.com",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_operation_revision: 4,
+    }),
+  );
+  assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, null), true);
+  assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, 4), false);
+  assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, 3), true);
+  assert.equal(
+    remoteAccessSetupDialogShouldOpen(
+      { ...provisioning, customState: "unconfigured" },
+      null,
+    ),
+    false,
+  );
+});
+
+test("reserved setup windows close only while still unused", () => {
+  const closes = (href: string | null, alreadyClosed = false) => {
+    const closeCalls: boolean[] = [];
+    closeUnusedRemoteAccessWindow({
+      closed: alreadyClosed,
+      close: () => closeCalls.push(true),
+      get location() {
+        if (href !== null) {
+          return { href };
+        }
+        throw new Error("SecurityError");
+      },
+    });
+    return closeCalls.length;
+  };
+  assert.equal(closes("about:blank"), 1);
+  assert.equal(closes("https://example.com"), 0);
+  assert.equal(closes("about:blank", true), 0);
+  assert.equal(closes(null), 0);
+});
+
+test("custom request errors belong to one backend operation revision", () => {
+  const provisioning = normalizeRemoteAccessStatus(
+    apiStatus({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_state: "provisioning",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      custom_operation_revision: 4,
+    }),
+  );
+  assert.notEqual(
+    remoteAccessOperationRevision(provisioning, "cancel"),
+    remoteAccessOperationRevision(
+      { ...provisioning, customOperationRevision: 5 },
+      "cancel",
+    ),
+  );
+});
+
+test("remote access requests carry their operation inputs", async () => {
   const {
     remoteAccessAutoStartRequest,
+    remoteAccessCancelRequest,
     remoteAccessMethodRequest,
     remoteAccessStartRequest,
   } = await import("../src/features/settings/api/remote-access.ts");
@@ -318,6 +393,14 @@ test("start and auto-start requests leave method selection to the saved setting"
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: '{"method":"custom"}',
+    },
+  });
+  assert.deepEqual(remoteAccessCancelRequest(7), {
+    path: "/custom/cancel",
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"expected_revision":7}',
     },
   });
 });

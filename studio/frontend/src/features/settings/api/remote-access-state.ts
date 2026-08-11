@@ -72,6 +72,7 @@ export type RemoteAccessStatus = {
   autoStartKind: RemoteAccessKind | null;
   autoStartBlockReason: string | null;
   customState: CustomTunnelState;
+  customOperationRevision: number;
   customHostname: string | null;
   customTunnelName: string | null;
   customRunnable: boolean;
@@ -117,6 +118,8 @@ export type ApiRemoteAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   custom_state?: CustomTunnelState;
   // biome-ignore lint/style/useNamingConvention: API schema
+  custom_operation_revision?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   custom_hostname?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   custom_tunnel_name?: string | null;
@@ -160,6 +163,7 @@ export function normalizeRemoteAccessStatus(
     autoStartKind: status.auto_start_kind ?? null,
     autoStartBlockReason: status.auto_start_block_reason ?? null,
     customState: status.custom_state ?? "unconfigured",
+    customOperationRevision: status.custom_operation_revision ?? 0,
     customHostname: status.custom_hostname ?? null,
     customTunnelName,
     customRunnable: status.custom_runnable === true,
@@ -198,6 +202,37 @@ export function remoteAccessShowsCustomPanel(
   );
 }
 
+export function remoteAccessSetupDialogShouldOpen(
+  status: RemoteAccessStatus,
+  cancelledRevision: number | null,
+): boolean {
+  return (
+    status.customState === "provisioning" &&
+    status.customOperationRevision !== cancelledRevision
+  );
+}
+
+type RemoteAccessReservedWindow = {
+  closed: boolean;
+  close: () => void;
+  readonly location: { readonly href: string };
+};
+
+export function closeUnusedRemoteAccessWindow(
+  pendingWindow: RemoteAccessReservedWindow | null,
+): void {
+  if (pendingWindow?.closed !== false) {
+    return;
+  }
+  try {
+    if (pendingWindow.location.href === "about:blank") {
+      pendingWindow.close();
+    }
+  } catch {
+    // A cross-origin tab no longer belongs to setup.
+  }
+}
+
 export function remoteAccessPreferredKind(
   status: RemoteAccessStatus | null,
 ): RemoteAccessKind {
@@ -227,11 +262,11 @@ export function remoteAccessIsReady(
   );
 }
 
-export function remoteAccessProgressSteps(
+export function remoteAccessProgressStep(
   status: RemoteAccessStatus | null,
-): { id: RemoteAccessProgressStepId; complete: boolean }[] {
+): RemoteAccessProgressStepId | null {
   if (status?.state === "stopping") {
-    return [{ id: "disconnecting", complete: false }];
+    return "disconnecting";
   }
   if (
     status?.state !== "starting" &&
@@ -241,19 +276,20 @@ export function remoteAccessProgressSteps(
       !remoteAccessIsReady(status)
     )
   ) {
-    return [];
+    return null;
   }
   if (status.kind === "custom") {
-    return [
-      { id: "connecting", complete: status.connectorRegistered },
-      { id: "openingLink", complete: status.tunnelServing },
-      { id: "checkingHostname", complete: status.dns === "resolved" },
-    ];
+    if (!status.connectorRegistered) {
+      return "connecting";
+    }
+    if (!status.tunnelServing) {
+      return "openingLink";
+    }
+    return "checkingHostname";
   }
-  return [
-    { id: "connecting", complete: status.connectorRegistered },
-    { id: "openingLink", complete: status.tunnelServing },
-  ];
+  return status.connectorRegistered && !status.tunnelServing
+    ? "openingLink"
+    : "connecting";
 }
 
 export function remoteAccessOperationRevision(
@@ -279,6 +315,7 @@ export function remoteAccessOperationRevision(
     operation === "teardown"
   ) {
     return JSON.stringify([
+      status.customOperationRevision,
       status.customState,
       status.customHostname,
       status.customTunnelName,

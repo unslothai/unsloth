@@ -1617,6 +1617,10 @@ class CustomTunnelProvisionPayload(BaseModel):
     hostname: str = Field(..., min_length = 1, max_length = 253)
 
 
+class CustomTunnelCancelPayload(BaseModel):
+    expected_revision: int = Field(..., ge = 1)
+
+
 class RemoteAccessResponse(BaseModel):
     state: Literal["off", "starting", "online", "stopping", "error"]
     url: Optional[str] = None
@@ -1640,6 +1644,7 @@ class RemoteAccessResponse(BaseModel):
     custom_state: Literal["unconfigured", "provisioning", "configured", "tearing_down", "error"] = (
         "unconfigured"
     )
+    custom_operation_revision: int = 0
     custom_hostname: Optional[str] = None
     custom_tunnel_name: Optional[str] = None
     custom_runnable: bool = False
@@ -1761,10 +1766,15 @@ def provision_custom_remote_access_route(
 @router.post("/remote-access/custom/cancel", response_model = RemoteAccessResponse)
 def cancel_custom_remote_access_route(
     request: Request,
+    payload: CustomTunnelCancelPayload,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> RemoteAccessResponse:
-    return RemoteAccessResponse(**cancel_custom_remote_access(request.app.state))
+    try:
+        status = cancel_custom_remote_access(request.app.state, payload.expected_revision)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    return RemoteAccessResponse(**status)
 
 
 @router.post("/remote-access/custom/teardown", response_model = RemoteAccessResponse)

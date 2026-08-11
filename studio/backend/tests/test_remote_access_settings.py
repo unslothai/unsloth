@@ -296,6 +296,56 @@ def test_custom_status_exposes_the_owned_tunnel_name(monkeypatch):
     assert status["custom_tunnel_name"] == "unsloth-AB12CD"
 
 
+def test_custom_status_keeps_the_requested_hostname_during_setup(monkeypatch):
+    class PendingThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: None)
+    monkeypatch.setattr(cloudflare_tunnel, "identity_is_runnable", lambda _identity: False)
+    monkeypatch.setattr(cloudflare_tunnel, "orphaned_hostnames", lambda: [])
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_revision", 4)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(
+        remote_access,
+        "threading",
+        SimpleNamespace(Event = threading.Event, Thread = PendingThread),
+    )
+    monkeypatch.setattr(
+        remote_access,
+        "remote_access_status",
+        lambda _state: remote_access._custom_status(),
+    )
+
+    status = remote_access.provision_custom_remote_access(_state(), "Studio.Example.com.")
+
+    assert status["custom_hostname"] == "studio.example.com"
+    assert status["custom_operation_revision"] == 5
+
+
+def test_custom_cancel_only_targets_the_displayed_operation(monkeypatch):
+    cancelled = threading.Event()
+    worker = SimpleNamespace(is_alive = lambda: True)
+    monkeypatch.setattr(remote_access, "_custom_worker", worker)
+    monkeypatch.setattr(remote_access, "_custom_cancel", cancelled)
+    monkeypatch.setattr(remote_access, "_custom_operation_revision", 6)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _state: {"state": "off"})
+
+    with pytest.raises(RuntimeError, match = "custom_operation_changed"):
+        remote_access.cancel_custom_remote_access(_state(), 5)
+    assert cancelled.is_set() is False
+
+    assert remote_access.cancel_custom_remote_access(_state(), 6) == {"state": "off"}
+    assert cancelled.is_set() is True
+
+
 @pytest.mark.parametrize("stop_succeeds", [True, False])
 def test_custom_teardown_stops_the_connector_before_local_cleanup(monkeypatch, stop_succeeds):
     events = []
@@ -543,6 +593,7 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         "connector_registered": True,
         "tunnel_serving": True,
         "custom_state": "provisioning",
+        "custom_operation_revision": 9,
         "custom_hostname": "studio.example.com",
         "custom_tunnel_name": "unsloth-AB12CD",
         "custom_runnable": True,
@@ -554,9 +605,14 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         "orphaned_hostnames": ["old.example.com"],
     }
     via_key = [False]
+    cancelled_revisions = []
     monkeypatch.setattr(routes, "remote_access_status", lambda _state: status)
     monkeypatch.setattr(routes, "provision_custom_remote_access", lambda *_args: status)
-    monkeypatch.setattr(routes, "cancel_custom_remote_access", lambda *_args: status)
+    monkeypatch.setattr(
+        routes,
+        "cancel_custom_remote_access",
+        lambda _state, revision: (cancelled_revisions.append(revision), status)[1],
+    )
     selected_methods = []
     monkeypatch.setattr(routes, "set_remote_access_method", selected_methods.append)
     app = FastAPI()
@@ -588,16 +644,19 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
     )
     assert (
         body["custom_state"],
+        body["custom_operation_revision"],
         body["custom_hostname"],
         body["custom_runnable"],
         body["custom_error_detail"],
         body["custom_error_phase"],
         body["custom_error_settled"],
-    ) == ("provisioning", "studio.example.com", True, "record exists", "provision", False)
+    ) == ("provisioning", 9, "studio.example.com", True, "record exists", "provision", False)
     assert client.post(
         "/remote-access/custom/provision", json = {"hostname": "studio.example.com"}
     ).json()["login_url"]
-    assert client.post("/remote-access/custom/cancel").json()["custom_error"] == "dns_conflict"
+    cancel_response = client.post("/remote-access/custom/cancel", json = {"expected_revision": 9})
+    assert cancel_response.json()["custom_error"] == "dns_conflict"
+    assert cancelled_revisions == [9]
     assert client.put("/remote-access/method", json = {"method": "custom"}).json()["method"] == (
         "custom"
     )
@@ -610,7 +669,7 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         ("PUT", "/remote-access/auto-start", {"enabled": True}),
         ("PUT", "/remote-access/method", {"method": "temporary"}),
         ("POST", "/remote-access/custom/provision", {"hostname": "studio.example.com"}),
-        ("POST", "/remote-access/custom/cancel", None),
+        ("POST", "/remote-access/custom/cancel", {"expected_revision": 9}),
         ("POST", "/remote-access/custom/teardown", None),
     ]
     assert all(

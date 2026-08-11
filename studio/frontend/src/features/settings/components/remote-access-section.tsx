@@ -40,6 +40,7 @@ import {
   type RemoteAccessProgressStepId,
   type RemoteAccessRequestAxis,
   type RemoteAccessStatus,
+  closeUnusedRemoteAccessWindow,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
@@ -52,9 +53,10 @@ import {
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
-  remoteAccessProgressSteps,
+  remoteAccessProgressStep,
   remoteAccessRequestMessageId,
   remoteAccessSelfStopPoll,
+  remoteAccessSetupDialogShouldOpen,
   remoteAccessShouldClearRequestError,
   remoteAccessShowsCustomPanel,
   remoteAccessStopDisconnectsOrigin,
@@ -65,6 +67,7 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openLink } from "@/lib/open-link";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -205,7 +208,7 @@ const PROGRESS_MESSAGE_KEYS: Record<
 function ConnectionProgress({ status }: { status: RemoteAccessStatus | null }) {
   const t = useT();
   const ready = remoteAccessIsReady(status);
-  const steps = remoteAccessProgressSteps(status);
+  const step = remoteAccessProgressStep(status);
   const [showReady, setShowReady] = useState(false);
   useEffect(() => {
     if (!ready) {
@@ -227,36 +230,24 @@ function ConnectionProgress({ status }: { status: RemoteAccessStatus | null }) {
       </output>
     );
   }
-  if (steps.length === 0) {
+  if (step === null) {
     return null;
   }
-  const activeStep = steps.findIndex((step) => !step.complete);
   return (
     <output
-      className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground"
+      className="flex items-center gap-1.5 text-xs text-muted-foreground"
       aria-live="polite"
     >
-      {steps.map((step, index) => (
-        <span
-          key={step.id}
-          className={cn(
-            "flex items-center gap-1.5",
-            step.complete && "text-emerald-600",
-          )}
-        >
-          {step.complete ? (
-            <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
-          ) : (
-            <span
-              className={cn(
-                "size-2 rounded-full bg-muted-foreground/40",
-                index === activeStep && "animate-pulse bg-blue-500",
-              )}
-            />
-          )}
-          {t(PROGRESS_MESSAGE_KEYS[step.id])}
-        </span>
-      ))}
+      <span className="size-2 rounded-full bg-blue-500 animate-pulse" />
+      <span>
+        {t(
+          step === "disconnecting"
+            ? "settings.general.remoteAccess.actionStopping"
+            : "settings.general.remoteAccess.actionStarting",
+        )}
+        {" · "}
+        {t(PROGRESS_MESSAGE_KEYS[step])}
+      </span>
     </output>
   );
 }
@@ -472,44 +463,147 @@ function CustomTunnelSetup({
   setHostname,
   busy,
   onProvision,
+  onCancel,
+  requestError,
 }: {
   status: RemoteAccessStatus;
   hostname: string;
   setHostname: (hostname: string) => void;
   busy: RemoteAccessOperation | null;
-  onProvision: () => void;
+  onProvision: (hostname: string) => Promise<boolean>;
+  onCancel: (expectedRevision: number) => Promise<boolean>;
+  requestError: string | null;
 }) {
   const t = useT();
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(
+    remoteAccessSetupDialogShouldOpen(status, null),
+  );
+  const [requestedHostname, setRequestedHostname] = useState(
+    status.customHostname ?? "",
+  );
+  const cloudflareWindow = useRef<Window | null>(null);
+  const openedLoginUrl = useRef<string | null>(null);
+  const cancelledSetupRevision = useRef<number | null>(null);
   const disabled = remoteAccessCustomActionsDisabled(status, busy !== null);
+  const waiting = busy === "provision" || status.customState === "provisioning";
+
+  useEffect(() => {
+    if (status.customState !== "provisioning") {
+      if (cancelledSetupRevision.current !== null && busy === null) {
+        cancelledSetupRevision.current = null;
+        setConfirmOpen(false);
+      }
+      return;
+    }
+    if (
+      !remoteAccessSetupDialogShouldOpen(status, cancelledSetupRevision.current)
+    ) {
+      return;
+    }
+    setConfirmOpen(true);
+    if (status.customHostname) {
+      setRequestedHostname(status.customHostname);
+    }
+  }, [busy, status]);
+
+  useEffect(() => {
+    const loginUrl = status.loginUrl;
+    if (
+      !(confirmOpen && loginUrl) ||
+      openedLoginUrl.current === loginUrl ||
+      cancelledSetupRevision.current === status.customOperationRevision
+    ) {
+      return;
+    }
+    if (isTauri) {
+      openedLoginUrl.current = loginUrl;
+      import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+        openUrl(loginUrl).catch(console.error);
+      });
+      return;
+    }
+    if (cloudflareWindow.current && !cloudflareWindow.current.closed) {
+      try {
+        cloudflareWindow.current.location.replace(loginUrl);
+        openedLoginUrl.current = loginUrl;
+      } catch {
+        // Manual Open remains available.
+      }
+    }
+  }, [confirmOpen, status.loginUrl, status.customOperationRevision]);
+
+  const closePendingWindow = () => {
+    if (openedLoginUrl.current === null) {
+      closeUnusedRemoteAccessWindow(cloudflareWindow.current);
+    }
+    cloudflareWindow.current = null;
+  };
+
+  const cancelSetup = () => {
+    closePendingWindow();
+    if (waiting) {
+      cancelledSetupRevision.current = status.customOperationRevision;
+      onCancel(status.customOperationRevision).then((cancelled) => {
+        if (!cancelled) {
+          cancelledSetupRevision.current = null;
+          setConfirmOpen(true);
+        }
+      });
+      return;
+    }
+    setConfirmOpen(false);
+  };
+
   return (
     <>
-      <form
-        className="mt-3 flex gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setConfirmOpen(true);
+      {waiting ? null : (
+        <form
+          className="mt-3 flex gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const targetHostname = hostname.trim();
+            cancelledSetupRevision.current = null;
+            setRequestedHostname(targetHostname);
+            openedLoginUrl.current = null;
+            if (!isTauri) {
+              cloudflareWindow.current = window.open("", "_blank");
+              if (cloudflareWindow.current) {
+                cloudflareWindow.current.opener = null;
+              }
+            }
+            setConfirmOpen(true);
+            onProvision(targetHostname).then((started) => {
+              if (!started) {
+                closePendingWindow();
+              }
+            });
+          }}
+        >
+          <Input
+            value={hostname}
+            onChange={(event) => setHostname(event.target.value)}
+            placeholder={t("settings.general.remoteAccess.hostnamePlaceholder")}
+            aria-label={t("settings.general.remoteAccess.hostnameLabel")}
+            disabled={disabled}
+          />
+          <Button
+            type="submit"
+            size="sm"
+            className="shrink-0"
+            disabled={disabled || hostname.trim().length === 0}
+          >
+            {t("settings.general.remoteAccess.setupAction")}
+          </Button>
+        </form>
+      )}
+      <AlertDialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (open || !waiting) {
+            setConfirmOpen(open);
+          }
         }}
       >
-        <Input
-          value={hostname}
-          onChange={(event) => setHostname(event.target.value)}
-          placeholder={t("settings.general.remoteAccess.hostnamePlaceholder")}
-          aria-label={t("settings.general.remoteAccess.hostnameLabel")}
-          disabled={disabled}
-        />
-        <Button
-          type="submit"
-          size="sm"
-          className="shrink-0"
-          disabled={disabled || hostname.trim().length === 0}
-        >
-          {busy === "provision"
-            ? t("settings.general.remoteAccess.settingUp")
-            : t("settings.general.remoteAccess.setupAction")}
-        </Button>
-      </form>
-      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -520,20 +614,46 @@ function CustomTunnelSetup({
                 {t("settings.general.remoteAccess.setupConfirmDescription")}
               </span>
               <code className="block break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
-                {hostname.trim()}
+                {requestedHostname}
               </code>
+              <span className="block" aria-live="polite">
+                {status.loginUrl
+                  ? t("settings.general.remoteAccess.setupAuthorize", {
+                      hostname: requestedHostname,
+                    })
+                  : t("settings.general.remoteAccess.setupPreparing")}
+              </span>
+              {requestError || status.customError ? (
+                <span className="block text-destructive" role="alert">
+                  {requestError ?? localizedCustomError(status, t)}
+                </span>
+              ) : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setConfirmOpen(false);
-                onProvision();
-              }}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={cancelSetup}
+              disabled={
+                busy === "cancel" ||
+                (busy === "provision" && status.customState !== "provisioning")
+              }
             >
-              {t("settings.general.remoteAccess.setupConfirmAction")}
-            </AlertDialogAction>
+              {t("common.cancel")}
+            </Button>
+            {status.loginUrl ? (
+              <Button
+                type="button"
+                onClick={() => openLink(status.loginUrl as string)}
+              >
+                {t("settings.general.remoteAccess.openCloudflare")}
+              </Button>
+            ) : (
+              <Button type="button" disabled={true}>
+                {t("settings.general.remoteAccess.openCloudflare")}
+              </Button>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -541,17 +661,7 @@ function CustomTunnelSetup({
   );
 }
 
-function CustomTunnelProgress({
-  status,
-  hostname,
-  busy,
-  onCancel,
-}: {
-  status: RemoteAccessStatus;
-  hostname: string;
-  busy: RemoteAccessOperation | null;
-  onCancel: () => void;
-}) {
+function CustomTunnelRemovalProgress() {
   const t = useT();
   return (
     <div
@@ -560,34 +670,8 @@ function CustomTunnelProgress({
       aria-atomic="true"
     >
       <p className="text-xs leading-snug text-muted-foreground">
-        {status.customState === "tearing_down"
-          ? t("settings.general.remoteAccess.removeProgress")
-          : status.loginUrl
-            ? t("settings.general.remoteAccess.setupAuthorize", {
-                hostname: status.customHostname ?? hostname,
-              })
-            : t("settings.general.remoteAccess.setupPreparing")}
+        {t("settings.general.remoteAccess.removeProgress")}
       </p>
-      {status.customState === "provisioning" ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {status.loginUrl ? (
-            <Button asChild={true} type="button" size="sm">
-              <a href={status.loginUrl} target="_blank" rel="noreferrer">
-                {t("settings.general.remoteAccess.openCloudflare")}
-              </a>
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={onCancel}
-            disabled={busy !== null}
-          >
-            {t("common.cancel")}
-          </Button>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -725,20 +809,22 @@ function CustomTunnelPanel({
   onProvision,
   onCancel,
   onTeardown,
+  requestError,
 }: {
   status: RemoteAccessStatus;
   hostname: string;
   setHostname: (hostname: string) => void;
   busy: RemoteAccessOperation | null;
-  onProvision: () => void;
-  onCancel: () => void;
+  onProvision: (hostname: string) => Promise<boolean>;
+  onCancel: (expectedRevision: number) => Promise<boolean>;
   onTeardown: () => void;
+  requestError: string | null;
 }) {
   const t = useT();
-  const operating =
-    status.customState === "provisioning" ||
-    status.customState === "tearing_down";
-  const hasIdentity = status.customHostname !== null;
+  const provisioning = status.customState === "provisioning";
+  const removing = status.customState === "tearing_down";
+  const hasIdentity =
+    status.customState !== "provisioning" && status.customHostname !== null;
 
   return (
     <div className="border-t border-border/60 p-4">
@@ -751,33 +837,28 @@ function CustomTunnelPanel({
         </p>
       </div>
 
-      {hasIdentity || operating ? null : (
+      {hasIdentity || removing ? null : (
         <CustomTunnelSetup
           status={status}
           hostname={hostname}
           setHostname={setHostname}
           busy={busy}
           onProvision={onProvision}
+          onCancel={onCancel}
+          requestError={requestError}
         />
       )}
 
-      {operating ? (
-        <CustomTunnelProgress
-          status={status}
-          hostname={hostname.trim()}
-          busy={busy}
-          onCancel={onCancel}
-        />
-      ) : null}
+      {removing ? <CustomTunnelRemovalProgress /> : null}
 
-      {hasIdentity && !operating ? (
+      {hasIdentity && !provisioning && !removing ? (
         <CustomTunnelIdentity
           status={status}
           busy={busy}
           onTeardown={onTeardown}
         />
       ) : null}
-      <CustomTunnelMessages status={status} />
+      {provisioning ? null : <CustomTunnelMessages status={status} />}
     </div>
   );
 }
@@ -913,6 +994,7 @@ export function RemoteAccessSection() {
       if (pausePollingAfterSuccess) {
         selfStopDisconnectExpected.current = true;
       }
+      return true;
     } catch (error) {
       requestErrorBaseline.current = {
         operation: requestAxis,
@@ -922,6 +1004,7 @@ export function RemoteAccessSection() {
         ),
       };
       setRequestError(localizedRequestError(error, t));
+      return false;
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
@@ -948,9 +1031,10 @@ export function RemoteAccessSection() {
     perform("auto", () => updateRemoteAccessAutoStart(enabled));
   const setMethod = (method: RemoteAccessStatus["method"]) =>
     perform("method", () => updateRemoteAccessMethod(method));
-  const provision = () =>
-    perform("provision", () => provisionCustomRemoteAccess(hostname.trim()));
-  const cancel = () => perform("cancel", cancelCustomRemoteAccess);
+  const provision = (targetHostname: string) =>
+    perform("provision", () => provisionCustomRemoteAccess(targetHostname));
+  const cancel = (expectedRevision: number) =>
+    perform("cancel", () => cancelCustomRemoteAccess(expectedRevision));
   const teardown = () => perform("teardown", teardownCustomRemoteAccess);
 
   const blockMessage = localizedBlockMessage(
@@ -967,16 +1051,9 @@ export function RemoteAccessSection() {
     status,
     busy !== null,
   );
-  const actionLabel =
-    busy === "start"
-      ? t("settings.general.remoteAccess.actionStarting")
-      : busy === "stop"
-        ? t("settings.general.remoteAccess.actionStopping")
-        : stopAction
-          ? t("settings.general.remoteAccess.stopAction")
-          : remoteAccessPreferredKind(status) === "custom"
-            ? t("settings.general.remoteAccess.connectAction")
-            : t("settings.general.remoteAccess.temporaryAction");
+  const actionLabel = stopAction
+    ? t("settings.general.remoteAccess.stopAction")
+    : t("settings.general.remoteAccess.startAction");
   const showHeaderAction =
     stopAction ||
     remoteAccessPreferredKind(status) === "temporary" ||
@@ -1060,6 +1137,7 @@ export function RemoteAccessSection() {
           onProvision={provision}
           onCancel={cancel}
           onTeardown={teardown}
+          requestError={requestError}
         />
       ) : null}
 

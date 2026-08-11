@@ -41,6 +41,8 @@ _STOP_RESPONSE_PATHS = frozenset(
 _custom_worker: threading.Thread | None = None
 _custom_cancel: threading.Event | None = None
 _custom_operation = "idle"
+_custom_operation_revision = 0
+_custom_hostname: str | None = None
 _custom_login_url: str | None = None
 _custom_error: tuple[str, str, str, bool] | None = None
 
@@ -324,14 +326,26 @@ def _custom_status() -> dict:
 
     identity = read_identity()
     with _worker_lock:
-        operation, login_url, failure = _custom_operation, _custom_login_url, _custom_error
+        operation, revision, hostname = (
+            _custom_operation,
+            _custom_operation_revision,
+            _custom_hostname,
+        )
+        login_url, failure = _custom_login_url, _custom_error
         running = _worker_alive(_custom_worker)
     if operation in {"provisioning", "tearing_down"} and not running:
         operation = "idle"
     state = operation if operation != "idle" else ("configured" if identity else "unconfigured")
     return {
         "custom_state": state,
-        "custom_hostname": identity.get("hostname") if identity else None,
+        "custom_operation_revision": revision,
+        "custom_hostname": (
+            identity.get("hostname")
+            if identity
+            else hostname
+            if operation == "provisioning"
+            else None
+        ),
         "custom_tunnel_name": identity.get("tunnel_name") if identity else None,
         "custom_runnable": identity_is_runnable(identity),
         "login_url": login_url if running else None,
@@ -611,9 +625,11 @@ def _set_custom_operation(
     error_phase: str | None = None,
     error_settled: bool = False,
 ) -> None:
-    global _custom_operation, _custom_login_url, _custom_error
+    global _custom_operation, _custom_hostname, _custom_login_url, _custom_error
     with _worker_lock:
         _custom_operation = operation
+        if operation != "provisioning":
+            _custom_hostname = None
         _custom_login_url = login_url
         _custom_error = (
             (error[0], error[1], error_phase, error_settled)
@@ -639,7 +655,9 @@ def _custom_operation_allowed(app_state) -> None:
 
 
 def provision_custom_remote_access(app_state, hostname: str) -> dict:
-    global _custom_worker, _custom_cancel, _custom_operation, _custom_login_url, _custom_error
+    global _custom_worker, _custom_cancel, _custom_operation, _custom_operation_revision
+    global _custom_hostname
+    global _custom_login_url, _custom_error
     from cloudflare_tunnel import canonical_hostname
 
     host = canonical_hostname(hostname)
@@ -674,7 +692,9 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
     with _worker_lock:
         if _worker_alive(_custom_worker):
             raise RuntimeError("custom_operation_in_progress")
+        _custom_operation_revision += 1
         _custom_operation = "provisioning"
+        _custom_hostname = host
         _custom_login_url = None
         _custom_error = None
         _custom_cancel = cancel
@@ -683,15 +703,19 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
     return remote_access_status(app_state)
 
 
-def cancel_custom_remote_access(app_state) -> dict:
+def cancel_custom_remote_access(app_state, expected_revision: int) -> dict:
     with _worker_lock:
+        if expected_revision != _custom_operation_revision:
+            raise RuntimeError("custom_operation_changed")
         if _worker_alive(_custom_worker) and _custom_cancel is not None:
             _custom_cancel.set()
     return remote_access_status(app_state)
 
 
 def teardown_custom_remote_access(app_state) -> dict:
-    global _custom_worker, _custom_cancel, _custom_operation, _custom_login_url, _custom_error
+    global _custom_worker, _custom_cancel, _custom_operation, _custom_operation_revision
+    global _custom_hostname
+    global _custom_login_url, _custom_error
     from cloudflare_tunnel import read_identity
 
     if read_identity() is None:
@@ -743,7 +767,9 @@ def teardown_custom_remote_access(app_state) -> dict:
     with _worker_lock:
         if _worker_alive(_custom_worker):
             raise RuntimeError("custom_operation_in_progress")
+        _custom_operation_revision += 1
         _custom_operation = "tearing_down"
+        _custom_hostname = None
         _custom_login_url = None
         _custom_error = None
         _custom_cancel = None
