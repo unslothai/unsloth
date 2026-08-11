@@ -222,6 +222,8 @@ def test_media_galleries_save_natively_with_feedback():
 
     assert "await downloadUrl(src, filename);" in download
     assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
+    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
     assert "isDownloadCancelled(error)" in download
     assert "if (isTauri)" in download
     assert 'toast.success("Image saved", { description: filename });' in download
