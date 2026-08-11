@@ -261,7 +261,11 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     (data / "loop").symlink_to(data, target_is_directory = True)
     depth = 0
 
-    def _walk_following_junctions(top, followlinks = False, onerror = None):
+    def _walk_following_junctions(
+        top,
+        followlinks = False,
+        onerror = None,
+    ):
         nonlocal depth
         stack = [Path(top)]
         while stack:
