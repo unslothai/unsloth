@@ -11475,12 +11475,17 @@ class LlamaCppBackend:
                                     total_mib = None,
                                 )
                             )
-                            if _ctx_w > 0 and (
-                                _probe_base(True, _n)
-                                + _kv_bytes(_ctx_w)
-                                + _cc_n(_ctx_w)
-                                + _mtp_bytes(_ctx_w)
-                            ) / (1024 * 1024) <= _budget_w:
+                            if (
+                                _ctx_w > 0
+                                and (
+                                    _probe_base(True, _n)
+                                    + _kv_bytes(_ctx_w)
+                                    + _cc_n(_ctx_w)
+                                    + _mtp_bytes(_ctx_w)
+                                )
+                                / (1024 * 1024)
+                                <= _budget_w
+                            ):
                                 break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True

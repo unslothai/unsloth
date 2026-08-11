@@ -5798,9 +5798,7 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
                     if "main" in {str(x) for x in (getattr(r, "refs", None) or ())}
                 ),
                 None,
-            ) or max(
-                revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None
-            )
+            ) or max(revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None)
             for f in getattr(chosen, "files", ()) or ():
                 name = str(f.file_name)
                 if name.lower().endswith(".gguf"):

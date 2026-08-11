@@ -1853,9 +1853,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 SimpleNamespace(
                     refs = set(),
                     last_modified = 1.0,
-                    files = [
-                        SimpleNamespace(file_name = "old-F16.gguf", size_on_disk = 60 * 1024**3)
-                    ],
+                    files = [SimpleNamespace(file_name = "old-F16.gguf", size_on_disk = 60 * 1024**3)],
                 ),
             ],
         )
