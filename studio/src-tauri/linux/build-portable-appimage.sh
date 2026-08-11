@@ -717,7 +717,16 @@ WEBKIT_LINK="__WEBKIT_LINK_PATH__"
 webkit_src="$appdir/usr/libexec/unsloth-webkit"
 rm -f -- "$WEBKIT_LINK" 2>/dev/null || true
 ln -sn "$webkit_src" "$WEBKIT_LINK" 2>/dev/null || true
-if [ ! -L "$WEBKIT_LINK" ] || [ ! -O "$WEBKIT_LINK" ] \
+# Ownership of the LINK, not of what it points at. `test -O` dereferences, and
+# appimagetool normalises the payload to root:root, so on a mounted AppImage it
+# asked "is the bundle owned by me?" -- false for every non-root user, and every
+# launch died here with exit 126. `stat` without -L reports the symlink itself,
+# which is the thing the security check actually cares about: a link we created in
+# a world-writable directory is ours, one an attacker pre-created is theirs.
+# The -x test below still follows the link, which is what proves it reaches a real
+# bundle rather than a dangling or hostile target.
+if [ ! -L "$WEBKIT_LINK" ] \
+   || [ "$(stat -c %u "$WEBKIT_LINK" 2>/dev/null)" != "$(id -u)" ] \
    || [ ! -x "$WEBKIT_LINK/WebKitNetworkProcess" ]; then
   printf '%s\n' \
     "Unsloth cannot start: $WEBKIT_LINK is not a link this session controls." \
@@ -790,8 +799,16 @@ ARCH=x86_64 "$appimagetool_path" --appimage-extract-and-run \
 ( cd "$verify_dir" && "$output_path" --appimage-extract >/dev/null )
 assert_portable_appdir "$verify_dir/squashfs-root"
 
-grep -q 'LD_LIBRARY_PATH=' "$verify_dir/squashfs-root/AppRun" \
-  || die "Portable AppRun must put the bundled libraries first."
+# The inverse of what this once asserted. It required AppRun to SET
+# LD_LIBRARY_PATH, back when that was how the bundle resolved itself; the bundle now
+# resolves through $ORIGIN RUNPATHs and setting it is the #7953 failure, because it
+# outranks the default search path for host libraries too. Left as it was, the check
+# could never pass -- it demanded a line the generator deliberately stopped writing,
+# so every build died here after producing a correct artifact.
+if grep -q '^[[:space:]]*\(export[[:space:]]\+\)\?LD_LIBRARY_PATH=' \
+     "$verify_dir/squashfs-root/AppRun"; then
+  die "Portable AppRun must not set LD_LIBRARY_PATH: it captures host library loads (#7953)."
+fi
 
 log "Built portable AppImage: $output_path"
 log "size: $(du -h "$output_path" | cut -f1)"

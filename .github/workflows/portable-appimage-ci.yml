@@ -171,8 +171,15 @@ jobs:
 
           # No path may point back at this runner's build tree. Checking the
           # extracted image catches anything the AppDir pass could not see.
-          if grep -rlI --exclude-dir=proc "$RUNNER_TEMP" "$appdir" 2>/dev/null | head -5 | grep -q .; then
+          # No pipeline here on purpose. `grep ... | head -5 | grep -q .` fails OPEN
+          # under `set -o pipefail`: once enough matches fill the pipe, head closes it,
+          # the recursive grep dies of SIGPIPE, and pipefail reports that nonzero status
+          # for the whole pipeline -- so the `if` is false precisely when a build path
+          # leaked into MANY objects, which is the case that matters most.
+          if grep -rlI --exclude-dir=proc "$RUNNER_TEMP" "$appdir" \
+               > "$RUNNER_TEMP/build-path-leaks.txt" 2>/dev/null; then
             echo "::error::the bundle references the build directory"
+            head -5 "$RUNNER_TEMP/build-path-leaks.txt"
             exit 1
           fi
 
@@ -224,16 +231,23 @@ jobs:
           for lib in libcurl-gnutls.so.4 libGLX_mesa.so.0 libGL.so.1 libEGL.so.1; do
             p=$(find /usr/lib/x86_64-linux-gnu -maxdepth 2 -name "$lib" | head -1)
             [ -n "$p" ] || { printf '%-22s absent\n' "$lib"; continue; }
-            printf '%-22s host: ' "$lib"; /tmp/probe "$p"
-            printf '%-22s bundle-first: ' "$lib"
-            out=$(LD_LIBRARY_PATH="$libdir" /tmp/probe "$p"); echo "$out"
+            # What users actually get: AppRun exports no LD_LIBRARY_PATH, so host
+            # libraries resolve through the default search path. THIS is the gate.
+            printf '%-22s host: ' "$lib"
+            out=$(/tmp/probe "$p"); echo "$out"
             case "$out" in FAILED*) rc=1 ;; esac
+            # And the same load with the bundle forced in front, reported but not
+            # gated. It is expected to fail on 24.04 -- that failure is the whole
+            # reason AppRun stopped exporting the variable, so gating on it would
+            # fail every build for a configuration the runtime no longer produces.
+            printf '%-22s bundle-first (informational): ' "$lib"
+            LD_LIBRARY_PATH="$libdir" /tmp/probe "$p" || true
           done
           exit $rc
           SH
           if ! docker run --rm -v "$workdir":/work -w /work ubuntu:24.04 \
                bash /work/probe.sh; then
-            echo "::error::a host library cannot load under AppRun's LD_LIBRARY_PATH on Ubuntu 24.04 -- this is the #7953 class of failure (undefined symbol / GLIBCXX)"
+            echo "::error::a host library cannot load on Ubuntu 24.04 under the environment AppRun actually provides -- this is the #7953 class of failure (undefined symbol / GLIBCXX)"
             exit 1
           fi
 

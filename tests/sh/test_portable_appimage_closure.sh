@@ -253,6 +253,32 @@ echo "=== structural: the tauri bundle-type stamp ==="
 assert_eq "tauri bundle-type stamped" "yes" \
     "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"
 
+echo "=== behavioural: the guard checks the LINK's owner, not the payload's ==="
+# The regression this encodes: appimagetool normalises the payload to root:root, and
+# `test -O` DEREFERENCES, so the guard asked "is the bundle owned by me?" -- false for
+# every non-root user. Every launch of a CI-built AppImage died with exit 126. The
+# fixture Daniel's tests use is owned by the test user, so it could not see this.
+# /usr stands in for the root-owned payload: it is not ours on any normal system.
+_root_owned=""
+for _cand in /usr /usr/lib /lib; do
+    if [ -d "$_cand" ] && [ ! -O "$_cand" ]; then _root_owned="$_cand"; break; fi
+done
+if [ -n "$_root_owned" ]; then
+    ln -sfn "$_root_owned" "$_TMP/foreign-target-link"
+    # Old check: -O follows the link and sees the foreign owner -> would refuse.
+    assert_eq "dereferencing owner check rejects a root-owned payload" "refused" \
+        "$([ -O "$_TMP/foreign-target-link" ] && echo accepted || echo refused)"
+    # New check: stat without -L reads the link itself, which we created -> accepted.
+    assert_eq "link-owner check accepts our own link to it" "$(id -u)" \
+        "$(stat -c %u "$_TMP/foreign-target-link" 2>/dev/null)"
+else
+    echo "  SKIP: no foreign-owned directory available to stand in for the payload"
+fi
+assert_eq "guard reads the link, not the target" "yes" \
+    "$(grep -q 'stat -c %u "\$WEBKIT_LINK"' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "guard no longer uses the dereferencing -O test" "yes" \
+    "$(grep -q '\-O "\$WEBKIT_LINK"' "$BUILD_SH" && echo no || echo yes)"
+
 echo "=== structural: the host/bundle boundary ==="
 # glibc and the GPU stack must stay on the host; the desktop stack must not.
 for _host in 'libc' 'libGL' 'libEGL' 'libdrm' 'libX11' 'libwayland-'; do
