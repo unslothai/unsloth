@@ -11156,7 +11156,16 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
+                    # CPU-offloaded and the drafter that will launch is the separate
+                    # one, so nothing speculative sits on the GPU. A separate sidecar
+                    # wins over an embedded head (llama.cpp loads the draft model on
+                    # has_dft()), so an unused head must not keep the reserve alive;
+                    # a head with no sidecar is still GPU-resident and still reserved.
+                    _draft_cpu_no_embedded = _draft_on_cpu and (
+                        bool(mtp_draft_path)
+                        or _spec_canon in ("dspark", "dflash")
+                        or not self._nextn_predict_layers
+                    )
 
                     # The two tensor -> layer downgrades that depend on nothing the
                     # drafter probe below decides run here, BEFORE it: the probe is
@@ -11295,15 +11304,7 @@ class LlamaCppBackend:
                         # would release the reserve for a drafter the child still
                         # loads, and the load OOMs. It is also an explicit choice.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
-                        # The drafter this load will launch, not whether an embedded
-                        # head also exists: a separate sidecar wins over one (llama.cpp
-                        # loads the draft model on has_dft()), so with the sidecar
-                        # pinned to CPU there is no GPU drafter reserve to drop. An
-                        # embedded head with no sidecar does sit on GPU, and is probed.
-                        and not (
-                            _draft_on_cpu
-                            and (mtp_draft_path or _spec_canon in ("dspark", "dflash"))
-                        )
+                        and not _draft_cpu_no_embedded
                         and not tensor_parallel
                         and gpus
                         and effective_ctx > 0

@@ -741,3 +741,34 @@ def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_pa
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
+
+
+def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_path):
+    """The exemption has to reach the reserve, not just the probe.
+
+    _mtp_reserves_gpu kept the flat fraction and draft-compute reserve alive for
+    an embedded head the launch never uses, so the context still shrank for GPU
+    memory nothing allocates. One definition now serves both.
+    """
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    def _meta(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = _meta
+    reserved = []
+    backend._fit_context_to_vram = lambda requested, *a, **k: (
+        reserved.append(k.get("mtp_engaged")) or requested
+    )
+
+    _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 0,
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
+
+    assert reserved, "the fit never ran"
+    assert not any(reserved), f"mtp_engaged should be False throughout, got {reserved}"

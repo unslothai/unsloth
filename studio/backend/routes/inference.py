@@ -5758,7 +5758,7 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
     # cache: that is what lets llama-server open it with the Hub unreachable, and
     # it is also what makes the flat reserve dangerous, since --spec-draft-hf takes
     # any repo and an ordinary 30 GB GGUF is a legal value. Measure the cache.
-    cached = _cached_repo_gguf_bytes(repo)
+    cached = _cached_repo_gguf_bytes(repo, hint)
     if cached:
         return cached
     # Neither listable nor cached: llama-server would have to download it over the
@@ -5767,12 +5767,13 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
     return _REMOTE_DRAFTER_RESERVE_BYTES
 
 
-def _cached_repo_gguf_bytes(repo: str) -> int:
+def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
     """Largest whole GGUF shard set already on disk for ``repo``, else 0.
 
     Same bound as the listing path, taken from the local Hugging Face cache, so a
     drafter llama-server can open offline is charged at its real size rather than
-    a class-based guess.
+    a class-based guess. ``hint`` narrows exactly as it does there: a repo holding
+    several quants would otherwise be charged its F16 for a :Q4_K_M request.
     """
     try:
         from huggingface_hub import scan_cache_dir
@@ -5789,6 +5790,8 @@ def _cached_repo_gguf_bytes(repo: str) -> int:
                     name = str(f.file_name)
                     if name.lower().endswith(".gguf"):
                         sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
+        if hint:
+            sizes = {n: b for n, b in sizes.items() if hint in n.lower()} or sizes
         return dflash_budget_bytes(sizes, _gguf_extra_shards)
     except Exception as e:
         logger.warning(f"Could not measure the cached drafter repo {repo}: {e}")
@@ -5977,6 +5980,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
@@ -6139,7 +6143,13 @@ def _estimate_gguf_required_gb(
         # nowhere and the guard admitted a load that evicts the training job.
         _extras_bytes = 0
         _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-        if _extras_draft and Path(_extras_draft).is_file():
+        # -ngld 0 / --spec-draft-device cpu keeps the drafter in host memory, so it
+        # competes for RAM, not for the training job's VRAM. Charging it here is not
+        # the safe over-estimate the rest of this guard makes; it is simply the wrong
+        # resource, and a large drafter then 409s a load that takes no VRAM at all.
+        if _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ):
+            _extras_bytes = 0
+        elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
         elif _extras_draft:

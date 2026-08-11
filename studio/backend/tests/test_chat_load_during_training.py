@@ -1869,6 +1869,70 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
         self.assertEqual(charged, self.route._REMOTE_DRAFTER_RESERVE_BYTES)
 
+    def test_a_cached_drafter_is_narrowed_by_the_quant_tag(self):
+        """llama.cpp's :quant is its own narrowing, so a repo holding several
+        quants must not be charged its F16 for a Q4_K_M request. Same rule the
+        listing path applies, and the two have to agree."""
+        cached = SimpleNamespace(
+            repo_id = "org/drafter",
+            revisions = [
+                SimpleNamespace(
+                    files = [
+                        SimpleNamespace(
+                            file_name = "drafter-F16.gguf", size_on_disk = 20 * 1024**3
+                        ),
+                        SimpleNamespace(
+                            file_name = "drafter-Q4_K_M.gguf", size_on_disk = 3 * 1024**3
+                        ),
+                    ]
+                )
+            ],
+        )
+        with (
+            patch("huggingface_hub.model_info", side_effect = OSError("no network")),
+            patch(
+                "huggingface_hub.scan_cache_dir",
+                return_value = SimpleNamespace(repos = [cached]),
+            ),
+        ):
+            charged = self.route._remote_drafter_repo_bytes(
+                "org/drafter:Q4_K_M", hf_token = None
+            )
+        self.assertEqual(charged, 3 * 1024**3)
+
+    def test_a_cpu_offloaded_extras_drafter_is_not_charged_vram(self):
+        """-ngld 0 keeps the drafter in host memory. Charging it against the
+        training job's VRAM is not a conservative estimate, it is the wrong
+        resource, and it 409s a load that takes no VRAM for the drafter at all."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        extras = ["--spec-type", "draft-dspark", "--spec-draft-hf", "org/drafter"]
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 8 * 1024**3),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+        ):
+            on_gpu = self.route._estimate_gguf_required_gb(
+                cfg, speculative_type = "auto", llama_extra_args = extras
+            )
+            on_cpu = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = [*extras, "--spec-draft-ngl", "0"],
+            )
+        self.assertAlmostEqual(on_gpu - on_cpu, 8.0, places = 6)
+
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a
         listing caught mid-publication must not be billed for its listed half:
