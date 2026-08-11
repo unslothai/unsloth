@@ -37,6 +37,7 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   pasteClipboardFiles,
+  pasteLongTextAsFile,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -2098,6 +2099,16 @@ const Composer: FC<{
     useImeComposerInputHandlers({ submitOnEnter: true });
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Bulk text pastes attach as a file instead of filling the input.
+      const attachedPastedText = pasteLongTextAsFile(
+        event,
+        (file) => aui.composer().addAttachment(file),
+        () =>
+          toast.error("Could not attach the pasted text.", {
+            description: "Paste it again, or paste it in smaller pieces.",
+          }),
+      );
+      if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
         async (files) => {

@@ -17,6 +17,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isPastedTextFile, unwrapAttachmentText } from "@/features/chat";
+import { formatBytes } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
 import {
   AttachmentPrimitive,
@@ -25,10 +27,20 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { AudioWave01Icon, File02Icon } from "@hugeicons/core-free-icons";
+import {
+  AudioWave01Icon,
+  File02Icon,
+  TextAlignLeft01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PlusIcon, XIcon } from "lucide-react";
-import { type FC, type PropsWithChildren, useEffect, useState } from "react";
+import { ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  type FC,
+  type PropsWithChildren,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { useShallow } from "zustand/shallow";
 
 const useFileSrc = (file: File | undefined): string | undefined => {
@@ -163,9 +175,156 @@ const AttachmentThumb: FC = () => {
   );
 };
 
+type PastedTextAttachment = {
+  readonly file?: File;
+  readonly inlineText?: string;
+  readonly bytes: number;
+};
+
+// Long pastes arrive as a synthetic .txt and render as a chip, not a tile.
+const usePastedTextAttachment = (): PastedTextAttachment | null => {
+  return useAuiState(
+    useShallow(({ attachment }): PastedTextAttachment | null => {
+      if (attachment.type !== "document") return null;
+      const file = (attachment as { file?: File }).file;
+      if (!isPastedTextFile(file, attachment.name)) return null;
+      const inlineText = attachment.content?.flatMap((part) =>
+        part.type === "text" ? [part.text] : [],
+      )[0];
+      const unwrapped =
+        inlineText === undefined ? undefined : unwrapAttachmentText(inlineText);
+      return {
+        file,
+        inlineText: unwrapped,
+        bytes: file?.size ?? new Blob([unwrapped ?? ""]).size,
+      };
+    }),
+  );
+};
+
+const readPastedText = async ({
+  file,
+  inlineText,
+}: PastedTextAttachment): Promise<string> => {
+  if (file) return await file.text();
+  return inlineText ?? "";
+};
+
+const PastedTextPreviewDialog: FC<
+  PropsWithChildren<{ name: string; attachment: PastedTextAttachment }>
+> = ({ attachment, children, name }) => {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    readPastedText(attachment)
+      .then((value) => {
+        if (!cancelled) setText(value);
+      })
+      .catch(() => {
+        if (!cancelled) setText("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, attachment]);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild={true}>{children}</DialogTrigger>
+      <DialogContent className="aui-pasted-text-dialog flex max-h-[80dvh] w-[min(46rem,92vw)] max-w-none flex-col gap-3 overflow-hidden">
+        <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
+        <pre className="aui-pasted-text-dialog-body max-h-[64dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
+          {text ?? "Loading…"}
+        </pre>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+const PastedTextAttachmentUI: FC<{
+  attachment: PastedTextAttachment;
+  isComposer: boolean;
+  name: string;
+}> = ({ attachment, isComposer, name }) => {
+  const aui = useAui();
+  const [inlining, setInlining] = useState(false);
+
+  // Clicking the chip pours the text back into the composer.
+  const showInTextField = useCallback(() => {
+    if (inlining) return;
+    setInlining(true);
+    void readPastedText(attachment)
+      .then((text) => {
+        if (text.length === 0) return;
+        const composer = aui.composer();
+        const current = composer.getState().text;
+        composer.setText(current.length > 0 ? `${current}\n\n${text}` : text);
+        aui.attachment().remove();
+      })
+      .finally(() => setInlining(false));
+  }, [attachment, aui, inlining]);
+
+  const chip = (
+    <button
+      className={cn(
+        "aui-pasted-text-chip group flex h-14 max-w-[15rem] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] border bg-muted px-3 text-left transition-opacity hover:opacity-90",
+        // Keep the label clear of the remove button in the corner.
+        isComposer && "aui-pasted-text-chip-composer border-foreground/20 pr-6",
+      )}
+      type="button"
+      aria-label={
+        isComposer
+          ? `Pasted text: ${name}. Show in text field`
+          : `Pasted text: ${name}. Show contents`
+      }
+      onClick={isComposer ? showInTextField : undefined}
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-foreground/10">
+        <HugeiconsIcon
+          icon={TextAlignLeft01Icon}
+          strokeWidth={2}
+          className="size-4 text-muted-foreground"
+        />
+      </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="truncate font-medium text-xs">{name}</span>
+        <span className="truncate text-[11px] text-muted-foreground">
+          {/* Hover swaps the size for the action. */}
+          <span className={isComposer ? "group-hover:hidden" : undefined}>
+            {formatBytes(attachment.bytes)}
+          </span>
+          {isComposer ? (
+            <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">
+              Show in text field
+              <ChevronRightIcon className="size-3" />
+            </span>
+          ) : null}
+        </span>
+      </span>
+    </button>
+  );
+
+  return (
+    <AttachmentPrimitive.Root className="aui-attachment-root relative">
+      {isComposer ? (
+        chip
+      ) : (
+        <PastedTextPreviewDialog attachment={attachment} name={name}>
+          {chip}
+        </PastedTextPreviewDialog>
+      )}
+      {isComposer && <AttachmentRemove />}
+    </AttachmentPrimitive.Root>
+  );
+};
+
 const AttachmentUI: FC = () => {
   const aui = useAui();
   const isComposer = aui.attachment.source === "composer";
+  const pastedText = usePastedTextAttachment();
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
   const name = useAuiState(({ attachment }) => attachment.name);
@@ -192,6 +351,16 @@ const AttachmentUI: FC = () => {
   const accessibleName = name
     ? `${typeLabel} attachment: ${name}`
     : `${typeLabel} attachment`;
+
+  if (pastedText) {
+    return (
+      <PastedTextAttachmentUI
+        attachment={pastedText}
+        isComposer={isComposer}
+        name={name ?? "Pasted text"}
+      />
+    );
+  }
 
   return (
     <Tooltip>

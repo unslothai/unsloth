@@ -145,6 +145,13 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
+  createPastedTextFile,
+  isPastedTextFile,
+  pasteLongTextAsFile,
+  shouldAttachPastedText,
+  unwrapAttachmentText,
+} from "./utils/pasted-text";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,
