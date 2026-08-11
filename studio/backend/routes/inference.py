@@ -2174,6 +2174,7 @@ from models.inference import (
     DiffusionDownloadPlanResponse,
     DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
+    GalleryFlagsPatch,
     GalleryImage,
     GalleryListResponse,
     ImageGenerationRequest,
@@ -21678,6 +21679,7 @@ async def generate_diffusion_image(
 async def list_gallery_images(
     limit: int = 50,
     offset: int = 0,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from pydantic import ValidationError
@@ -21698,7 +21700,11 @@ async def list_gallery_images(
 
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(
-        image_gallery.list_images, limit + 1, offset, valid = _valid_gallery_image
+        image_gallery.list_images,
+        limit + 1,
+        offset,
+        valid = _valid_gallery_image,
+        archived = archived,
     )
     has_more = len(records) > limit
     images = [GalleryImage(**r) for r in records[:limit]]
@@ -21724,6 +21730,29 @@ async def get_gallery_image_file(
     )
 
 
+@studio_router.patch("/images/gallery/{image_id}", response_model = GalleryImage)
+async def update_gallery_image_flags(
+    image_id: str,
+    patch: GalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Pin/unpin or archive/restore one image. Omitted fields are left alone."""
+    from core.inference import image_gallery
+
+    try:
+        record = await asyncio.to_thread(
+            image_gallery.set_flags, image_id, pinned = patch.pinned, archived = patch.archived
+        )
+    except OSError as exc:
+        # The client already applied this optimistically, so a silent miss would look like it stuck
+        # and then quietly undo on reload.
+        logger.warning("image_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this image.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Image not found.")
+    return GalleryImage(**record)
+
+
 @studio_router.delete("/images/gallery/{image_id}")
 async def delete_gallery_image(image_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
@@ -21737,7 +21766,18 @@ async def delete_gallery_image(image_id: str, current_subject: str = Depends(get
 @studio_router.delete("/images/gallery")
 async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
-    removed = await asyncio.to_thread(image_gallery.clear)
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(image_gallery.clear)
+    except FlagsUnavailable as exc:
+        # Refuse rather than delete the archive we cannot prove is archived.
+        logger.warning("image_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's pin/archive data, so clearing was stopped to "
+            "avoid deleting archived images.",
+        )
     return {"removed": removed}
 
 

@@ -1231,7 +1231,9 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
         assert linked_catalog.stat().st_ino == source_catalog.stat().st_ino
 
 
-def test_rocm_runtime_requires_both_kernel_catalogs(tmp_path):
+def test_rocm_runtime_requires_the_rocblas_kernel_catalog(tmp_path):
+    # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF
+    # NEEDED (checked on the published b10342 linux-x64-rocm-gfx103X bundle).
     llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     (llama_bin / "hipblaslt").mkdir()
     (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
@@ -1242,6 +1244,96 @@ def test_rocm_runtime_requires_both_kernel_catalogs(tmp_path):
             backend = "rocm",
             host = _host("linux", "x64"),
         )
+
+
+def test_rocm_runtime_rejects_an_empty_rocblas_kernel_catalog(tmp_path):
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    (llama_bin / "rocblas" / "library").mkdir(parents = True)
+    with pytest.raises(PrebuiltFallback, match = "empty rocblas"):
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / "whisper-bin",
+            backend = "rocm",
+            host = _host("linux", "x64"),
+        )
+
+
+def _gfx103x_llama_bin(tmp_path: Path) -> Path:
+    """The published linux-x64-rocm-gfx103X layout from #8364: librocblas plus
+    its Tensile catalog, and libhipblaslt.so.1 with no hipblaslt/ catalog at all.
+    hipBLASLt builds no kernels for gfx1030 (RDNA2), so nothing is missing here;
+    llama.cpp installs and runs inference on exactly this tree."""
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
+    for name in ("libamdhip64.so.7", "libhipblas.so.3", "librocblas.so.5", "libhipblaslt.so.1"):
+        (llama_bin / name).write_bytes(name.encode())
+    catalog = llama_bin / "rocblas" / "library"
+    catalog.mkdir(parents = True)
+    (catalog / "TensileLibrary_Type_HH_Contraction_gfx1030.dat").write_bytes(b"kernel")
+    return llama_bin
+
+
+def test_rocm_runtime_wires_rocblas_when_hipblaslt_ships_no_kernels(tmp_path):
+    # #8364: RX 6800 (gfx1030) on linux x64. The whisper update failed every
+    # startup on "missing its hipblaslt kernel catalog" while inference ran.
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+    whisper_bin = tmp_path / "whisper-bin"
+
+    linked_dirs = M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030"),
+    )
+
+    assert linked_dirs == ["rocblas"]
+    catalog = whisper_bin / "rocblas" / "library" / "TensileLibrary_Type_HH_Contraction_gfx1030.dat"
+    assert catalog.is_file()
+    assert catalog.stat().st_ino == (llama_bin / "rocblas" / "library" / catalog.name).stat().st_ino
+    # No empty stand-in directory: the sidecar treats an empty catalog as broken.
+    assert not (whisper_bin / "hipblaslt").exists()
+
+
+def test_rocm_runtime_treats_an_empty_hipblaslt_catalog_as_absent(tmp_path):
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+    (llama_bin / "hipblaslt" / "library").mkdir(parents = True)
+    whisper_bin = tmp_path / "whisper-bin"
+
+    assert M.link_runtime_directories(
+        llama_bin,
+        whisper_bin,
+        backend = "rocm",
+        host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030"),
+    ) == ["rocblas"]
+    assert not (whisper_bin / "hipblaslt").exists()
+
+
+@pytest.mark.parametrize(
+    "whisper_os, backend",
+    [
+        ("linux", "cpu"),
+        ("linux", "cuda"),
+        ("linux", "vulkan"),
+        ("macos", "cpu"),
+        ("macos", "metal"),
+        ("windows", "cpu"),
+        ("windows", "cuda"),
+        ("windows", "vulkan"),
+        ("windows", "rocm"),
+    ],
+)
+def test_runtime_directories_are_a_linux_rocm_concern_only(tmp_path, whisper_os, backend):
+    # Non-regression for the backends #8364 must not touch: no catalog is looked
+    # for, so a bundle without one is never rejected over it.
+    llama_bin = _fake_llama_bin(tmp_path, backend_module = None)
+    assert (
+        M.link_runtime_directories(
+            llama_bin,
+            tmp_path / f"whisper-bin-{whisper_os}-{backend}",
+            backend = backend,
+            host = _host(whisper_os, "x64"),
+        )
+        == []
+    )
 
 
 def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
@@ -1308,6 +1400,84 @@ def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     assert M.existing_install_matches(tmp_path, host, object()) is True
     marker.update(backend = "rocm", linked_runtime_directories = [])
     assert M.existing_install_matches(tmp_path, _host("windows", "x64"), object()) is True
+
+
+@pytest.mark.parametrize(
+    "runtime_dirs, current",
+    [
+        (["hipblaslt", "rocblas"], True),  # every target hipBLASLt has kernels for
+        (["rocblas"], True),  # gfx1030 and friends: #8364
+        ([], False),  # rocblas is load-bearing, never optional
+        (["hipblaslt"], False),
+        (["rocblas", "unexpected"], False),  # not a catalog this installer wires
+        ("rocblas", False),  # not a list: hand-edited or truncated marker
+    ],
+)
+def test_existing_rocm_install_accepts_the_catalogs_the_target_has(
+    tmp_path, monkeypatch, runtime_dirs, current
+):
+    # #8364: a gfx1030 install wires rocblas alone and is complete, so "already
+    # matches" must hold for it, while a marker with no rocblas still reinstalls.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server = bin_dir / "whisper-server"
+    server.write_text("bin")
+    server.chmod(0o755)
+    (bin_dir / "libggml.so.0").write_text("lib")
+    for name in ("hipblaslt", "rocblas", "unexpected"):
+        (bin_dir / name).mkdir()
+        (bin_dir / name / "kernel.dat").write_text("kernel")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "backend": "rocm",
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+            "linked_runtime_directories": runtime_dirs,
+        },
+    )
+
+    assert M.existing_install_matches(tmp_path, host, object()) is current
+
+
+@pytest.mark.parametrize("empty", ["hipblaslt", "rocblas"])
+def test_existing_rocm_install_reinstalls_over_an_empty_catalog_on_disk(
+    tmp_path, monkeypatch, empty
+):
+    # Relaxing the marker check to membership must not relax the on-disk check:
+    # a marker that names a catalog still has to find files in it, or dictation
+    # fails at launch with the marker insisting the install is current.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server = bin_dir / "whisper-server"
+    server.write_text("bin")
+    server.chmod(0o755)
+    (bin_dir / "libggml.so.0").write_text("lib")
+    for name in ("hipblaslt", "rocblas"):
+        (bin_dir / name / "library").mkdir(parents = True)
+        if name != empty:
+            (bin_dir / name / "library" / "kernel.dat").write_text("kernel")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "backend": "rocm",
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+            "linked_runtime_directories": ["hipblaslt", "rocblas"],
+        },
+    )
+
+    assert M.existing_install_matches(tmp_path, host, object()) is False
 
 
 def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
@@ -1397,6 +1567,54 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
     ]
     assert marker["runtime_wiring_version"] == M.SLIM_RUNTIME_WIRING_VERSION
     assert marker["linked_runtime_directories"] == []
+
+
+def test_slim_rocm_install_pairs_a_runtime_without_a_hipblaslt_catalog(tmp_path, monkeypatch):
+    # End to end over the #8364 tree: the install must complete and the marker
+    # must record the one catalog the gfx1030 bundle actually ships.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    archive, sha256 = _build_slim_bundle(tmp_path, host)
+    llama_bin = _gfx103x_llama_bin(tmp_path)
+
+    def fake_download(url, destination):
+        destination.parent.mkdir(parents = True, exist_ok = True)
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "download_file", fake_download)
+    monkeypatch.setattr(M, "_elf_needed", lambda path: set())
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (llama_bin, SLIM_LLAMA_TAG, "rocm-gfx103X"),
+    )
+    manifest = M.parse_manifest(_manifest([_slim_artifact(sha256 = sha256)]))
+    bundle = M.ReleaseBundle(
+        repo = "unslothai/whisper.cpp",
+        release_tag = RELEASE_TAG,
+        manifest = manifest,
+        asset_urls = {SLIM_ASSET: f"https://example.invalid/{SLIM_ASSET}"},
+    )
+    monkeypatch.setattr(
+        M,
+        "fetch_release_for_install",
+        lambda repo, *, published_release_tag = None: (bundle, {SLIM_ASSET: sha256}),
+    )
+
+    install_dir = tmp_path / "whisper.cpp"
+    assert M.install_prebuilt(install_dir, backend = "rocm") == M.EXIT_SUCCESS
+
+    whisper_bin = install_dir / "build" / "bin"
+    assert (whisper_bin / "libggml-hip.so").is_file()
+    assert (whisper_bin / "rocblas" / "library").is_dir()
+    assert not (whisper_bin / "hipblaslt").exists()
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text())
+    assert marker["backend"] == "rocm"
+    assert marker["install_kind"] == "slim"
+    assert marker["linked_runtime_directories"] == ["rocblas"]
+    assert marker["runtime_wiring_version"] == M.SLIM_RUNTIME_WIRING_VERSION
+    # A second run is a no-op: the wiring the target can have is the wiring it has.
+    assert M.install_prebuilt(install_dir, backend = "rocm") == M.EXIT_SUCCESS
 
 
 def test_slim_links_survive_a_llama_dir_swap(tmp_path, monkeypatch):

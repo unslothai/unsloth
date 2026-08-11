@@ -246,7 +246,16 @@ def slim_runtime_intact(binary: str) -> bool:
             for name in runtime_dirs
         )
     if intact and marker.get("backend") == "rocm":
-        expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        # Membership plus required, not equality: hipBLASLt builds no Tensile
+        # kernels for gfx1030 and the rest of RDNA2, so llama's ROCm bundle for
+        # those ships libhipblaslt with no hipblaslt/ catalog, and the installer
+        # wires only the catalogs the bundle has; demanding both read a correct
+        # install as broken (#8364). rocblas stays mandatory (the backend module
+        # links librocblas directly) and a name outside the pair still means
+        # stale wiring. Windows overlays wire no catalogs, so both sets are
+        # empty there and this reduces to the old equality.
+        known_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        required_runtime_dirs = set() if sys.platform == "win32" else {"rocblas"}
         # Any wiring from version 2 on records linked_runtime_directories, so
         # pin the floor, not one version, or an installer bump strands installs.
         wiring_version = marker.get("runtime_wiring_version")
@@ -254,7 +263,8 @@ def slim_runtime_intact(binary: str) -> bool:
             isinstance(wiring_version, int)
             and wiring_version >= 2
             and isinstance(runtime_dirs, list)
-            and set(runtime_dirs) == expected_runtime_dirs
+            and set(runtime_dirs) <= known_runtime_dirs
+            and required_runtime_dirs <= set(runtime_dirs)
         )
     if not intact:
         logger.warning(

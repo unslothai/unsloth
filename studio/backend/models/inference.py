@@ -2511,7 +2511,7 @@ class DiffusionLoadRequest(BaseModel):
         "scheme. Loads the already-quantized weights with the dense bf16 never on the "
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
         "checkpoint if configured, else quantises the dense transformer at load time. "
-        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "A local path installs arbitrary weights into the served model, so it is "
         "ignored unless the path resolves inside a directory the operator allowlisted "
         "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
         "the OS path separator). A bare on/off value such as '1' is deliberately not "
@@ -2895,6 +2895,16 @@ class GalleryImage(BaseModel):
         None, description = "How many reference images the reference workflow used"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
+    # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+
+
+class GalleryFlagsPatch(BaseModel):
+    """Partial update of one gallery item's pin/archive flags; omitted fields are left alone."""
+
+    pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the item")
+    archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the item")
 
 
 class DiffusionGenerateResponse(BaseModel):
@@ -3584,6 +3594,9 @@ class GalleryVideo(BaseModel):
         None, description = "Offload policy actually engaged: none | group | model | sequential"
     )
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
+    # Library state, not recipe: stored beside the clip, so older sidecars simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
 
 
 class VideoGenerateResponse(BaseModel):
