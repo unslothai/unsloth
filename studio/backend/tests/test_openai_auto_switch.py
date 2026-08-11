@@ -7390,9 +7390,7 @@ def _age_resolver_clock(monkeypatch, seconds):
     than the age; a fresh CI runner has not, and the subtraction flips the sign.
     """
     base = time.monotonic()
-    monkeypatch.setattr(
-        resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds)
-    )
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds))
 
 
 def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
