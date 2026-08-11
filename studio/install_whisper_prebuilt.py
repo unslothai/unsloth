@@ -416,12 +416,13 @@ def slim_pairing_for_artifact(
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
     required_sonames = [str(name) for name in sonames]
-    if host.is_windows and backend == "rocm":
-        # Windows ROCm llama bundles are built without GGML OpenMP and do not
-        # ship libomp140, while the shared Windows whisper manifest also serves
-        # CPU builds whose ggml runtime does need it. Keep the manifest's ggml
-        # ABI gate, but do not reject the valid ROCm layout for a CPU-only
-        # toolchain runtime. link_ggml_runtime still wires libomp when present.
+    if host.is_windows:
+        # The shared Windows manifest lists libomp because the CPU llama bundle
+        # links ggml against it; the GPU bundles (rocm, vulkan, cuda) do not ship
+        # it and their ggml DLLs do not import it. libomp is a transitive dep of
+        # llama's own ggml, so a working llama install already satisfies it and
+        # this gate only ever mis-rejects. Keep the ggml ABI sonames; drop libomp.
+        # link_ggml_runtime still wires it whenever the bundle ships it.
         required_sonames = [
             name
             for name in required_sonames

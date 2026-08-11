@@ -697,16 +697,28 @@ def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
     assert artifact["asset"] == WIN_SLIM_ASSET and backend == "cpu"
 
 
-def test_windows_rocm_slim_does_not_require_cpu_only_libomp(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "backend, module, host_kwargs",
+    [
+        ("rocm", "ggml-hip.dll", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
+        ("cuda", "ggml-cuda.dll", {"has_usable_nvidia": True}),
+        ("vulkan", "ggml-vulkan.dll", {}),
+        ("cpu", "ggml-cpu.dll", {}),
+    ],
+)
+def test_windows_slim_does_not_require_cpu_only_libomp(
+    tmp_path, monkeypatch, backend, module, host_kwargs
+):
     # The published Windows manifest is shared by every backend and lists the
-    # OpenMP runtime shipped by CPU llama bundles. Paired ROCm bundles omit it:
-    # their ggml DLLs do not import OpenMP, so this must remain a valid pairing.
+    # OpenMP runtime that only the CPU llama bundle ships. The GPU bundles omit
+    # it and their ggml DLLs do not import it, so these must all stay valid
+    # pairings; the CPU bundle ships it either way.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
-    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-hip.dll"):
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", module):
         (bin_dir / name).write_bytes(b"ggml")
     monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "rocm-gfx1150")
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, f"windows-{backend}")
     )
     manifest = _windows_slim_manifest(
         requires_ggml_sonames = [
@@ -716,39 +728,26 @@ def test_windows_rocm_slim_does_not_require_cpu_only_libomp(tmp_path, monkeypatc
         ]
     )
 
-    artifact, backend, used_fallback = M.select_artifact_with_fallback(
-        manifest,
-        _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
-        "rocm",
+    artifact, chosen, used_fallback = M.select_artifact_with_fallback(
+        manifest, _host("windows", "x64", **host_kwargs), backend
     )
 
     assert artifact["asset"] == WIN_SLIM_ASSET
-    assert backend == "rocm" and used_fallback is False
+    assert chosen == backend and used_fallback is False
 
 
-@pytest.mark.parametrize("backend", ["cpu", "cuda", "vulkan"])
-def test_windows_non_rocm_slim_still_requires_manifest_libomp(tmp_path, monkeypatch, backend):
-    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
-    bin_dir.mkdir(parents = True)
-    module = {
-        "cpu": "ggml-cpu.dll",
-        "cuda": "ggml-cuda.dll",
-        "vulkan": "ggml-vulkan.dll",
-    }[backend]
-    for name in ("ggml.dll", "ggml-base.dll", module):
-        (bin_dir / name).write_bytes(b"ggml")
+def test_linux_slim_still_requires_manifest_libomp(tmp_path, monkeypatch):
+    # The exemption is Windows only: llama's clang-built linux slices bundle
+    # libomp beside a libggml-base that really imports it, so it stays mandatory.
+    bin_dir = _fake_llama_bin(tmp_path, backend_module = "libggml-cuda.so")
     monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, f"windows-{backend}")
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "linux-cuda")
     )
-    artifact = _windows_slim_manifest(
-        requires_ggml_sonames = [
-            "ggml.dll",
-            "ggml-base.dll",
-            "libomp140.x86_64.dll",
-        ]
-    )["artifacts"][0]
+    artifact = _slim_artifact(
+        requires_ggml_sonames = ["libggml.so.0", "libggml-base.so.0", "libomp.so.5"],
+    )
 
-    assert M.slim_pairing_for_artifact(artifact, _host("windows", "x64"), backend) is None
+    assert M.slim_pairing_for_artifact(artifact, _host("linux", "x64"), "cuda") is None
 
 
 @pytest.mark.parametrize(
