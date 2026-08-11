@@ -27,23 +27,23 @@ Download the native Unsloth desktop app for your operating system:
   </tr>
   <tr>
     <td><b>Windows</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.62-beta/Unsloth-Desktop-0_1_62_beta-Windows.exe'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.70-beta/Unsloth-Desktop-0_1_70_beta-Windows.exe'>Download</a></td>
   </tr>
   <tr>
     <td><b>macOS</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.62-beta/Unsloth-Desktop-0_1_62_beta-MacOS.dmg'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.70-beta/Unsloth-Desktop-0_1_70_beta-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (deb)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.62-beta/Unsloth-Desktop-0_1_62_beta-Linux.deb'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.70-beta/Unsloth-Desktop-0_1_70_beta-Linux.deb'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (AppImage)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.62-beta/Unsloth-Desktop-0_1_62_beta-Linux.AppImage'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.70-beta/Unsloth-Desktop-0_1_70_beta-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
     <td><b>Linux (Arm64)</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.62-beta/Unsloth-Desktop-0_1_62_beta-ARM64.app.tar.gz'>Download</a></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.70-beta/Unsloth-Desktop-0_1_70_beta-ARM64.app.tar.gz'>Download</a></td>
   </tr>
 </table>
 
@@ -394,7 +394,7 @@ You can delete old model files either from the bin icon in model search or by re
 ## 💚 Community and Links
 | Type                                                                                                                                      | Links                                                                          |
 | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| <img width="16" src="https://cdn.prod.website-files.com/6257adef93867e50d84d30e2/66e3d80db9971f10a9757c99_Symbol.svg" />  **Discord**                       | [Join Discord server](https://discord.com/invite/unsloth)                          |
+| <img width="16" src="https://cdn.prod.website-files.com/7057adef93867e50d84d30e2/66e3d80db9971f10a9757c99_Symbol.svg" />  **Discord**                       | [Join Discord server](https://discord.com/invite/unsloth)                          |
 | <img width="15" src="https://redditinc.com/hs-fs/hubfs/Reddit%20Inc/Brand/Reddit_Logo.png" />  **r/unsloth Reddit**                       | [Join Reddit community](https://reddit.com/r/unsloth)                          |
 | 📚 **Documentation & Wiki**                                                                                                               | [Read Our Docs](https://unsloth.ai/docs)                                       |
 | <img width="13" src="https://upload.wikimedia.org/wikipedia/commons/0/09/X_(formerly_Twitter)_logo_late_2025.svg" />  **Twitter (aka X)** | [Follow us on X](https://twitter.com/unslothai)                                |
