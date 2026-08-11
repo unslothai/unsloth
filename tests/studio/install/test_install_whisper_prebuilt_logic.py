@@ -774,9 +774,7 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
     # ggml backend module, so their presence must not stand in for it.
     for name in ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll"):
         (bin_dir / name).write_bytes(b"runtime")
-    monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "")
-    )
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
     artifact = _windows_slim_manifest(
         requires_ggml_sonames = [
             "ggml.dll",
