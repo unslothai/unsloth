@@ -8033,6 +8033,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
+        caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
     ) -> Optional[str]:
         """Download the published DSpark sidecar, preferring its Q8_0 copy.
 
@@ -8040,7 +8041,12 @@ class LlamaCppBackend:
         ``draft-dspark`` (every prebuilt in the known-broken window included) falls
         back, so the download would never be opened. A raised probe still fetches,
         since launch re-probes and may yet engage.
+
+        ``caps_probe`` is the caller's accumulator: this gate shapes the launch, and a
+        guess here has to latch like any other, or a load that skipped the sidecar on an
+        inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
+        if caps_probe is None: caps_probe = self.probe_server_capabilities
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
@@ -8057,7 +8063,7 @@ class LlamaCppBackend:
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
             )
         try:
-            if not self.probe_server_capabilities(binary).get("supports_dspark"):
+            if not caps_probe(binary).get("supports_dspark"):
                 logger.warning(
                     "Skipping the DSpark sidecar download: llama-server has no usable "
                     "--spec-type draft-dspark, so this load falls back to no speculative "
@@ -9677,6 +9683,7 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             near_path = model_path,
                             binary = binary,
+                            caps_probe = _launch_caps,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():

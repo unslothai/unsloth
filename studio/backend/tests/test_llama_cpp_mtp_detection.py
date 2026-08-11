@@ -3198,3 +3198,90 @@ def test_the_accumulator_latches_across_probes():
     launch_caps({"mtp_probe_inconclusive": True})  # slot clamp, probe timed out
     launch_caps({"mtp_probe_inconclusive": False})  # command build, probe recovered
     assert state["inconclusive"] is True, "a later success must not erase the earlier guess"
+
+
+def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
+    """The sidecar gate shapes the launch as much as the slot clamp does: an inconclusive
+    probe there skips an ~11 GB drafter, so that load ran degraded. It sits before a
+    download that can outlast the 30s retry window, so if it probes on its own the later
+    launch probe can come back conclusive and the load is remembered as a good one --
+    every identical Apply after it then dedupes against a server with no drafter.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    tree = ast.parse(inspect.getsource(mod))
+    download = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_download_dspark"
+    )
+    direct = [
+        node.lineno
+        for node in ast.walk(download)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "probe_server_capabilities"
+    ]
+    assert direct == [], (
+        f"_download_dspark probes directly at {direct}; route it through the caller's "
+        "accumulator so a guess there is not forgotten"
+    )
+
+    load_model = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    call = next(
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_download_dspark"
+    )
+    passed = {
+        kw.value.id
+        for kw in call.keywords
+        if kw.arg == "caps_probe" and isinstance(kw.value, ast.Name)
+    }
+    assert passed == {"_launch_caps"}, (
+        "load_model must hand _download_dspark the accumulating probe helper"
+    )
+
+
+def test_the_dspark_gate_uses_the_probe_it_is_given():
+    """Behavioural half: the injected probe is the one consulted, and its verdict still
+    drives the skip. A default is kept so the direct callers in the tests and the CLI
+    keep working unchanged.
+    """
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    signature = inspect.signature(LlamaCppBackend._download_dspark)
+    assert signature.parameters["caps_probe"].default is None, (
+        "caps_probe must stay optional; _download_dspark has callers that do not "
+        "accumulate"
+    )
+
+    seen = []
+
+    def probe(binary):
+        seen.append(binary)
+        return {"supports_dspark": False, "mtp_probe_inconclusive": True}
+
+    server = LlamaCppBackend.__new__(LlamaCppBackend)
+    result = LlamaCppBackend._download_dspark(
+        server,
+        hf_repo = "unsloth/does-not-matter",
+        near_path = None,
+        binary = "/nonexistent/llama-server",
+        caps_probe = probe,
+    )
+    assert seen == ["/nonexistent/llama-server"], "the injected probe was not consulted"
+    # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
+    # the degraded launch the accumulator has to remember.
+    assert result is None
