@@ -397,9 +397,7 @@ class TestEnsureFlashAttn:
         ):
             assert ips._remove_rejected_flash_attn() is True
 
-        assert commands == [
-            ["uv", "pip", "uninstall", "--python", sys.executable, "flash-attn"]
-        ]
+        assert commands == [["uv", "pip", "uninstall", "--python", sys.executable, "flash-attn"]]
 
     def test_a_failed_removal_is_not_reported_as_removed(self):
         """Still importable in process, so it must not read like a clean skip."""
