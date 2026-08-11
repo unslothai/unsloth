@@ -57,14 +57,17 @@ function newestFirst<T extends FlaggableItem>(a: T, b: T): number {
 /**
  * Re-sort one shelf: pinned items lead, then everything else newest first.
  *
- * Within the pinned group the backend sorts by pin time, which the client does not know, so a
- * freshly pinned item is moved to the very front -- the same "most recently pinned first" rule,
- * and what the user just asked for visually. A reload reconciles with the server.
+ * The pinned group keeps the order it arrived in. The backend sorts it by PIN time, which the
+ * client never learns, so re-sorting it by `created_at` would silently rearrange the pins whenever
+ * an unrelated merge ran -- wrong whenever an older item was pinned more recently than a newer one.
+ * Arriving order is the server's order, so leaving it alone is what keeps the two agreeing.
+ *
+ * `justPinnedId` is the one exception: a freshly pinned item goes to the very front, which is the
+ * same "most recently pinned first" rule the backend will apply.
  */
 export function sortGalleryItems<T extends FlaggableItem>(items: T[], justPinnedId?: string): T[] {
   const pinned = items.filter((i) => i.pinned);
   const rest = items.filter((i) => !i.pinned);
-  pinned.sort(newestFirst);
   rest.sort(newestFirst);
   if (justPinnedId) {
     const at = pinned.findIndex((i) => i.id === justPinnedId);

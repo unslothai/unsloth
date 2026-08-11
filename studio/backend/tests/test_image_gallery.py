@@ -350,3 +350,42 @@ def test_clear_all_still_works_with_an_unreadable_store():
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     assert gallery.clear(include_archived = True) == 1
     assert gallery.image_path(record["id"]) is None
+
+
+def test_clear_refuses_when_a_single_flag_entry_is_malformed():
+    # The whole-file corruption case is not the only risk: one bad VALUE reads as "not archived",
+    # which is enough to delete an archived image, so it must block the clear too.
+    import json as _json
+
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        _json.dumps({"version": 1, "items": {record["id"]: "hand edited"}}), encoding = "utf-8"
+    )
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.image_path(record["id"]) is not None
+
+
+def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
+    # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
+    # landing in that window returned success for a file the same clear went on to delete.
+    import threading
+
+    records = [_save_with_mtime(f"i{i}", float(i)) for i in range(30)]
+    target = records[15]["id"]
+    out = {}
+
+    def _archive():
+        out["result"] = gallery.set_flags(target, archived = True)
+
+    worker = threading.Thread(target = _archive)
+    worker.start()
+    gallery.clear()
+    worker.join(timeout = 10)
+
+    said_ok = out.get("result") is not None
+    survived = gallery.image_path(target) is not None
+    # Either the archive won (reported success, file kept) or the clear won (reported gone, file
+    # deleted). "Reported success but deleted" is the outcome this must never produce.
+    assert said_ok == survived

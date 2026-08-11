@@ -217,11 +217,16 @@ def set_flags(
     """Patch one image's pin/archive flags and return its updated record, or None when the id is
     not a Studio-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped
     foreign PNG must not become flaggable (and so listable under a shelf we own)."""
-    path = owned_image_path(image_id)
-    if path is None:
-        return None
-    gallery_flags.set_flags(gallery_dir(), image_id, pinned = pinned, archived = archived)
-    meta = _read_meta(path)
+    # Ownership check and write under one lock, so a concurrent clear cannot delete the file
+    # between them and leave this reporting success for an image that is already gone.
+    with gallery_flags.exclusive(gallery_dir()):
+        path = owned_image_path(image_id)
+        if path is None:
+            return None
+        gallery_flags.set_flags_locked(
+            gallery_dir(), image_id, pinned = pinned, archived = archived
+        )
+        meta = _read_meta(path)
     if meta is None:  # raced a delete between the guard and the read
         return None
     return _record(image_id, meta)
@@ -258,23 +263,28 @@ def clear(include_archived: bool = False) -> int:
 
     Foreign PNGs are preserved: list_images already hides them, so clear must not destroy them."""
     removed = 0
-    # Read flags BEFORE listing: nothing should be unlinked if the store turns out to be untrusted.
-    flags = {} if include_archived else gallery_flags.read_trusted(gallery_dir())
-    try:
-        paths = list(gallery_dir().glob("*.png"))
-    except OSError:
-        return 0
-    cleared: list[str] = []
-    for path in paths:
-        if _read_meta(path) is None:  # foreign / not ours
-            continue
-        if not include_archived and gallery_flags.is_archived(flags, path.stem):
-            continue
+    directory = gallery_dir()
+    # Hold the flag lock across the whole read-then-delete: an archive landing mid-loop would
+    # otherwise be judged active from the stale snapshot and deleted, after its PATCH had already
+    # reported success.
+    with gallery_flags.exclusive(directory):
+        # Read flags BEFORE listing: nothing is unlinked if the store turns out to be untrusted.
+        flags = {} if include_archived else gallery_flags.read_trusted(directory)
         try:
-            path.unlink()
-            removed += 1
-            cleared.append(path.stem)
+            paths = list(directory.glob("*.png"))
         except OSError:
-            continue
-    gallery_flags.forget(gallery_dir(), cleared)
+            return 0
+        cleared: list[str] = []
+        for path in paths:
+            if _read_meta(path) is None:  # foreign / not ours
+                continue
+            if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            try:
+                path.unlink()
+                removed += 1
+                cleared.append(path.stem)
+            except OSError:
+                continue
+        gallery_flags.forget_locked(directory, cleared)
     return removed

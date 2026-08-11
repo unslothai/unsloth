@@ -25,9 +25,17 @@ test("unpinned items sort newest first", () => {
   assert.deepEqual(ids(sortGalleryItems(items)), ["new", "mid", "old"]);
 });
 
-test("pinned items lead, and stay newest-first within their own group", () => {
-  const items = [item("new", 3), item("pinOld", 1, true), item("pinNew", 2, true)];
-  assert.deepEqual(ids(sortGalleryItems(items)), ["pinNew", "pinOld", "new"]);
+test("pinned items lead, keeping the order they arrived in", () => {
+  const items = [item("new", 3), item("pinnedFirst", 1, true), item("pinnedSecond", 2, true)];
+  assert.deepEqual(ids(sortGalleryItems(items)), ["pinnedFirst", "pinnedSecond", "new"]);
+});
+
+test("an unrelated merge does not rearrange the pinned group", () => {
+  // The backend orders pins by PIN time, which the client never learns. Sorting them by created_at
+  // would flip this pair, since the older item was pinned more recently and so leads on the server.
+  const serverOrder = [item("pinnedRecentlyButOld", 1, true), item("pinnedLongAgoButNew", 9, true)];
+  const merged = sortGalleryItems([item("fresh", 10), ...serverOrder]);
+  assert.deepEqual(ids(merged), ["pinnedRecentlyButOld", "pinnedLongAgoButNew", "fresh"]);
 });
 
 test("the item just pinned goes to the very front of the pinned group", () => {

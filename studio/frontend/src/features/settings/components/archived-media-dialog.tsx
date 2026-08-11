@@ -67,6 +67,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // MB if every blob were held to unmount. Budget them like the main gallery does. Images only: a
   // clip uses a signed link, which is not an object URL and must not be revoked.
   const blobs = useRef(new BlobUrlCache(ARCHIVED_THUMB_BUDGET_BYTES));
+  // Only rows on screen fetch a thumbnail, and only rows off screen are evicted. Together those
+  // two rules keep memory bounded without ever blanking a row the user is looking at.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
 
   const loadPage = useCallback(
     async (offset: number) => {
@@ -126,14 +130,44 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => cache.clear();
   }, []);
 
-  // Thumbnails for rows that do not have one yet. `requested` is a ref, not state, so a landing
-  // thumbnail cannot re-enter this effect and refetch the rest.
+  // Track which rows are actually on screen. Without a visibility signal (jsdom, old webviews)
+  // every row counts as visible, which is the old eager behaviour rather than a blank list.
+  useEffect(() => {
+    const root = listRef.current;
+    if (!root) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(new Set(rows.map((r) => r.id)));
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        setVisible((prev) => {
+          const next = new Set(prev);
+          for (const entry of entries) {
+            const id = (entry.target as HTMLElement).dataset.archivedId;
+            if (!id) continue;
+            if (entry.isIntersecting) next.add(id);
+            else next.delete(id);
+          }
+          return next;
+        });
+      },
+      // A little margin so a row is fetched just before it scrolls into view.
+      { rootMargin: "200px 0px" },
+    );
+    for (const el of root.querySelectorAll("[data-archived-id]")) io.observe(el);
+    return () => io.disconnect();
+  }, [rows]);
+
+  // Thumbnails for VISIBLE rows that do not have one yet. `requested` is a ref, not state, so a
+  // landing thumbnail cannot re-enter this effect and refetch the rest.
   const requested = useRef<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       for (const row of rows) {
         if (cancelled) return;
+        if (!visible.has(row.id)) continue;
         if (requested.current.has(row.id)) continue;
         requested.current.add(row.id);
         try {
@@ -144,9 +178,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               return;
             }
             blobs.current.set(row.id, url, bytes);
-            // Evict the coldest thumbnails back within budget. An evicted row re-fetches if it is
-            // still on screen, so nothing renders permanently blank.
-            const evicted = blobs.current.prune();
+            // Evict the coldest thumbnails back within budget, never one that is on screen. Since
+            // only visible rows are fetched, an evicted row is off screen by definition; clearing
+            // it from `requested` lets it fetch again when it scrolls back and this effect re-runs.
+            const evicted = blobs.current.prune(visible);
             setThumbs((prev) => {
               const next = { ...prev, [row.id]: url };
               for (const id of evicted) {
@@ -171,7 +206,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages]);
+  }, [rows, isImages, visible]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
@@ -246,7 +281,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
+      <div ref={listRef}>
         <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
           <span className="w-10 shrink-0" />
           <span className="flex-1">Prompt</span>
@@ -256,6 +291,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         {rows.map((row) => (
           <div
             key={row.id}
+            data-archived-id={row.id}
             className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
           >
             <span className="size-10 shrink-0 overflow-hidden rounded-md bg-muted/40">

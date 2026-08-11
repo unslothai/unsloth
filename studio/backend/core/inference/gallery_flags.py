@@ -66,7 +66,17 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
-            return data, True
+            # Every ENTRY has to be a mapping too, not just the container. A single malformed value
+            # is dropped by the readers below, which reads as "this id is not archived" -- enough
+            # for clear() to delete an archived file. So one bad entry costs the store its trust,
+            # but the surviving entries are still returned: listing should keep the flags it can
+            # read, and only destructive callers need to refuse.
+            if all(isinstance(v, dict) for v in data["items"].values()):
+                return data, True
+            logger.warning(
+                "gallery_flags.unreadable: %s has a malformed entry", _store_path(directory)
+            )
+            return data, False
         logger.warning(
             "gallery_flags.unreadable: %s has an unrecognised shape", _store_path(directory)
         )
@@ -133,6 +143,19 @@ def _file_lock(directory: Path):
             os.close(fd)
 
 
+@contextlib.contextmanager
+def exclusive(directory: Path):
+    """Hold the store's write lock across a read-then-act sequence.
+
+    ``clear`` decides what to delete from a snapshot of the flags and then unlinks files, so an
+    archive landing in that window would be classified active from the stale snapshot and deleted
+    anyway -- after the PATCH had already told the user it was archived. Taking the same lock
+    ``set_flags`` takes serializes the two.
+    """
+    with _lock, _file_lock(directory):
+        yield
+
+
 def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
     """One id's entry, normalized. A non-dict entry (hand-edited) reads as no flags."""
     entry = items.get(item_id)
@@ -188,46 +211,65 @@ def set_flags(
     unpinning drops the key rather than storing False, keeping the store to only what is set.
     An id whose flags all end up default is removed entirely, so toggling something on and off
     again leaves no residue."""
+    with _lock, _file_lock(directory):
+        return set_flags_locked(directory, item_id, pinned = pinned, archived = archived)
+
+
+def set_flags_locked(
+    directory: Path,
+    item_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
+) -> dict[str, Any]:
+    """``set_flags`` for a caller already inside ``exclusive()``, so the ownership check and the
+    write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    with _lock, _file_lock(directory):
-        # An untrusted store is REPLACED rather than merged: its contents are already unusable, and
-        # refusing here would leave the user unable to pin anything until they cleaned it up by hand.
-        data = _load(directory)[0]
-        items = data.setdefault("items", {})
-        entry = dict(_entry(items, item_id))
-        if pinned is not None:
-            if pinned:
-                entry["pinned_at"] = time.time()
-            else:
-                entry.pop("pinned_at", None)
-        if archived is not None:
-            if archived:
-                entry["archived"] = True
-            else:
-                entry.pop("archived", None)
-        if entry:
-            items[item_id] = entry
+    # An untrusted store is REPLACED rather than merged: its contents are already unusable, and
+    # refusing here would leave the user unable to pin anything until they cleaned it up by hand.
+    data = _load(directory)[0]
+    items = data.setdefault("items", {})
+    entry = dict(_entry(items, item_id))
+    if pinned is not None:
+        if pinned:
+            entry["pinned_at"] = time.time()
         else:
-            items.pop(item_id, None)
-        _save(directory, data)
+            entry.pop("pinned_at", None)
+    if archived is not None:
+        if archived:
+            entry["archived"] = True
+        else:
+            entry.pop("archived", None)
+    if entry:
+        items[item_id] = entry
+    else:
+        items.pop(item_id, None)
+    _save(directory, data)
     return {"pinned": entry.get("pinned_at") is not None, "archived": bool(entry.get("archived"))}
 
 
 def forget(directory: Path, item_ids) -> None:
     """Drop flags for ids that no longer exist, so a deleted image cannot hand its pin to a
     future id and the store cannot grow without bound. No-op when nothing is stored."""
+    with _lock, _file_lock(directory):
+        forget_locked(directory, item_ids)
+
+
+def forget_locked(directory: Path, item_ids) -> None:
+    """``forget`` for a caller already inside ``exclusive()``. Separate because the cross-process
+    lock is per file descriptor: re-taking it on a second descriptor in the same process blocks
+    against the one already held, so the nested call would deadlock rather than recurse."""
     ids = {i for i in item_ids if i}
     if not ids:
         return
-    with _lock, _file_lock(directory):
-        data = _load(directory)[0]
-        items = data.get("items", {})
-        if not any(i in items for i in ids):
-            return  # nothing stored for these ids: skip the write entirely
-        for item_id in ids:
-            items.pop(item_id, None)
-        try:
-            _save(directory, data)
-        except Exception as exc:  # noqa: BLE001 -- the media is already gone; a stale row is harmless
-            logger.warning("gallery_flags.prune_failed: %s", exc)
+    data = _load(directory)[0]
+    items = data.get("items", {})
+    if not any(i in items for i in ids):
+        return  # nothing stored for these ids: skip the write entirely
+    for item_id in ids:
+        items.pop(item_id, None)
+    try:
+        _save(directory, data)
+    except Exception as exc:  # noqa: BLE001 -- the media is already gone; a stale row is harmless
+        logger.warning("gallery_flags.prune_failed: %s", exc)

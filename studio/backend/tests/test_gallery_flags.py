@@ -154,3 +154,49 @@ def test_a_corrupt_store_is_replaced_rather_than_blocking_new_flags(gdir):
     _store(gdir).write_text("[]", encoding = "utf-8")
     flags.set_flags(gdir, "a", archived = True)
     assert flags.is_archived(flags.read_trusted(gdir), "a") is True
+
+
+def test_a_malformed_entry_taints_the_whole_store_for_trusted_reads(gdir):
+    # One bad value would otherwise be filtered out silently, reading as "this id is not archived",
+    # which is enough for clear() to delete an archived file.
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"ok": {"archived": True}, "bad": "corrupt"}}),
+        encoding = "utf-8",
+    )
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
+    # The fail-safe reader still degrades quietly, so listing keeps working.
+    assert flags.read(gdir) == {"ok": {"archived": True}}
+
+
+def test_exclusive_serializes_against_set_flags(gdir):
+    # clear() decides from a snapshot then unlinks; an archive landing in that window must wait,
+    # not slip in and leave the file deleted after its PATCH reported success.
+    import threading
+
+    started = threading.Event()
+    landed = threading.Event()
+
+    def _archive():
+        started.set()
+        flags.set_flags(gdir, "a", archived = True)
+        landed.set()
+
+    with flags.exclusive(gdir):
+        worker = threading.Thread(target = _archive)
+        worker.start()
+        started.wait(timeout = 5)
+        # Held: the writer cannot land while the section is open.
+        assert not landed.wait(timeout = 0.5)
+    worker.join(timeout = 5)
+    assert landed.is_set()
+    assert flags.is_archived(flags.read(gdir), "a") is True
+
+
+def test_forget_locked_does_not_deadlock_inside_exclusive(gdir):
+    # The cross-process lock is per descriptor, so a nested forget() would block on the lock its
+    # own caller holds. clear() uses forget_locked for exactly this reason.
+    flags.set_flags(gdir, "a", pinned = True)
+    with flags.exclusive(gdir):
+        flags.forget_locked(gdir, ["a"])
+    assert flags.read(gdir) == {}
