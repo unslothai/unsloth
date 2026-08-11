@@ -2921,3 +2921,52 @@ def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
         _gguf_path = None,
     )
     assert _matches(clamped, n_parallel = 4, **_same_settings_apply()) is False
+
+
+def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
+    """The marker describes the RUNNING runtime, so load_model must not write it before
+    the launch is committed.
+
+    Two early exits sit between the probe and the commit and both leave the old server
+    up: the Vulkan-ordinal preflight rejects an invalid GPU selection, and a diffusion
+    load returns through _start_diffusion_server without using any llama-server
+    capability. Writing the marker early would clear it for a runtime that is still
+    degraded, or set it on a diffusion runner that would then be torn down and reloaded
+    for no reason. Checked structurally because load_model is not unit-callable.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    source = inspect.getsource(mod)
+    tree = ast.parse(source)
+    load_model = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+
+    writes = [
+        node.lineno
+        for node in ast.walk(load_model)
+        for target in getattr(node, "targets", [])
+        if isinstance(node, ast.Assign)
+        and isinstance(target, ast.Attribute)
+        and target.attr == "_capability_probe_inconclusive"
+    ]
+    assert len(writes) == 1, f"expected one commit-point write, found {len(writes)}"
+
+    diffusion_returns = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_start_diffusion_server"
+    ]
+    assert diffusion_returns, "the diffusion early return moved; re-pin this test"
+    assert writes[0] > max(diffusion_returns), (
+        "the marker is written before the diffusion early return, so a diffusion runner "
+        "would carry it and be reloaded once the probe recovers"
+    )

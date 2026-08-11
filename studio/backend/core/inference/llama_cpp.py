@@ -9495,11 +9495,14 @@ class LlamaCppBackend:
                 bool(gpu_ids) and not is_vulkan_backend and self._backend_lacks_gpu_lib(binary)
             )
 
-            # Remember whether the probe behind every capability gate below actually
-            # answered. Recorded once here rather than at each gate, because an
-            # inconclusive probe degrades all of them at once and the reuse check has to
-            # know that this runtime is degraded for a reason that may since have lifted.
-            self._capability_probe_inconclusive = bool(
+            # Whether the probe behind every capability gate below actually answered.
+            # Captured here, next to the gates it explains, because the retry window can
+            # expire mid-load and a later re-read would describe a different probe than
+            # the one that shaped this launch. Kept LOCAL until the launch is committed:
+            # the instance flag describes the RUNNING runtime, and the preflights between
+            # here and there can bail while deliberately leaving the old server up, which
+            # would otherwise clear a marker the still-degraded runtime needs.
+            _launch_probe_inconclusive = bool(
                 self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
                 if binary
                 else False
@@ -12661,6 +12664,11 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                # Commit the probe state with the rest of the snapshot. Only a launch that
+                # got this far replaced the runtime, so a rejected preflight leaves the old
+                # marker intact, and the diffusion runner -- which returns long before this
+                # and uses no llama-server capability -- never carries one at all.
+                self._capability_probe_inconclusive = _launch_probe_inconclusive
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
