@@ -175,7 +175,14 @@ def _is_present_payload_file(path: Path) -> bool:
     # nothing. offering either put a row On Device that then failed to load offline.
     if not _is_payload_file(path.name):
         return False
-    return not local_options._empty_payload(path)
+    if local_options._empty_payload(path):
+        return False
+    # bytes are not rows. `_rowless` is the resolver's probe for a csv holding only its header
+    # and a json holding `[]` or `{}`; it reads a short head and only for those two builders,
+    # so it costs nothing on parquet, arrow or media. a rowless file is not counted, but it
+    # does not condemn the snapshot either -- datasets drops that split and builds the rest.
+    module = local_options._file_module(path.name)
+    return module is None or not local_options._rowless(path, path.name, module)
 
 
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
@@ -191,70 +198,82 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         nonlocal unreadable
         unreadable = True
 
-    try:
-        root = snapshot.resolve(strict = True)
-    except OSError:
-        return None
+    # Every directory already walked or queued, by resolved path, and the roots still to walk.
+    # A junction pointing at one of its own ancestors resolves back inside the snapshot, so
+    # containment alone does not stop it: `os.walk(followlinks = False)` keeps descending
+    # `data/loop/loop/...` until the path length gives out, and the inventory request hangs.
+    # Recording what has been visited ends that on every runtime, which matters most on the
+    # pre-3.12 Windows this supports, where neither `is_symlink()` nor a missing `is_junction()`
+    # can report the reparse point.
+    seen: set[Path] = set()
+    pending: list[Path] = []
 
-    # Every directory this walk has already entered, by resolved path. A junction pointing at
-    # one of its own ancestors resolves back inside the snapshot, so containment alone does not
-    # stop it: `os.walk(followlinks = False)` keeps descending `data/loop/loop/...` until the
-    # path length gives out, and the inventory request hangs. Recording what has been visited
-    # ends that on every runtime, which matters most on the pre-3.12 Windows this supports,
-    # where neither `is_symlink()` nor a missing `is_junction()` can report the reparse point.
-    seen: set[Path] = {root}
-
-    def _redirects_outside(entry: Path) -> bool:
-        # Containment rather than a link-type test. `Path.is_symlink()` is false for a Windows
-        # junction (only `S_IFLNK` sets it) and `Path.is_junction()` does not exist before 3.12,
-        # which this package still supports, so `os.walk(followlinks = False)` would descend
-        # through a junction into an arbitrary external tree. Comparing the resolved path to the
-        # snapshot root catches every redirect on every runtime, with no platform branch.
+    def _book(entry: Path) -> Optional[Path]:
+        """The resolved path, booked as visited, or None when already seen or unresolvable."""
+        nonlocal unreadable
         try:
-            return not entry.resolve(strict = True).is_relative_to(root)
-        except (OSError, RuntimeError, ValueError):
-            return True
-
-    def _already_walked(entry: Path) -> bool:
-        try:
-            # A POSIX symlink is never descended by this walk, so it cannot loop and must not
-            # claim its target's resolved path either: `alias -> data` listed before `data`
-            # would otherwise book the target and prune the real directory, losing whatever is
-            # under it on nothing more than enumeration order. A junction reports False here on
-            # every runtime, which is the case the visited set is for.
-            if entry.is_symlink():
-                return False
             resolved = entry.resolve(strict = True)
         except (OSError, RuntimeError, ValueError):
-            return True
+            unreadable = True
+            return None
         if resolved in seen:
-            return True
+            return None
         seen.add(resolved)
-        return False
+        return resolved
+
+    start = _book(snapshot)
+    if start is None:
+        return None
+    pending.append(start)
 
     try:
-        for directory, dirnames, filenames in os.walk(snapshot, followlinks = False, onerror = _note):
-            base = Path(directory)
-            kept = []
-            for name in dirnames:
-                # Nothing under a hidden or `__`-prefixed dir can supply rows, by the same
-                # rule `datasets` resolves data files with, so it is neither walked nor
-                # counted -- a `.hidden/notes.txt` must not clear `partial`.
-                if not _is_payload_dir(name):
-                    continue
-                # A directory that leaves the snapshot is not descended into -- it can point
-                # anywhere -- but its name IS evidence of payload, and pruning it silently hid
-                # migrated and shared caches that keep their data behind one.
-                if _redirects_outside(base / name):
+        while pending:
+            root = pending.pop()
+            for directory, dirnames, filenames in os.walk(root, followlinks = False, onerror = _note):
+                base = Path(directory)
+                kept = []
+                for name in dirnames:
+                    # Nothing under a hidden or `__`-prefixed dir can supply rows, by the same
+                    # rule `datasets` resolves data files with, so it is neither walked nor
+                    # counted -- a `.hidden/notes.txt` must not clear `partial`.
+                    if not _is_payload_dir(name):
+                        continue
+                    entry = base / name
+                    # Containment rather than a link-type test. `Path.is_symlink()` is false for
+                    # a Windows junction (only `S_IFLNK` sets it) and `Path.is_junction()` does
+                    # not exist before 3.12, which this package still supports, so
+                    # `os.walk(followlinks = False)` would descend through a junction into an
+                    # arbitrary external tree. Comparing resolved paths catches every redirect on
+                    # every runtime, with no platform branch.
+                    try:
+                        redirected = not entry.resolve(strict = True).is_relative_to(root)
+                        linked = entry.is_symlink()
+                    except (OSError, RuntimeError, ValueError):
+                        unreadable = True
+                        continue
+                    # A directory leaving this root is walked as a root of its own rather than
+                    # taken as proof. Migrated and shared caches keep their data behind one, so
+                    # pruning it hid them, but a stale redirect to an empty or metadata-only
+                    # target supplies no rows and must not clear `partial` by existing.
+                    if redirected:
+                        target = _book(entry)
+                        if target is not None:
+                            pending.append(target)
+                        continue
+                    # A POSIX symlink pointing back inside this root is skipped outright: the
+                    # walk never descends one, so it cannot loop, and booking its target's
+                    # resolved path would prune the real directory when `alias` happens to be
+                    # listed before `data` -- losing the payload under it on enumeration order.
+                    # A junction reports False here on every runtime, which is the case the
+                    # visited set is for.
+                    if linked:
+                        continue
+                    if _book(entry) is None:
+                        continue
+                    kept.append(name)
+                dirnames[:] = kept
+                if any(_is_present_payload_file(base / name) for name in filenames):
                     return True
-                # A redirect back to somewhere already walked is not new payload, and following
-                # it is what loops.
-                if _already_walked(base / name):
-                    continue
-                kept.append(name)
-            dirnames[:] = kept
-            if any(_is_present_payload_file(base / name) for name in filenames):
-                return True
     except OSError:
         return None
     return None if unreadable else False

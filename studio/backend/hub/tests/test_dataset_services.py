@@ -307,6 +307,43 @@ def test_raw_dataset_cache_has_data_rejects_an_empty_payload_file(monkeypatch, t
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
+def test_raw_dataset_cache_has_data_rejects_a_payload_file_with_no_rows(monkeypatch, tmp_path):
+    """Bytes are not rows. `_rowless` is the resolver's probe for a csv holding only its header
+    and a json holding `[]`, and the picker resolves no trainable split from either, so the row
+    was offered On Device and then failed. A rowless file is not counted, but it does not
+    condemn its siblings: datasets drops that split and builds the rest."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    snapshot = next((repo_root / "snapshots").iterdir())
+    (snapshot / "train.csv").write_bytes(b"text,label\n")
+    (snapshot / "extra.json").write_bytes(b"[]")
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+    (snapshot / "train.csv").write_bytes(b"text,label\nhello,1\n")
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
+def test_raw_dataset_cache_has_data_walks_a_redirect_instead_of_trusting_it(
+    monkeypatch, tmp_path
+):
+    """A migrated cache keeps its data behind a directory link, so pruning one hid the dataset.
+    Taking the link itself as proof is the opposite error: a stale redirect to an empty or
+    metadata-only target supplies no rows either. The target is walked, not assumed."""
+    stale = tmp_path / "elsewhere" / "stale"
+    stale.mkdir(parents = True)
+    (stale / "README.md").write_bytes(b"x")
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    snapshot = next((repo_root / "snapshots").iterdir())
+    (snapshot / "data").symlink_to(stale, target_is_directory = True)
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+    (stale / "train.parquet").write_bytes(b"PAR1" + b"\0" * 64)
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
 def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it(
     monkeypatch, tmp_path
 ):
