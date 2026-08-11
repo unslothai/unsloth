@@ -33,6 +33,7 @@ import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
+import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
 import { MotionConfig } from "motion/react";
 import {
@@ -398,7 +399,17 @@ function TauriUpdateLayer({
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
       ref={stack.ref}
-      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+      // Scrolls when the cap is smaller than the cards, rather than spilling
+      // them over the page. The gutter, cancelled by the margin, keeps the card
+      // shadows out of the clip; horizontal only, since useStackGeometry reads
+      // this node's scrollHeight and vertical padding would inflate it.
+      // Click-through until it actually scrolls: pointer-events-none also
+      // costs it its scrollbar, and only the cards opt back in, so nothing
+      // would drag the ones below the fold into view.
+      className={cn(
+        "fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
+        stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
+      )}
       style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
       <UpdateBanner
@@ -681,7 +692,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             pushes the top of the stack off screen. */}
         <div
           ref={stack.ref}
-          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+          // Scrolls when the cap is smaller than the cards, rather than
+          // spilling them over the page. The gutter, cancelled by the margin,
+          // keeps the card shadows out of the clip; horizontal only, since
+          // useStackGeometry reads this node's scrollHeight and vertical
+          // padding would inflate it.
+          // Click-through until it actually scrolls: pointer-events-none also
+          // costs it its scrollbar, and only the cards opt back in, so nothing
+          // would drag the ones below the fold into view.
+          className={cn(
+            "fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3",
+            stack.overflowing ? "pointer-events-auto" : "pointer-events-none",
+          )}
           style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >
           <WebUpdateBanner

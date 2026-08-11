@@ -49,7 +49,9 @@ def _monitor_root_z() -> int:
 def _stack_z() -> int:
     """The bottom-right overlay stack. Both copies, browser and desktop."""
     src = PROVIDER.read_text(encoding = "utf-8")
-    stacks = re.findall(r'className="pointer-events-none fixed right-4 z-\[(\d+)\]', src)
+    # The click-through class is applied conditionally, so it is not part of
+    # the literal the stack's own classes are authored in.
+    stacks = re.findall(r'"fixed right-4 z-\[(\d+)\]', src)
     assert stacks, "the bottom-right overlay stack was not found"
     assert len(set(stacks)) == 1, f"the two stacks disagree on z-index: {stacks}"
     return int(stacks[0])
