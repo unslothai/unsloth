@@ -210,3 +210,77 @@ def test_aggregate_tolerates_a_wddm_spill_over_the_smaller_card(win_rocm, monkey
     agg = hw._rocm_windows_aggregate_used_bytes
     assert agg([9 * GB, 0.3 * GB], [45 * GB, 8 * GB]) == pytest.approx(9.3 * GB)
     assert agg([46 * GB, 2 * GB], [45 * GB, 8 * GB]) is None
+
+
+# ----------------------------------------------------------------------------- #
+# The aggregate and the rows have to describe the same cards
+# ----------------------------------------------------------------------------- #
+
+
+def _merged_gpu_info(monkeypatch, visibility, utilization):
+    """Run main's payload merge over two stubbed probes and return the training half.
+
+    Both probes are function-local imports from utils.hardware, so they are patched
+    on the package. The module-level cache is cleared first or a neighbouring test's
+    payload is returned instead of this one.
+    """
+    import main
+    import utils.hardware as uh
+
+    monkeypatch.setattr(uh, "get_backend_visible_gpu_info", lambda: visibility)
+    monkeypatch.setattr(uh, "get_visible_gpu_utilization", lambda: utilization)
+    monkeypatch.setattr(main, "_system_gpu_cache", None, raising = False)
+    gpu_info, _ = main._get_cached_system_gpu_info(main.logger)
+    return gpu_info
+
+
+def _probe_pair(visible_indices, util_indices, aggregate):
+    visibility = {
+        "available": True,
+        "backend": "rocm",
+        "devices": [
+            {"index": i, "name": f"card{i}", "memory_total_gb": 45.0 if i == 0 else 7.98}
+            for i in visible_indices
+        ],
+    }
+    utilization = {
+        "backend": "rocm",
+        "devices": [{"index": i, "vram_used_gb": None} for i in util_indices],
+        "vram_used_gb_aggregate": aggregate,
+    }
+    return visibility, utilization
+
+
+def test_aggregate_is_dropped_when_the_probes_enumerate_different_cards(monkeypatch):
+    """The tile divides the aggregate by the SUMMED totals of the rows it shows, so
+    a total taken over cards the rows do not list reads above 100 percent and the
+    free figure clamps to 0. metrics_match cannot catch it: on the only path that
+    sets an aggregate, Windows ROCm, both probes label themselves "rocm", so it is
+    unconditionally true and constrains nothing about which cards were counted.
+
+    The two probes really do enumerate independently -- the visibility side calls
+    mem_get_info per device and drops one that raises, the aggregate side reads
+    torch properties only and keeps it -- so the sets can differ with both probes
+    reporting success.
+    """
+    visibility, utilization = _probe_pair([0], [0, 1], 46.0)
+    gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
+    shown_total = sum(d["memory_total_gb"] for d in gpu_info["devices"])
+    assert utilization["vram_used_gb_aggregate"] > shown_total  # the wrong number
+    assert gpu_info["vram_used_gb_aggregate"] is None
+
+
+def test_aggregate_survives_when_both_probes_name_the_same_cards(monkeypatch):
+    """The reporter's own host, and the case the fix exists for: identical index
+    sets, so the aggregate is a total over exactly the rows on screen."""
+    visibility, utilization = _probe_pair([0, 1], [0, 1], 0.36)
+    gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
+    assert gpu_info["vram_used_gb_aggregate"] == 0.36
+
+
+def test_aggregate_is_dropped_when_the_sets_merely_overlap(monkeypatch):
+    """Equal counts are not enough. Two cards each, but index 1 against index 2:
+    the aggregate counts a card that has no row, and a row has no counter."""
+    visibility, utilization = _probe_pair([0, 1], [0, 2], 46.0)
+    gpu_info = _merged_gpu_info(monkeypatch, visibility, utilization)
+    assert gpu_info["vram_used_gb_aggregate"] is None
