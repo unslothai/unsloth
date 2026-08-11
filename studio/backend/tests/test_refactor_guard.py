@@ -114,3 +114,43 @@ def test_a_deleted_patch_target_is_not_written_off_as_environmental():
         "core.inference.deleted_name",
     }
     assert not any(entry.get("environment") for entry in broken)
+
+
+def test_no_guarded_function_is_driven_by_a_sentinel():
+    """A digest over one constant marker string is not coverage, it only looks like it.
+
+    Every guarded function has to be actually called, or its golden digest pins nothing
+    and an arbitrary rewrite of it passes.
+    """
+    corpus = refactor_guard.build_corpus()[:200]
+    undrivable = sorted(
+        name
+        for module in refactor_guard.BEHAVIOUR_MODULES
+        for name, func in refactor_guard._guarded_functions(module)
+        if refactor_guard._drive(func, corpus[0]) == "<undrivable>"
+    )
+
+    assert not undrivable, f"no argument fixture for: {undrivable}"
+
+    constant = sorted(
+        name
+        for module in refactor_guard.BEHAVIOUR_MODULES
+        for name, func in refactor_guard._guarded_functions(module)
+        if len({repr(refactor_guard._drive(func, text)) for text in corpus}) == 1
+    )
+
+    assert len(constant) <= 4, f"too many functions pin a single value: {constant}"
+
+
+def test_a_dropped_lazy_export_is_not_written_off_as_environmental():
+    """``core.inference`` resolves through a PEP 562 ``__getattr__``.
+
+    A missing optional dependency surfaces there as ImportError, but a name that is no
+    longer exported surfaces as AttributeError, and only the first is an environment gap.
+    """
+    broken = refactor_guard.unresolvable_patch_targets(
+        {"core.inference.no_such_lazy_export": ["fake_test.py"]}
+    )
+
+    assert [entry["target"] for entry in broken] == ["core.inference.no_such_lazy_export"]
+    assert not any(entry.get("environment") for entry in broken)

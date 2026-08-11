@@ -233,6 +233,43 @@ def build_corpus(seed: int = 20260811, count: int = 600) -> list:
     return list(dict.fromkeys(corpus))
 
 
+# One fixture per required positional parameter the guarded functions take beyond the
+# text. Offsets are derived from the text rather than fixed at 0 so the balanced scanners
+# start on a real delimiter. Without these the driver returns a ``<undrivable>`` sentinel,
+# and a digest over one constant string is not coverage, it only looks like it.
+_ARG_FIXTURES = {
+    "brace_start": lambda text: max(text.find("{"), 0),
+    "brace_pos": lambda text: max(text.find("{"), 0),
+    "start": lambda text: max(text.find("["), 0),
+    "pos": lambda text: len(text),
+    "body_start": lambda text: max(text.find("[") + 1, 0),
+    "body_end": lambda text: len(text),
+    "body": lambda text: text,
+    "hard_stop": lambda text: len(text),
+    "i": lambda text: 0,
+    "idx": lambda text: 0,
+    "p": lambda text: 0,
+    "n": lambda text: len(text),
+    "vs": lambda text: 0,
+    "needle": lambda text: "[",
+    "out": lambda text: [],
+    "previous": lambda text: text,
+    "markers": lambda text: _tool_healing_build_markers(text),
+    "patterns": lambda text: _tool_healing_all_pats(),
+    "strip_segment": lambda text: (lambda segment, is_last: segment),
+}
+
+
+def _tool_healing_build_markers(text: str):
+    from core import tool_healing
+    return tool_healing._build_markers(text)
+
+
+def _tool_healing_all_pats():
+    from core import tool_healing
+    return tool_healing._TOOL_ALL_PATS
+
+
 def _drive(func, text: str):
     """Call ``func`` with ``text`` however its signature wants it.
 
@@ -264,18 +301,18 @@ def _drive(func, text: str):
             continue
         if params[extra].default is not inspect.Parameter.empty:
             continue
-        if extra in ("brace_start", "brace_pos"):
-            args.append(max(text.find("{"), 0))
-        elif extra == "start":
-            args.append(max(text.find("["), 0))
-        elif extra == "pos":
-            args.append(len(text))
-        else:
+        fixture = _ARG_FIXTURES.get(extra)
+        if fixture is None:
             return "<undrivable>"
+        args.append(fixture(text))
     try:
         result = func(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - the exception type is the pinned value
         return f"<raised {type(exc).__name__}>"
+    # A function whose real output is an accumulator it was handed returns None, so the
+    # accumulator has to be recorded or the digest pins nothing.
+    if "out" in names and args[names.index("out")]:
+        return [_jsonable(result), _jsonable(args[names.index("out")])]
     return _jsonable(result)
 
 
@@ -433,14 +470,22 @@ def unresolvable_patch_targets(targets = None) -> list:
             try:
                 found = hasattr(obj, attr)
             except Exception as exc:  # noqa: BLE001
-                broken.append(
-                    {
-                        "target": dotted,
-                        "reason": f"unresolvable in this environment: {type(exc).__name__}",
-                        "tests": users,
-                        "environment": True,
-                    }
-                )
+                # An AttributeError is the lazy loader saying the name is not exported,
+                # which is a dead target. Only a failure to import a dependency is an
+                # environment gap, and ``__getattr__`` surfaces that as an ImportError.
+                environment = not isinstance(exc, AttributeError)
+                entry = {
+                    "target": dotted,
+                    "reason": (
+                        f"unresolvable in this environment: {type(exc).__name__}"
+                        if environment
+                        else f"lazy export {attr!r} is gone: {exc}"
+                    ),
+                    "tests": users,
+                }
+                if environment:
+                    entry["environment"] = True
+                broken.append(entry)
                 break
             if not found:
                 # A missing name on a package is ambiguous: the symbol may genuinely be
@@ -602,7 +647,14 @@ def verify() -> int:
                 f"f(f(x)) != f(x) for {failure['input']!r}"
             )
 
-    for broken in unresolvable_patch_targets():
+    # The recorded set matters as much as the live one. A patch string edited to a
+    # different but still resolvable namespace, or a patch dropped during the refactor,
+    # resolves fine and would otherwise pass while the routing silently moved.
+    recorded = {target: sorted(tests) for target, tests in _read("patch_targets.json").items()}
+    live = {target: sorted(tests) for target, tests in patch_targets().items()}
+    problems += _diff("patch-targets", recorded, live)
+
+    for broken in unresolvable_patch_targets(live):
         problems.append(
             f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"
         )
