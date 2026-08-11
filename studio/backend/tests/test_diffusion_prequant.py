@@ -682,6 +682,55 @@ def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monke
     assert not marker.exists()
 
 
+class _UnknownConstructor:
+    """A constructor no allowlist entry names. Module level so it pickles by reference."""
+
+
+def test_the_probe_and_the_loader_agree_on_what_is_readable(tmp_path, monkeypatch):
+    """One mechanism on both sites, so the two cannot drift apart.
+
+    ``usable_prequant_source`` treats a checkpoint whose scheme it cannot read as not usable
+    "since the loader would reject it too". That sentence is only true while the probe and the
+    load answer the same question: a probe that read MORE than the loader accepts would let
+    planning skip the dense shards for a checkpoint the load then drops, which is the GGUF
+    silent-downgrade the scheme check exists to prevent. Sharing the allowlist makes the two
+    agree by construction."""
+    import os
+
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch.serialization, "safe_globals"):
+        pytest.skip("torch < 2.6 has no safe_globals")
+
+    path = tmp_path / "off-allowlist.pt"
+    torch.save(
+        {
+            "format": PREQUANT_FORMAT,
+            "metadata": {"scheme": "int8", "base_model_id": "Tongyi-MAI/Z-Image-Turbo"},
+            "state_dict": {"weight": _UnknownConstructor()},
+        },
+        path,
+    )
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+
+    # The probe: unknown, so planning budgets the dense build.
+    assert pq.local_prequant_scheme(str(path)) is None
+    fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
+    assert pq.usable_prequant_source(fam, "int8", path_override = str(path)) is None
+    # And the loader agrees rather than installing it: same allowlist, same verdict.
+    assert (
+        load_prequantized_transformer(
+            _FakeTransformer,
+            "Tongyi-MAI/Z-Image-Turbo",
+            PrequantSource(kind = "path", location = str(path), filename = None),
+            device = "cpu",
+            dtype = "bf16",
+            hf_token = None,
+            scheme = "int8",
+        )
+        is None
+    )
+
+
 def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(monkeypatch):
     """No allowlist support means no load. Falling back to an unrestricted one would put the
     sink back on exactly the installs least able to defend it."""
