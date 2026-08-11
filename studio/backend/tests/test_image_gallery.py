@@ -401,10 +401,9 @@ def test_a_repair_never_makes_a_damaged_archive_deletable():
 
 
 def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
-    # The sibling case to the test above, and the one it does not cover: when the CONTAINER is
-    # unreadable rather than one entry, there is nothing to repair from. _load substitutes an empty
-    # map, so an unrelated pin used to write a clean, trusted store saying nothing was archived --
-    # and the next default clear() deleted the image the user had shelved.
+    # The sibling of the test above: with the CONTAINER unreadable there is nothing to repair from,
+    # so an unrelated pin wrote a clean, trusted store saying nothing was archived, and the next
+    # default clear() deleted the shelved image.
     shelved = _save_with_mtime("shelved", 100.0)
     other = _save_with_mtime("other", 200.0)
     gallery.set_flags(shelved["id"], archived = True)
@@ -421,9 +420,8 @@ def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
 
 
 def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
-    # The escape hatch has to actually escape. include_archived spares nothing, so once it has run
-    # there is no file left for the taint to protect -- and leaving the corrupt store behind meant
-    # every later default clear still refused, including for media generated afterwards.
+    # The escape hatch has to escape: include_archived spares nothing, so no file is left for the
+    # taint to protect, and leaving the corrupt store behind kept every later clear refusing.
     _save_with_mtime("a", 100.0)
     _save_with_mtime("b", 200.0)
     (gallery.gallery_dir() / ".flags.json").write_text(

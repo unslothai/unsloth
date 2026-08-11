@@ -34,9 +34,8 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _STORE_NAME = ".flags.json"
-# Marks a store written over one whose ITEMS MAP could not be read at all. Such a write cannot
-# carry the old archive flags forward, because they were never legible, so the new file must not
-# be taken as proof that nothing is archived. See ``_carry_taint``.
+# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried
+# forward, so the new file is no proof that nothing is archived. See ``_carry_taint``.
 _TAINT_KEY = "unreadable"
 _lock = threading.RLock()
 
@@ -108,8 +107,7 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
-            # A store carrying the taint below was written over one whose contents could not be
-            # read at all, so what it does NOT say is not evidence of anything.
+            # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
             # Every ENTRY has to be readable too, not just the container. A malformed value is
@@ -135,17 +133,15 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
 
 
 def _carry_taint(data: dict[str, Any], trusted: bool) -> dict[str, Any]:
-    """``data`` prepared for a rewrite, carrying the taint when the old contents were illegible.
+    """``data`` prepared for a rewrite, marked when the old contents were illegible.
 
-    Entry-level damage is repaired in place by ``_sanitize_entry``, so the flags that were still
-    readable survive the write and the store earns its trust back. Damage to the CONTAINER --
-    truncated JSON, an ``items`` that is not a dict, a version we do not know -- leaves nothing to
-    carry forward: ``_load`` substitutes an empty map, and writing that as an ordinary store turns
-    "we cannot say what was archived" into "nothing is archived", which is the answer the default
-    ``clear()`` deletes on. So the replacement is marked, and every destructive caller keeps
-    failing closed until a human resolves it. Listing, pinning, archiving and restoring all keep
-    working; ``clear(include_archived = True)`` is the deliberate way out, since it spares nothing
-    and so needs no flags to be correct.
+    Entry-level damage is repaired by ``_sanitize_entry``, so readable flags survive and the store
+    earns its trust back. CONTAINER damage (truncated JSON, a non-dict ``items``, an unknown
+    version) leaves nothing to carry: ``_load`` substitutes an empty map, and writing that plainly
+    turns "we cannot say what was archived" into "nothing is", which is what ``clear()`` deletes on.
+    So the replacement is marked and destructive callers keep failing closed. Listing, pinning,
+    archiving and restoring still work; ``clear(include_archived = True)`` is the way out, since it
+    spares nothing and so needs no flags.
     """
     if not trusted and not data.get("items"):
         data[_TAINT_KEY] = True
@@ -251,11 +247,10 @@ def is_trusted(directory: Path) -> bool:
 def reset_locked(directory: Path) -> None:
     """Replace the store with an empty, trusted one. For a caller already inside ``exclusive()``.
 
-    Only ``clear(include_archived = True)`` does this, and only once it has removed every image we
-    own. That is the way out of an unreadable store: the taint exists to protect files from a
-    delete that cannot prove them active, and after this there are no such files left. Without the
-    reset the escape hatch is not one, since the corrupt file survives the wipe and every later
-    clear still refuses, including for media generated afterwards."""
+    Only ``clear(include_archived = True)`` does this, and only after removing every item we own:
+    the taint protects files from a delete that cannot prove them active, and none are left. Without
+    it the escape hatch is not one, since the corrupt file survives the wipe and every later clear
+    still refuses, new media included."""
     _save(directory, _empty())
 
 
@@ -351,21 +346,20 @@ def set_flags_locked(
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            # Strictly ahead of every stamp already stored, not just the wall clock. Windows'
-            # time.time() advances in ~16 ms steps, so two pins a click apart can land on the SAME
-            # value and "most recently pinned leads" quietly stops holding for them -- which is the
-            # ordering the client serializes its PATCHes to preserve.
+            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances
+            # time.time() in ~16 ms steps, so two pins a click apart landed on the same value and
+            # "most recently pinned leads" stopped holding for exactly the case the client
+            # serializes its PATCHes to preserve.
             latest = max(
                 (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
                 default = float("-inf"),
             )
             now = time.time()
             nudged = math.nextafter(latest, math.inf) if latest != float("-inf") else now
-            # A hand-edited store holding the largest finite float nudges to infinity, which
-            # json.dump writes happily and _pinned_at then refuses, so the pin this call just
-            # reported would read back as unset AND take the store's trust down with it, blocking
-            # the default clear. Tie with the largest stamp instead: the group then falls back to
-            # mtime for those two, which costs an ordering rather than the store.
+            # A store holding the largest finite float nudges to infinity, which json writes and
+            # _pinned_at then refuses, so the pin just reported would read back unset AND take the
+            # store's trust with it. Tie instead: those two fall back to mtime, which costs an
+            # ordering rather than the store.
             entry["pinned_at"] = (
                 now if now > latest else (nudged if math.isfinite(nudged) else latest)
             )

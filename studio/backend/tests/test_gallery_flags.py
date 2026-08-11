@@ -69,8 +69,8 @@ def test_pin_rank_orders_most_recently_pinned_first(gdir):
 
 
 def test_a_coarse_clock_still_orders_two_pins(gdir, monkeypatch):
-    # Windows advances time.time() in ~16 ms steps, so two pins a click apart read the same wall
-    # clock and the pinned group loses the order the client serializes its PATCHes to preserve.
+    # Windows advances time.time() in ~16 ms steps, so two pins a click apart read the same clock
+    # and the group loses the order the client serializes its PATCHes to preserve.
     import time as _time
 
     monkeypatch.setattr(_time, "time", lambda: 1000.0)
@@ -87,9 +87,8 @@ def test_a_coarse_clock_still_orders_two_pins(gdir, monkeypatch):
 
 
 def test_a_pin_never_stores_a_non_finite_timestamp(gdir):
-    # The monotonic nudge must not be able to manufacture the value _pinned_at refuses. A store
-    # holding the largest finite float nudges to infinity, which would read back as unpinned and
-    # leave the store untrusted, so the default clear stops working after a successful PATCH.
+    # The nudge must not manufacture the value _pinned_at refuses: the largest finite float nudges
+    # to infinity, which reads back unpinned and leaves the store untrusted after a 200.
     import sys
 
     _store(gdir).write_text(
@@ -193,9 +192,8 @@ def test_a_corrupt_store_is_replaced_rather_than_blocking_new_flags(gdir):
 
 
 def test_a_store_rebuilt_from_illegible_contents_stays_untrusted(gdir):
-    # The write above must not be blocked, but the file it leaves behind is not evidence: the old
-    # contents were never read, so "nothing else is archived" is a guess. Trusting the replacement
-    # is what let an unrelated pin hand every previously archived image to the next clear().
+    # The write must not be blocked, but the file it leaves is not evidence: the old contents were
+    # never read. Trusting it let an unrelated pin hand every archived image to the next clear().
     _store(gdir).write_text("[]", encoding = "utf-8")
     flags.set_flags(gdir, "a", archived = True)
     with pytest.raises(flags.FlagsUnavailable):

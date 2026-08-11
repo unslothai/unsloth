@@ -15,13 +15,9 @@ export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
 export type GalleryKind = "images" | "videos";
 
 /**
- * Announce that a gallery changed from OUTSIDE the page that owns it.
- *
- * The Images and Video pages are mounted persistently by `__root.tsx` (so an in-flight batch
- * survives leaving the tab) and their `loadGallery` effects run only on mount. Restoring or
- * deleting from the Settings archive therefore left the strip stale until a full reload, since
- * closing Settings never remounts the page. In lib/, not a feature: the emitter (Settings) and
- * the listeners (Images, Video) are both features.
+ * Announce that a gallery changed from OUTSIDE the page that owns it. Both pages are mounted
+ * persistently and load only on mount, so a restore from Settings would otherwise leave the strip
+ * stale until a full reload. In lib/ because emitter and listeners are both features.
  */
 export function notifyGalleryChanged(kind: GalleryKind): void {
   if (typeof window === "undefined") return;
@@ -55,15 +51,11 @@ function newestFirst<T extends FlaggableItem>(a: T, b: T): number {
 }
 
 /**
- * Re-sort one shelf: pinned items lead, then everything else newest first.
+ * Re-sort one shelf: pinned lead, then newest first.
  *
- * The pinned group keeps the order it arrived in. The backend sorts it by PIN time, which the
- * client never learns, so re-sorting it by `created_at` would silently rearrange the pins whenever
- * an unrelated merge ran -- wrong whenever an older item was pinned more recently than a newer one.
- * Arriving order is the server's order, so leaving it alone is what keeps the two agreeing.
- *
- * `justPinnedId` is the one exception: a freshly pinned item goes to the very front, which is the
- * same "most recently pinned first" rule the backend will apply.
+ * The pinned group keeps ARRIVAL order, which is the server's. It sorts pins by pin time, which the
+ * client never learns, so re-sorting them by `created_at` would rearrange them on any unrelated
+ * merge. `justPinnedId` is the exception: a fresh pin leads, matching the backend.
  */
 export function sortGalleryItems<T extends FlaggableItem>(items: T[], justPinnedId?: string): T[] {
   const pinned = items.filter((i) => i.pinned);
@@ -91,15 +83,11 @@ export function pinnedOrder<T extends FlaggableItem>(items: T[]): string[] {
 }
 
 /**
- * Undo a failed unpin, putting the item back where it WAS rather than at the front.
+ * Undo a failed unpin, back to where the item WAS. `applyPin(..., true)` means "freshly pinned" and
+ * would promote it to the head instead, disagreeing with a server order that never changed.
  *
- * `applyPin(..., true)` is the wrong rollback: it means "freshly pinned", so it promotes the item
- * to the head of the pinned group, and an item that had been third by pin time comes back first.
- * The server's order never changed, so the strip would sit wrong until a refetch.
- *
- * `order` is the pinned ids as they stood before the click. An id missing from it was pinned while
- * this request was in flight; `indexOf` scores those -1, which is exactly right, since the newest
- * pin leads. Ties keep their arrival order, which is the server's.
+ * `order` is the pinned ids from before the click. An id missing from it was pinned mid-request, and
+ * `indexOf` scoring those -1 is exactly right: the newest pin leads.
  */
 export function restorePinOrder<T extends FlaggableItem>(
   items: T[],
@@ -125,23 +113,18 @@ export function mergeGenerated<T extends FlaggableItem>(items: T[], fresh: T[]):
 export const NEW_RECORD_PROBE_MAX_PAGES = 5;
 
 /**
- * Whether the gallery holds a record absent from `knownIds`, used to prove that a generation whose
- * POST response was lost did in fact reach the server.
- *
- * A saved record is always unpinned and newest, so it is the FIRST unpinned row of the listing.
- * This walks the pinned prefix to reach that row instead of reading row 0: pinned records sort
- * ahead of everything, so with any pin present row 0 is a record we already knew, and the probe
- * would report a finished generation as never submitted.
+ * Whether the gallery holds a record absent from `knownIds`, proving a generation whose POST
+ * response was lost did reach the server. A saved record is unpinned and newest, so it is the first
+ * UNPINNED row; reading row 0 instead would find a pin we already knew and report the run as never
+ * submitted.
  */
 export interface NewRecordProbeBaseline {
   /** Every gallery id the client had loaded when the POST went out. */
   knownIds: ReadonlySet<string>;
   /**
-   * Whether that loaded window is a sound basis for calling an unpinned row new.
-   *
-   * It is when the window already held an unpinned record, or when it was the entire gallery.
-   * It is NOT when the window was all pinned with more pages behind it: every unpinned row is
-   * then unfamiliar simply because it was never loaded, so "unknown" stops meaning "new".
+   * Whether the window can judge an unpinned row: it held one already, or it was the whole gallery.
+   * An all-pinned window with more pages behind it cannot, since every unpinned row is unfamiliar
+   * for never having been loaded, so "unknown" stops meaning "new".
    */
   canJudgeUnpinned: boolean;
 }
@@ -183,11 +166,8 @@ export async function hasUnknownRecord<T extends FlaggableItem>(
 const queues = new Map<string, Promise<unknown>>();
 
 /**
- * Run `task` after every task already queued under `key`, so a burst of clicks reaches the server
- * in click order rather than whichever request happens to arrive first. Different keys stay
- * parallel, so one gallery's writes never wait on another's.
- *
- * A rejected task does not break the chain; the next one still runs, and the rejection is still
+ * Run `task` after everything already queued under `key`, so a burst of clicks reaches the server in
+ * click order. Different keys stay parallel. A rejection does not break the chain, and is still
  * delivered to whoever awaited it.
  */
 export function serializeById<T>(key: string, task: () => Promise<T>): Promise<T> {
@@ -214,17 +194,13 @@ export function removeGalleryItem<T extends FlaggableItem>(items: T[], id: strin
 export const PAGE_MAX_ATTEMPTS = 4;
 
 /**
- * Run `fetch` and hand back its result only if `token` did not move while it ran.
+ * Run `fetch`, and use its result only if `token` held still. For a GET whose response REPLACES the
+ * strip: the backend can snapshot flags before a pin or archive and answer after it, reverting an
+ * action the user was told had succeeded, with nothing scheduled to correct it. Both pages render
+ * from a module cache while this runs, so their tiles are actionable throughout.
  *
- * For a GET whose response REPLACES the strip. The backend can snapshot the flags before a pin or
- * archive and answer after it, so applying that response unconditionally reverts an action the
- * user was already told had succeeded: a pin reads as unpinned, an archived image comes back onto
- * the strip, and nothing refreshes it again. Both galleries render from a module cache while their
- * first-page load runs, so the tiles are actionable for the whole of that window.
- *
- * Retrying is right rather than failing: the local change is already applied and the server now
- * agrees, so a later read is the one worth having. Giving up after `maxAttempts` returns null and
- * the caller keeps what it has, which is the optimistic state the server just confirmed.
+ * It retries rather than fails, since the server now agrees with the local change. Null after
+ * `maxAttempts` leaves the caller its optimistic state, which is what the server just confirmed.
  */
 export async function fetchWhileStable<T>(
   token: () => number,
@@ -242,26 +218,15 @@ export async function fetchWhileStable<T>(
 /**
  * Fetch the next page at an offset that is still true when the response lands.
  *
- * The offset is how many records are loaded, and archiving or deleting one shortens the server's
- * shelf under an in-flight request: with 50 loaded, archiving one mid-flight moves the record that
- * was at index 50 down to 49, so a page starting at 50 begins AFTER it and that record is returned
- * by no page at all. It then stays missing until a reload, and a short final page can set
- * `hasMore` false so nothing ever goes looking for it again.
+ * Archiving or deleting shortens the server's shelf under an in-flight request: with 50 loaded,
+ * losing one moves the record at index 50 down to 49, so a page starting at 50 begins after it and
+ * no page ever returns it. A short final page can then set `hasMore` false, so nothing looks again.
  *
- * `count()` is read again after the response, from live state rather than a captured number, and
- * the fetch is retried at the corrected offset when it moved. Same shape as the archived list's
- * `showMore`, which had this bug first.
- *
- * `token()` is the second half, and the count alone is not enough without it. The server shelf
- * shortens when it PROCESSES the archive, while the count only moves when that response gets back
- * and the row is dropped locally. A page read inside that gap sees the shortened shelf at the old
- * offset and the count agrees with itself, so the boundary record is skipped with nothing to
- * notice. Callers bump the token when the request STARTS, which covers the whole round trip.
- *
- * `pending()` is why a token alone is still not enough. A token is an edge, not a state: a page
- * that begins AFTER the bump and ends BEFORE the row is dropped sees both the count and the token
- * hold still across a shelf that moved underneath it. So a page is only accepted while nothing is
- * in flight, and the retry runs once the mutation has landed and the count is true again.
+ * All three guards are needed, because each covers a different part of the round trip.
+ * `count()` catches the row being dropped DURING the fetch. `token()`, bumped when the request
+ * starts, catches a mutation beginning during it. `pending()` catches the gap between those two,
+ * where a page begins after the bump and ends before the drop and sees both hold still across a
+ * shelf the server has already shortened.
  */
 export async function fetchNextPage<T>(
   count: () => number,

@@ -354,9 +354,8 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
 });
 
 test("a failed unpin puts the image back where it was, not at the front of the pins", () => {
-  // The pinned group is ordered by pin TIME, which the client never learns, so the rollback has to
-  // replay the order it saw rather than recompute one. applyPin(..., true) means "freshly pinned"
-  // and would promote this image to the head.
+  // Pins are ordered by pin TIME, which the client never learns, so a rollback must replay the
+  // order it saw. applyPin(..., true) means "freshly pinned" and would promote this to the head.
   const before = [item("first", 1, true), item("second", 2, true), item("third", 3, true)];
   const order = pinnedOrder(before);
   const optimistic = applyPin(before, "third", false);
@@ -418,10 +417,9 @@ test("a gallery load gives up rather than overwriting a strip that keeps changin
 });
 
 test("a page fetch is refused when an archive is merely IN FLIGHT", async () => {
-  // The gap the count alone cannot see: the server shortens the shelf when it PROCESSES the
-  // archive, while the local count only moves when that response gets back and the row is
-  // dropped. A page read inside that round trip finds the shortened shelf at an offset the count
-  // still agrees with, so only a token bumped when the request STARTS reveals it.
+  // The gap the count cannot see: the server shortens the shelf when it PROCESSES the archive,
+  // while the count only moves when the response gets back, so only a token bumped at request
+  // START reveals a page read inside that round trip.
   const full = ["e", "d", "c", "b", "a"];
   const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
   let loaded = 2;
@@ -451,9 +449,8 @@ test("a page fetch is refused when an archive is merely IN FLIGHT", async () => 
 });
 
 test("a page fetch is refused while a shelf mutation is still pending", async () => {
-  // The token is an EDGE, not a state. A page that starts after the archive bumped it and lands
-  // before the row is dropped sees both the token and the count hold still across a shelf the
-  // server has already shortened, so only "is anything in flight" catches this one.
+  // The token is an EDGE, not a state: a page starting after the bump and landing before the row is
+  // dropped sees it and the count hold still, so only "is anything in flight" catches this.
   const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
   let loaded = 2;
   let pending = 1; // the PATCH is in flight for the whole of the first read

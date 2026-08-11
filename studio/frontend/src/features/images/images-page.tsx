@@ -1486,26 +1486,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  // Bumped by every LOCAL change to the strip: a pin, an archive, a delete, a merged generation.
-  // A resync started before one of those holds a snapshot the server listing cannot reconcile with
-  // what the user just did, so it drops it rather than applying a window they have moved off.
+  // Bumped by every LOCAL change to the strip (pin, archive, delete, merged generation). A resync
+  // started before one holds a snapshot the listing cannot reconcile with what the user just did.
   const stripEpoch = useRef(0);
-  // Bumped by the window growing from the server instead: a load, an appended page. That is not a
-  // conflict, it just means the resync sized itself against a smaller window, so it refetches.
+  // Bumped by the window growing from the server (a load, an appended page). Not a conflict: the
+  // resync just sized itself against a smaller window, so it refetches.
   const pageEpoch = useRef(0);
-  // Only the most recently started resync may apply. Two restores in a row start two of them, and
-  // the older snapshot arriving last would drop whatever the newer one had already shown.
+  // Only the newest resync may apply: two restores in a row would otherwise let the older snapshot
+  // land last and drop what the newer one showed.
   const resyncSeq = useRef(0);
-  // Shelf mutations currently in flight. The epoch alone is an EDGE: a page that starts after the
-  // bump and lands before the row is dropped sees both it and the count hold still while the
-  // server shelf moved underneath. A page is only trusted while this is zero.
+  // Shelf mutations in flight. The epoch is an EDGE, so a page starting after the bump and landing
+  // before the row is dropped sees it hold still. A page is only trusted while this is zero.
   const pendingShelfMutations = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
-      // Fenced like every other write to the strip: this page renders from the module cache while
-      // the load runs, so its tiles are actionable, and a response snapshotted before a pin or an
-      // archive would put the image back the way it was with nothing to correct it afterwards.
+      // Fenced: this page renders from the module cache while the load runs, so its tiles are
+      // actionable, and a pre-pin snapshot would undo the action with nothing to correct it.
       const page = await fetchWhileStable(
         () => stripEpoch.current,
         () => getGallery(0, PAGE_SIZE),
@@ -1530,9 +1527,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      // Re-read the offset after the response: an archive or a delete landing while this GET is in
-      // flight shortens the shelf, and the record that shifted across the page boundary would be
-      // returned by no page at all.
+      // Guarded on all three counters: an archive landing anywhere across this GET shortens the
+      // shelf, and the record that shifts over the page boundary is returned by no page at all.
       const result = await fetchNextPage(
         () => galleryCache.images.length,
         () => stripEpoch.current,
@@ -1627,9 +1623,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
-      // when it processes this, and a page read anywhere inside that window would see the shortened
-      // list at an offset nothing locally has changed to contradict.
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
       stripEpoch.current += 1;
       pendingShelfMutations.current += 1;
       try {
@@ -1701,9 +1696,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(
     () =>
       subscribeGalleryChanged("images", () => {
-        // Bumped FIRST: a restore changes the shelf, so a load or a page already in flight is now
-        // reading a list this resync is about to replace. Capturing without advancing left those
-        // reads passing their own stability checks and landing on top of the restored window.
+        // Bumped FIRST: a restore changes the shelf, so reads already in flight must be discarded.
+        // Capturing without advancing let them pass their own checks and land on the new window.
         stripEpoch.current += 1;
         // Fenced like the unpin resync: a generation or a new page landing while this GET runs
         // would otherwise be overwritten by a snapshot taken before it.
@@ -1728,9 +1722,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // The pinned order as it stands BEFORE the click, so a failed unpin can put the image back
       // where it was instead of at the front of the pins.
       const orderBefore = pinnedOrder(galleryCache.images);
-      // A per-attempt token, not the target boolean. Pin, unpin, pin before the first settles
-      // stores true twice, so a boolean check lets the FIRST attempt's failure roll back the
-      // THIRD attempt's optimistic pin, and the queued pin then succeeds with the strip unpinned.
+      // A per-attempt token, not the target boolean: pin, unpin, pin stores true twice, so the FIRST
+      // attempt's failure would roll back the THIRD attempt's pin and leave the two disagreeing.
       const attempt = (pinSeq.current += 1);
       pinAttempt.current.set(id, attempt);
       stripEpoch.current += 1;
@@ -1785,9 +1778,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleArchive = useCallback(
     async (id: string) => {
-      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
-      // when it processes this, and a page read anywhere inside that window would see the shortened
-      // list at an offset nothing locally has changed to contradict.
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
       stripEpoch.current += 1;
       pendingShelfMutations.current += 1;
       try {
@@ -3172,9 +3164,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
         // ahead of pins until the next reload.
         stripEpoch.current += 1;
-        // Deduplicated: a resync in flight can fetch the saved record before this response
-        // arrives, and prepending it again would duplicate a React key and inflate the offset the
-        // next page is asked for, skipping a record.
+        // Deduplicated: a resync in flight can fetch the saved record first, and prepending it
+        // again duplicates a React key and inflates the next page's offset, skipping a record.
         setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);

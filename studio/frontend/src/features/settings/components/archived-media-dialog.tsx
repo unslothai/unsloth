@@ -71,9 +71,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
   const mutations = useRef(0);
-  // Restores and deletes currently in flight. The counter above is an EDGE: a page that starts
-  // after it moves and lands before the row is dropped sees it hold still while the server shelf
-  // has already shortened. A page is only applied while this is zero.
+  // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
+  // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
   const pendingMutations = useRef(0);
   const loadingMore = useRef(false);
   const putRows = useCallback((next: ArchivedRow[]) => {
@@ -189,9 +188,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
-  // Prune on VISIBILITY, not only after a successful fetch. Rows leaving the viewport are what
-  // makes their blobs evictable, and at the end of a shelf there is nothing left to fetch, so the
-  // budget was never re-checked and full-size PNGs stayed pinned above it until the dialog closed.
+  // Prune on VISIBILITY, not only after a fetch. Rows leaving the viewport are what makes their
+  // blobs evictable, and at the end of a shelf nothing fetches again, so the budget stopped binding.
   useEffect(() => {
     const evicted = blobs.current.prune(visible);
     if (evicted.length === 0) return;
@@ -227,9 +225,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (cancelled) return;
         if (!visible.has(row.id)) continue;
         if (requested.current.has(row.id)) continue;
-        // The cap has to be checked HERE too, not only where the retry is scheduled. A failure
-        // clears `requested`, so any later run of this effect -- a scroll changing `visible`, another
-        // page -- would fetch a permanently missing file again, without limit.
+        // Checked here too, not only where the retry is scheduled: a failure clears `requested`, so
+        // any later run of this effect would refetch a permanently missing file without limit.
         if ((failures.current.get(row.id) ?? 0) > THUMB_RETRY_LIMIT) continue;
         requested.current.add(row.id);
         try {
@@ -325,9 +322,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   );
 
   async function handleRestore(row: ArchivedRow) {
-    // Counted BEFORE the request and held for its whole round trip: the server shortens the shelf
-    // when it processes this, so a page read anywhere inside that window would see the shortened
-    // list at the offset it captured, with nothing locally changed for showMore to notice.
+    // Held for the whole round trip: the server shortens the shelf when it processes this, so a
+    // page read inside that window sees it at the offset it captured with nothing to notice.
     mutations.current += 1;
     pendingMutations.current += 1;
     try {
@@ -345,9 +341,8 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
 
   async function handleDelete(row: ArchivedRow) {
-    // Counted BEFORE the request and held for its whole round trip: the server shortens the shelf
-    // when it processes this, so a page read anywhere inside that window would see the shortened
-    // list at the offset it captured, with nothing locally changed for showMore to notice.
+    // Held for the whole round trip: the server shortens the shelf when it processes this, so a
+    // page read inside that window sees it at the offset it captured with nothing to notice.
     mutations.current += 1;
     pendingMutations.current += 1;
     try {
