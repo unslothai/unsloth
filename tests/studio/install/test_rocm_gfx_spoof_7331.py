@@ -1071,7 +1071,7 @@ def test_no_torch_keeps_the_override_because_no_per_gfx_wheels_are_installed():
 
     for skip_torch, expected in (("false", "<cleared>"), ("true", "11.0.0")):
         out = _run_sh(
-            f'{guard}\n'
+            f"{guard}\n"
             "    unset HSA_OVERRIDE_GFX_VERSION\n"
             "fi\n"
             'printf "%s\\n" "${HSA_OVERRIDE_GFX_VERSION:-<cleared>}"\n',
