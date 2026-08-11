@@ -2515,11 +2515,14 @@ fi
 # only-managed: uv otherwise walks PATH and *executes* every interpreter it finds to
 # read its version. On a Mac with no Command Line Tools /usr/bin/python3 is Apple's
 # xcode_select shim, so that probe pops the "command line developer tools" dialog
-# naming python3, for tools this install never needs.
+# naming python3, for tools this install never needs. Spelled --python-preference
+# rather than its --managed-python alias: identical effect, accepted since uv 0.4.30
+# instead of 0.8.16.
 #
-# The flag also drops uv's system-interpreter fallback, and an offline host with no
-# cached managed build then has nothing left to resolve. Retry unflagged so that host
-# keeps the install it had before: the dialog is worth removing, a failed install is not.
+# The flag also drops uv's system-interpreter fallback, so an offline host, or one
+# with UV_PYTHON_DOWNLOADS=never, has nothing left to resolve and the install dies
+# where it used to work. Retry unflagged for them: the dialog is worth removing, a
+# failed install is not.
 _uv_venv_arm64() {  # label
     run_install_cmd "$1" uv venv "$VENV_DIR" \
         --python-preference only-managed \

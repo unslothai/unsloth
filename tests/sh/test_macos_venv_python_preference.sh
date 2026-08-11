@@ -98,7 +98,54 @@ else
     PASS=$((PASS + 1))
 fi
 
-rm -f "$_FN"
+echo "=== Studio installer stream ==="
+
+# install.rs turns [TAURI:ERROR_OUTPUT] into "Installation failed" and only a later
+# [TAURI:ERROR_CLEAR] takes it back, so a fallback that recovers has to emit one or
+# the desktop app reports a failure it already recovered from.
+_STREAM=$(mktemp)
+{
+    printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'
+    printf 'step() { :; }\ntauri_log() { :; }\n'
+    for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
+              run_install_cmd _uv_venv_arm64; do
+        sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
+    done
+} > "$_STREAM"
+
+_UVDIR=$(mktemp -d)
+cat > "$_UVDIR/uv" << 'UV_EOF'
+#!/bin/sh
+case " $* " in *" only-managed "*) [ "$UV_FAIL_MANAGED" = 1 ] && exit 2 ;; esac
+mkdir -p "$2/bin" && printf '#!/bin/sh\n' > "$2/bin/python" && chmod +x "$2/bin/python"
+UV_EOF
+chmod +x "$_UVDIR/uv"
+
+_emit() {  # UV_FAIL_MANAGED
+    _sd=$(mktemp -d)
+    PATH="$_UVDIR:$PATH" VENV_DIR="$_sd/venv" PYTHON_VERSION=3.12 UV_FAIL_MANAGED="$1" \
+        sh -c ". '$_STREAM'; _uv_venv_arm64 'create venv'; echo RC=\$?" 2>&1
+    rm -rf "$_sd"
+}
+
+_out=$(_emit 0)
+assert_contains "managed attempt succeeds, returns 0" "$_out" "RC=0"
+if echo "$_out" | grep -q ERROR_OUTPUT; then
+    echo "  FAIL: clean run must not report a failure"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: clean run reports no failure"
+    PASS=$((PASS + 1))
+fi
+
+_out=$(_emit 1)
+assert_contains "fallback run still returns 0" "$_out" "RC=0"
+assert_contains "recovery clears the Studio failure" "$_out" "ERROR_CLEAR"
+assert_eq "ERROR_CLEAR is the last error-state line" "ERROR_CLEAR" \
+    "$(echo "$_out" | grep -o 'ERROR_OUTPUT\|ERROR_CLEAR' | tail -1)"
+
+rm -rf "$_UVDIR"
+rm -f "$_FN" "$_STREAM"
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"
 [ "$FAIL" -eq 0 ]
