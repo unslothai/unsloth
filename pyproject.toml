@@ -81,6 +81,7 @@ include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = [
     "images*",
     "tests*",
+    "studio.backend.tests*",
     "unsloth_compiled_cache*",
     "*.unsloth_compiled_cache*",
     "*.node_modules",
