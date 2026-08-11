@@ -11380,9 +11380,7 @@ class LlamaCppBackend:
                             # so the two cannot disagree. Auto only: an explicit context
                             # is honored verbatim, never capped, and overflows to --fit.
                             if not explicit_ctx:
-                                _usable_wo = [
-                                    _gpu_usable(g, _probe_frac(False)) for g in _subset
-                                ]
+                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
                                 _probe_reserve_at = lambda c, _k = _n: (
                                     (_pipeline_overhead_bytes if _k > 1 else 0)
                                     + _cc_bytes(c, _k) // _k
@@ -11401,9 +11399,9 @@ class LlamaCppBackend:
                                     _foot_wo = (_base_wo + _shared) / (1024 * 1024)
                                     if _foot_wo > _budget_wo:
                                         continue
-                            _foot_w = (
-                                _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
-                            ) / (1024 * 1024)
+                            _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
+                                1024 * 1024
+                            )
                             _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
                             if not _target_fits_somewhere:
                                 # The placement this reports on: the first subset that
