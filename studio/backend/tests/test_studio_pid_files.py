@@ -924,3 +924,32 @@ def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, m
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
 
     assert events == ["clear"]
+
+
+def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
+    # Dropping the path before the unlink succeeds loses the only reference to
+    # it. The marker would stay on disk, keep matching this live process, and
+    # pin the compiled cache with no later cleanup able to retry.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    assert run._OWN_STARTUP_MARKERS == [marker]
+
+    real_unlink = Path.unlink
+    refused = []
+
+    def refuse_once(self, missing_ok = False):
+        if not refused:
+            refused.append(self)
+            raise OSError("busy")
+        return real_unlink(self, missing_ok = missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", refuse_once)
+    run._remove_startup_marker()
+
+    assert run._OWN_STARTUP_MARKERS == [marker], "still tracked for a retry"
+    assert marker.exists()
+
+    run._remove_startup_marker()
+
+    assert run._OWN_STARTUP_MARKERS == []
+    assert not marker.exists()

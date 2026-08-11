@@ -1039,12 +1039,19 @@ def write_startup_marker() -> None:
 
 
 def _remove_startup_marker() -> None:
+    # A path is dropped from the list only once it is actually gone. A transient
+    # unlink failure would otherwise lose the only reference to it, leaving a
+    # marker on disk that no later cleanup can retry: its recorded start time
+    # still matches this process, so an embedded host that keeps running would
+    # go on answering as a live backend and pin the compiled cache.
+    remaining = []
     while _OWN_STARTUP_MARKERS:
         path = _OWN_STARTUP_MARKERS.pop()
         try:
             path.unlink(missing_ok = True)
         except OSError:
-            pass
+            remaining.append(path)
+    _OWN_STARTUP_MARKERS.extend(remaining)
 
 
 def _startup_marker_records() -> "list[tuple[int, float | None, str | None] | None]":
