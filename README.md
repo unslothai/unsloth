@@ -155,8 +155,6 @@ The desktop app is the easiest way to use Unsloth and needs no setup, so start h
   </tr>
 </table>
 
-Also available at [unsloth.ai/download](https://unsloth.ai/download).
-
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 
