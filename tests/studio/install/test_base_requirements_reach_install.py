@@ -137,7 +137,8 @@ class TestSharedBasePhase:
     def test_shared_phase_is_after_and_outside_the_core_branch(self):
         core = _core_branch()
         shared = _shared_base_branch()
-        assert shared.lineno > core.lineno
+        between = _STACK.read_text(encoding = "utf-8").splitlines()[core.end_lineno : shared.lineno]
+        assert "        base_requirements = _shared_base_requirements()" in between
         assert all(isinstance(node, ast.Pass) for node in core.body)
 
 

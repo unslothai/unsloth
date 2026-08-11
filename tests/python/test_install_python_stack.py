@@ -86,16 +86,18 @@ class TestUvSafePath:
         assert ips._uv_safe_path(p) == p
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
-    def test_posix_space_path_returns_spacefree_copy(self, tmp_path):
+    def test_posix_space_path_preserves_relative_requirements(self, tmp_path):
         src = tmp_path / "Open Source" / "constraints.txt"
         src.parent.mkdir(parents = True)
-        src.write_text("torch>=2.6\n")
+        src.write_text("-r child.txt\n")
+        (src.parent / "child.txt").write_text("torch>=2.6\n")
 
         out = ips._uv_safe_path(str(src))
 
         assert " " not in out, f"uv-safe path still has a space: {out!r}"
         assert out != str(src)
-        assert Path(out).read_text() == "torch>=2.6\n"
+        assert Path(out).read_text() == "-r child.txt\n"
+        assert (Path(out).parent / "child.txt").read_text() == "torch>=2.6\n"
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_posix_missing_file_falls_back_to_original(self):
@@ -121,8 +123,8 @@ class TestUvSafePathHardening:
         assert uvps.uv_safe_path(str(src)) == str(src)
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
-    def test_no_temp_dir_leak_on_copy_failure(self, tmp_path, monkeypatch):
-        """A copyfile failure after mkdtemp must not orphan the temp dir."""
+    def test_no_temp_dir_leak_on_alias_failure(self, tmp_path, monkeypatch):
+        """A symlink failure after mkdtemp must not orphan the temp dir."""
         from backend.utils import uv_path_safety as uvps
 
         src = tmp_path / "Open Source" / "constraints.txt"
@@ -134,7 +136,7 @@ class TestUvSafePathHardening:
         def boom(*a, **k):
             raise OSError("boom")
 
-        monkeypatch.setattr(uvps.shutil, "copyfile", boom)
+        monkeypatch.setattr(uvps.os, "symlink", boom)
         out = uvps.uv_safe_path(str(src))
 
         assert out == str(src)
@@ -149,7 +151,7 @@ class TestUvSafePathHardening:
         src.parent.mkdir(parents = True)
         src.write_text("idna\n")
         out = uvps.uv_safe_path(str(src))
-        tmp_dir = Path(out).parent
+        tmp_dir = Path(out).parents[1]
         assert tmp_dir.is_dir() and str(tmp_dir) in uvps._UV_SAFE_PATH_TMPDIRS
 
         uvps._cleanup_uv_safe_path_tmpdirs()

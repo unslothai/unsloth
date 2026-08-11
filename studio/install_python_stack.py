@@ -3865,7 +3865,7 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
-    base_requirements = _shared_base_requirements()
+    base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
@@ -4057,6 +4057,9 @@ def install_python_stack() -> int:
             "unsloth",
             "unsloth-zoo",
         )
+
+    if not skip_base:
+        base_requirements = _shared_base_requirements()
 
     # Shared torch-bound requirements are independent of the core package
     # phase. install.sh / install.ps1 may skip the latter after installing the
