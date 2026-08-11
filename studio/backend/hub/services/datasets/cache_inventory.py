@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.services import resolve_destructive_repo_ids
-from hub.services.datasets import downloads
+from hub.services.datasets import downloads, local_options
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.dataset_cache import (
@@ -112,20 +112,24 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
 
 # anything not named here counts as payload, so unknown formats are never read as an empty
 # snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36.
-_DATASET_NON_PAYLOAD_FILENAMES = frozenset(
-    {
-        ".ds_store",
-        ".gitattributes",
-        ".huggingface.yaml",
-        "dataset_infos.json",
-        "desktop.ini",
-        "license",
-        "license.md",
-        "license.txt",
-        "readme.md",
-        "thumbs.db",
-    }
-) | {name.lower() for name in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE}
+# the data-file names come from local_options rather than a second copy, so this check and the
+# resolver that decides whether a cache yields rows can never drift apart.
+_DATASET_NON_PAYLOAD_FILENAMES = (
+    frozenset(
+        {
+            ".ds_store",
+            ".gitattributes",
+            ".huggingface.yaml",
+            "desktop.ini",
+            "license",
+            "license.md",
+            "license.txt",
+            "thumbs.db",
+        }
+    )
+    | {name.lower() for name in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE}
+    | {name.lower() for name in local_options._IGNORED_DATA_FILENAMES}
+)
 
 
 def _is_payload_name(name: str) -> bool:

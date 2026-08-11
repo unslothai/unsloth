@@ -11,7 +11,13 @@ import pytest
 from fastapi import HTTPException
 
 from hub.schemas.datasets import CheckFormatRequest, LocalDatasetItem
-from hub.services.datasets import cache_inventory, downloads, formatting, local
+from hub.services.datasets import (
+    cache_inventory,
+    downloads,
+    formatting,
+    local,
+    local_options,
+)
 from hub.utils import (
     dataset_processed_cache,
     download_manifest,
@@ -1149,3 +1155,16 @@ def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_pa
     by_id = {item.id: item for item in response.datasets}
     assert by_id["recipe_alpha"].source == "recipe"
     assert by_id["manual.jsonl"].source == "upload"
+
+
+def test_raw_dataset_cache_has_data_ignores_every_datasets_metadata_name(monkeypatch, tmp_path):
+    """The non-payload set reuses `local_options._IGNORED_DATA_FILENAMES` rather than copying
+    it, so the check and the resolver that decides whether a cache yields rows cannot drift.
+    A snapshot holding only these has no rows to load however complete it looks."""
+    repo_root = _dataset_snapshot(
+        monkeypatch,
+        tmp_path,
+        tuple(sorted(local_options._IGNORED_DATA_FILENAMES)),
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
