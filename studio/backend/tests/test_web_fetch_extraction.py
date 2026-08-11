@@ -833,9 +833,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     assert err is None
     assert body == "ok"
     assert [req.full_url for req in requested] == ["https://example.com:8443/page?q=1"]
-    assert not [
-        h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
-    ]
+    assert not [h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies]
 
 
 @pytest.mark.parametrize(
