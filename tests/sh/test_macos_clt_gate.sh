@@ -176,9 +176,24 @@ else
     assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
 fi
 
+# Intel hosted runners can have a real working /usr/bin/git even with no selected CLT.
+# MAC_INTEL is established from hardware detection before this helper runs, so probe
+# the same path on real Intel while still refusing it on Apple Silicon.
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 0"
+_r="$(PATH="$_BIN" OS=macos MAC_INTEL=true _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "Intel Mac + working system git -> yes" "yes" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "Intel system git WAS executed" "executed" "executed"
+else
+    assert_eq "Intel system git WAS executed" "executed" "not-executed"
+fi
+
 # A real git elsewhere on PATH (Homebrew) must still be probed by executing it, so a Mac
 # with a working git but no CLT selected keeps working exactly as before.
 rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 1"
 _r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM=/usr/bin/git "$_SH" -c \
     ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
 assert_eq "clean Mac + non-shim working git -> probed" "no" "$_r"

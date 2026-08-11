@@ -2113,14 +2113,16 @@ _has_working_git() {
     # resolved path instead when it is that exact shim and no toolchain is selected.
     #
     # Narrow on purpose. Only /usr/bin/git is a shim: a Homebrew, MacPorts or Xcode.app git
-    # earlier on PATH is a real binary and is still probed by executing it, so a Mac with a
-    # working git but no CLT selected keeps working exactly as before. xcode-select -p only
-    # asks which toolchain is selected and never prompts.
+    # earlier on PATH is a real binary and is still probed by executing it. Intel macOS can
+    # also ship a working /usr/bin/git after CLT masking, so MAC_INTEL must probe that path;
+    # only Apple Silicon treats it as the known dialog shim without execution. xcode-select
+    # -p only asks which toolchain is selected and never prompts.
     # $OS is the platform detected above, not a fresh `uname` call: this can run with a
     # scrubbed PATH where uname is not resolvable, and a failed probe there would silently
     # fall through to executing the shim. _CLT_GIT_SHIM is the shim path, overridable so
     # the branch is testable without a /usr/bin write.
     if [ "${OS:-}" = "macos" ] &&
+       [ "${MAC_INTEL:-false}" != true ] &&
        [ "$(command -v git)" = "${_CLT_GIT_SHIM:-/usr/bin/git}" ] &&
        ! xcode-select -p >/dev/null 2>&1; then
         return 1
