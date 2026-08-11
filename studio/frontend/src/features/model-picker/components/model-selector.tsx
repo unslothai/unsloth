@@ -163,6 +163,8 @@ interface ModelSelectorProps {
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  /** Responsive text sizing for headers that have to share a constrained row. */
+  triggerLabelClassName?: string;
   contentClassName?: string;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -187,6 +189,7 @@ function ModelSelectorTrigger({
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   dataTour,
   onEject,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
@@ -198,6 +201,7 @@ function ModelSelectorTrigger({
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
+  triggerLabelClassName?: string;
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
@@ -262,7 +266,12 @@ function ModelSelectorTrigger({
           </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
-          <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
+          <span
+            className={cn(
+              "min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white",
+              triggerLabelClassName,
+            )}
+          >
             {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
@@ -730,6 +739,7 @@ export function ModelSelector({
   variant = "outline",
   size = "default",
   className,
+  triggerLabelClassName,
   contentClassName,
   open: controlledOpen,
   onOpenChange,
@@ -851,6 +861,7 @@ export function ModelSelector({
         variant={variant}
         size={size}
         className={className}
+        triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
         placeholder={placeholder}

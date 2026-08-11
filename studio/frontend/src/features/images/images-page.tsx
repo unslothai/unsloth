@@ -3416,10 +3416,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      {/* Below 50rem, equal side tracks keep the mode switch centered without overlaying
-          either action group. Above it, the 408px rail continues through the header and
-          Create / Train centers over the preview pane. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 @[50rem]:grid-cols-[408px_minmax(0,1fr)] @[50rem]:gap-0">
+      {/* Keep the tabs centered over the preview region at every width. The model rail
+          holds at 408px when space permits and shrinks only to preserve the controls. */}
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(18rem,1fr)]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -3450,7 +3449,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}
                 variant="ghost"
-                className="!h-[34px] max-w-full overflow-hidden"
+                className="!h-[34px] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 placeholder="Select image model"
@@ -3477,8 +3477,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        <div className="contents @[50rem]:grid @[50rem]:h-full @[50rem]:min-w-0 @[50rem]:grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-2">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_1fr]">
+          <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               ariaLabel="Page mode"
               value={pageMode}
@@ -3491,7 +3491,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               ]}
             />
           </div>
-          <div className="pointer-events-none flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-3">
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <MediaPageLink
                 to="/video"
