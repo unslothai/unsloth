@@ -1028,6 +1028,7 @@ def write_startup_marker() -> None:
         from utils.cache_cleanup import compiled_cache_lock
     except Exception:
         import contextlib
+
         # No lock available means an unserialized publish, which is what this
         # did before the lock existed. Startup still has to happen.
         compiled_cache_lock = contextlib.nullcontext
