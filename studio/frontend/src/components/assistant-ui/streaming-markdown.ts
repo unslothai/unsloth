@@ -2,7 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { fromMarkdown } from "mdast-util-from-markdown";
-import { isWithinMathBlock } from "remend";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { mathFromMarkdown } from "mdast-util-math";
+import { gfm } from "micromark-extension-gfm";
+import { math } from "micromark-extension-math";
+import remend from "remend";
+import { parseMarkdownIntoBlocks } from "streamdown";
 
 // Cheap gate: a bullet marker then nothing but thematic-break punctuation. The
 // ambiguity is not asterisk specific, `- --verbose` and `* ___under___` stream
@@ -19,17 +24,55 @@ type MarkdownNode = {
   readonly children?: readonly MarkdownNode[];
 };
 
-function someNode(
-  root: MarkdownNode,
-  match: (node: MarkdownNode) => boolean,
+// Streamdown parses with GFM plus the math plugin, so a bare CommonMark parse
+// disagrees with what is on screen for footnotes and for dollar signs.
+function parse(text: string): MarkdownNode {
+  return fromMarkdown(text, {
+    extensions: [gfm(), math({ singleDollarTextMath: true })],
+    mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
+  }) as MarkdownNode;
+}
+
+// Is a rule on screen right now? Streamdown repairs incomplete Markdown with
+// remend and splits into blocks before rendering, so run both: after an
+// unclosed construct the repair alone turns this frame into a list already.
+// Splitting also keeps the parse to the trailing block rather than the response.
+function rendersTrailingThematicBreak(text: string): boolean {
+  const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
+  if (block === undefined) {
+    return false;
+  }
+  let node = parse(block);
+  while (node.children?.length) {
+    node = node.children[node.children.length - 1];
+  }
+  return node.type === "thematicBreak";
+}
+
+// Does this marker open an item that will hold text? Matching the offset is
+// what separates a nested item continuing a list from `* * *`, a break whose
+// completed form is nested lists with no paragraph of its own.
+function completesAsTrailingParagraphListItem(
+  text: string,
+  markerIndex: number,
 ): boolean {
-  const pending: MarkdownNode[] = [root];
+  const completedText = `${text}x`;
+  const pending: MarkdownNode[] = [parse(completedText)];
   while (pending.length > 0) {
     const node = pending.pop();
     if (!node) {
       continue;
     }
-    if (match(node)) {
+    if (
+      node.type === "listItem" &&
+      node.position?.start.offset === markerIndex &&
+      node.position.end.offset === completedText.length &&
+      node.children?.some(
+        (child) =>
+          child.type === "paragraph" &&
+          child.position?.end.offset === completedText.length,
+      )
+    ) {
       return true;
     }
     if (node.children) {
@@ -37,39 +80,6 @@ function someNode(
     }
   }
   return false;
-}
-
-// The frame really ends in a rule, top level (`* **`) or nested in the bullet
-// it opened (`- ___`). Without this a line rendering fine could be hidden.
-function rendersTrailingThematicBreak(text: string): boolean {
-  return someNode(
-    fromMarkdown(text) as MarkdownNode,
-    (node) =>
-      node.type === "thematicBreak" &&
-      node.position?.end.offset === text.length,
-  );
-}
-
-// The completed form validates the active container while also rejecting
-// code, raw HTML, and footnote content.
-function completesAsTrailingParagraphListItem(
-  text: string,
-  markerIndex: number,
-): boolean {
-  const completedText = `${text}x`;
-  return someNode(
-    fromMarkdown(completedText) as MarkdownNode,
-    (node) =>
-      node.type === "listItem" &&
-      node.position?.start.offset === markerIndex &&
-      node.position.end.offset === completedText.length &&
-      (node.children?.some(
-        (child) =>
-          child.type === "paragraph" &&
-          child.position?.end.offset === completedText.length,
-      ) ??
-        false),
-  );
 }
 
 export function stabilizeStreamingMarkdown(
@@ -93,7 +103,6 @@ export function stabilizeStreamingMarkdown(
   const markerIndex =
     lineStart + blockquotePrefix.length + content.indexOf(marker);
   if (
-    isWithinMathBlock(text, markerIndex) ||
     !rendersTrailingThematicBreak(text) ||
     !completesAsTrailingParagraphListItem(text, markerIndex)
   ) {

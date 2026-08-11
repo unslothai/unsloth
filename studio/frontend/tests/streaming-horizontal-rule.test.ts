@@ -171,17 +171,62 @@ test("preserves ambiguous-looking content in raw HTML blocks", () => {
 });
 
 test("preserves GFM footnote content that does not render a rule", () => {
+  // An empty footnote definition renders no content at all, so buffering its
+  // indented prefix is invisible. Assert the rendered output, not the string.
   const markdown = "See[^1]\n\n[^1]:\n    * **";
   const html = render(markdown);
 
   assert.ok(!html.includes(HORIZONTAL_RULE));
-  assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  assert.equal(render(stabilizeStreamingMarkdown(markdown, true)), html);
 
   const completed = `${markdown}Heading**`;
   const completedHtml = render(completed);
   assert.ok(completedHtml.includes(UNORDERED_LIST));
   assert.ok(completedHtml.includes(STRONG));
   assert.ok(!completedHtml.includes(HORIZONTAL_RULE));
+});
+
+test("buffers a populated GFM footnote that does render a rule", () => {
+  const markdown = "See[^1]\n\n[^1]: text\n\n    * **";
+  assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+
+  const stabilized = stabilizeStreamingMarkdown(markdown, true);
+  assert.equal(stabilized, "See[^1]\n\n[^1]: text\n\n");
+  assert.ok(!render(stabilized).includes(HORIZONTAL_RULE));
+});
+
+test("is not defeated by literal dollar signs", () => {
+  // Dollar parity alone mistook prices, shell vars and code spans for math and
+  // silently disabled buffering for the rest of the response.
+  for (const preceding of [
+    "Price is $5",
+    "Use `$HOME`",
+    "```sh\necho $HOME\n```",
+  ]) {
+    const markdown = `${preceding}\n\n* **`;
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(
+      stabilizeStreamingMarkdown(markdown, true),
+      `${preceding}\n\n`,
+    );
+  }
+
+  // Real math is still left alone. `render` here has no math plugin, unlike the
+  // app, so only the decision can be asserted, not this helper's output.
+  assert.equal(stabilizeStreamingMarkdown("$$\n* **", true), "$$\n* **");
+});
+
+test("keeps lines that Streamdown's incomplete-Markdown repair already fixes", () => {
+  // remend closes the open construct, so these render as a list already and
+  // buffering them would hide a line that was displaying correctly.
+  for (const markdown of ["[open\n* **", "`open\n* **", "[open](\n* **"]) {
+    assert.ok(!render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  }
+
+  // An unclosed bold still leaves a real rule to buffer.
+  assert.ok(render("**open\n* **").includes(HORIZONTAL_RULE));
+  assert.equal(stabilizeStreamingMarkdown("**open\n* **", true), "**open\n");
 });
 
 test("does not reinterpret adjacent Markdown constructs", () => {
