@@ -10206,9 +10206,9 @@ def _fetch_url_raw(
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
-            # Decide the routing once, on the netloc urllib itself tests, then hold
-            # the opener to it: a pinned request carries an IP, which no NO_PROXY
-            # entry matches, so ProxyHandler would proxy a bypassed host.
+            # Decide routing once, on the netloc urllib tests: a pinned request
+            # carries an IP, which no NO_PROXY entry matches, so the opener below
+            # has to carry the decision rather than re-derive it.
             proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
             if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS
