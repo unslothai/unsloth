@@ -3438,10 +3438,9 @@ exit 0
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
     # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false, and .Error carries WHICH failure it
-    # was: stderr used to be drained and thrown away, so a driver-level DLL load error and a
-    # missing torch were indistinguishable at every call site. Defined above the Intel scan,
-    # since PowerShell binds a function only when its definition runs.
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
         $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
@@ -3459,15 +3458,13 @@ exit 0
             $errTask = $proc.StandardError.ReadToEndAsync()
             if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
                 try { $proc.Kill() } catch {}
-                # Synthesised, not read back: the reader tasks are the thing that may never
-                # complete on a wedged child, so waiting on them here would reintroduce the
-                # hang this helper exists to bound.
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
                 $result.Error = "python did not answer within $TimeoutSec seconds"
                 return $result
             }
             $result.Output = $outTask.GetAwaiter().GetResult()
-            # Kept, not discarded: on a failed probe this is the only place the real OSError /
-            # WinError text exists.
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
             $result.Error = $errTask.GetAwaiter().GetResult()
             $result.Ok = ($proc.ExitCode -eq 0)
             return $result
@@ -4609,16 +4606,12 @@ exit 0
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
-    # The torch family THIS run settled on for this host. setup.ps1 rescans the hardware from
-    # scratch and keeps a GPU wheel rather than forcing another family over it -- but "a GPU
-    # wheel is in the venv" is not on its own evidence that this installer put it there. The
-    # migrated-venv arm above installs unsloth only and never touches torch, and the flavor
-    # repair no-ops whenever the expected tag is 'cpu' or unrecognised, so an upgrade from an
-    # older layout can hand setup a wheel from a previous install on different hardware.
-    # Empty means "no answer": --no-torch, or a custom index whose leaf names no flavor. Always
-    # assigned so a previous run in the same session cannot leak a value -- on 7.5+ that leaves
-    # it present and blank, and on 5.1 / 7.0-7.4 an empty assignment removes it; setup.ps1
-    # treats both as unknown.
+    # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
+    # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
+    # installer put it there -- the migrated-venv arm above installs unsloth only and never
+    # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
+    # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
+    # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
     $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
         [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
     }
