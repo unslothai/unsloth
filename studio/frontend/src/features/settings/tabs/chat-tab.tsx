@@ -176,6 +176,12 @@ export function ChatTab() {
   const setShowResponseModel = useChatPreferencesStore(
     (state) => state.setShowResponseModel,
   );
+  const collapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
+  const setCollapseThinkingByDefault = useChatPreferencesStore(
+    (state) => state.setCollapseThinkingByDefault,
+  );
 
   useEffect(() => {
     void hydratePersistedSettings();
@@ -272,6 +278,18 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.chat.thinking.title")}>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
           />
         </SettingsRow>
       </SettingsSection>

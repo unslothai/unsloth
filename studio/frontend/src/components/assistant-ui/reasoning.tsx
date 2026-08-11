@@ -11,7 +11,12 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { resolveReasoningGroupDuration } from "@/features/chat";
+import {
+  reasoningToggleTargetsManualState,
+  resolveReasoningGroupDuration,
+  resolveReasoningOpen,
+  useChatPreferencesStore,
+} from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -347,6 +352,10 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     );
   });
 
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
+
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
   const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
@@ -385,23 +394,34 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
 
-  // Open while streaming (unless dismissed), or once manually opened.
-  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
+  // Open while streaming (unless dismissed), or once manually opened. With
+  // collapse by default on, only a manual open shows the block.
+  const isOpen = resolveReasoningOpen({
+    isStreaming: isReasoningStreaming,
+    collapseByDefault,
+    dismissedWhileStreaming,
+    manualOpen,
+  });
   const variant = isOpen ? "outline" : "ghost";
 
   // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (isReasoningStreaming) {
-        setDismissedWhileStreaming(!open);
-      } else {
+      if (
+        reasoningToggleTargetsManualState(
+          isReasoningStreaming,
+          collapseByDefault,
+        )
+      ) {
         if (open) {
           setRetainStreamingHeight(false);
         }
         setManualOpen(open);
+      } else {
+        setDismissedWhileStreaming(!open);
       }
     },
-    [isReasoningStreaming],
+    [isReasoningStreaming, collapseByDefault],
   );
 
   return (

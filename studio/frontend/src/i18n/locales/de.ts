@@ -928,6 +928,12 @@ export const de = {
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      thinking: {
+        title: "Denken",
+        collapseByDefault: "Denken standardmäßig einklappen",
+        collapseByDefaultDescription:
+          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",
