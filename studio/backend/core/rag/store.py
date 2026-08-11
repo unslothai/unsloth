@@ -302,15 +302,13 @@ def delete_document(
 def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     """Whether anything here can be hidden by the linked-folder filters.
 
-    Each EXISTS mirrors one thing they hide, so with all three empty the plain query
-    returns the same rows out of the FTS index. Three indexed reads to skip a
-    per-matched-row join and two subqueries.
+    One EXISTS per thing they hide, so with all three empty the plain query returns the
+    same rows straight out of the FTS index.
 
-    A PURGED tombstone is excluded: deleting any knowledge base leaves one behind for
-    good, and its scope has no documents left to hide, so counting it would disable the
-    fast path permanently on the first delete. A folder-owned document is counted
-    directly rather than through `linked_folders`, because a crash between ingestion and
-    `_install_mapping` leaves one that outlives its folder row until the reaper runs.
+    A purged tombstone does not count: every knowledge base delete leaves one for good
+    and its scope keeps no documents, so counting it would end the fast path on the first
+    delete. Folder-owned documents are counted directly, not via `linked_folders`: a
+    crash before `_install_mapping` leaves one that outlives its folder row.
     """
     return bool(
         conn.execute(

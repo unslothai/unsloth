@@ -234,8 +234,8 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
 def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
     """A scope retired between the gate and the FTS read must not reach the read.
 
-    Otherwise the gate decides "nothing is linked" against a state the read no longer
-    sees, and rows from the retired scope take slots the caller loses at hydration.
+    Otherwise the gate decides against a state the read no longer sees, and rows from the
+    retired scope take slots the caller loses at hydration.
     """
     from storage import rag_db
 
@@ -281,9 +281,8 @@ def test_lexical_reuses_a_transaction_the_caller_already_opened(rag_conn):
 def test_gate_ignores_a_purged_tombstone(rag_conn):
     """Deleting a knowledge base must not disable the fast path for good.
 
-    delete_retired_scope keeps the tombstone and only stamps purged_at, and its scope has
-    no documents left, so a gate that counted it would take the filtered query forever
-    after the first ordinary delete.
+    delete_retired_scope keeps the tombstone and only stamps purged_at, so a gate that
+    counted it would take the filtered query forever after the first ordinary delete.
     """
     _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
     rag_conn.execute(
@@ -304,9 +303,8 @@ def test_gate_ignores_a_purged_tombstone(rag_conn):
 def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
     """An orphan left by a crash before _install_mapping stays hidden after unlink.
 
-    The folder row goes with the unlink but the document does not (only mapped documents
-    are collected), so the gate has to see the document itself or the plain query would
-    make unlinked content searchable until the reaper runs.
+    Unlink collects only mapped documents, so the folder row goes and this one does not;
+    the gate has to see the document itself or unlinked content becomes searchable.
     """
     _link_folder(rag_conn, "f1", "kb_a")
     store.create_document(
