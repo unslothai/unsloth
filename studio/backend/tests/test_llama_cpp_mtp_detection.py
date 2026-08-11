@@ -2740,3 +2740,81 @@ def test_concurrent_timeout_cannot_overwrite_a_successful_probe(tmp_path, monkey
     cached = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert cached["supports_mtp"] is True
     assert cached["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_a_conclusive_probe_is_never_expired_by_the_retry_window(tmp_path, monkeypatch):
+    """Only the inconclusive answer is time-bounded. A conclusive one describes the
+    binary, which cannot change while its mtime holds, so applying the retry window to it
+    too would re-run --help forever on a perfectly healthy install (#8317)."""
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,draft-mtp,ngram-mod\n",
+            stderr = "",
+            returncode = 0,
+        )
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["supports_mtp"] is True
+    assert len(calls) == 1
+
+    now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS * 100
+    again = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert again is first
+    assert len(calls) == 1, "a conclusive probe must not be re-run once cached"
+
+
+@_NEEDS_BASH
+def test_a_hanging_binary_is_probed_once_per_model_load(tmp_path, monkeypatch):
+    """The cost half of #8317, stated as the caller sees it. One model load makes seven
+    capability calls; a binary that hangs for a permanent reason must pay the --help
+    timeout once across all of them, not once each."""
+    import subprocess as _subprocess
+
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--spec-type none,draft-mtp")
+    _clear_caps_cache()
+    now = [100.0]
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(cmd)
+        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
+    monkeypatch.setattr("core.inference.llama_cpp.time.monotonic", lambda: now[0])
+
+    # probe_server_capabilities call sites reached by a single load:
+    # llama_cpp.py 8003, 9443, 9636, 9706, 10117, 11038, 12786.
+    for _ in range(7):
+        LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert len(calls) == 1, f"expected one --help per load, got {len(calls)}"
+
+
+@_NEEDS_BASH
+def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_path):
+    """The found:False early return sits above the cache and costs a stat rather than a
+    subprocess, so it must stay uncached: an install finishing mid-session has to be
+    picked up without a Studio restart."""
+    binary = tmp_path / "llama-server"
+    _clear_caps_cache()
+
+    absent = LlamaCppBackend.probe_server_capabilities(str(binary))
+    assert absent["found"] is False
+    assert LlamaCppBackend._capability_cache == {}
+
+    _make_fake_llama_server(binary, "--spec-type none,draft-mtp,ngram-mod")
+    present = LlamaCppBackend.probe_server_capabilities(str(binary))
+    assert present["found"] is True
+    assert present["supports_mtp"] is True
