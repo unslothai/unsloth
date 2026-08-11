@@ -2173,7 +2173,6 @@ def run_server(
     # lock differently from the clear that follows, and serialize nothing.
     try:
         from utils.paths.storage_roots import setup_cache_env
-
         setup_cache_env()
     except Exception:  # noqa: BLE001
         # main.py seeds it too, and does not depend on this having worked.

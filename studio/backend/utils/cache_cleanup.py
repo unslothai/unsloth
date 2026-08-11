@@ -393,7 +393,6 @@ def _last_clear_time() -> float:
 
 def _record_clear() -> None:
     import time
-
     stamp = f"{time.time()}"
     for path in _clear_stamp_paths():
         try:
@@ -403,7 +402,9 @@ def _record_clear() -> None:
             continue
 
 
-def clear_compiled_cache_unless_shared(sibling_probe = None, started_at: "float | None" = None) -> None:
+def clear_compiled_cache_unless_shared(
+    sibling_probe = None, started_at: "float | None" = None
+) -> None:
     """Clear the compiled cache, unless another backend of this install is live.
 
     The cache sits in the install tree, not the studio home, so two of our own

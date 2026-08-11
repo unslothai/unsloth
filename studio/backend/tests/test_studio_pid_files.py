@@ -737,9 +737,7 @@ def test_the_coordination_directory_follows_the_cache_path_not_the_studio_home(
     assert _REAL_COORDINATION_DIRS() != first
 
 
-def test_two_installs_sharing_one_cache_overlap_even_with_different_trees(
-    tmp_path, monkeypatch
-):
+def test_two_installs_sharing_one_cache_overlap_even_with_different_trees(tmp_path, monkeypatch):
     # Keying the whole path set would give two installs different directories
     # whenever their install-tree candidates differ, even though both delete out
     # of the configured one. Coordination is per path, so the shared one matches.
