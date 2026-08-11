@@ -17,6 +17,10 @@ export function HfTokenField() {
   const t = useT();
   const token = useHfTokenStore((state) => state.token);
   const setToken = useHfTokenStore((state) => state.setToken);
+
+  const persistenceError = useHfTokenStore(
+    (state) => state.persistenceError,
+  );
   const validation = useHfTokenValidation(token);
 
   return (
@@ -52,7 +56,9 @@ export function HfTokenField() {
           onChange={(event) => setToken(event.target.value)}
         />
       </InputGroup>
-      {validation.isChecking ? (
+      {persistenceError ? (
+        <p className="text-xs text-destructive">{persistenceError}</p>
+      ) : validation.isChecking ? (
         <p className="text-xs text-muted-foreground">
           {t("studio.wizard.hfTokenChecking")}
         </p>

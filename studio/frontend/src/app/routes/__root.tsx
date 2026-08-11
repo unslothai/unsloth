@@ -6,7 +6,11 @@ import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { hasAuthToken } from "@/features/auth";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+  hasAuthToken,
+} from "@/features/auth";
 import {
   ChatPage,
   type ChatSearch,
@@ -16,6 +20,7 @@ import {
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
@@ -35,10 +40,14 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import {
   lazy,
+
+  type ReactNode,
   Suspense,
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
+
   useState,
 } from "react";
 import { AppProvider } from "../provider";
@@ -80,6 +89,44 @@ const AudioPage = lazy(() =>
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
   return null;
+}
+
+
+function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  const runRevision = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    const reconcile = () => {
+      const revision = ++runRevision.current;
+      if (!hasAuthToken()) {
+        setReady(false);
+        return;
+      }
+      setReady(false);
+      void bootstrapPersistedCredentials().finally(() => {
+        if (
+          active &&
+          revision === runRevision.current &&
+          hasAuthToken()
+        ) {
+          setReady(true);
+        }
+      });
+    };
+
+    window.addEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
+    window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
+    reconcile();
+    return () => {
+      active = false;
+      runRevision.current += 1;
+      window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
+      window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
+    };
+  }, []);
+  return ready ? children : <RouteFallback />;
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -304,8 +351,8 @@ function RootLayout() {
     chatRuntime.setIncognito(false);
   }, [isChatRoute]);
 
-  return (
-    <AppProvider>
+  const content = (
+    <>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -421,6 +468,16 @@ function RootLayout() {
             </div>
           </SidebarInset>
         </SidebarProvider>
+      )}
+    </>
+  );
+
+  return (
+    <AppProvider>
+      {!isAuthFlowRoute || pathname === "/onboarding" ? (
+        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
+      ) : (
+        content
       )}
     </AppProvider>
   );

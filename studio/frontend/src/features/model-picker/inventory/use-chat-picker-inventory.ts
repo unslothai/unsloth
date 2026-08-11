@@ -76,6 +76,7 @@ export interface ChatPickerInventory {
   cachedReady: boolean;
   localModels: LocalModelInfo[];
   refreshInventory: () => Promise<void>;
+  refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
 
 export function useChatPickerInventory(
@@ -155,5 +156,6 @@ export function useChatPickerInventory(
     cachedReady: inventory.downloadedReady,
     localModels,
     refreshInventory: inventory.refreshInventory,
+    refreshInventoryIfOlderThan: inventory.refreshInventoryIfOlderThan,
   };
 }
