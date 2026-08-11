@@ -297,12 +297,14 @@ export function TrainingStartOverlay({
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
   const modelDownload = coerceCachedStateReady(rawModelDownload);
   const datasetDownload = coerceCachedStateReady(rawDatasetDownload);
+  // the raw message, not displayMessage: a resumed run rewrites its download statuses to
+  // "resuming training", which names no resource for the classifier to route on.
   const preparationProgress = shouldShowPreparationStatus(
     phase,
     currentStep,
     isStarting,
   )
-    ? parsePreparationProgress(displayMessage, t("studio.trainingStart.preparing"))
+    ? parsePreparationProgress(message, t("studio.trainingStart.preparing"))
     : null;
   const preparationTarget = preparationProgress
     ? classifyPreparation(preparationProgress.title, { modelName, datasetName })
