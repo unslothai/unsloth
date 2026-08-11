@@ -189,6 +189,8 @@ import type {
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
+  ggufQuantChipLabel,
+  ggufQuantDetailLabel,
   ggufVariantPickerLabel,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
@@ -1426,6 +1428,10 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  // Every workflow's recommendation, flattened. Only for readers with no row to
+  // ask about, like the footprint representative below; a ROW asks its own
+  // group, since two groups recommending different quants would otherwise light
+  // both rows in both groups.
   const effectiveRecommended = useMemo(
     () => new Set(effectiveRecommendedByGroup.values()),
     [effectiveRecommendedByGroup],
@@ -1678,6 +1684,13 @@ function GgufVariantExpander({
         );
         const showGroupHeading =
           group?.title != null && group.variants[0]?.filename === v.filename;
+        // This row's OWN workflow recommendation. Matching on the quant alone
+        // would also light the other workflow's pick, and only holds today
+        // because the backend keys an H3 quant by its file; a row knows its
+        // group, so it should not depend on that.
+        const isRecommended =
+          group != null &&
+          effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
@@ -1731,7 +1744,7 @@ function GgufVariantExpander({
                     </span>
                   ) : null}
                 </>
-              ) : effectiveRecommended.has(v.quant) ? (
+              ) : isRecommended ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
                   recommended
                 </span>
@@ -2151,10 +2164,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
-function localPathTooltip(name: string, path: string): ReactNode {
+function localPathTooltip(
+  name: string,
+  path: string,
+  // A row standing for ONE checkpoint says which, since the path does not: an
+  // H3 repo holds a keyframe and a reference partition in the same directory.
+  detail?: string,
+): ReactNode {
   return (
     <>
       <span className="block break-words">{name}</span>
+      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -4424,9 +4444,11 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={entry.repoId}
-            tooltipText={`${entry.repoId} (${entry.quant})`}
+            tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
+              entry.quant,
+            )})`}
             meta="GGUF"
-            quantChip={entry.quant}
+            quantChip={ggufQuantChipLabel(entry.quant)}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -4544,9 +4566,13 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
-            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            tooltipText={localPathTooltip(
+              c.repo_id,
+              c.cache_path,
+              ggufQuantDetailLabel(variant.quant),
+            )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
-            quantChip={variant.quant}
+            quantChip={ggufQuantChipLabel(variant.quant)}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}

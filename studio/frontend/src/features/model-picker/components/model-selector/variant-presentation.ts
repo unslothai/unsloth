@@ -15,9 +15,22 @@ export type GgufVariantPresentationGroup<T extends PresentableGgufVariant> = {
   variants: T[];
 };
 
-const H3_FILENAME = /^minimax_h3_(fl2va|ref2va)(?:_pruned)?-(.+)\.gguf$/i;
+// The `.gguf` is optional because a variant KEY is read with the same parser as
+// a filename: the backend keys an H3 checkpoint by its own path
+// (`_unknown_gguf_variant_key`), so a quant reads `minimax_h3_fl2va_pruned-Q4_K_M`
+// with no suffix. The quant group is lazy so the optional suffix wins when it is
+// there.
+const H3_FILENAME = /^minimax_h3_(fl2va|ref2va)(?:_pruned)?-(.+?)(?:\.gguf)?$/i;
 const GGUF_SHARD_SUFFIX = /-\d{5}-of-\d{5}$/i;
 const PATH_SEPARATOR = /[\\/]/;
+
+// What each workflow is called where no section heading names it. Deliberately
+// the backend's own wording in `_apply_gguf_display_labels`, so one checkpoint
+// does not read two ways across the Hub card and a row's tooltip.
+const H3_WORKFLOW_LABEL = {
+  "text-frames": "Text & frames",
+  "reference-media": "References",
+} as const;
 
 type H3Presentation = {
   group: "text-frames" | "reference-media";
@@ -25,12 +38,9 @@ type H3Presentation = {
   build: "Full" | "Pruned";
 };
 
-function h3Presentation(
-  variant: PresentableGgufVariant,
-): H3Presentation | null {
-  const filename =
-    variant.filename.split(PATH_SEPARATOR).at(-1) ?? variant.filename;
-  const match = H3_FILENAME.exec(filename);
+function h3PresentationFor(name: string): H3Presentation | null {
+  const leaf = name.split(PATH_SEPARATOR).at(-1) ?? name;
+  const match = H3_FILENAME.exec(leaf);
   if (!match) {
     return null;
   }
@@ -38,8 +48,36 @@ function h3Presentation(
     group:
       match[1].toLowerCase() === "ref2va" ? "reference-media" : "text-frames",
     quantLabel: match[2].replace(GGUF_SHARD_SUFFIX, ""),
-    build: filename.toLowerCase().includes("_pruned-") ? "Pruned" : "Full",
+    build: leaf.toLowerCase().includes("_pruned-") ? "Pruned" : "Full",
   };
+}
+
+function h3Presentation(
+  variant: PresentableGgufVariant,
+): H3Presentation | null {
+  return h3PresentationFor(variant.filename);
+}
+
+/** A GGUF quant KEY as the row's mono chip.
+ *
+ *  The quant alone, because the chip's column is capped at 7.2em -- wide enough
+ *  for `UD-Q4_K_XL` and no wider, by design, so the meta columns line up down the
+ *  list. An H3 key is a whole file stem, so left alone the chip reads
+ *  `minimax_h3_fl2va_pruned-Q4_K_M` and clips to nonsense; the workflow and build
+ *  it also carries go to `ggufQuantDetailLabel` and the row's tooltip, which has
+ *  the room. Anything that is already just a quant is returned untouched. */
+export function ggufQuantChipLabel(quant: string): string {
+  return h3PresentationFor(quant)?.quantLabel ?? quant;
+}
+
+/** The same key in full, for a tooltip: which workflow the checkpoint drives and
+ *  which build it is. The backend's wording, so the Hub card and this row agree. */
+export function ggufQuantDetailLabel(quant: string): string {
+  const h3 = h3PresentationFor(quant);
+  if (!h3) {
+    return quant;
+  }
+  return `${H3_WORKFLOW_LABEL[h3.group]} · ${h3.quantLabel} · ${h3.build}`;
 }
 
 export function ggufVariantPickerLabel(
