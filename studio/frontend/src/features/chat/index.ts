@@ -16,6 +16,7 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  estimateKvCache,
   listModels,
   listRecommendedFolders,
   listScanFolders,
@@ -29,6 +30,7 @@ export {
   type CachedModelRepo,
   type ChatAttachmentPage,
   type ChatAttachmentRecord,
+  type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
 } from "./api/chat-api";

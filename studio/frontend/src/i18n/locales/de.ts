@@ -911,6 +911,9 @@ export const de = {
         showAllQuantizations: "Alle Quantisierungen anzeigen",
         showAllQuantizationsDescription:
           "Ein: Alle Quantisierungen unter „On Device“ auflisten, auch nicht heruntergeladene. Aus: Nur heruntergeladene Quantisierungen anzeigen.",
+        showMemoryBar: "VRAM-Auslastungsbalken anzeigen",
+        showMemoryBarDescription:
+          "Zeigt unter jeder Zeile eines heruntergeladenen Modells den geschätzten VRAM-Bedarf: Gewichte, KV-Cache bei der Kontextlänge, mit der das Modell geladen wird, und eine eventuelle Reserve für spekulatives Decoding.",
       },
       menu: {
         title: "Chatmenü",
@@ -1978,5 +1981,14 @@ export const de = {
     tour: {
       guidedTour: "Geführte Tour",
     },
+  },
+  modelMemory: {
+    readout:
+      "Gewichte {model} + Kontext {context} = {total} von {budget} nutzbarem VRAM",
+    readoutWithSpec:
+      "Gewichte {model} + KV {kv} + MTP-Entwurf {spec} = {total} von {budget} nutzbarem VRAM",
+    kvRate: "KV reserviert, ca. {rate}/Token",
+    oomLikely: "Mit den aktuellen Einstellungen ist ein Speicherüberlauf wahrscheinlich",
+    tooLarge: "Zu groß zum Laden – wählen Sie eine kleinere Quantisierung",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

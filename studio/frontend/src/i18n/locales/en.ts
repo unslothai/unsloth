@@ -872,6 +872,9 @@ export const en = {
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
           "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
+        showMemoryBar: "Show VRAM usage bar",
+        showMemoryBarDescription:
+          "Chart each downloaded model's estimated VRAM use under its row: weights, KV cache at the context it will load with, and any speculative draft reserve.",
       },
       menu: {
         title: "Chat menu",
@@ -1894,5 +1897,16 @@ export const en = {
     tour: {
       guidedTour: "Guided Tour",
     },
+  },
+  modelMemory: {
+    readout:
+      "Weights {model} + context {context} = {total} of {budget} usable VRAM",
+    readoutWithSpec:
+      "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
+    // Measured against llama.cpp: the cache is allocated at context creation,
+    // sized to n_ctx, so the rate is what a longer context actually costs.
+    kvRate: "KV reserved, ~{rate}/token",
+    oomLikely: "With current settings OOM likely",
+    tooLarge: "Too large to load — try a smaller quantization",
   },
 } as const;

@@ -888,6 +888,9 @@ export const ru = {
         showAllQuantizations: "Показывать все квантизации",
         showAllQuantizationsDescription:
           "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+        showMemoryBar: "Показывать шкалу использования VRAM",
+        showMemoryBarDescription:
+          "Показывает под строкой каждой скачанной модели её ожидаемое потребление VRAM: веса, KV-кеш при той длине контекста, с которой модель будет загружена, и резерв для спекулятивного черновика.",
       },
       menu: {
         title: "Меню чата",
@@ -1937,5 +1940,14 @@ export const ru = {
     tour: {
       guidedTour: "Обзорный тур",
     },
+  },
+  modelMemory: {
+    readout:
+      "Веса {model} + контекст {context} = {total} из {budget} доступной VRAM",
+    readoutWithSpec:
+      "Веса {model} + KV {kv} + черновик MTP {spec} = {total} из {budget} доступной VRAM",
+    kvRate: "KV зарезервирован, ~{rate}/токен",
+    oomLikely: "При текущих настройках вероятна нехватка памяти",
+    tooLarge: "Слишком большая модель — выберите квантизацию поменьше",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

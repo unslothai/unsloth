@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
   PopoverContent,
@@ -111,7 +112,10 @@ interface LocalOnDeviceCardProps {
    * it came from this card's selector or was derived from the resident model, which
    * decides whether a fresher status read may override it.
    */
-  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
+  onOpenSettings?: (
+    ggufVariant: string | null,
+    quantIsUserPicked: boolean,
+  ) => void;
 }
 
 function formatAdapterLabel(
@@ -700,6 +704,18 @@ export function LocalOnDeviceCard({
             </button>
           </div>
         </div>
+        {/* Below the action row, not inside it: the row is a horizontal flex
+            container, so a full-width bar there becomes another flex item and
+            squeezes the Run/Train buttons. */}
+        {repoId && selectedQuant ? (
+          <ModelMemoryBarFor
+            repoId={repoId}
+            quant={selectedQuant}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference

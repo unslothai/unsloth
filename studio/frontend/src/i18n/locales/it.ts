@@ -878,6 +878,9 @@ export const it = {
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
           "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+        showMemoryBar: "Mostra la barra di utilizzo della VRAM",
+        showMemoryBarDescription:
+          "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
       },
       menu: {
         title: "Menu della chat",
@@ -1975,5 +1978,14 @@ export const it = {
     tour: {
       guidedTour: "Tour guidato",
     },
+  },
+  modelMemory: {
+    readout:
+      "Pesi {model} + contesto {context} = {total} di {budget} di VRAM utilizzabile",
+    readoutWithSpec:
+      "Pesi {model} + KV {kv} + draft MTP {spec} = {total} di {budget} di VRAM utilizzabile",
+    kvRate: "KV riservato, ~{rate}/token",
+    oomLikely: "Con le impostazioni attuali è probabile un errore di memoria",
+    tooLarge: "Troppo grande per essere caricato: prova una quantizzazione più piccola",
   },
 } as const;
