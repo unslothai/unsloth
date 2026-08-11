@@ -263,6 +263,60 @@ def test_looks_like_quant_separates_quants_from_foreign_tags():
     assert not auto_dl.looks_like_quant(None)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # The reported shape: a scan folder on another drive, quant in the file name.
+        r"N:\AI Models\LiquidAI\LFM2.5-8B-A1B-UD-Q8_K_XL",
+        r"C:\models\x.gguf",
+        r"C:\Users\me\.lmstudio\models\org\repo\model-Q4_K_M.gguf",
+        # A UNC share has no drive letter but still must not split on a colon it lacks.
+        r"D:\models\repo:build\llama-13b",
+        r"E:\models\repo:distilled\model-Q6_K",
+    ],
+)
+def test_a_windows_path_is_never_split_on_its_drive_letter(raw):
+    """A Windows absolute path named as the model id must stay whole.
+
+    Reported on Windows 10 with an external scan folder: rpartition(":") leaves
+    base = "N" and hands the rest of the path back as the variant, so nothing
+    downstream can place the model. base is what _resident_quant_is compares
+    against, what _advertised_local_path and recently_downloaded look up, and what
+    describe_local_miss reports on, so a drive letter poisons all four at once and
+    the model that just loaded is then refused as unservable.
+    """
+    assert auto_dl.split_model_ref(raw) == (raw, None)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        # Unchanged: a real Hub repo before the colon still pins a path-qualified key.
+        ("unsloth/repo-GGUF:distilled/model-Q6_K", ("unsloth/repo-GGUF", "distilled/model-Q6_K")),
+        ("unsloth/repo-GGUF:Q4_K_M", ("unsloth/repo-GGUF", "Q4_K_M")),
+        ("llama3:latest", ("llama3", "latest")),
+        ("/srv/models/repo:Q4_K_M", ("/srv/models/repo", "Q4_K_M")),
+        ("build/llama-13b", ("build/llama-13b", None)),
+        ("C:/models/x.gguf", ("C:/models/x.gguf", None)),
+        ("/home/me/models/x:build/llama-13b", ("/home/me/models/x:build/llama-13b", None)),
+    ],
+)
+def test_the_windows_guard_leaves_every_other_ref_alone(raw, expected):
+    # The backslash arm only widens what counts as a path suffix, so POSIX paths,
+    # Ollama tags, plain quants and subdirectory keys all parse exactly as before.
+    assert auto_dl.split_model_ref(raw) == expected
+
+
+def test_a_windows_path_never_reaches_looks_like_quant_as_a_variant():
+    # looks_like_quant reads any separator-bearing label as one of our advertised
+    # subdirectory keys, which is what made a drive-letter split look like a real
+    # quant request. Splitting correctly is what keeps that from ever being asked.
+    assert auto_dl.looks_like_quant(r"distilled\model-Q6_K")
+    _, variant = auto_dl.split_model_ref(r"N:\AI Models\LiquidAI\LFM2.5-8B-A1B-UD-Q8_K_XL")
+    assert variant is None
+    assert not auto_dl.looks_like_quant(variant)
+
+
 def test_match_variant_is_case_insensitive_and_exact():
     variants = {"UD-Q4_K_XL": 1, "Q8_0": 2}
     assert auto_dl._match_variant("ud-q4_k_xl", variants) == "UD-Q4_K_XL"
@@ -944,6 +998,55 @@ def test_a_failed_switch_is_reported_not_answered_by_the_resident_model(monkeypa
     assert excinfo.value.status_code == 503
     assert excinfo.value.detail["error"]["code"] == "model_switch_failed"
     assert excinfo.value.headers["Retry-After"] == "5"
+
+
+def test_a_windows_scan_folder_model_is_not_reported_as_a_failed_switch(monkeypatch):
+    """The model loads, then the guard 503s it: success toast and failure banner together.
+
+    Reported on Windows 10 with models kept on a second drive. _reject_unservable_model
+    runs after the switch, and split_model_ref used to hand it base = "N", which matches
+    no resident id, so the guard concluded the swap had failed and raised 503
+    model_switch_failed for a model that was serving. The stand-in is loaded from the
+    exact path the request names, which is what a scan-folder load looks like.
+    """
+    path = r"N:\AI Models\LiquidAI\LFM2.5-8B-A1B-UD-Q8_K_XL"
+    loaded = _Loaded(path, "UD-Q8_K_XL")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": None})(),
+    )
+    # On disk and switching on: exactly the combination that produced the 503.
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf",
+        lambda name, **_kw: (path, "UD-Q8_K_XL", name),
+    )
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: True
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    assert asyncio.run(inference_route._reject_unservable_model(path, _Req())) is None
+    # Forward slashes from a client that normalised them must land the same way.
+    assert (
+        asyncio.run(inference_route._reject_unservable_model(path.replace("\\", "/"), _Req()))
+        is None
+    )
+
+
+def test_a_windows_path_for_another_model_is_still_refused(monkeypatch):
+    # The other half: parsing the path whole must not turn the guard off. A different
+    # drive path while this one is resident is still the wrong weights.
+    loaded = _Loaded(r"N:\AI Models\LiquidAI\LFM2.5-8B-A1B-UD-Q8_K_XL", "UD-Q8_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject(
+            r"N:\AI Models\Qwen\Qwen3-8B-UD-Q4_K_XL",
+            loaded,
+            monkeypatch,
+            downloaded = True,
+            auto_switch = True,
+        )
+    assert excinfo.value.status_code == 503
 
 
 @pytest.mark.parametrize(
