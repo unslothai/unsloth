@@ -598,3 +598,57 @@ def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
     (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
 
     assert run.live_sibling_backend() is None
+
+
+def test_a_sibling_that_is_still_binding_is_found(tmp_path):
+    # The window Codex flagged: lifespan startup runs, and would clear the
+    # cache, long before uvicorn reports a port for _write_pid_file to record.
+    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_a_legacy_only_sibling_is_found(tmp_path):
+    # A pre-upgrade server is recorded here and nowhere else, and so is one
+    # whose best-effort per-port write failed.
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_a_dead_legacy_record_is_not_a_sibling(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_the_startup_marker_is_written_and_removed(tmp_path):
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+
+    assert marker.is_file()
+    # Parsed by the same reader as a per-port record, with a real start time.
+    record = run._read_pid_record(marker)
+    assert record is not None and record[0] == os.getpid()
+
+    run._remove_startup_marker()
+
+    assert not marker.exists()
+    assert run._OWN_STARTUP_MARKER is None
+
+
+def test_our_own_startup_marker_is_not_a_sibling(tmp_path):
+    run.write_startup_marker()
+
+    assert run.live_sibling_backend() is None
+
+    run._remove_startup_marker()
+
+
+def test_a_startup_marker_is_invisible_to_the_pid_file_glob(tmp_path):
+    # Everything reading PID_FILE_GLOB expects a port in the name; a process
+    # that has not bound yet has none, so `stop` and _legacy_heir must skip it.
+    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
+
+    assert list(tmp_path.glob(run.PID_FILE_GLOB)) == []

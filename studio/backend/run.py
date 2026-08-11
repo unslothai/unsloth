@@ -827,6 +827,11 @@ from utils.paths.storage_roots import studio_root as _studio_root
 # Legacy single-instance file; still read so `stop` finds an older build's server.
 _PID_FILE = _studio_root() / "studio.pid"
 PID_FILE_GLOB = "studio-*.pid"
+# Deliberately not a .pid: everything that globs PID_FILE_GLOB expects a bound
+# server with a port in the name, and a process that has not bound yet is not
+# one. Only the sibling probe reads these.
+STARTUP_MARKER_GLOB = "studio-starting-*.marker"
+_OWN_STARTUP_MARKER: "Path | None" = None
 
 
 def _pid_file_for_port(port: int) -> Path:
@@ -976,6 +981,62 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
+def write_startup_marker() -> None:
+    """Record that this process is coming up, before uvicorn starts.
+
+    The per-port record cannot be written until uvicorn reports the bound port,
+    and lifespan startup runs well before that. Two overlapping launches would
+    otherwise each find no sibling and each clear the shared compiled cache, the
+    exact race this is meant to prevent, so a sibling has to be discoverable
+    from the moment it could do any clearing.
+
+    Best effort, like the records themselves: a studio home we cannot write to
+    is not a reason to refuse to start.
+    """
+    global _OWN_STARTUP_MARKER
+    me = os.getpid()
+    path = _studio_root() / f"studio-starting-{me}.marker"
+    created = _process_create_time(me)
+    try:
+        _studio_root().mkdir(parents = True, exist_ok = True)
+        # Same layout as a per-port record, so _read_pid_record parses both. An
+        # unknown start time is a blank line, which it reads back as None.
+        path.write_text(f"{me}\n{created if created is not None else ''}\n", encoding = "utf-8")
+    except OSError:
+        return
+    _OWN_STARTUP_MARKER = path
+    import atexit
+
+    # Registered here rather than beside the pid-file hook: startup can fail
+    # between these two points, and the marker has to go either way.
+    atexit.register(_remove_startup_marker)
+
+
+def _remove_startup_marker() -> None:
+    global _OWN_STARTUP_MARKER
+    if _OWN_STARTUP_MARKER is None:
+        return
+    try:
+        _OWN_STARTUP_MARKER.unlink(missing_ok = True)
+    except OSError:
+        pass
+    _OWN_STARTUP_MARKER = None
+
+
+def _startup_marker_records() -> "list[tuple[int, float | None, str | None] | None]":
+    try:
+        return [_read_pid_record(p) for p in _studio_root().glob(STARTUP_MARKER_GLOB)]
+    except OSError:
+        return []
+
+
+def _legacy_record() -> "tuple[int, float | None, str | None] | None":
+    try:
+        return _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+    except OSError:
+        return None
+
+
 def live_sibling_backend() -> "int | None":
     """PID of another live Studio backend of this install, or None.
 
@@ -984,11 +1045,16 @@ def live_sibling_backend() -> "int | None":
     the user to pick another. They share an install-tree compiled cache, so the
     second one must not wipe it out from under the first.
 
+    All three records are read, because a sibling can be in a state where only
+    one of them exists: a startup marker while it is still binding, a per-port
+    record once it has bound, and `studio.pid` alone for a pre-upgrade server or
+    one whose best-effort per-port write failed.
+
     Called before `_write_pid_file`, so our own record is not there yet; the
-    explicit pid check keeps it correct if that ever changes.
+    explicit pid check keeps it correct for the marker, which is.
     """
     me = os.getpid()
-    for record in _per_port_records():
+    for record in _startup_marker_records() + _per_port_records() + [_legacy_record()]:
         if record is None:
             continue
         pid, created, _address = record
@@ -2029,6 +2095,11 @@ def run_server(
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()
+
+    # Before the import, not just before uvicorn: this is what makes us visible
+    # to a sibling's own probe, and the earlier it lands the smaller the window
+    # in which two launches can each believe they are alone.
+    write_startup_marker()
 
     from main import app, setup_frontend, _desktop_owner, _IS_COLAB
 
