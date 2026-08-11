@@ -4628,7 +4628,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 # triton-windows and torch's XPU triton BOTH own the top-level `triton` package (80 to 160 shared
 # paths, __init__.py and _C/libtriton.pyd among them), so a cu*-to-xpu pin repair leaves the CUDA
 # build shadowing the XPU one. AFTER the stack, since unsloth declares triton-windows a win32
-# core dep and base.txt reinstalls anything removed earlier. Uninstall always paired with a
+# core dependency install reinstalls anything removed earlier. Uninstall always paired with a
 # reinstall: removing one drops the shared paths the other overwrote. The spec is read from the
 # installed torch (renamed pytorch-triton-xpu -> triton-xpu in torch 2.10).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
