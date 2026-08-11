@@ -32,11 +32,26 @@ blocking merges:
 
 The only nonzero exit is a usage error.
 
-Wall-clock is bounded twice over: Kaggle's own kernel timeout (passed at
-push time, so the SESSION dies and stops billing even if this process is
-killed) and our polling deadline. The Kaggle-side one is the load-bearing
-one -- a runner that is cancelled cannot clean up after itself, and an
-orphaned kernel would burn quota to its own ceiling with nobody watching.
+Wall-clock is bounded three times over, and the order of trust here is the
+opposite of what it looks like:
+
+* **Deleting the kernel.** This is the control that has been observed to
+  work. Every kernel this process pushed is deleted on the way out, on every
+  path including the failure ones, and deletion stops the billing (measured:
+  the account's used-hours figure went DOWN when a wedged kernel was
+  deleted).
+* **Our polling deadline** (``--max-wait``), which decides when to give up
+  and therefore when to delete.
+* **Kaggle's own kernel timeout**, passed at push time. It is a backstop and
+  it is NOT sufficient on its own: on 2026-08-11 a kernel pushed with
+  ``-t 5400`` whose own nbconvert crashed at t=406s sat in RUNNING for over
+  two hours, past that ceiling and past this process's deadline, and stopped
+  only when it was deleted by hand. So the value is still passed, and
+  nothing is left resting on it.
+
+A socket timeout is set globally for the same reason. Without one, a single
+status call that never returns stalls the poll loop past every deadline
+above -- which is exactly how that two-hour kernel went unnoticed.
 
 No credential is printed. The token is read from the environment by the
 Kaggle client and never echoed.
@@ -49,6 +64,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -99,6 +115,12 @@ CAPACITY_MARKERS = (
     "no accelerator quota",
     "no quota for",
 )
+
+# Ceiling on any single network call. urllib takes an explicit timeout and
+# the Kaggle client does not, so this is the only bound available on its
+# status and quota calls. Without it one call that never returns outlasts
+# every deadline in this file, and the kernel it was watching keeps billing.
+SOCKET_TIMEOUT_SEC = 120
 
 # Consecutive unreadable statuses before we stop waiting. One is not enough:
 # the API returns transient 5xx and the client prints them the same way as a
@@ -417,6 +439,10 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # Before the first network call, and globally: the Kaggle client offers
+    # no per-call timeout of its own. See SOCKET_TIMEOUT_SEC.
+    socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
+
     outdir = Path(args.outdir)
     outdir.mkdir(parents = True, exist_ok = True)
     result: dict = {
@@ -427,7 +453,31 @@ def main() -> int:
         "reports": [],
     }
 
+    def release() -> None:
+        """Delete every kernel this process pushed. Idempotent, and on every
+        path out of main().
+
+        This is the budget control, not a tidy-up. A kernel left behind bills
+        to its own ceiling with nobody reading the result, and Kaggle's
+        push-time timeout has been observed not to stop one that wedged. The
+        measurement that settles it: deleting a two-hour-old stuck kernel
+        took the account's used-hours figure DOWN.
+        """
+        if args.keep_kernel:
+            return
+        for entry in result.get("kernels") or []:
+            slug = entry.get("slug")
+            if not slug or entry.get("released"):
+                continue
+            try:
+                subprocess.run(["kaggle", "kernels", "delete", slug, "-y"],
+                               capture_output = True, text = True, timeout = 180)
+                entry["released"] = True
+            except Exception:  # noqa: BLE001
+                _log(f"could not delete {slug}; it may keep billing")
+
     def finish(code: int = 0) -> int:
+        release()
         (outdir / "launch_result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
         _out("verdict", result["verdict"])
         _out("reason", result["reason"])
@@ -525,18 +575,7 @@ def main() -> int:
         result["verdict"] = "pass"
         result["reason"] = f"all {len(reports)} payload(s) passed"
 
-    if not args.keep_kernel:
-        for entry in live:
-            try:
-                subprocess.run(
-                    ["kaggle", "kernels", "delete", entry["slug"], "-y"],
-                    capture_output = True,
-                    text = True,
-                    timeout = 120,
-                )
-            except Exception:  # noqa: BLE001
-                pass
-
+    # The kernels are released by finish(), on this path and on every other.
     return finish()
 
 

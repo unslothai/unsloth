@@ -187,6 +187,8 @@ LEGS: dict[str, Leg] = {
         files = COMMON_FILES + ("run_gptoss_t4.py",),
         args = ("--max-steps", "3", "--max-seq-length", "1024"),
     ),
+    # NOT WIRED. See UNWIRED below for what three probe sessions found and
+    # what has to change before this can run on quota anyone is watching.
     "grpo": Leg(
         name = "grpo",
         summary = "Qwen3-4B GRPO through a vLLM engine on the same card",
@@ -218,6 +220,44 @@ LEGS: dict[str, Leg] = {
 # quietly change what both of them measure.
 MAX_LEGS_PER_KERNEL = 2
 
+# Legs that are defined here and deliberately NOT run, with the reason.
+#
+# A leg is unwired rather than deleted when the payload is right and the
+# environment is not: the next person to try owes nothing but a working
+# install, and deleting it would mean rediscovering the install problem from
+# scratch. Every entry must say what was measured.
+UNWIRED: dict[str, str] = {
+    "grpo": (
+        "Three probe sessions on 2026-08-11 never reached a training step, "
+        "and none of them failed for a reason to do with sm_75, memory or "
+        "GRPO. `vllm==0.11.2` pins `torch==2.9.0`, so this leg has to REPLACE "
+        "the Kaggle image's torch 2.10.0+cu128, and that is where all three "
+        "died.\n\n"
+        "  1. venv seeing the image (kernels 8161ceb9, 7ab727f1): both cards "
+        "     died at `import torch` with `libcusparseLt.so.0: cannot open "
+        "     shared object file`. pip had treated torch's pinned NVIDIA "
+        "     runtime packages as satisfied by the image's copies, which "
+        "     belong to 2.10.\n"
+        "  2. that package named and force-reinstalled (kernel f88c929b): "
+        "     the cusparseLt error cleared and the next one appeared one "
+        "     package along, `libtorch_cuda.so: undefined symbol: "
+        "     ncclCommWindowRegister`. IDENTICAL on vllm 0.11.2 and 0.15.1, "
+        "     so at this stage it is not a vLLM-version question at all.\n"
+        "  3. fully isolated venv, pip resolving the whole stack (kernel "
+        "     9ac72efe): the session produced no payload output past venv "
+        "     creation, Kaggle's own nbconvert of the kernel failed at t=406s "
+        "     with NotJSONError, and the session then sat in RUNNING past its "
+        "     own 5400s ceiling until it was deleted by hand, about an hour "
+        "     of quota later.\n\n"
+        "Wiring it in this state would make the check permanently red and "
+        "would spend the budget doing it. What is still unknown, and needs a "
+        "session that gets further than these did: whether 8GB of 16-bit "
+        "weights plus a vLLM engine plus a LoRA trainer fit in 14.56GB, and "
+        "whether sm_75 still has an attention backend at either vLLM "
+        "version. The payload asserts on reward and reward_std rather than "
+        "loss and is ready for that session; the install is not."),
+}
+
 # Which legs travel in which kernel. One entry per kernel, and a kernel runs
 # its legs one per T4 of its session.
 #
@@ -225,9 +265,13 @@ MAX_LEGS_PER_KERNEL = 2
 # on the two cards of the SAME session: same image, same driver, same hour.
 # Splitting them across sessions would put an uncontrolled variable between
 # the only two legs whose comparison has to be clean.
+#
+# The second kernel carries one leg and has a free T4, which costs nothing:
+# a session bills its wall clock once, not per card. That card is where
+# `grpo` goes when its install works.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
-    ("gptoss", "grpo"),
+    ("gptoss",),
 )
 
 

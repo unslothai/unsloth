@@ -1142,15 +1142,39 @@ def test_every_leg_carries_the_version_recorder(tmp_path):
         assert "versions.flatten_versions" in _cell(payload, 2)
 
 
-def test_every_registered_leg_is_carried_by_exactly_one_kernel():
-    """A leg nobody runs is dead code; a leg run twice halves the session."""
-    from legs import KERNELS, LEGS, MAX_LEGS_PER_KERNEL
+def test_every_registered_leg_is_either_carried_or_explicitly_unwired():
+    """A leg run twice halves a session; a leg silently run by nothing is
+    dead code that reads like coverage.
+
+    The only permitted third state is UNWIRED, which is a leg whose payload
+    is finished and whose environment is not. That state has to be declared
+    with a reason, so nobody has to re-derive it from a git log.
+    """
+    from legs import KERNELS, LEGS, MAX_LEGS_PER_KERNEL, UNWIRED
 
     carried = [name for kernel in KERNELS for name in kernel]
-    assert sorted(carried) == sorted(LEGS)
-    assert len(carried) == len(set(carried))
+    assert len(carried) == len(set(carried)), carried
+    assert sorted(carried) + sorted(UNWIRED) == sorted(LEGS), (
+        sorted(carried), sorted(UNWIRED), sorted(LEGS))
+    assert not set(carried) & set(UNWIRED)
     for kernel in KERNELS:
         assert 1 <= len(kernel) <= MAX_LEGS_PER_KERNEL, kernel
+    for name, reason in UNWIRED.items():
+        assert name in LEGS, name
+        # A one-line "does not work" is how this becomes folklore.
+        assert len(reason) > 200, name
+
+
+def test_an_unwired_leg_still_builds():
+    """It is unwired because its INSTALL does not work on the image, not
+    because the payload rots. A leg that stopped building would be
+    rediscovered only by whoever next tries to switch it on."""
+    from legs import UNWIRED
+
+    for name in UNWIRED:
+        assert name in LEG_NAMES, (
+            f"{name} is unwired but not in the build coverage list, so "
+            f"nothing checks that it still generates valid cells")
 
 
 # --------------------------------------------------- generated cell hygiene

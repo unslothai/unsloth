@@ -11,7 +11,7 @@
 # and allows two sessions at once: four payloads.
 #
 # ---------------------------------------------------------------------
-# WHAT RUNS: four legs, two kernels, one per T4. See
+# WHAT RUNS: three legs, two kernels, one leg per T4. See
 # .github/scripts/kaggle_t4_ci/legs.py, which is the single source of truth
 # for the leg-to-kernel plan; this file does not restate it.
 # ---------------------------------------------------------------------
@@ -19,7 +19,14 @@
 #   kernel 1   control   tiny Qwen2.5-0.5B SFT, PINNED library set
 #              canary    the same run on the newest permitted library set
 #   kernel 2   gptoss    gpt-oss-20b LoRA: torch.compile and float32 on sm_75
-#              grpo      Qwen3-4B GRPO through a vLLM engine on the same card
+#              (free T4, reserved for the grpo leg)
+#
+# A fourth leg, `grpo` (Qwen3-4B through a vLLM engine), is written and NOT
+# wired: three probe sessions never reached a training step, all three for
+# the same reason, and none of them to do with sm_75, memory or GRPO. The
+# measurements and what would have to change are on legs.UNWIRED. The second
+# kernel's spare T4 costs nothing -- a session bills its wall clock once, not
+# per card -- and is where that leg goes when its install works.
 #
 # **control and canary are one instrument, not two tests.** They run the
 # same payload, seed, dataset and step count on the two cards of the same
@@ -79,7 +86,8 @@
 #      down entirely. See ALLOWED_IN_FLIGHT_FOREIGN_KERNELS in gate.py.
 #
 # ARITHMETIC, recomputed from live numbers on 2026-08-11. Everything below
-# is measured on unslothai/unsloth over the preceding 7 days, not estimated.
+# is measured on unslothai/unsloth over the preceding 7 days, or on real
+# Kaggle sessions; none of it is estimated.
 #
 #   commits on main                                479
 #     ... touching the paths filter below            45   (9.4%)
@@ -97,26 +105,33 @@
 #                                                          commit count)
 #     TOTAL                                    88 .. 231
 #
-#   COST OF ONE INVOCATION. Two kernels, and a session bills its wall clock
-#   ONCE rather than per card, so the second T4 of each is free. Measured on
-#   the feasibility probe kernels of 2026-08-11:
-#     kernel 1 (control + canary)                 ~0.12 h
-#     kernel 2 (gptoss + grpo)                    ~0.35 h
-#     TOTAL, expected                             ~0.47 h
+#   COST OF ONE INVOCATION. Two kernels. A session bills its wall clock ONCE
+#   rather than per card, at almost exactly 1 GPU-h per hour of session, so
+#   the cost is the wall clock and the second T4 of each kernel is free.
+#   Measured on kernels 066cd463 (control + canary, both green, 263s of
+#   payload) and 8161ceb9 / 7ab727f1 (gpt-oss, 375s of payload):
+#     kernel 1 (control + canary)                  0.10 h
+#     kernel 2 (gptoss)                            0.13 h
+#     TOTAL, expected                             ~0.25 h  (rounded up)
 #
-#   SAMPLING RATE. Solving for the pessimistic end of the eligible range,
-#   and targeting 30h rather than the full 40 so an unusually busy week does
-#   not spend the allowance before the quota floor has to intervene:
-#     231 x r x 0.47 h = 30 h   ->   r = 0.276, set to 25% (--percent 25)
+#   SAMPLING RATE. Solving at the pessimistic end of the eligible range, and
+#   targeting 30h rather than the full 40 so an unusually busy week does not
+#   spend the allowance before the quota floor has to intervene:
+#     231 x r x 0.25 h = 30 h   ->   r = 0.52, set to 40% (--percent 40)
 #
-#   EXPECTED SPEND at that rate:
-#     quiet week   88 x 0.25 x 0.47 =  10.3 GPU-h
-#     busy week   231 x 0.25 x 0.47 =  27.1 GPU-h
-#   against the 40 GPU-h allowance, which is 17% to 45% of the 60h account.
+#   EXPECTED SPEND at 40%:
+#     quiet week   88 x 0.40 x 0.25 =   8.8 GPU-h
+#     busy week   231 x 0.40 x 0.25 =  23.1 GPU-h
+#   against the 40 GPU-h allowance: 15% to 39% of the 60h account.
+#
+#   The rate is set for THIS payload set and does not survive a change to
+#   it. Wiring the grpo leg would roughly double kernel 2 and put a busy
+#   week over the allowance, so that change comes with a recomputation of
+#   this block, not just a line in legs.KERNELS.
 #
 #   WORST CASE, if every sampled launch ran to both kernel ceilings
-#   (0.75h + 1.0h = 1.75h), is far above the allowance -- and is not the
-#   control. Layer 3 is: the 20h reserve stops CI at 40h spent, whatever the
+#   (1h + 1h), is far above the allowance -- and is not the control.
+#   Layer 3 is: the 20h reserve stops CI at 40h spent, whatever the
 #   arithmetic above turns out to have got wrong. The sampling rate sets the
 #   EXPECTED spend; the reserve sets the ceiling.
 #
@@ -238,7 +253,7 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
-            --percent 25 \
+            --percent 40 \
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-t4-ci \
@@ -326,15 +341,18 @@ jobs:
             --per-run-timeout 3300 \
             $SKIP
 
-      # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
-      # kills a session at that point. A runner that is cancelled cannot
-      # clean up after itself, so the ceiling has to be enforced on Kaggle's
-      # side rather than here.
+      # kernel-timeout-sec is passed to Kaggle at push time and is a
+      # BACKSTOP, not the budget control. Measured on 2026-08-11: a kernel
+      # pushed with -t 5400 whose own nbconvert crashed sat in RUNNING for
+      # over two hours and stopped only when it was deleted. So the value is
+      # passed and nothing rests on it; what actually bounds the spend is
+      # the launcher deleting every kernel it pushed, on every path out,
+      # which was measured to take the account's used-hours figure back
+      # down. See launch.py's module docstring.
       #
-      # It is one value for both kernels because Kaggle takes it per push,
-      # and the larger of the two requirements wins: kernel 2 downloads a
-      # 12GB gpt-oss checkpoint and an 8GB Qwen3 one before it trains
-      # anything.
+      # One value for both kernels because Kaggle takes it per push, and the
+      # larger requirement wins: kernel 2 downloads a 12GB gpt-oss checkpoint
+      # before it trains anything.
       - name: Launch on Kaggle and collect
         id: launch
         env:
@@ -371,4 +389,4 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ steps.build.outputs.payloads || 4 }}'
+            --expect '${{ steps.build.outputs.payloads || 3 }}'
