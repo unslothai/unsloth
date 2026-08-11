@@ -68,8 +68,18 @@
 # The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
 # budget (60h on this account at time of writing; Kaggle's documented
 # baseline is 30h and the surplus is a discretionary "floating" allowance
-# that can be withdrawn). This workflow is allotted 40 GPU-h/week of it and
-# is held to that in four independent layers:
+# that can be withdrawn). CI as a whole is allowed 50 of those 60; the last
+# 10 are held for human use.
+#
+# That 50 is SHARED with kaggle-t4-studio-gpu-ci.yml, which is the expensive
+# one: ~0.75 GPU-h per launch against this leg's ~0.25, on an eligible event
+# stream about three times larger. The split is Studio 35, this leg 15, and
+# the reserve layer below is what enforces the priority: this leg stands down
+# once the account is 35h spent, Studio runs on to 50h. A change to either
+# rate is a change to both budget blocks.
+#
+# This workflow is therefore allotted 15 GPU-h/week and is held to that in
+# four independent layers:
 #
 #   1. paths filters, which turn a four-figure event count into a
 #      two-figure one.
@@ -77,9 +87,12 @@
 #      the run id so a re-run cannot reroll the dice.
 #   3. A quota floor. The gate reads Kaggle's own accelerator-quota API and
 #      refuses to start unless what remains covers this run's worst case
-#      PLUS a 20h reserve. Against a 60h account that reserve is what makes
-#      the 40h allowance a HARD ceiling rather than an average: CI cannot
-#      spend the last 20h whatever the sampling rate turns out to be.
+#      PLUS a 25h reserve. Against a 60h account that reserve is what makes
+#      the 15h allowance a HARD ceiling rather than an average: this leg
+#      cannot spend below 25h remaining whatever the sampling rate turns out
+#      to be. Studio's reserve is 10, so the 25h floor here is also the
+#      priority rule -- the cheap leg yields the tail of the week to the
+#      expensive one rather than racing it for the same hours.
 #   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2
 #      per ACCOUNT. This job uses both, and only when the account is
 #      otherwise idle: a single kernel belonging to anyone else stands it
@@ -115,14 +128,20 @@
 #     TOTAL, expected                             ~0.25 h  (rounded up)
 #
 #   SAMPLING RATE. Solving at the pessimistic end of the eligible range, and
-#   targeting 30h rather than the full 40 so an unusually busy week does not
+#   targeting 9h rather than the full 15 so an unusually busy week does not
 #   spend the allowance before the quota floor has to intervene:
-#     231 x r x 0.25 h = 30 h   ->   r = 0.52, set to 40% (--percent 40)
+#     231 x r x 0.25 h = 9 h   ->   r = 0.156, set to 15% (--percent 15)
 #
-#   EXPECTED SPEND at 40%:
-#     quiet week   88 x 0.40 x 0.25 =   8.8 GPU-h
-#     busy week   231 x 0.40 x 0.25 =  23.1 GPU-h
-#   against the 40 GPU-h allowance: 15% to 39% of the 60h account.
+#   EXPECTED SPEND at 15%:
+#     quiet week   88 x 0.15 x 0.25 =   3.3 GPU-h  (13 launches)
+#     busy week   231 x 0.15 x 0.25 =   8.7 GPU-h  (35 launches)
+#   against the 15 GPU-h allowance: 5% to 14% of the 60h account.
+#
+#   An earlier revision of this block ran 40% for ~23 GPU-h/week, sized
+#   against a 40h allowance from before the Studio leg existed. Two legs at
+#   ~23 each is 46 of the 50 CI is allowed, with the whole margin gone on the
+#   cheaper one. 15% is that rate re-solved against the 15h share, not a
+#   throttle applied to a rate that was still correct.
 #
 #   The rate is set for THIS payload set and does not survive a change to
 #   it. Wiring the grpo leg would roughly double kernel 2 and put a busy
@@ -131,9 +150,9 @@
 #
 #   WORST CASE, if every sampled launch ran to both kernel ceilings
 #   (1h + 1h), is far above the allowance -- and is not the control.
-#   Layer 3 is: the 20h reserve stops CI at 40h spent, whatever the
-#   arithmetic above turns out to have got wrong. The sampling rate sets the
-#   EXPECTED spend; the reserve sets the ceiling.
+#   Layer 3 is: the 25h reserve stops this leg at 35h spent account-wide,
+#   whatever the arithmetic above turns out to have got wrong. The sampling
+#   rate sets the EXPECTED spend; the reserve sets the ceiling.
 #
 # ---------------------------------------------------------------------
 # FAILURE SEMANTICS
@@ -241,25 +260,27 @@ jobs:
       # budget-hours is the worst case ONE invocation can cost: both kernel
       # ceilings set below (45 + 60 min), rounded up.
       #
-      # reserve-hours is what turns the 40 GPU-h/week allowance into a hard
-      # ceiling. The account budget is 60h, so refusing to start below 20h
-      # remaining means CI can never have spent more than 40h in a week,
-      # whatever the sampling estimate at the top of this file got wrong.
-      # Raise it to throttle CI harder. Do not raise it above roughly 45 or
-      # CI will never run at all on a week with any other usage.
+      # reserve-hours is what turns the 15 GPU-h/week allowance into a hard
+      # ceiling. The account budget is 60h, so refusing to start below 25h
+      # remaining means this leg can never have spent more than 35h in a
+      # week, whatever the sampling estimate at the top of this file got
+      # wrong. It is deliberately 15 higher than the Studio leg's 10: the two
+      # share one account, and the cheap leg is the one that should yield.
+      # Raise it to throttle this leg harder. Do not raise it above roughly
+      # 45 or it will never run at all on a week with any other usage.
       - name: Decide
         id: decide
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
-            --percent 40 \
+            --percent 15 \
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-t4-ci \
             --kernels 2 \
             --budget-hours 2 \
-            --reserve-hours 20
+            --reserve-hours 25
 
   t4-smoke:
     name: T4 smoke

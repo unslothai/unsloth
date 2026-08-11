@@ -765,25 +765,67 @@ def test_the_paths_filter_is_not_the_whole_of_studio():
 
 
 def test_the_sampling_rate_matches_the_arithmetic_in_the_header():
-    """The header states 4%, ~30 launches and ~23 GPU-h a week. If the flag
+    """The header states 5%, ~38 launches and ~28 GPU-h a week. If the flag
     and the prose disagree, one of them is a lie to whoever reads it next."""
     source = WORKFLOW.read_text()
-    assert "--percent 4" in source
-    assert "x sampling rate            0.04" in source
+    assert "--percent 5" in source
+    assert "x sampling rate            0.05" in source
+    assert "= launches                 ~38 / week" in source
+    assert "= EXPECTED SPEND           ~28 GPU-h / week" in source
 
 
 def test_studio_is_sampled_harder_than_the_notebook_leg():
-    """Not by rate -- by launches and by spend, which is what the budget is
-    denominated in. The rate is lower because the eligible stream is larger
-    and each launch costs more."""
+    """Harder on every axis the budget is denominated in -- launches, hours
+    and share of the allowance -- and LOWER on the one axis that looks like
+    the answer, the percentage.
+
+    The inversion is structural, so it is asserted rather than tolerated. A
+    point of rate costs ~570 x 0.01 GPU-h here against ~58 x 0.01 there, and
+    a future edit that "fixes" the percentages to agree would either starve
+    the notebook leg or blow the account. If that edit is ever the right one,
+    this test is where the reasoning has to be argued with.
+    """
     studio = WORKFLOW.read_text()
     notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
-    assert "= EXPECTED SPEND           ~23 GPU-h / week" in studio
-    assert "1.2-1.6 GPU-h / week" in notebook
-    assert "--percent 10" in notebook and "--percent 4" in studio
-    # The rate is lower and the spend is higher; that pairing is the finding,
-    # so pin both rather than either alone.
-    assert "0.08 h" in notebook and "0.75 GPU-h" in studio
+
+    assert "--percent 5" in studio and "--percent 15" in notebook
+    assert "= EXPECTED SPEND           ~28 GPU-h / week" in studio
+    assert "busy week   231 x 0.15 x 0.25 =   8.7 GPU-h" in notebook
+    assert "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
+
+    # Share of the shared 50h CI allowance, and the stand-down floor that
+    # enforces the priority: the cheap leg stops first so the expensive one
+    # gets the tail of the week.
+    assert "The split is Studio 35, this leg 15" in notebook
+    assert "--reserve-hours 25" in notebook and "--reserve-hours 10" in studio
+
+    # Both budget blocks must name the other leg. Two independently-tuned
+    # rates against one account is how the 50h ceiling gets exceeded by
+    # accident.
+    assert "kaggle-t4-studio-gpu-ci.yml" in notebook
+    assert "kaggle-t4-notebook-ci.yml" in studio
+
+
+def test_the_two_legs_together_fit_inside_the_ci_allowance():
+    """Re-derived from the two headers rather than trusting either total."""
+    import re
+
+    studio = WORKFLOW.read_text()
+    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
+
+    def rate(text):
+        # The invoked flag, not the prose that quotes it.
+        found = re.findall(r"^\s+--percent (\d+) \\$", text, re.M)
+        assert len(found) == 1, found
+        return int(found[0]) / 100.0
+
+    studio_spend = 760 * rate(studio) * 0.75
+    notebook_spend = 231 * rate(notebook) * 0.25  # busy week, the pessimistic end
+    assert studio_spend > notebook_spend
+    assert studio_spend + notebook_spend <= 50.0
+    # And with margin, because the ceiling is enforced by a quota read that
+    # only sees the account AFTER the hours are gone.
+    assert studio_spend + notebook_spend <= 40.0
 
 
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():

@@ -48,10 +48,12 @@
 # what `--reserve-hours 10` protects.
 #
 # Studio is sampled HARDER than the notebook leg because Studio changes land
-# far more often. That comes out as MORE launches and far more GPU-hours, and
-# as a LOWER percentage, and the reason the percentage moves the other way is
-# the whole point of the arithmetic below: the eligible event stream is about
-# five times larger and each launch costs about nine times as much.
+# far more often. That comes out as MORE launches, far more GPU-hours, a
+# bigger share of the allowance -- and as a LOWER percentage. The percentage
+# moves the other way because the eligible event stream here is about three
+# times larger and each launch costs about three times as much, so a point of
+# rate is worth roughly ten times more here. See COMPARED WITH THE NOTEBOOK
+# LEG below; that inversion is the arithmetic, not a mistake in it.
 #
 #   MEASURED, 7 days to 2026-08-11 on unslothai/unsloth:
 #     479 commits landed on main (the wider week the numbers below use is
@@ -87,24 +89,38 @@
 #
 #   ARITHMETIC, at the current settings.
 #     eligible invocations       ~760 / week   (paths filter, measured)
-#     x sampling rate            0.04          (--percent 4)
-#     = launches                 ~30 / week
+#     x sampling rate            0.05          (--percent 5)
+#     = launches                 ~38 / week
 #     x cost of one launch       0.75 h
-#     = EXPECTED SPEND           ~23 GPU-h / week
+#     = EXPECTED SPEND           ~28 GPU-h / week
 #
-#   Against the 60 h account budget that is ~38%, and against the 50 h CI
-#   allowance ~46%. The notebook leg's ~1.4 h/week sits alongside it.
+#   Against the 60 h account budget that is ~47%, and against the 50 h CI
+#   allowance ~57%. This leg's share of that allowance is 35 h.
 #
 #   Worst case, if every sampled launch ran to the 70-minute kernel ceiling:
-#   30 x 1.17 = ~35 GPU-h/week. Adding the notebook leg's 15 h worst case
-#   reaches 50, which is exactly where the 10 h reserve stops both of them.
+#   38 x 1.17 = ~44 GPU-h/week, which is over the 35 h share. That is what
+#   the 10 h reserve is for, and it is the ceiling; the rate above is the
+#   expectation.
 #
 #   COMPARED WITH THE NOTEBOOK LEG, which is what "sampled higher" means:
-#     launches / week      ~30      vs 15-20
-#     GPU-h / week         ~23      vs ~1.4
-#     sampling rate        4%       vs 10%
-#   The rate is the knob, not the goal. Raising it to 10% here would mean
-#   76 launches and ~57 GPU-h/week, which is the entire account.
+#     launches / week      ~38      vs 13-35
+#     GPU-h / week         ~28      vs 3.3-8.7
+#     share of the 50h CI allowance  35      vs 15
+#     sampling rate        5%       vs 15%
+#
+#   THE PERCENTAGE IS THE ONE AXIS THAT INVERTS, AND IT CANNOT BE MADE TO
+#   AGREE. Studio's eligible stream is ~3.3x the notebook leg's busy-week
+#   count and each launch costs 3x as much, so a percentage point here buys
+#   ~10x the GPU-hours it does there. At a common rate r the two cost 570r
+#   and 58r; equalising the rate at anything this leg can afford would leave
+#   the notebook leg running on a handful of commits a week, and raising this
+#   leg to the notebook's 15% would be 114 launches and ~86 GPU-h/week --
+#   more than the whole account. So "sampled harder" is implemented as more
+#   launches, more hours, a bigger share of the allowance and a lower stand-
+#   down floor, on a smaller fraction of a much larger stream. Anyone
+#   comparing the two `--percent` values alone will read it backwards, which
+#   is why this paragraph is here and why the harness test asserts the
+#   inversion rather than papering over it.
 #
 #   ONE PAYLOAD, NOT TWO. The notebook leg runs a payload on each T4 of a
 #   session because the second card is free. Here the second card is left
@@ -270,7 +286,7 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
-            --percent 4 \
+            --percent 5 \
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-studio-gpu-ci \
