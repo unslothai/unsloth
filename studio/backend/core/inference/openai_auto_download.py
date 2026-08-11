@@ -99,16 +99,17 @@ def _public_label(repo_id: str, variant: Optional[str]) -> str:
 def split_model_ref(requested: str) -> tuple[str, Optional[str]]:
     """``org/repo:QUANT`` -> ``("org/repo", "QUANT")``; no suffix -> variant None.
 
-    Splits on the last colon. A slash-bearing suffix is only a variant when a real
-    Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key the catalog
-    advertises, while "C:/models/x.gguf" leaves a drive letter that is no repo id.
+    Splits on the last colon. A suffix bearing either separator is only a variant
+    when a real Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key
+    the catalog advertises, while "C:/models/x.gguf" -- and the native Windows
+    "C:\\models\\x.gguf" -- leaves a drive letter that is no repo id.
     """
     text = (requested or "").strip()
     base, sep, suffix = text.rpartition(":")
     if not sep or not base or not suffix:
         return text, None
     stripped = base.strip()
-    if "/" in suffix:
+    if "/" in suffix.replace("\\", "/"):
         from hub.utils.paths import is_valid_repo_id
         if "/" not in stripped or not is_valid_repo_id(stripped):
             return text, None
