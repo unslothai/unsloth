@@ -19,7 +19,10 @@ pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
     let root = record_root();
     let interpreters = crate::process_identity::interpreters_of(&root);
     let probe = Probe {
-        is_live: &|pid| crate::desktop_backend_owner::pid_is_not_dead(pid),
+        is_live: &|pid| {
+            crate::desktop_backend_owner::pid_is_not_dead(pid)
+                && !crate::process_identity::is_zombie(pid)
+        },
         origin: &|pid| crate::process_identity::origin_of(pid, &root, &interpreters),
         started_at: &crate::process_identity::process_start_time_secs,
     };
@@ -567,6 +570,29 @@ mod system_tests {
         );
 
         assert_eq!(live_backend_pid_on_port(8895), Some(me));
+    }
+
+    /// A crashed backend the app has not reaped keeps its pid and answers a
+    /// liveness check, but its socket is gone. Its record must not block.
+    #[cfg(unix)]
+    #[test]
+    fn a_record_for_an_unreaped_process_is_ignored() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let mut child = spawn_foreign();
+        let pid = child.id();
+        child.kill().unwrap();
+        for _ in 0..200 {
+            if crate::process_identity::is_zombie(pid) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        root.record(&format!("studio-8896-{pid}.pid"), "");
+
+        let found = live_backend_pid_on_port(8896);
+        child.wait().unwrap();
+
+        assert_eq!(found, None);
     }
 
     #[test]

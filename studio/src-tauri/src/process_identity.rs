@@ -129,16 +129,22 @@ pub(crate) fn interpreters_of(tree: &Path) -> TreeInterpreters {
                 }
             }
         }
+        // Unknown covers both "the config would not say" and "it named a base
+        // interpreter that is not there": a uv venv whose base interpreter was
+        // deleted or moved is a damaged install, which is the state a repair
+        // runs in, and its backend is still running out of the old one.
         let bases = base_interpreters_of(&venv);
-        if bases.is_empty() {
-            base_unknown = true;
-        }
+        let mut resolved_a_base = false;
         for base in bases {
             if let Ok(target) = std::fs::canonicalize(base) {
+                resolved_a_base = true;
                 if !shared.contains(&target) {
                     shared.push(target);
                 }
             }
+        }
+        if !resolved_a_base {
+            base_unknown = true;
         }
     }
     TreeInterpreters {
@@ -185,6 +191,59 @@ fn base_interpreters_of(venv: &Path) -> Vec<PathBuf> {
         names.push(format!("python{version}.exe"));
     }
     names.into_iter().map(|name| home.join(name)).collect()
+}
+
+/// Whether `pid` has exited but has not been reaped.
+///
+/// A zombie holds its pid and answers `kill(pid, 0)`, so a liveness check alone
+/// reads a crashed backend as running. It matters here because the desktop app
+/// spawns the backend and does not wait on it, so a crash leaves a zombie for
+/// as long as the app lives, and the record would block every repair until the
+/// app exited. The socket is already released by then.
+///
+/// Windows has no equivalent: an exited process is signalled, which the
+/// liveness check already reads as dead.
+pub(crate) fn is_zombie(pid: u32) -> bool {
+    is_zombie_impl(pid)
+}
+
+#[cfg(target_os = "linux")]
+fn is_zombie_impl(pid: u32) -> bool {
+    // Field 3 of /proc/{pid}/stat, read from the last ')' so a comm containing
+    // spaces or parentheses cannot shift the offset.
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some(after_comm) = stat.rfind(')').map(|at| &stat[at + 1..]) else {
+        return false;
+    };
+    after_comm.split_whitespace().next() == Some("Z")
+}
+
+#[cfg(target_os = "macos")]
+fn is_zombie_impl(pid: u32) -> bool {
+    // SZOMB from sys/proc.h, which libc does not re-export.
+    const SZOMB: u32 = 5;
+    if pid > i32::MAX as u32 {
+        return false;
+    }
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    written == size && info.pbi_status == SZOMB
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn is_zombie_impl(_pid: u32) -> bool {
+    false
 }
 
 /// Unix epoch seconds at which `pid` started, when the OS will say.
@@ -495,6 +554,20 @@ mod tests {
         assert_eq!(found.shared, vec![std::fs::canonicalize(&interpreter).unwrap()]);
     }
 
+    /// A uv venv whose base interpreter was deleted or moved: the config still
+    /// names it, so the candidates are built, but none of them resolve. That is
+    /// a damaged install, which is exactly when a repair runs.
+    #[test]
+    fn a_base_interpreter_that_no_longer_exists_is_flagged_unknown() {
+        let missing = tempfile::tempdir().unwrap();
+        let base = missing.path().join("gone");
+        let tree = tree_with_venv(Some(&base), "bin");
+
+        let found = interpreters_of(tree.path());
+
+        assert!(found.base_unknown);
+    }
+
     #[test]
     fn a_tree_with_no_venv_at_all_is_not_flagged_unknown() {
         let tree = tempfile::tempdir().unwrap();
@@ -503,6 +576,37 @@ mod tests {
 
         assert!(!found.base_unknown);
         assert!(found.shared.is_empty());
+    }
+
+    /// A crashed backend the desktop app has not reaped still answers
+    /// kill(pid, 0), and its record would block every repair until the app
+    /// exited. Reproduced with a real unreaped child.
+    #[cfg(unix)]
+    #[test]
+    fn a_zombie_is_not_a_live_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        assert!(!is_zombie(pid), "a running child is not a zombie");
+
+        child.kill().unwrap();
+        // Deliberately not reaped yet: Child::wait is what clears the zombie,
+        // and leaving it is the state under test.
+        let mut zombie = false;
+        for _ in 0..200 {
+            if is_zombie(pid) {
+                zombie = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait().unwrap();
+
+        assert!(zombie, "a killed but unreaped child should read as a zombie");
+        assert!(!is_zombie(std::process::id()), "we are not a zombie");
     }
 
     #[test]
