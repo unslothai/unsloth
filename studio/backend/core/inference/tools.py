@@ -9829,21 +9829,23 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
-def _explicit_proxy_applies(url: str) -> bool:
-    """Whether urllib sends *url* through an explicitly configured proxy.
+def _explicit_proxy_applies(scheme: str, host: str) -> bool:
+    """Whether urllib routes a *scheme* request for *host* through a proxy.
 
-    Only then may the hostname stay in the request URL: the proxy resolves it, so
-    this host never looks it up again. Without one urllib would, which is the
-    DNS-rebinding window, so those fetches stay pinned to the validated IP.
+    Only a proxied fetch may keep the hostname in the request URL: the proxy
+    resolves it, so this host never looks it up again. A direct one would, which
+    is the DNS-rebinding window, so it stays pinned to the validated IP.
+
+    *host* must be the ``host[:port]`` form ``Request.host`` carries, since that
+    is what ``ProxyHandler`` passes to ``proxy_bypass``; probing the bare hostname
+    instead would disagree with it on a port-qualified NO_PROXY entry.
     """
-    from urllib.parse import urlparse
     from urllib.request import getproxies, proxy_bypass
 
-    parsed = urlparse(url)
-    if parsed.scheme not in getproxies():
+    if scheme not in getproxies():
         return False
     try:
-        return not proxy_bypass(parsed.hostname or "")
+        return not proxy_bypass(host)
     except (OSError, ValueError):
         # proxy_bypass reads system config on macOS/Windows; failure falls back to pinning.
         return False
@@ -10202,9 +10204,11 @@ def _fetch_url_raw(
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and _explicit_proxy_applies(
-                current_url
-            ):
+            # Decide the routing once, on the netloc urllib itself tests, then hold
+            # the opener to it: a pinned request carries an IP, which no NO_PROXY
+            # entry matches, so ProxyHandler would proxy a bypassed host.
+            proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS
                 # interception, and they resolve it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
@@ -10214,10 +10218,11 @@ def _fetch_url_raw(
                 ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
                 request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
-            opener = urllib.request.build_opener(
-                _NoRedirect,
-                _SNIHTTPSHandler(current_host),
-            )
+            handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
+            if not proxied:
+                # An empty ProxyHandler is the documented way to opt a request out.
+                handlers.append(urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(*handlers)
 
             headers = {
                 "User-Agent": ua,

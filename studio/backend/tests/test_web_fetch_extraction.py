@@ -783,6 +783,81 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     assert requested[0].get_header("Host") == "example.com:8443"
 
 
+@pytest.mark.parametrize(
+    "no_proxy,disable_dns_pinning,expected_url",
+    [
+        # urllib tests NO_PROXY against Request.host, so a port-qualified entry only
+        # matches with the port: probing the bare hostname would call this proxied,
+        # keep the hostname, and let the direct connect re-resolve it.
+        ("example.com:8443", True, "https://203.0.113.7:8443/page?q=1"),
+        ("example.com", True, "https://203.0.113.7:8443/page?q=1"),
+        ("other.example", True, "https://example.com:8443/page?q=1"),
+        ("example.com", False, "https://203.0.113.7:8443/page?q=1"),
+    ],
+)
+def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinning, expected_url):
+    # Real getproxies/proxy_bypass here, not stubs: both read the environment first
+    # on every platform, and the point is to agree with what urllib actually does.
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+    built = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    def fake_build_opener(*handlers):
+        built.append(handlers)
+        return _FakeOpener()
+
+    for var in ("http_proxy", "https_proxy", "no_proxy", "all_proxy", "REQUEST_METHOD"):
+        monkeypatch.delenv(var, raising = False)
+        monkeypatch.delenv(var.upper(), raising = False)
+    monkeypatch.setenv("https_proxy", "http://proxy.corp:3128")
+    monkeypatch.setenv("no_proxy", no_proxy)
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
+
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert [req.full_url for req in requested] == [expected_url]
+    # A bypassed host keeps its direct route: the pinned IP would never match the
+    # NO_PROXY entry, so the opener has to carry the decision instead.
+    bypassed = expected_url.startswith("https://203.0.113.7")
+    empty_proxy_handlers = [
+        h
+        for h in built[0]
+        if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
+    ]
+    assert bool(empty_proxy_handlers) is bypassed
+
+
 def test_fetch_url_raw_rejects_embedded_credentials(monkeypatch):
     # Credentials in the URL are blocked rather than stripped, so they can never
     # leak to a redirect target or into logs.
