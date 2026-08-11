@@ -86,6 +86,7 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      audio: "Audio",
       trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
       videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",

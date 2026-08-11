@@ -13,9 +13,19 @@ from pathlib import Path
 import hashlib as _hashlib
 import hmac as _hmac
 import secrets as _secrets
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, Collection, List, NamedTuple, Optional, Union
 import json
@@ -39,7 +49,15 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
-from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
+from core.inference.audio_errors import (
+    AudioBackendUnsupportedError,
+    AudioGenerationCancelledError,
+)
+from core.inference.orchestrator import (
+    AUDIO_GENERATION_MAX_TOKENS,
+    GenStreamError,
+    GenStreamErrorRaised,
+)
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -357,6 +375,91 @@ def _effective_max_tokens(payload):
         if payload.max_completion_tokens is not None
         else payload.max_tokens
     )
+
+
+# Below this there is no room for speech worth returning, so an over-context prompt is a
+# client error rather than a one-token generation.
+_MIN_SPEECH_OUTPUT_TOKENS = 64
+
+# The backends do not generate from the raw text: each wraps it in codec delimiters
+# (llama_cpp.py:_TTS_PROMPTS, and the model-specific prompts the Transformers generators
+# build), so the real prompt is longer than what the estimate below sees. Budgeting the
+# whole remainder left zero headroom and those few tokens pushed prompt + max_new_tokens
+# back over the context. Generous rather than exact, since the wrapper is chosen deeper
+# than this and 32 tokens off a 2048 context is not worth threading it up here.
+_TTS_PROMPT_FORMAT_RESERVE = 32
+
+
+def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
+    """Bound TTS work consistently across llama.cpp and subprocess backends.
+
+    ``prompt`` shares the loaded context with the output, so a Max tokens slider near the
+    ceiling plus a long prompt overflowed the context the page loaded with. Capped here so
+    both the Studio and OpenAI routes inherit it.
+    """
+    budget = min(
+        AUDIO_GENERATION_MAX_TOKENS,
+        max(1, int(_effective_max_tokens(payload) or 2048)),
+    )
+    if prompt:
+        context_length = _monitor_context_length()
+        if context_length:
+            budget = min(
+                budget,
+                context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
+            )
+    # A caller that reached generation with no budget left gets one token and a useless
+    # clip; the routes reject that case up front instead.
+    return max(1, budget)
+
+
+def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
+    """400 when the prompt alone consumes the loaded context.
+
+    Shared by both TTS routes: the budget helper floors at one token so generation always
+    has something to ask for, which on its own would send an over-context prompt into the
+    backend to fail there or return a clip too short to hold codec tokens.
+    """
+    context_length = _monitor_context_length()
+    if not context_length:
+        return
+    remaining = context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
+    if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Input is too long for the loaded model's {context_length}-token context. "
+                "Shorten it, or load the model with a larger context."
+            ),
+        )
+
+
+def _prompt_token_estimate(prompt: str) -> int:
+    """Tokens the prompt will occupy, from the loaded tokenizer where one is reachable.
+
+    The len//3 fallback under-counts CJK and emoji badly, which is exactly the input that
+    then overflows the context, so ask the tokenizer first and only guess when it is absent.
+    """
+    try:
+        backend = _peek_inference_backend()
+        if backend is not None and backend.active_model_name:
+            models = getattr(backend, "models", {}) or {}
+            info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+            tokenizer = info.get("tokenizer") if isinstance(info, dict) else None
+            if tokenizer is not None and hasattr(tokenizer, "encode"):
+                count = len(tokenizer.encode(prompt))
+                if count > 0:
+                    return count
+    except Exception:  # noqa: BLE001 - an estimate must never fail the request
+        pass
+    # llama-server holds its own tokenizer, so estimate by character class instead of a
+    # flat ratio. Everything outside ASCII counts as a token: the earlier cut at U+2E7F
+    # only caught CJK and emoji, so Arabic, Cyrillic, Hebrew and the Indic scripts were
+    # billed at the Latin third-of-a-token rate and a long prompt in any of them passed
+    # the guard, then overflowed the context during generation. Over-counting accented
+    # Latin is the safe direction for a budget: it shortens the clip rather than failing.
+    dense = sum(1 for ch in prompt if ord(ch) > 0x7F)
+    return max(1, dense + (len(prompt) - dense) // 3)
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
@@ -2076,6 +2179,9 @@ from models.inference import (
     ImageGenerationRequest,
     ImageGenerationData,
     ImageGenerationResponse,
+    AudioSpeechRequest,
+    AudioGalleryItem,
+    AudioGalleryListResponse,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -2825,6 +2931,16 @@ async def _await_disconnect_then_cancel(request, cancel_event) -> None:
         while not await request.is_disconnected():
             await asyncio.sleep(0.1)
         cancel_event.set()
+    except asyncio.CancelledError:
+        return
+
+
+async def _await_stt_disconnect_then_cancel(request, sidecar, cancel_event) -> None:
+    """Cancel this sidecar request, including a model load still starting."""
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        await asyncio.to_thread(sidecar.cancel_transcription, cancel_event)
     except asyncio.CancelledError:
         return
 
@@ -6830,6 +6946,159 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     ) == (request.chat_template_override or None)
 
 
+class _ScopedLoadAttempt(NamedTuple):
+    token: str
+    request_id: Optional[str]
+    model_path: str
+    subject: str
+    cancel_event: threading.Event
+    cancel_complete: threading.Event
+
+
+_scoped_load_attempts_lock = threading.Lock()
+_scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
+_scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
+_running_load_attempt: Optional[_ScopedLoadAttempt] = None
+_SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
+# Bound on waiting for a cancel's teardown to report back. Only the /unload
+# handler sets cancel_complete for a running attempt, so a disconnect or a
+# shutdown between the cancel and its finally leaves nobody to set it. An
+# unbounded wait there parks /load under inference_lifecycle_gate forever, and
+# to_thread's executor threads are non-daemon, so it also blocks process exit.
+_SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 15.0
+_SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
+
+
+def _prune_scoped_load_cancel_tombstones(now: float) -> None:
+    expired = [
+        key for key, (_, expires_at) in _scoped_load_cancel_tombstones.items() if expires_at <= now
+    ]
+    for key in expired:
+        _scoped_load_cancel_tombstones.pop(key, None)
+
+
+def _begin_load_attempt(request: LoadRequest, current_subject: str) -> _ScopedLoadAttempt:
+    attempt = _ScopedLoadAttempt(
+        token = uuid.uuid4().hex,
+        request_id = request.load_request_id,
+        model_path = request.model_path,
+        subject = current_subject,
+        cancel_event = threading.Event(),
+        cancel_complete = threading.Event(),
+    )
+    if attempt.request_id is None:
+        return attempt
+    key = (current_subject, attempt.request_id)
+    with _scoped_load_attempts_lock:
+        now = time.monotonic()
+        _prune_scoped_load_cancel_tombstones(now)
+        if key in _scoped_load_attempts:
+            raise HTTPException(
+                status_code = 409,
+                detail = "A load with this request ID is already in progress",
+            )
+        tombstone = _scoped_load_cancel_tombstones.pop(key, None)
+        if (
+            tombstone is not None
+            and tombstone[0].strip().casefold() == attempt.model_path.strip().casefold()
+        ):
+            attempt.cancel_event.set()
+            attempt.cancel_complete.set()
+        _scoped_load_attempts[key] = attempt
+    return attempt
+
+
+def _finish_load_attempt(attempt: _ScopedLoadAttempt) -> None:
+    if attempt.request_id is None:
+        return
+    key = (attempt.subject, attempt.request_id)
+    with _scoped_load_attempts_lock:
+        if _scoped_load_attempts.get(key) is attempt:
+            _scoped_load_attempts.pop(key, None)
+
+
+def _cancel_scoped_load_attempt(
+    request: UnloadRequest, current_subject: str
+) -> tuple[Optional[_ScopedLoadAttempt], bool]:
+    request_id = request.cancel_load_request_id
+    if request_id is None:
+        return None, False
+    key = (current_subject, request_id)
+    with _scoped_load_attempts_lock:
+        now = time.monotonic()
+        _prune_scoped_load_cancel_tombstones(now)
+        attempt = _scoped_load_attempts.get(key)
+        if attempt is None:
+            subject_tombstones = [
+                tombstone_key
+                for tombstone_key in _scoped_load_cancel_tombstones
+                if tombstone_key[0] == current_subject
+            ]
+            if len(subject_tombstones) >= _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT:
+                oldest = min(
+                    subject_tombstones,
+                    key = lambda item: _scoped_load_cancel_tombstones[item][1],
+                )
+                _scoped_load_cancel_tombstones.pop(oldest, None)
+            _scoped_load_cancel_tombstones[key] = (
+                request.model_path,
+                now + _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S,
+            )
+            return None, False
+        if attempt.model_path.strip().casefold() != request.model_path.strip().casefold():
+            return None, False
+        attempt.cancel_event.set()
+        is_running = _running_load_attempt is attempt
+        if not is_running:
+            # Queued/completed attempts have no backend teardown handler to signal
+            # completion. Let a queued attempt fail immediately once it gets the gate.
+            attempt.cancel_complete.set()
+        return attempt, is_running
+
+
+async def _run_tracked_load_model_impl(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    attempt: Optional[_ScopedLoadAttempt] = None,
+    current_request_counted: bool = False,
+    on_reload_confirmed = None,
+):
+    global _running_load_attempt
+
+    owned_attempt = attempt is None
+    attempt = attempt or _begin_load_attempt(request, current_subject)
+    with _scoped_load_attempts_lock:
+        _running_load_attempt = attempt
+    try:
+        if attempt.cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
+        return await _load_model_impl(
+            request,
+            fastapi_request,
+            current_subject,
+            current_request_counted = current_request_counted,
+            on_reload_confirmed = on_reload_confirmed,
+            load_cancel_event = attempt.cancel_event,
+        )
+    finally:
+        if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
+            if not await asyncio.to_thread(
+                attempt.cancel_complete.wait, _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S
+            ):
+                logger.warning(
+                    "Scoped load cancel did not report back in %.0fs; releasing the load: %s",
+                    _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S,
+                    request.model_path,
+                )
+        with _scoped_load_attempts_lock:
+            if _running_load_attempt is attempt:
+                _running_load_attempt = None
+        if owned_attempt:
+            _finish_load_attempt(attempt)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -6871,29 +7140,36 @@ async def load_model_gated(
     # check alone is only a fast path.
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
-    _raise_if_sidecar_swap_in_progress()
-    # Hold the lifecycle gate across the load so idle auto-unload can't unload the
-    # model mid-load. Auto-switch calls _load_model_impl directly since it already
-    # holds this gate.
-    async with inference_lifecycle_gate():
+    attempt = _begin_load_attempt(request, current_subject)
+    try:
         _raise_if_sidecar_swap_in_progress()
-        # The active-generation gate runs inside _load_model_impl, once it knows this is a real
-        # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-        response = await _load_model_impl(
-            request,
-            fastapi_request,
-            current_subject,
-            on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
-                force = request.force_cancel_active,
-                action = "Loading a model",
-                cancel = cancel,
-            ),
-        )
+        # Hold the lifecycle gate across the load so idle auto-unload can't unload the
+        # model mid-load. Auto-switch calls the tracked impl directly since it already
+        # holds this gate.
+        async with inference_lifecycle_gate():
+            _raise_if_sidecar_swap_in_progress()
+            # The active-generation gate runs inside _load_model_impl, once it knows this is a real
+            # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
+            response = await _run_tracked_load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                attempt = attempt,
+                on_reload_confirmed = lambda *, cancel: _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active,
+                    action = "Loading a model",
+                    cancel = cancel,
+                ),
+            )
         # Record provenance only once the model is resident, and here rather than
         # inside the impl so the already-loaded fast paths are covered too. Preview
-        # keeps the False default: only an explicit UI load pins.
+        # keeps the False default: only an explicit UI load pins. Outside the gate:
+        # it is a plain attribute write and holding the gate for it would only widen
+        # the window that blocks unload.
         get_llama_cpp_backend()._loaded_by_user_action = user_initiated
         return response
+    finally:
+        _finish_load_attempt(attempt)
 
 
 async def _load_model_impl(
@@ -6903,8 +7179,13 @@ async def _load_model_impl(
     *,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    load_cancel_event: Optional[threading.Event] = None,
 ):
     from core.inference.llama_cpp import LlamaServerNotFoundError
+
+    def _raise_if_scoped_load_cancelled() -> None:
+        if load_cancel_event is not None and load_cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
 
     # A new load starts here; arm the progress throttle so this load's first
     # sampled step logs even if it reports 100% immediately (cached/small load).
@@ -7306,6 +7587,7 @@ async def _load_model_impl(
 
             # Point of no return for the GGUF path: nothing left can reject this load, so stop the
             # chats the swap interrupts (or refuse, if the caller never opted in).
+            _raise_if_scoped_load_cancelled()
             if on_reload_confirmed is not None:
                 on_reload_confirmed(cancel = True)
 
@@ -7351,6 +7633,7 @@ async def _load_model_impl(
                 return await asyncio.to_thread(
                     llama_backend.load_model,
                     intent = attempt,
+                    load_cancel_event = load_cancel_event,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
@@ -7363,7 +7646,10 @@ async def _load_model_impl(
                 requested_tensor = request.tensor_parallel,
                 extra_args = extra_llama_args,
                 label = config.identifier,
-                cancelled = llama_backend.load_cancelled,
+                cancelled = lambda: (
+                    llama_backend.load_cancelled()
+                    or bool(load_cancel_event and load_cancel_event.is_set())
+                ),
             )
 
             if not success:
@@ -7441,6 +7727,7 @@ async def _load_model_impl(
         _raise_if_sidecar_swap_in_progress()
 
         # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
+        _raise_if_scoped_load_cancelled()
         if on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
 
@@ -7486,6 +7773,7 @@ async def _load_model_impl(
             subject = current_subject,
             mlx_kv_bits = request.mlx_kv_bits,
             chat_template_override = request.chat_template_override,
+            load_cancel_event = load_cancel_event,
         )
 
         if not success:
@@ -8340,6 +8628,47 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
     # backend directly (not this route), so clearing here never fights keep-warm.
     from core.inference.llama_keepwarm import inference_lifecycle_gate, note_model_unloaded
     try:
+        # Hidden Audio cleanup is cancellation, not a manual eject. Bind it to the
+        # exact client load attempt so a delayed request can never stop a newer
+        # same-model load or unload a model that has already become resident.
+        if request.cancel_load_request_id is not None:
+            attempt, is_running = _cancel_scoped_load_attempt(request, current_subject)
+            if attempt is None or not is_running:
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            try:
+                backend = await asyncio.to_thread(get_inference_backend)
+                loading = getattr(backend, "get_loading_model", lambda: None)()
+                if (
+                    loading is not None
+                    and hasattr(backend, "cancel_load")
+                    and _names_the_loading_model(loading, attempt.model_path)
+                    and await asyncio.to_thread(backend.cancel_load, loading)
+                ):
+                    note_model_unloaded()
+                    logger.info("Cancelled scoped in-flight load: %s", request.model_path)
+                    return UnloadResponse(status = "unloaded", model = request.model_path)
+
+                llama_backend = get_llama_cpp_backend()
+                if (
+                    llama_backend.is_active
+                    and not llama_backend.is_loaded
+                    and (
+                        llama_backend.model_identifier == attempt.model_path
+                        or is_registered_native_path_label(
+                            llama_backend.model_identifier, attempt.model_path
+                        )
+                        or _names_the_resident_model(
+                            llama_backend.model_identifier, attempt.model_path
+                        )
+                    )
+                ):
+                    await asyncio.to_thread(llama_backend.unload_model)
+                    note_model_unloaded()
+                    logger.info("Cancelled scoped in-flight GGUF load: %s", request.model_path)
+                return UnloadResponse(status = "unloaded", model = request.model_path)
+            finally:
+                attempt.cancel_complete.set()
+
         # "Stop loading" (frontend cancelLoading -> /unload) must abort a still-loading
         # model promptly, and /load holds the lifecycle gate for the whole load. cancel_load only
         # tears the loading subprocess down, so it is safe off-gate -- and ahead of the
@@ -8957,29 +9286,16 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
+_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(("snac", "csm", "bicodec", "dac"))
+_GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 
-@router.post("/audio/generate")
-async def generate_audio(
-    payload: ChatCompletionRequest,
-    request: Request,
-    current_subject: str = Depends(get_current_subject),
-):
-    """
-    Generate audio (TTS) from the latest user message.
-    Returns JSON with base64-encoded WAV audio.
-    Works with both GGUF (llama-server) and Unsloth/transformers backends.
-    """
-    import base64
 
-    # Extract text from the last user message
-    _, chat_messages, _ = _extract_content_parts(payload.messages)
-    if not chat_messages:
-        raise HTTPException(status_code = 400, detail = "No messages provided.")
-    last_user_msg = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
-    if not last_user_msg:
-        raise HTTPException(status_code = 400, detail = "No user message found.")
-    text = last_user_msg["content"]
-
+async def _generate_tts_wav(
+    text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
+) -> tuple[bytes, int, str, Optional[str]]:
+    """Shared core of /audio/generate and /audio/speech. Returns
+    (wav_bytes, sample_rate, model_name, audio_type)."""
+    _raise_if_prompt_leaves_no_speech_budget(text)
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
     # unload an audio GGUF the next request then failed to restore. Validation
@@ -8992,6 +9308,11 @@ async def generate_audio(
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
     await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
+    # Again, now that a context exists to measure against. The check above runs before the
+    # restore so an invalid request never triggers a reload, but with nothing loaded it has
+    # no context length and passes everything, so the first request after an idle eviction
+    # would reach generation over-context and come back as a one-token clip.
+    _raise_if_prompt_leaves_no_speech_budget(text)
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
@@ -9006,6 +9327,8 @@ async def generate_audio(
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
+        audio_type = getattr(llama_backend, "_audio_type", None)
+        supported_audio_types = _GGUF_TTS_AUDIO_TYPES
         _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
@@ -9014,7 +9337,7 @@ async def generate_audio(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _effective_max_tokens(payload) or 2048,
+            max_new_tokens = _tts_max_new_tokens(payload, text),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
         )
@@ -9026,6 +9349,8 @@ async def generate_audio(
         if not model_info.get("is_audio"):
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = public_model_id(backend.active_model_name)
+        audio_type = model_info.get("audio_type")
+        supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
@@ -9033,9 +9358,16 @@ async def generate_audio(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _effective_max_tokens(payload) or 2048,
+            max_new_tokens = _tts_max_new_tokens(payload, text),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
+            cancel_event = _audio_cancel,
+        )
+
+    if audio_type not in supported_audio_types:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
@@ -9046,10 +9378,9 @@ async def generate_audio(
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
-    # generations and tore the model down mid-generation. The GGUF path observes the event; the
-    # subprocess backend blocks on its response queue with no cancel plumbing, so there it is
-    # only advisory -- which is why the swap drains are bounded. No cancel keys: /cancel
-    # addresses streams, and this route has none.
+    # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
+    # the request event. No cancel keys: /cancel addresses streams, and this route has none; the
+    # disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
@@ -9064,12 +9395,84 @@ async def generate_audio(
             with _direct_llama_request(_direct_llama_tts):
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
-            if _audio_cancel.is_set():
+            # An idle auto-unload cancels through the backend without setting this route's event.
+            if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            # Missing capability, not a failure: no retry helps, and the message
+            # carries no path or user input, so send it as written.
+            if isinstance(e, AudioBackendUnsupportedError):
+                logger.info("Audio generation unsupported on this backend: %s", e.detail)
+                raise HTTPException(status_code = 501, detail = e.message)
             logger.error(f"Audio generation error: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
             await _stop_local_disconnect_cancel_watcher(_audio_watcher)
+
+    return wav_bytes, sample_rate, model_name, audio_type
+
+
+def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
+    """Duration of an in-memory WAV, from its own header when readable."""
+    import io
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(wav_bytes)) as wav:
+            rate = wav.getframerate() or sample_rate
+            return round(wav.getnframes() / rate, 3) if rate else 0.0
+    except Exception:  # noqa: BLE001 - fall back to the 16-bit mono pcm the codecs emit
+        payload_bytes = max(0, len(wav_bytes) - 44)
+        return round(payload_bytes / (2 * sample_rate), 3) if sample_rate else 0.0
+
+
+def _persist_tts_clip(
+    wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
+) -> Optional[dict[str, Any]]:
+    """Best-effort gallery save: persistence never fails the request that produced
+    the audio. Blocking, so callers run it off the event loop."""
+    from core.inference import audio_gallery
+    try:
+        return audio_gallery.save(
+            wav_bytes,
+            {
+                "prompt": text,
+                "model": model_name,
+                "audio_type": audio_type or "unknown",
+                "sample_rate": sample_rate,
+                "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
+        logger.warning("audio_gallery.persist_failed: %s", exc)
+        return None
+
+
+@router.post("/audio/generate")
+async def generate_audio(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Generate audio (TTS) from the latest user message, as base64 WAV.
+    Works with both GGUF (llama-server) and Unsloth/transformers backends."""
+    import base64
+
+    # Extract text from the last user message
+    _, chat_messages, _ = _extract_content_parts(payload.messages)
+    if not chat_messages:
+        raise HTTPException(status_code = 400, detail = "No messages provided.")
+    last_user_msg = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
+    if not last_user_msg:
+        raise HTTPException(status_code = 400, detail = "No user message found.")
+    text = last_user_msg["content"]
+
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        text, payload, request, current_subject
+    )
+    persisted_clip = await asyncio.to_thread(
+        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+    )
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -9077,6 +9480,7 @@ async def generate_audio(
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
             "object": "chat.completion.audio",
             "model": model_name,
+            "clip_id": persisted_clip.get("id") if persisted_clip else None,
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
             "choices": [
                 {
@@ -9092,9 +9496,102 @@ async def generate_audio(
     )
 
 
+# openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
+@router.post("/audio/speech")
+async def openai_audio_speech(
+    body: AudioSpeechRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> Response:
+    """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
+
+    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
+    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
+    silent container mismatch."""
+    fmt = (body.response_format or "wav").strip().lower()
+    if fmt != "wav":
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unsupported response_format '{body.response_format}'. Only 'wav' is supported.",
+        )
+    # The tts core reads its sampling knobs from a chat request shape; defaults apply here.
+    # max_tokens is set explicitly because the OpenAI CreateSpeech shape has no field for it,
+    # so the chat default of 2048 would silently truncate any input past ~30s of speech and
+    # still return HTTP 200 with a short WAV.
+    # Unlike the Audio page, which loads with headroom for both, this route is reachable
+    # after any /api/inference/load, including the default max_seq_length=0 that becomes
+    # 2048. Asking for the full ceiling against that context overflows or truncates, so
+    # cap to what is actually left once the prompt is accounted for.
+    # The over-context check lives in _generate_tts_wav, so both routes share it.
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.input}],
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.input, payload, request, current_subject
+    )
+    await asyncio.to_thread(
+        _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
+    )
+    return Response(content = wav_bytes, media_type = "audio/wav")
+
+
+# openai-compatible transcription api, dual-mounted like /audio/speech; runs on the stt sidecar, not the main gpu slot
+@router.post("/audio/transcriptions")
+async def openai_audio_transcriptions(
+    request: Request,
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
+    response_format: str = Form("json"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
+
+    ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing selecting the
+    default. ``response_format`` supports ``json`` and ``text``."""
+    fmt = (response_format or "json").strip().lower()
+    if fmt not in ("json", "text"):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Unsupported response_format '{response_format}'. Use 'json' or 'text'.",
+        )
+    # UploadFile spools to disk, but an unbounded read materializes the whole upload in
+    # memory before the shared size check. One byte past the limit is enough to reject it.
+    raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
+    # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
+    sidecar_model = None if model in (None, "", "whisper-1") else model
+    result = await _transcribe_audio_result(
+        raw,
+        sidecar_model,
+        language,
+        fast = False,
+        engine = _stt_engine_for_model(sidecar_model),
+        request = request,
+    )
+    if fmt == "text":
+        return PlainTextResponse(content = str(result.get("text", "")))
+    return JSONResponse(content = {"text": result.get("text", "")})
+
+
 # =====================================================================
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
 # =====================================================================
+
+
+def _stt_engine_for_model(model: Optional[str]) -> Optional[str]:
+    """The engine an STT id *requires*, or None to leave the default alone.
+
+    Qwen3-ASR only runs on the mtmd sidecar; without this an explicit id fell through to
+    the Transformers Whisper sidecar, which rejects it.
+    """
+    if not model:
+        return None
+    from core.inference.stt_mtmd_sidecar import is_mtmd_model
+
+    # Only the mtmd ids are forced. Whisper ids are shared with the Transformers
+    # sidecar and work there, so leaving them alone keeps the default behaviour.
+    return "mtmd" if is_mtmd_model(model.strip()) else None
 
 
 def _resolve_stt_engine(engine: Optional[str]) -> str:
@@ -9128,6 +9625,42 @@ def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
             return "transformers"
     # mtmd models exist in no other engine, so there is nothing to fall back to.
     return resolved
+
+
+def _prepare_runtime_fallback_checkpoint(
+    requested_engine: Optional[str],
+    serving_engine: str,
+    model: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """Fetch the Transformers snapshot a broken whisper.cpp runtime now falls back to.
+
+    A GGUF pick downloads one .bin file, so when the runtime turns out to be broken at
+    inference time the Transformers engine it is redirected to has no snapshot and every
+    retry raises SttModelNotDownloadedError instead of the promised fallback. The two
+    engines share curated ids, so the equivalent snapshot is known and is fetched in the
+    background here; /audio/stt/status reports its progress and the next attempt lands on
+    a usable checkpoint. Only for a runtime that broke: whisper-server simply not being
+    installed already routes the download itself through Transformers.
+    """
+    if serving_engine != "transformers" or _resolve_stt_engine(requested_engine) != "gguf":
+        return
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+
+    if stt_ggml_sidecar.runtime_inference_failure() is None:
+        return
+    if stt_sidecar.is_model_downloaded(model):
+        return
+    try:
+        stt_sidecar.start_model_download(model, hf_token)
+    except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
+        # Another dictation model already downloading is the common case, and the caller
+        # is about to report "not downloaded" anyway.
+        logger.info(
+            "Could not start the Transformers fallback download for STT model %r: %s",
+            model,
+            exc,
+        )
 
 
 def _stt_download_module(engine: str):
@@ -9314,7 +9847,11 @@ async def stt_download_cancel(
 
 
 @studio_router.post("/audio/stt/load")
-async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
+async def stt_load(
+    payload: SttLoadRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
@@ -9322,20 +9859,31 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
+        SttTranscriptionCancelledError,
         SttUnavailableError,
         get_stt_sidecar,
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    await asyncio.to_thread(
+        _prepare_runtime_fallback_checkpoint,
+        payload.engine,
+        engine,
+        payload.model,
+    )
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
+    cancel_event = threading.Event()
+    disconnect_watcher = asyncio.create_task(
+        _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
+    )
     try:
-        await asyncio.to_thread(load_stt, payload.model, engine)
+        await asyncio.to_thread(load_stt, payload.model, engine, cancel_event)
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
-    except SttLoadCancelledError as e:
+    except (SttLoadCancelledError, SttTranscriptionCancelledError) as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelBusyError as e:
         raise HTTPException(status_code = 409, detail = str(e))
@@ -9346,6 +9894,8 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     except Exception as e:
         logger.error(f"STT load error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
 
 
@@ -9371,12 +9921,18 @@ async def stt_validate(
 
 @studio_router.post("/audio/stt/unload")
 async def stt_unload(
-    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    engine: Optional[str] = None,
+    model: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Release the local STT model when dictation is idle.
 
     Without an engine, both sidecars unload so an engine switch in Voice
-    settings always frees whichever backend was resident.
+    settings always frees whichever backend was resident. ``model`` scopes the
+    release to the model the caller claims: a surface owns one model, and another
+    can switch the same engine between that ownership check and this request
+    arriving, so the sidecar re-checks under its own lock rather than releasing
+    whatever happens to be resident by then.
     """
     if engine is None:
         engines = None
@@ -9388,7 +9944,7 @@ async def stt_unload(
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines)
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines, model)
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -9403,8 +9959,24 @@ async def _transcribe_audio_bytes(
     language: Optional[str],
     fast: bool,
     engine: Optional[str] = None,
+    request: Optional[Request] = None,
 ) -> JSONResponse:
     """Run STT for already-decoded request bytes."""
+    return JSONResponse(
+        content = await _transcribe_audio_result(raw, model, language, fast, engine, request)
+    )
+
+
+async def _transcribe_audio_result(
+    raw: bytes,
+    model: Optional[str],
+    language: Optional[str],
+    fast: bool,
+    engine: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> dict:
+    """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
+    Returns the sidecar's result dict so callers own the response shape."""
     from core.inference.stt_sidecar import (
         SttAudioDecodeError,
         SttAudioTooLongError,
@@ -9415,6 +9987,7 @@ async def _transcribe_audio_bytes(
         SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
+        SttTranscriptionCancelledError,
     )
 
     if not raw:
@@ -9422,15 +9995,51 @@ async def _transcribe_audio_bytes(
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
-    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
+    serving_engine = _resolve_serving_stt_engine(engine)
+    await asyncio.to_thread(
+        _prepare_runtime_fallback_checkpoint,
+        engine,
+        serving_engine,
+        model,
+    )
+    sidecar = _stt_sidecar_for(serving_engine)
+    cancel_event = threading.Event() if request is not None else None
+    disconnect_watcher = (
+        asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))
+        if request is not None and cancel_event is not None
+        else None
+    )
     try:
-        result = await asyncio.to_thread(
-            sidecar.transcribe,
-            raw,
-            model,
-            language,
-            fast,
-        )
+        # An implicit load has to go through the registry, not the sidecar: each sidecar
+        # loads its own model happily, but only the registry releases the other engines.
+        # An API client alternating between engines (Qwen3-ASR then Whisper through
+        # /v1/audio/transcriptions) therefore held both until their independent idle
+        # timers fired, which is what OOMs a device that fits either alone. A no-op once
+        # the model is resident, so the steady state costs a residency check.
+        load_stt, _ = _stt_lifecycle()
+        await asyncio.to_thread(load_stt, model, serving_engine, cancel_event)
+        if cancel_event is None:
+            result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
+        else:
+            result = await asyncio.to_thread(
+                sidecar.transcribe,
+                raw,
+                model,
+                language,
+                fast,
+                cancel_event,
+            )
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            # cancel_transcription takes a lock a load can hold, so inline would stall the loop.
+            threading.Thread(
+                target = sidecar.cancel_transcription,
+                args = (cancel_event,),
+                daemon = True,
+            ).start()
+        raise
+    except SttTranscriptionCancelledError as e:
+        raise HTTPException(status_code = 499, detail = str(e))
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
     except SttLoadCancelledError as e:
@@ -9454,12 +10063,17 @@ async def _transcribe_audio_bytes(
     except Exception as e:
         logger.error(f"Transcription error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
-    return JSONResponse(content = result)
+    finally:
+        if disconnect_watcher is not None:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return result
 
 
 @studio_router.post("/audio/transcribe")
 async def transcribe_audio(
-    payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
+    payload: TranscribeRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Transcribe dictation audio to text via the STT sidecar.
 
@@ -9475,8 +10089,10 @@ async def transcribe_audio(
         raw = base64.b64decode(b64, validate = True)
     except Exception:
         raise HTTPException(status_code = 400, detail = "Audio is not valid base64.")
+    # Same disconnect cancellation as the raw and OpenAI routes: without the request
+    # a client that goes away leaves the sidecar transcribing under its lock.
     return await _transcribe_audio_bytes(
-        raw, payload.model, payload.language, payload.fast, payload.engine
+        raw, payload.model, payload.language, payload.fast, payload.engine, request
     )
 
 
@@ -9497,7 +10113,11 @@ async def transcribe_audio_raw(
         if size > _MAX_AUDIO_RAW_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
-    return await _transcribe_audio_bytes(b"".join(chunks), model, language, fast, engine)
+    return JSONResponse(
+        content = await _transcribe_audio_result(
+            b"".join(chunks), model, language, fast, engine, request
+        )
+    )
 
 
 # =====================================================================
@@ -21118,6 +21738,91 @@ async def delete_gallery_image(image_id: str, current_subject: str = Depends(get
 async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
     removed = await asyncio.to_thread(image_gallery.clear)
+    return {"removed": removed}
+
+
+@studio_router.get("/audio/gallery", response_model = AudioGalleryListResponse)
+async def list_gallery_audio(
+    limit: int = 50,
+    offset: int = 0,
+    before_mtime: Optional[float] = None,
+    before_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    from pydantic import ValidationError
+
+    from core.inference import audio_gallery
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    if (before_mtime is None) != (before_id is None):
+        raise HTTPException(status_code = 400, detail = "Incomplete audio gallery cursor.")
+    before = (
+        (before_mtime, before_id) if before_mtime is not None and before_id is not None else None
+    )
+
+    # validate inside the pager so offset, limit and has_more count over the accepted domain
+    def _valid_gallery_audio(record: dict) -> bool:
+        try:
+            AudioGalleryItem(**record)
+        except ValidationError:
+            return False
+        return True
+
+    # fetch one extra to learn whether more remain, without a second scan
+    entries = await asyncio.to_thread(
+        audio_gallery.list_audio_page,
+        limit + 1,
+        offset,
+        before = before,
+        valid = _valid_gallery_audio,
+    )
+    has_more = len(entries) > limit
+    visible = entries[:limit]
+    audio = [AudioGalleryItem(**record) for record, _ in visible]
+    next_cursor = visible[-1][1] if has_more and visible else None
+    return AudioGalleryListResponse(
+        audio = audio,
+        has_more = has_more,
+        next_before_mtime = next_cursor[0] if next_cursor else None,
+        next_before_id = next_cursor[1] if next_cursor else None,
+    )
+
+
+@studio_router.get("/audio/gallery/{audio_id}/file")
+async def get_gallery_audio_file(
+    audio_id: str, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import audio_gallery
+
+    # ownership-gate the serve like delete/clear, so a guessed stem cannot stream out a foreign file
+    path = await asyncio.to_thread(audio_gallery.owned_audio_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    from fastapi.responses import FileResponse
+
+    # immutable content (id is unique per clip), so let the browser cache it
+    return FileResponse(
+        path,
+        media_type = "audio/wav",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
+@studio_router.delete("/audio/gallery/{audio_id}")
+async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_gallery
+
+    deleted = await asyncio.to_thread(audio_gallery.delete, audio_id)
+    if not deleted:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return {"deleted": True}
+
+
+@studio_router.delete("/audio/gallery")
+async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_gallery
+    removed = await asyncio.to_thread(audio_gallery.clear)
     return {"removed": removed}
 
 

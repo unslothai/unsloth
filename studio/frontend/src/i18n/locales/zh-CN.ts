@@ -81,6 +81,7 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      audio: "音频",
       trainChecking: "正在检查此设备是否支持训练...",
       videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",

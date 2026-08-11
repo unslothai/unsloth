@@ -71,6 +71,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   DownloadSquare01Icon,
@@ -1132,6 +1133,18 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    audio: {
+      icon: AudioWave01Icon,
+      label: t("shell.navigation.audio"),
+      active: pathname === "/audio" || pathname.startsWith("/audio/"),
+      onClick: () => {
+        navigate({ to: "/audio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/audio" }));
       },
     },
     recipes: {
