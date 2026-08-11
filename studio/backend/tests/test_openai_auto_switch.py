@@ -7482,13 +7482,25 @@ def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
 # index, so it must never say yes where the pre-existing resident check says no.
 # Anything it accepts, main would have accepted too: a miss only costs the scan.
 _IDENTITIES = [
-    "unsloth/Muse-GGUF", "/srv/models/unsloth--Muse-GGUF", "/srv/models/Muse.gguf", None,
+    "unsloth/Muse-GGUF",
+    "/srv/models/unsloth--Muse-GGUF",
+    "/srv/models/Muse.gguf",
+    None,
 ]
 _REQUESTS = [
-    "unsloth/Muse-GGUF", "unsloth/muse-gguf", "unsloth/Muse-GGUF:Q4_K_M",
-    "unsloth/Muse-GGUF:Q8_0", "unsloth/Muse-GGUF:latest", "unsloth/Other-GGUF",
-    "/srv/models/Muse.gguf", "/srv/models/MUSE.gguf", "muse.gguf", "../../etc/passwd",
-    "unsloth/", ":Q4_K_M", "unsloth/Muse GGUF",
+    "unsloth/Muse-GGUF",
+    "unsloth/muse-gguf",
+    "unsloth/Muse-GGUF:Q4_K_M",
+    "unsloth/Muse-GGUF:Q8_0",
+    "unsloth/Muse-GGUF:latest",
+    "unsloth/Other-GGUF",
+    "/srv/models/Muse.gguf",
+    "/srv/models/MUSE.gguf",
+    "muse.gguf",
+    "../../etc/passwd",
+    "unsloth/",
+    ":Q4_K_M",
+    "unsloth/Muse GGUF",
 ]
 
 
@@ -7502,9 +7514,9 @@ def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
     backend.is_loaded = identity is not None
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     fast = inference_route._loaded_identity_satisfies(requested)
-    assert not (fast and not inference_route._loaded_satisfies(requested)), (
-        f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
-    )
+    assert not (
+        fast and not inference_route._loaded_satisfies(requested)
+    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
 
 
 def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
