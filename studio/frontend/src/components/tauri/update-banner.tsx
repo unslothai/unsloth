@@ -69,9 +69,8 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
-  // Keyed by the backend release, not the app's SemVer; headings drop the v.
-  const notesTargetVersion =
-    (info?.pypiVersion ?? info?.version)?.replace(LEADING_V, "") ?? null;
+  // The Studio version offered. Not a notes key; it scopes the expanded state.
+  const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
 
@@ -177,8 +176,6 @@ export function UpdateBanner({
               <ReleaseNotesPanel
                 version={notesTargetVersion}
                 open={notesOpen}
-                // Used only if CHANGELOG.md has no section for this version.
-                fallbackMarkdown={info?.body ?? null}
                 className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
