@@ -3744,9 +3744,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     def _flat_binds(target, value):
         # Pair a destructuring target with its value through any nesting:
         # [[loader]] = [[yaml.unsafe_load]] binds loader like a flat one does.
-        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
-            value, (ast.Tuple, ast.List)
-        ):
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
             if len(target.elts) != len(value.elts):
                 return
             for t_el, v_el in zip(target.elts, value.elts):
