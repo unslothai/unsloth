@@ -2553,10 +2553,7 @@ def _audio_probe_target(inspection_target: str) -> str:
         return inspection_target
     try:
         from utils.security import load_scan_target
-
-        repo_id, _load_subdirs = load_scan_target(
-            canonical_model_repo_id(inspection_target), ()
-        )
+        repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(inspection_target), ())
         return repo_id or inspection_target
     except Exception:  # noqa: BLE001 - a probe target must never fail the handler
         return inspection_target
