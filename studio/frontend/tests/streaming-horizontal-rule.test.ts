@@ -229,6 +229,20 @@ test("keeps lines that Streamdown's incomplete-Markdown repair already fixes", (
   assert.equal(stabilizeStreamingMarkdown("**open\n* **", true), "**open\n");
 });
 
+test("does not parse a degenerate punctuation run", () => {
+  // Parsing a long run is quadratic, so a runaway line is left alone. Measured
+  // rather than assumed: unbounded, 100k dashes took over 8 seconds.
+  for (const run of ["-", "*", "_"]) {
+    const markdown = `Intro.\n\n* ${run.repeat(100_000)}`;
+    const started = performance.now();
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+    assert.ok(performance.now() - started < 250);
+  }
+
+  // A run a user could plausibly see is still well inside the bound.
+  assert.equal(stabilizeStreamingMarkdown(`* ${"*".repeat(60)}`, true), "");
+});
+
 test("does not reinterpret adjacent Markdown constructs", () => {
   const unchanged = [
     "- **",

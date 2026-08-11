@@ -14,6 +14,10 @@ import { parseMarkdownIntoBlocks } from "streamdown";
 // through a break frame too. Parsing below decides whether one really renders.
 const AMBIGUOUS_BREAK_ITEM_RE = /^[ \t]*([*+-])[ \t]+[*\-_][*\-_ \t]*$/;
 const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
+// The streaming prefix of a bold list item is a handful of characters. A longer
+// run is degenerate output, and parsing one is quadratic (a 100k dash line costs
+// 8s), so leave it alone rather than freeze the frame.
+const MAX_AMBIGUOUS_LINE = 120;
 
 type MarkdownNode = {
   readonly type: string;
@@ -39,6 +43,9 @@ function ambiguousMarkerIndex(text: string): number {
   const lineStart =
     Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
   const line = text.slice(lineStart);
+  if (line.length > MAX_AMBIGUOUS_LINE) {
+    return -1;
+  }
   const blockquotePrefix = line.match(BLOCKQUOTE_PREFIX_RE)?.[0] ?? "";
   const content = line.slice(blockquotePrefix.length);
   const marker = content.match(AMBIGUOUS_BREAK_ITEM_RE)?.[1];
