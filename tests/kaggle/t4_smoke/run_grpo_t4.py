@@ -8,12 +8,18 @@ first as a FEASIBILITY PROBE. Two things are genuinely in doubt on this
 hardware and this file is built to answer both with evidence.
 
 **Does vLLM run on sm_75 at all, at the version installed?** vLLM selects an
-attention backend by compute capability. Turing has no FlashAttention, so it
-depends on the xformers backend, and that backend has not survived every
-release. A version that dropped it does not fail at install time and does not
-fail at import time: it fails when the engine is constructed, deep inside
-platform selection, which is why the resolved vLLM version, the selected
-backend and the engine-construction outcome are all recorded separately.
+attention backend by compute capability, and Turing has neither
+FlashAttention nor FlashInfer. It used to depend on the xformers backend;
+that backend was deleted in 0.12.0, and at the version this leg installs the
+ladder in `vllm/platforms/cuda.py` falls through the two unavailable ones to
+TRITON_ATTN. The leg names TRITON_ATTN in `VLLM_ATTENTION_BACKEND` rather
+than trusting that order to hold, so a release that reorders or drops it
+shows up here as a red rather than as a silent substitution.
+
+None of that fails at install time or at import time: it fails when the
+engine is constructed, deep inside platform selection. So the resolved vLLM
+version, the backends the build actually offers, the backend that got
+selected and the engine-construction outcome are all recorded separately.
 
 **Does it fit?** The notebook this leg comes from sets `load_in_4bit=False`,
 which is roughly 8GB of 16-bit weights, and then asks a vLLM engine with
@@ -161,8 +167,11 @@ def vllm_facts() -> dict:
     except Exception as exc:  # noqa: BLE001
         facts["platform_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     # The backend enum has moved between releases and its absence is a
-    # finding, not a crash: a build with no xformers backend to name is
-    # exactly the state this leg is probing for.
+    # finding, not a crash. Both names below are recorded rather than
+    # asserted: at the version this leg installs, xformers is EXPECTED to be
+    # missing and TRITON_ATTN is what the ladder is expected to land on, and
+    # the point of writing both down is that "which of those two worlds are
+    # we in" is answerable from the report alone.
     for path in (
         "vllm.attention.backends.registry",
         "vllm.attention.selector",
@@ -178,6 +187,8 @@ def vllm_facts() -> dict:
             facts["backend_enum_source"] = path
             facts["backends_available"] = names
             facts["xformers_backend_present"] = any("XFORMERS" in n.upper() for n in names)
+            facts["triton_attn_backend_present"] = any("TRITON_ATTN" in n.upper() for n in names)
+            facts["requested_backend"] = os.environ.get("VLLM_ATTENTION_BACKEND", "")
             break
     return facts
 
@@ -215,7 +226,7 @@ def train(args) -> dict:
     result["load_seconds"] = round(time.time() - t0, 1)
     result["engine_built"] = True
     result["memory_after_load"] = memory()
-    _log(f"loaded in {result['load_seconds']}s, " f"memory {result['memory_after_load']}")
+    _log(f"loaded in {result['load_seconds']}s, memory {result['memory_after_load']}")
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -301,9 +312,7 @@ def train(args) -> dict:
     ]
     result["completions"] = SEEN_COMPLETIONS[: args.max_steps * 2]
     result["memory_peak"] = memory()
-    _log(
-        f"trained in {result['train_seconds']}s; " f"log {json.dumps(result['log_history'])[:1500]}"
-    )
+    _log(f"trained in {result['train_seconds']}s; log {json.dumps(result['log_history'])[:1500]}")
 
     # Generation through the vLLM path after training. `fast_generate` is
     # what the notebook uses and it is a different code path from the
@@ -342,9 +351,7 @@ def failures_for(result: dict, args) -> list[str]:
 
     stds = [e["reward_std"] for e in history if e.get("reward_std") is not None]
     if not stds:
-        failures.append(
-            "reward_std was never logged, so group diversity could not be established"
-        )
+        failures.append("reward_std was never logged, so group diversity could not be established")
     elif not any(s > 0 for s in stds):
         failures.append(
             f"reward_std was zero on every step ({stds}): every completion in "
@@ -365,7 +372,7 @@ def failures_for(result: dict, args) -> list[str]:
 
     if len(result.get("metrics") or []) != args.max_steps:
         failures.append(
-            f"expected {args.max_steps} logged steps, got " f"{len(result.get('metrics') or [])}"
+            f"expected {args.max_steps} logged steps, got {len(result.get('metrics') or [])}"
         )
 
     if result.get("fast_generate") is None:

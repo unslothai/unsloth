@@ -665,13 +665,29 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
     from run_t4_smoke import main  # noqa: F401  (import proves it loads)
 
     workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
-    dispatch_default = re.search(
-        r"max_steps:\s*\n\s*description:.*\n\s*type: string\n\s*default: '(\d+)'", workflow
-    ).group(1)
-    fallback = re.search(r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}", workflow).group(1)
-    payload = re.search(
-        r'"--max-steps", type=int, default=(\d+)', (SMOKE_DIR / "run_t4_smoke.py").read_text()
-    ).group(1)
+
+    def one(pattern, text, what):
+        found = re.findall(pattern, text)
+        # A pattern that stopped matching is the same failure as a disagreement:
+        # nothing is being compared. pre-commit.ci reformatting `default=10` to
+        # `default = 10` silently emptied this test once already, so the arity
+        # is asserted rather than assumed.
+        assert len(found) == 1, f"{what}: expected exactly one match, got {found}"
+        return found[0]
+
+    dispatch_default = one(
+        r"max_steps:\s*\n\s*description:.*\n\s*type:\s*string\n\s*default:\s*'(\d+)'",
+        workflow,
+        "workflow_dispatch default",
+    )
+    fallback = one(
+        r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}", workflow, "workflow fallback"
+    )
+    payload = one(
+        r'"--max-steps",\s*type\s*=\s*int,\s*default\s*=\s*(\d+)',
+        (SMOKE_DIR / "run_t4_smoke.py").read_text(),
+        "payload argparse default",
+    )
     assert dispatch_default == fallback == payload, (dispatch_default, fallback, payload)
 
 
@@ -1363,7 +1379,7 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
             for index, cell in enumerate(nb["cells"]):
                 missing, bound = _undefined_names("".join(cell["source"]), carried)
                 assert not missing, (
-                    f"{path}/{nb_name} cell {index} reads undefined " f"{sorted(missing)}"
+                    f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
                 )
                 carried = bound
 
@@ -1458,6 +1474,82 @@ def test_the_grpo_leg_installs_vllm_before_anything_pulls_torch(tmp_path):
 
     groups = LEGS["grpo"].install
     assert any("vllm" in item for item in groups[0]), groups
+
+
+# The image's torch, and the ONE fact the grpo leg's version choice rests on.
+# Kaggle's GPU image ships this; every probe that installed a vLLM pinning
+# anything else died before reaching a training step.
+KAGGLE_IMAGE_TORCH = "2.10.0"
+
+# vLLM releases that pin exactly KAGGLE_IMAGE_TORCH, read off PyPI metadata on
+# 2026-08-11. Outside this window the leg replaces the image's torch, which is
+# the whole documented failure mode in legs.UNWIRED["grpo"].
+VLLM_RELEASES_PINNING_IMAGE_TORCH = ("0.17.0", "0.17.1", "0.18.0", "0.18.1", "0.19.0", "0.19.1")
+
+
+def _grpo_vllm_pin() -> str:
+    from legs import LEGS
+
+    pins = [i for g in LEGS["grpo"].install for i in g if i.startswith("vllm==")]
+    assert len(pins) == 1, pins
+    return pins[0].split("==", 1)[1]
+
+
+def test_the_grpo_vllm_pin_does_not_replace_the_images_torch():
+    """The single fact three dead probe sessions cost.
+
+    vLLM pins torch exactly. Installing one that pins anything other than the
+    image's torch means pip swaps torch out while the image's NVIDIA runtime
+    packages -- which belong to the OLD torch -- are still on the path and
+    still look satisfied. The result imports as `libcusparseLt.so.0: cannot
+    open shared object file` or `libtorch_cuda.so: undefined symbol:
+    ncclCommWindowRegister`, tens of gigabytes of download later.
+
+    So this is not a version preference to be bumped with the others. Moving
+    it off this list is a decision to reopen that failure, and doing it needs
+    the list re-derived from PyPI, not widened.
+    """
+    assert _grpo_vllm_pin() in VLLM_RELEASES_PINNING_IMAGE_TORCH
+
+
+def test_the_grpo_leg_shares_the_image_now_that_it_keeps_the_images_torch():
+    """The isolated venv existed only to survive replacing torch. Probe 3
+    spent about an hour of quota resolving a CUDA stack from scratch and
+    never produced payload output; with nothing to replace, there is nothing
+    to isolate from."""
+    from legs import LEGS
+    assert LEGS["grpo"].system_site_packages is True
+
+
+def test_the_grpo_leg_names_its_attention_backend():
+    """sm_75 has no FlashAttention and no FlashInfer, and the xformers
+    backend was deleted in vLLM 0.12.0. TRITON_ATTN is what the ladder in
+    vllm/platforms/cuda.py falls through to, and naming it means a release
+    that reorders or drops it fails loudly here instead of quietly selecting
+    something else on a card nobody is watching."""
+    from legs import LEGS
+    assert LEGS["grpo"].env.get("VLLM_ATTENTION_BACKEND") == "TRITON_ATTN"
+
+
+def test_the_grpo_leg_no_longer_carries_xformers():
+    """Its vLLM backend is gone at this version, so it would be a package
+    nothing selects, resolved against a torch it has opinions about."""
+    from legs import LEGS
+    assert not any("xformers" in i for g in LEGS["grpo"].install for i in g)
+
+
+def test_the_unwired_note_still_matches_the_leg_it_describes():
+    """UNWIRED is the record of what was measured. A version bump that
+    leaves the prose behind turns the one durable artefact of three dead
+    sessions into a misleading one."""
+    from legs import UNWIRED
+
+    note = UNWIRED["grpo"]
+    assert _grpo_vllm_pin() in note
+    assert KAGGLE_IMAGE_TORCH in note
+    # It must still say what is UNKNOWN. An unwired leg whose note reads as
+    # settled is a leg someone wires without running it.
+    assert "STILL UNKNOWN" in note
 
 
 # --------------------------------------------------------------- workflow
@@ -1617,9 +1709,7 @@ def test_the_summary_states_a_refused_reference_rather_than_an_empty_list():
                     "observed_max_steps": 3,
                     "note": "captured at max_steps=10 and this run is 3 steps",
                 },
-                "failures": [
-                    "refusing to band-check against a reference that is not for this run"
-                ],
+                "failures": ["refusing to band-check against a reference that is not for this run"],
             }
         )
     )

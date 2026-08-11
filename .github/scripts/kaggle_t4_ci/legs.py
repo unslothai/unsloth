@@ -194,20 +194,40 @@ LEGS: dict[str, Leg] = {
         files = COMMON_FILES + ("run_gptoss_t4.py",),
         args = ("--max-steps", "3", "--max-seq-length", "1024"),
     ),
-    # NOT WIRED. See UNWIRED below for what three probe sessions found and
-    # what has to change before this can run on quota anyone is watching.
+    # NOT WIRED, but for a smaller reason than it used to be. See UNWIRED
+    # below: the install that killed three probe sessions has been re-solved
+    # and what remains is a runtime question that needs one session on a
+    # real T4.
     "grpo": Leg(
         name = "grpo",
         summary = "Qwen3-4B GRPO through a vLLM engine on the same card",
-        # vLLM FIRST and alone. It pins torch, and letting it resolve after
-        # unsloth means pip walks torch backwards underneath an already
-        # installed stack. The version is pinned because vLLM's support for
-        # sm_75 is a per-release question; see the leg's payload docstring.
-        # xformers travels WITH vllm and in the same resolution. On sm_75
-        # there is no FlashAttention, so the xformers backend is the only
-        # one vLLM can select; installing it afterwards would let the
-        # resolver pick a build against a torch vllm had already replaced.
-        install = (("vllm==0.11.2", "xformers"),) + BASE_INSTALL,
+        # vLLM FIRST and alone, because it pins torch and letting it resolve
+        # after unsloth means pip walks torch underneath an already installed
+        # stack.
+        #
+        # THE VERSION IS CHOSEN TO MATCH THE IMAGE, NOT TO BE OLD. Kaggle's
+        # image ships torch 2.10.0+cu128. vLLM's torch pin by release:
+        #
+        #   0.11.2 .. 0.16.0   torch==2.9.0 / 2.9.1
+        #   0.17.0 .. 0.19.1   torch==2.10.0      <- the whole window
+        #   0.20.0 .. 0.26.0   torch==2.11.0
+        #   0.27.0 ..          torch==2.13.0
+        #
+        # Every other choice REPLACES the image's torch, and replacing it is
+        # what all three probe sessions died of: the image's NVIDIA runtime
+        # packages belong to 2.10 and pip treats them as satisfying the new
+        # torch's pins. 0.19.1 is the newest release that needs no
+        # replacement at all, so the install is a normal one and the leg can
+        # keep `system_site_packages`.
+        #
+        # No xformers. Its vLLM attention backend was deleted in 0.12.0, so
+        # carrying it here would install a package nothing selects. sm_75 has
+        # no FlashAttention and no FlashInfer, and the backend ladder in
+        # vllm/platforms/cuda.py falls through those to TRITON_ATTN, which is
+        # what this leg pins below rather than leaving to a probe order that
+        # moves between releases. sm_75 is still in CUDA_SUPPORTED_ARCHS at
+        # v0.19.1, and fp16 is a supported dtype below capability 8.0.
+        install = (("vllm==0.19.1",),) + BASE_INSTALL,
         entry = "run_grpo_t4.py",
         files = COMMON_FILES + ("run_grpo_t4.py",),
         imports = (
@@ -222,11 +242,19 @@ LEGS: dict[str, Leg] = {
             "unsloth_zoo",
         ),
         args = ("--max-steps", "3"),
-        env = {"UNSLOTH_VLLM_STANDBY": "1"},
-        # See the field's own comment. This leg replaces torch, so it cannot
-        # share a view of the image that still holds torch's old NVIDIA
-        # runtime packages.
-        system_site_packages = False,
+        env = {
+            "UNSLOTH_VLLM_STANDBY": "1",
+            # See the install comment. Named rather than probed so that a
+            # release reordering the ladder shows up as this leg going red,
+            # not as it silently selecting something else.
+            "VLLM_ATTENTION_BACKEND": "TRITON_ATTN",
+        },
+        # Now true, and that is the point of the version choice above: this
+        # leg no longer replaces torch, so it can share the image's view
+        # instead of resolving a whole CUDA stack from scratch. Probe 3 spent
+        # about an hour of quota doing exactly that and never got past venv
+        # creation.
+        system_site_packages = True,
     ),
 }
 
@@ -244,11 +272,13 @@ MAX_LEGS_PER_KERNEL = 2
 # scratch. Every entry must say what was measured.
 UNWIRED: dict[str, str] = {
     "grpo": (
-        "Three probe sessions on 2026-08-11 never reached a training step, "
-        "and none of them failed for a reason to do with sm_75, memory or "
-        "GRPO. `vllm==0.11.2` pins `torch==2.9.0`, so this leg has to REPLACE "
-        "the Kaggle image's torch 2.10.0+cu128, and that is where all three "
-        "died.\n\n"
+        "The install that killed three probe sessions has been re-solved; "
+        "what is left is a runtime question that needs one session on a real "
+        "T4. Wired only after that session.\n\n"
+        "WHAT THE PROBES MEASURED, 2026-08-11. All three died replacing the "
+        "image's torch 2.10.0+cu128 with the torch `vllm==0.11.2` pins "
+        "(2.9.0). None failed for a reason to do with sm_75, memory or "
+        "GRPO.\n"
         "  1. venv seeing the image (kernels 8161ceb9, 7ab727f1): both cards "
         "     died at `import torch` with `libcusparseLt.so.0: cannot open "
         "     shared object file`. pip had treated torch's pinned NVIDIA "
@@ -258,20 +288,38 @@ UNWIRED: dict[str, str] = {
         "     the cusparseLt error cleared and the next one appeared one "
         "     package along, `libtorch_cuda.so: undefined symbol: "
         "     ncclCommWindowRegister`. IDENTICAL on vllm 0.11.2 and 0.15.1, "
-        "     so at this stage it is not a vLLM-version question at all.\n"
+        "     so it was never a vLLM-version question.\n"
         "  3. fully isolated venv, pip resolving the whole stack (kernel "
-        "     9ac72efe): the session produced no payload output past venv "
-        "     creation, Kaggle's own nbconvert of the kernel failed at t=406s "
-        "     with NotJSONError, and the session then sat in RUNNING past its "
-        "     own 5400s ceiling until it was deleted by hand, about an hour "
-        "     of quota later.\n\n"
-        "Wiring it in this state would make the check permanently red and "
-        "would spend the budget doing it. What is still unknown, and needs a "
-        "session that gets further than these did: whether 8GB of 16-bit "
-        "weights plus a vLLM engine plus a LoRA trainer fit in 14.56GB, and "
-        "whether sm_75 still has an attention backend at either vLLM "
-        "version. The payload asserts on reward and reward_std rather than "
-        "loss and is ready for that session; the install is not."
+        "     9ac72efe): no payload output past venv creation, Kaggle's own "
+        "     nbconvert failed at t=406s with NotJSONError, and the session "
+        "     sat in RUNNING past its 5400s ceiling until deleted by hand, "
+        "     about an hour of quota later.\n\n"
+        "WHAT CHANGED. The common cause is one line: vLLM pins torch "
+        "exactly, and no release in the 0.11-0.16 range pins the version the "
+        "image ships. Releases 0.17.0 through 0.19.1 pin `torch==2.10.0`, "
+        "which is the image's torch to the patch, so the leg now installs "
+        "`vllm==0.19.1` and replaces nothing. That removes the cause of 1 "
+        "and 2 outright, and removes the reason probe 3 needed an isolated "
+        "venv at all.\n\n"
+        "WHAT IS STILL UNKNOWN, and is the whole content of the session that "
+        "would wire this:\n"
+        "  a. Whether vLLM 0.19.1 actually starts on sm_75. The static "
+        "     evidence is good and is not a run: 7.5 is still in "
+        "     CUDA_SUPPORTED_ARCHS in v0.19.1's CMakeLists, fp16 is a "
+        "     supported dtype below capability 8.0, and the backend ladder "
+        "     in vllm/platforms/cuda.py is FLASH_ATTN, FLASHINFER, "
+        "     TRITON_ATTN, FLEX_ATTENTION -- the first two are unavailable "
+        "     on Turing, so TRITON_ATTN is what is left, and the leg names "
+        "     it rather than trusting the order. Nobody has run it there.\n"
+        "  b. Whether 8GB of 16-bit weights plus a vLLM engine plus a LoRA "
+        "     trainer fit in 14.56GB. The notebook's own committed output "
+        "     shows vLLM auto-reducing gpu_memory_utilization 0.9 -> 0.69 on "
+        "     a T4, which is evidence it has been done, not that it will be "
+        "     done at this vLLM version.\n\n"
+        "The payload is ready either way: it asserts on reward and "
+        "reward_std rather than loss, because TRL's GRPO loss is ~0 by "
+        "construction at num_iterations=1 and beta=0 and would pass on a "
+        "run that learned nothing."
     ),
 }
 
@@ -319,7 +367,7 @@ def _read_pins(path: Path) -> list[str]:
             out.append(line)
     if not out:
         raise ValueError(
-            f"pin file {path} names no versions at all, so the " f"control leg would pin nothing"
+            f"pin file {path} names no versions at all, so the control leg would pin nothing"
         )
     return out
 
@@ -333,6 +381,6 @@ def resolve(names) -> list[Leg]:
     legs = []
     for name in names:
         if name not in LEGS:
-            raise SystemExit(f"unknown leg {name!r}; known legs are " f"{', '.join(sorted(LEGS))}")
+            raise SystemExit(f"unknown leg {name!r}; known legs are {', '.join(sorted(LEGS))}")
         legs.append(LEGS[name])
     return legs
