@@ -20,6 +20,10 @@ def test_chat_run_reuses_one_thread_metadata_read() -> None:
     assert "const thread = await getStoredChatThread(resolvedThreadId);" in run
     assert "getStoredChatThread(resolvedThreadId).catch(() => undefined)" not in run
 
+    model_ready_boundary = run.index("// Re-read store after auto-load / model-ready wait.")
+    first_shared_read = run.index("const sandboxSessionId = await resolveSandboxSessionId(")
+    assert first_shared_read > model_ready_boundary
+
     for call in (
         "resolveProjectId(\n          resolvedThreadId,\n          readThreadRecord,",
         "resolveSandboxSessionId(\n        resolvedThreadId,\n        readThreadRecord,",

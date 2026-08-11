@@ -3753,13 +3753,6 @@ export function createOpenAIStreamAdapter(
         }
         return;
       }
-      const sandboxSessionId = await resolveSandboxSessionId(
-        resolvedThreadId,
-        readThreadRecord,
-      );
-      const toolConfirmationScopeId = resolvedThreadId
-        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
-        : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
       // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
@@ -3891,6 +3884,13 @@ export function createOpenAIStreamAdapter(
         : liveRuntime;
       const { params } = runtime;
       await persistResolvedQueuedModel(params.checkpoint);
+      const sandboxSessionId = await resolveSandboxSessionId(
+        resolvedThreadId,
+        readThreadRecord,
+      );
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
       const {
         supportsTools,
         toolsEnabled,
