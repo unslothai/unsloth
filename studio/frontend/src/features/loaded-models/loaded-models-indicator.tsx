@@ -61,9 +61,12 @@ const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   stt: Mic01Icon,
 };
 
-// Nothing to report on the auth and onboarding screens. Desktop auto-authenticates,
-// so only the browser needs the token check: polling before one exists is all 401s.
+// Chat already exposes the selected model and its eject action, so repeating the
+// global card there adds noise. Nothing is shown on auth/onboarding screens either.
+// Desktop auto-authenticates, so only the browser needs the token check: polling
+// before one exists is all 401s.
 const HIDDEN_ROUTES = new Set([
+  "/chat",
   "/login",
   "/signup",
   "/change-password",
