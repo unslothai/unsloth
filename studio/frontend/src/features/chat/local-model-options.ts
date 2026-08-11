@@ -6,23 +6,23 @@ import type { LoraModelOption } from "@/features/model-picker/components/model-s
 
 /** The device-inventory sources Chat lists as local models.
  *
- * `ollama` matters: the compat endpoint Chat used to call reported Ollama pulls as
- * `custom`, while the shared inventory reports their own source, so leaving it out drops
- * every Ollama model from the selector.
+ * Deliberately the same set as the picker's `PICKER_LOCAL_SOURCES`, and `ollama` is
+ * deliberately absent from both. The compat endpoint Chat used to call materialized a
+ * `.gguf` link eagerly and handed back a loadable path, while `/api/hub/local` scans
+ * read-only and returns an opaque `ollama-manifest:` reference that only
+ * `materialize_ollama_model_ref` can resolve. Nothing calls that yet, so offering these
+ * rows would produce entries that fail on selection rather than load.
  */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
   "models_dir",
   "custom",
-  "ollama",
 ]);
 
 function baseModelLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
-    case "ollama":
-      return "Ollama";
     case "custom":
       return "Custom Folders";
     default:
