@@ -10,7 +10,8 @@ REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src"
 PROVIDERS_API = FRONTEND / "features/chat/api/providers-api.ts"
 SYNC_PROVIDERS = FRONTEND / "features/chat/sync-external-providers.ts"
-CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+CREDENTIAL_BOOTSTRAP = FRONTEND / "features/credentials/bootstrap.ts"
+APP_ROOT = FRONTEND / "app/routes/__root.tsx"
 PROVIDERS_DB = REPO / "studio/backend/storage/providers_db.py"
 PROVIDERS_MODELS = REPO / "studio/backend/models/providers.py"
 
@@ -39,7 +40,9 @@ def test_frontend_sync_backfills_local_models_to_backend():
     source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
     assert "updateProviderConfig" in source
     assert "needsModelBackfill" in source
-    assert "Promise.allSettled(backfillTasks)" in source
+    # settleTasksIfCurrent is the Promise.allSettled this used to inline (#8299); it
+    # additionally drops the writes when the auth session has moved on.
+    assert "settleTasksIfCurrent(backfillTasks" in source
 
 
 def test_frontend_sync_preserves_local_provider_options():
@@ -49,10 +52,13 @@ def test_frontend_sync_preserves_local_provider_options():
     assert "openaiContainerTtlMinutes" in source
 
 
-def test_chat_page_hydrates_connections_on_startup():
-    source = CHAT_PAGE.read_text(encoding = "utf-8")
+def test_app_hydrates_connections_on_startup():
+    # #8299 moved startup hydration off the chat page into the credential bootstrap,
+    # which the app root runs before releasing content.
+    source = CREDENTIAL_BOOTSTRAP.read_text(encoding = "utf-8")
     assert "syncExternalProvidersFromBackend" in source
-    assert "await hydratePersistedSettings()" in source
+    assert "runCredentialBootstrap" in source
+    assert "bootstrapPersistedCredentials" in APP_ROOT.read_text(encoding = "utf-8")
 
 
 def test_providers_api_sends_models_to_backend():
