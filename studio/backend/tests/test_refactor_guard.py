@@ -85,13 +85,32 @@ def test_every_string_patch_target_still_resolves():
     The test then passes while exercising unpatched code, which is the quiet failure this
     check exists to make loud.
     """
+    live = refactor_guard.patch_targets()
     broken = [
         entry
-        for entry in refactor_guard.unresolvable_patch_targets()
+        for entry in refactor_guard.unresolvable_patch_targets(live)
         if not entry.get("environment")
     ]
 
     assert not broken, "\n".join(f"{e['target']}: {e['reason']} ({e['tests'][0]})" for e in broken)
+
+
+def test_the_recorded_patch_target_inventory_still_matches():
+    """Resolving is not enough: the recorded routing has to be the live routing.
+
+    A patch string repointed at a different but still resolvable namespace, or a patch
+    dropped during a refactor, resolves fine. CI runs pytest and nothing invokes the
+    ``verify`` CLI, so the comparison has to live here to run at all.
+    """
+    recorded = {
+        target: sorted(tests)
+        for target, tests in refactor_guard._read("patch_targets.json").items()
+    }
+    live = {target: sorted(tests) for target, tests in refactor_guard.patch_targets().items()}
+
+    problems = refactor_guard._diff("patch-targets", recorded, live)
+
+    assert not problems, "\n".join(problems[:20])
 
 
 def test_a_deleted_patch_target_is_not_written_off_as_environmental():

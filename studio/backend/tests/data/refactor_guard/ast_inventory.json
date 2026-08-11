@@ -53,6 +53,9 @@
       "_BIG_ENDIAN_GGUF_FILENAME_RE": {
         "kind": "assign"
       },
+      "_BOOTSTRAP_SWA_DEFAULTS": {
+        "kind": "assign"
+      },
       "_CANONICAL_SPEC_MODES": {
         "kind": "assign"
       },
@@ -155,6 +158,9 @@
       "_LLAMA_ARG_TRUE_VALUES": {
         "kind": "assign"
       },
+      "_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
       "_LOADS_IN_FLIGHT_LOCK": {
         "kind": "assign"
       },
@@ -171,6 +177,9 @@
         "kind": "assign"
       },
       "_OFFLOADED_LAYERS_RE": {
+        "kind": "assign"
+      },
+      "_OVERRIDE_TENSOR_FLAGS": {
         "kind": "assign"
       },
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
@@ -192,6 +201,9 @@
         "kind": "assign"
       },
       "_SPEC_ENV_VARS": {
+        "kind": "assign"
+      },
+      "_SWA_CACHE": {
         "kind": "assign"
       },
       "_SWA_CACHE_LOCK": {

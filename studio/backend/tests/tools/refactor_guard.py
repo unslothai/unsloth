@@ -114,6 +114,11 @@ def ast_inventory() -> dict:
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             symbols[target.id] = {"kind": "assign"}
+                # An annotated global (``_SWA_CACHE: Optional[dict] = None``) is an
+                # AnnAssign, not an Assign, and would otherwise be missing from the
+                # inventory entirely.
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                    symbols[node.target.id] = {"kind": "assign"}
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 symbols[node.name] = {
@@ -139,6 +144,8 @@ def ast_inventory() -> dict:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         symbols[target.id] = {"kind": "assign"}
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                symbols[node.target.id] = {"kind": "assign"}
         entry = {"symbols": symbols}
         if detailed:
             entry["regexes"] = _pattern_literals(tree)
