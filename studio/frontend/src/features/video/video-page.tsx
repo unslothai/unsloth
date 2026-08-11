@@ -1272,6 +1272,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // returned by no page at all.
       const result = await fetchNextPage(
         () => galleryCache.videos.length,
+        () => stripEpoch.current,
         (offset) => getVideoGallery(offset, PAGE_SIZE),
       );
       if (!result) return;
@@ -1349,6 +1350,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   const handleDelete = useCallback(
     async (id: string) => {
+      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
+      // shelf when it processes this, and a page read inside that round trip would see the
+      // shortened list at the old offset with nothing locally changed to reveal it.
+      stripEpoch.current += 1;
       try {
         await deleteGalleryVideo(id);
       } catch (err) {
@@ -1484,6 +1489,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   const handleArchive = useCallback(
     async (id: string) => {
+      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
+      // shelf when it processes this, and a page read inside that round trip would see the
+      // shortened list at the old offset with nothing locally changed to reveal it.
+      stripEpoch.current += 1;
       try {
         await setGalleryVideoFlags(id, { archived: true });
       } catch (err) {

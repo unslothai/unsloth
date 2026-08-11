@@ -251,16 +251,24 @@ export async function fetchWhileStable<T>(
  * `count()` is read again after the response, from live state rather than a captured number, and
  * the fetch is retried at the corrected offset when it moved. Same shape as the archived list's
  * `showMore`, which had this bug first.
+ *
+ * `token()` is the second half, and the count alone is not enough without it. The server shelf
+ * shortens when it PROCESSES the archive, while the count only moves when that response gets back
+ * and the row is dropped locally. A page read inside that gap sees the shortened shelf at the old
+ * offset and the count agrees with itself, so the boundary record is skipped with nothing to
+ * notice. Callers bump the token when the request STARTS, which covers the whole round trip.
  */
 export async function fetchNextPage<T>(
   count: () => number,
+  token: () => number,
   fetchPage: (offset: number) => Promise<T>,
   maxAttempts: number = PAGE_MAX_ATTEMPTS,
 ): Promise<{ page: T; offset: number } | null> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const offset = count();
+    const before = token();
     const page = await fetchPage(offset);
-    if (count() === offset) return { page, offset };
+    if (count() === offset && token() === before) return { page, offset };
   }
   return null;
 }

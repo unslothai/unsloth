@@ -304,6 +304,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   );
 
   async function handleRestore(row: ArchivedRow) {
+    // Counted BEFORE the request, not just when the row is dropped: the server shortens the
+    // shelf when it processes this, and a page read inside that round trip would see the shortened
+    // list at the offset it captured, with nothing locally changed for showMore to notice.
+    mutations.current += 1;
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
@@ -317,6 +321,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
 
   async function handleDelete(row: ArchivedRow) {
+    // Counted BEFORE the request, not just when the row is dropped: the server shortens the
+    // shelf when it processes this, and a page read inside that round trip would see the shortened
+    // list at the offset it captured, with nothing locally changed for showMore to notice.
+    mutations.current += 1;
     try {
       if (isImages) await deleteGalleryImage(row.id);
       else await deleteGalleryVideo(row.id);

@@ -312,9 +312,11 @@ test("a page fetch re-reads its offset when the shelf shortens mid request", asy
   // The server's list, newest first. The client has the first two loaded.
   let shelf = ["e", "d", "c", "b", "a"];
   let loaded = ["e", "d"];
+  let epoch = 0;
   const requested: number[] = [];
   const result = await fetchNextPage(
     () => loaded.length,
+    () => epoch,
     async (offset) => {
       requested.push(offset);
       // The archive lands while the first request is in flight: "d" leaves the shelf, so every
@@ -338,6 +340,7 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
   let calls = 0;
   const result = await fetchNextPage(
     () => loaded,
+    () => 0,
     async () => {
       calls += 1;
       loaded -= 1; // something mutates the list on every single response
@@ -410,4 +413,36 @@ test("a gallery load gives up rather than overwriting a strip that keeps changin
   // Null, so the caller keeps its optimistic state, which is what the server already agreed to.
   assert.equal(result, null);
   assert.equal(fetches, PAGE_MAX_ATTEMPTS);
+});
+
+test("a page fetch is refused when an archive is merely IN FLIGHT", async () => {
+  // The gap the count alone cannot see: the server shortens the shelf when it PROCESSES the
+  // archive, while the local count only moves when that response gets back and the row is
+  // dropped. A page read inside that round trip finds the shortened shelf at an offset the count
+  // still agrees with, so only a token bumped when the request STARTS reveals it.
+  const full = ["e", "d", "c", "b", "a"];
+  const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
+  let loaded = 2;
+  let epoch = 0;
+  const seen: string[][] = [];
+  const result = await fetchNextPage(
+    () => loaded,
+    () => epoch,
+    async (offset) => {
+      if (seen.length === 0) {
+        epoch += 1; // the user clicks Archive while this request is in flight
+        const page = shortened.slice(offset, offset + 2);
+        seen.push(page);
+        return page; // ["b", "a"] -- "c" would be skipped for good
+      }
+      loaded = 1; // the archive has landed locally by now
+      const page = shortened.slice(offset, offset + 2);
+      seen.push(page);
+      return page;
+    },
+  );
+  assert.deepEqual(seen[0], ["b", "a"], "the first read did skip the boundary record");
+  assert.ok(result);
+  assert.deepEqual(result.page, ["c", "b"], "the retry picks the skipped record back up");
+  assert.equal(full.length, 5);
 });
