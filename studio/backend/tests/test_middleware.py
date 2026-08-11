@@ -541,6 +541,25 @@ class TestSecurityHeadersMiddleware:
             not in TestClient(main_module.app).get("/redoc").headers["content-security-policy"]
         )
 
+    def test_docs_urls_follow_the_root_path(self, main_module):
+        # Behind a path-stripping proxy the browser sees a prefix the server never does, so
+        # every URL the pages emit has to carry it, as FastAPI's own docs routes do.
+        c = TestClient(main_module.app, root_path = "/studio")
+        docs = c.get("/docs").text
+        assert "'/studio/openapi.json'" in docs
+        assert "'/studio/docs/oauth2-redirect'" in docs
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "favicon-32x32.png"):
+            assert f"/studio/docs-assets/{name}" in docs, name
+
+        redoc = c.get("/redoc").text
+        assert 'spec-url="/studio/openapi.json"' in redoc
+        assert "/studio/docs-assets/redoc.standalone.js" in redoc
+
+        # Unprefixed deployments, which is every default Studio, stay unprefixed.
+        plain = TestClient(main_module.app).get("/docs").text
+        assert "/studio/" not in plain
+        assert "'/openapi.json'" in plain
+
     def test_swagger_nonce_survives_a_reflowed_upstream_template(self, main_module):
         # fastapi is unpinned, so the tag is matched by what follows it. A version that
         # reflows the page or drops the comment must still get the nonce, not a 500.

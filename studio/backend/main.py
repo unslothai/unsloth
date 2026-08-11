@@ -1007,15 +1007,24 @@ if _DOCS_ASSETS_DIR.is_dir():
         name = "docs-assets",
     )
 
+    def _docs_url(request: Request, path: str) -> str:
+        """Prefix with the mount point, as FastAPI's own docs routes do.
+
+        Behind a path-stripping proxy (or `uvicorn --root-path`) the browser sees the prefix
+        the server never does, so an unprefixed URL escapes the mapping and 404s.
+        """
+        return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
+
     @app.get("/docs", include_in_schema = False)
-    async def swagger_ui_html():
+    async def swagger_ui_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
         html = get_swagger_ui_html(
-            openapi_url = app.openapi_url,
+            openapi_url = _docs_url(request, app.openapi_url),
             title = f"{app.title} - Swagger UI",
-            oauth2_redirect_url = "/docs/oauth2-redirect",
-            swagger_js_url = f"{_DOCS_ASSETS_URL}/swagger-ui-bundle.js",
-            swagger_css_url = f"{_DOCS_ASSETS_URL}/swagger-ui.css",
-            swagger_favicon_url = f"{_DOCS_ASSETS_URL}/favicon-32x32.png",
+            oauth2_redirect_url = _docs_url(request, "/docs/oauth2-redirect"),
+            swagger_js_url = f"{assets}/swagger-ui-bundle.js",
+            swagger_css_url = f"{assets}/swagger-ui.css",
+            swagger_favicon_url = f"{assets}/favicon-32x32.png",
         ).body.decode()
         return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
 
@@ -1026,14 +1035,15 @@ if _DOCS_ASSETS_DIR.is_dir():
         return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
 
     @app.get("/redoc", include_in_schema = False)
-    async def redoc_html():
+    async def redoc_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
         # ReDoc's bundle carries no inline init, so this one needs no nonce.
         return HTMLResponse(
             get_redoc_html(
-                openapi_url = app.openapi_url,
+                openapi_url = _docs_url(request, app.openapi_url),
                 title = f"{app.title} - ReDoc",
-                redoc_js_url = f"{_DOCS_ASSETS_URL}/redoc.standalone.js",
-                redoc_favicon_url = f"{_DOCS_ASSETS_URL}/favicon-32x32.png",
+                redoc_js_url = f"{assets}/redoc.standalone.js",
+                redoc_favicon_url = f"{assets}/favicon-32x32.png",
             ).body.decode()
         )
 
