@@ -4431,9 +4431,7 @@ def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, mo
     repo_dir = tmp_path / "models--BlackStone-Yu--Z-Image-Turbo-GGUF"
     _arch_gguf(repo_dir / "Qwen3-4B-UD-Q6_K_XL.gguf", "qwen3")
     _arch_gguf(repo_dir / "z_image_turbo-Q6_K.gguf", "lumina2")
-    repo_info = SimpleNamespace(
-        repo_id = "BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path = str(repo_dir)
-    )
+    repo_info = SimpleNamespace(repo_id = "BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path = str(repo_dir))
 
     answers = _both_walk_orders(
         repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
