@@ -55,6 +55,14 @@ function Install-UnslothStudio {
     # shadows the caller's table for this scope and below only.
     $PSDefaultParameterValues = $_UnslothKeptDefaults
 
+    # Windows PowerShell 5.1 redraws the Invoke-WebRequest progress bar on every read, and the
+    # redraw, not the link, sets the rate: on a windows-latest runner the python.org installer
+    # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
+    # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
+    # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
+    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    $ProgressPreference = 'SilentlyContinue'
+
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
     # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
     # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
@@ -3466,11 +3474,12 @@ exit 0
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
     # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false. Defined above the Intel scan, since
-    # PowerShell binds a function only when its definition runs.
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = "" }
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
         if (-not $PythonExe -or -not $Code) { return $result }
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -3485,13 +3494,20 @@ exit 0
             $errTask = $proc.StandardError.ReadToEndAsync()
             if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
                 try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
                 return $result
             }
             $result.Output = $outTask.GetAwaiter().GetResult()
-            [void]$errTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
             $result.Ok = ($proc.ExitCode -eq 0)
             return $result
-        } catch { return $result }
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
     }
 
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
@@ -4626,6 +4642,15 @@ exit 0
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
+    # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
+    # installer put it there -- the migrated-venv arm above installs unsloth only and never
+    # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
+    # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
+    # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
+    $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
+        [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
+    }
     # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
     $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
     # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from

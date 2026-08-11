@@ -18,6 +18,7 @@ mod native_intents;
 mod native_path_policy;
 mod preflight;
 mod process;
+mod process_identity;
 mod update;
 mod windows_job;
 mod x11_threads;
