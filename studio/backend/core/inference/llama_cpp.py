@@ -3168,11 +3168,14 @@ class LlamaCppBackend:
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
-        # Set when speculative decoding was skipped because the capability probe did not
-        # answer, as opposed to answering "no". Kept apart from _spec_fallback_reason so
-        # the UI banner stays suppressed for a probe that simply has not resolved yet,
-        # while _runtime_matches_intent can still tell a reload is worth retrying (#8317).
-        self._spec_probe_inconclusive: bool = False
+        # Set when THIS load ran against a capability probe that did not answer, as
+        # opposed to one that answered "no". An inconclusive probe reports every
+        # capability as absent, so it silently degrades whatever depends on one:
+        # speculative decoding, the DSpark sidecar, and the --kv-unified parallel-slot
+        # clamp. Kept apart from _spec_fallback_reason, which drives a UI banner that
+        # stays suppressed for a probe that simply has not resolved yet, so that
+        # _runtime_matches_intent can still tell a reload is worth retrying (#8317).
+        self._capability_probe_inconclusive: bool = False
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
         # Set after an auto-Vulkan crash recovers with all devices disabled.
@@ -3981,22 +3984,25 @@ class LlamaCppBackend:
             and not spec_owned_by_extra_args
         ):
             return False
-        # Same idea for a probe that never answered (#8317). The load fell back to no
-        # speculative decoding on an inconclusive `llama-server --help`, and the retry
-        # window that lets the probe recover is worth nothing if Apply keeps deduping
-        # against the fallback: nothing would ever re-probe, so MTP would stay off for the
-        # life of the process, which is the symptom the retry window exists to end.
-        # Gated on the probe having actually turned conclusive, so a binary that hangs for
-        # a permanent reason still dedupes instead of relaunching an identical server
-        # forever. Cheap: the probe is cached, and this only runs after an inconclusive one.
-        if (
-            self._spec_probe_inconclusive
-            and speculative_type in ("auto", "mtp", "mtp+ngram")
-            and not spec_owned_by_extra_args
+        # A runtime degraded by a probe that never answered has to be retried once the
+        # probe starts answering (#8317). The retry window lets the probe recover, but
+        # that is worth nothing if Apply keeps deduping against the degraded runtime:
+        # nothing would re-probe, so the degradation would outlive its cause for the life
+        # of the process, which is the symptom the window exists to end. Not just
+        # speculative decoding -- an inconclusive probe reports every capability absent,
+        # so it also drops the DSpark sidecar and clamps the parallel slots, and
+        # _requested_n_parallel deliberately stores the ASK, so the clamp compares equal
+        # and would never be revisited.
+        #
+        # One reload, not a loop: the reload records the now-conclusive probe, clearing
+        # this flag, so a build that really lacks these capabilities re-derives the same
+        # degraded runtime and dedupes from then on. Cheap: the probe is cached, and this
+        # only runs after an inconclusive one.
+        if self._capability_probe_inconclusive and not self.probe_server_capabilities().get(
+            "mtp_probe_inconclusive"
         ):
-            refreshed = self.probe_server_capabilities()
-            if not refreshed.get("mtp_probe_inconclusive") and refreshed.get("supports_mtp"):
-                return False
+            return False
+
         compared_draft_n_max = self._spec_draft_n_max
         if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
             # The MTP-free recovery clears the runtime value but retains the
@@ -9489,6 +9495,16 @@ class LlamaCppBackend:
                 bool(gpu_ids) and not is_vulkan_backend and self._backend_lacks_gpu_lib(binary)
             )
 
+            # Remember whether the probe behind every capability gate below actually
+            # answered. Recorded once here rather than at each gate, because an
+            # inconclusive probe degrades all of them at once and the reuse check has to
+            # know that this runtime is degraded for a reason that may since have lifted.
+            self._capability_probe_inconclusive = bool(
+                self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
+                if binary
+                else False
+            )
+
             # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N, so on a
             # build lacking the flag the default of 4 would quarter every context window for a
             # feature it cannot serve: fall back to one slot. Ahead of the KV estimates so the
@@ -12788,7 +12804,6 @@ class LlamaCppBackend:
         self._spec_draft_n_max = None
         self._speculative_type = None
         self._spec_fallback_reason = None
-        self._spec_probe_inconclusive = False
 
         # Canonical UI-facing requested mode (legacy values mapped via
         # _canonicalize_spec_mode).
@@ -12952,7 +12967,6 @@ class LlamaCppBackend:
                 self._speculative_type = "default"
                 if inconclusive:
                     self._spec_fallback_reason = None
-                    self._spec_probe_inconclusive = True
                 else:
                     self._spec_fallback_reason = "binary_no_mtp"
                 return False

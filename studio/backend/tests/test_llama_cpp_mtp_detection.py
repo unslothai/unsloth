@@ -2826,7 +2826,7 @@ def _inconclusive_fallback_backend():
     return _mtp_backend(
         _speculative_type = "default",
         _spec_fallback_reason = None,
-        _spec_probe_inconclusive = True,
+        _capability_probe_inconclusive = True,
         _gguf_path = None,
     )
 
@@ -2883,8 +2883,10 @@ def test_apply_still_dedupes_while_the_probe_keeps_hanging(monkeypatch):
     assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is True
 
 
-def test_apply_still_dedupes_when_the_build_really_has_no_mtp(monkeypatch):
-    # Conclusive and negative is a permanent answer, same as binary_no_mtp: no reload.
+def test_apply_reloads_once_even_when_the_build_turns_out_to_have_no_mtp(monkeypatch):
+    # Conclusive-and-negative still earns exactly one reload: the degradation has to be
+    # re-derived from a real answer rather than from a probe that never returned. That
+    # reload records the conclusive probe, clearing the flag, so it does not loop.
     _stub_caps(
         monkeypatch,
         found = True,
@@ -2892,4 +2894,30 @@ def test_apply_still_dedupes_when_the_build_really_has_no_mtp(monkeypatch):
         supports_mtp = False,
         mtp_probe_inconclusive = False,
     )
-    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is True
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+    # Cleared flag (what the reload leaves behind) dedupes from then on.
+    settled = _mtp_backend(_speculative_type = "default", _gguf_path = None)
+    assert settled._capability_probe_inconclusive is False
+    assert _matches(settled, **_same_settings_apply()) is True
+
+
+def test_a_slot_clamp_from_an_inconclusive_probe_is_also_retried(monkeypatch):
+    # An inconclusive probe reports --kv-unified absent too, so n_parallel is clamped to
+    # 1 while _requested_n_parallel keeps the ASK. The two then compare equal and Apply
+    # would never restore the slots once the probe recovers. No speculative decoding is
+    # involved, so the spec-only version of this guard missed it entirely.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        supports_kv_unified = True,
+        mtp_probe_inconclusive = False,
+    )
+    clamped = _mtp_backend(
+        _speculative_type = "default",
+        _capability_probe_inconclusive = True,
+        _requested_n_parallel = 4,
+        _gguf_path = None,
+    )
+    assert _matches(clamped, n_parallel = 4, **_same_settings_apply()) is False
