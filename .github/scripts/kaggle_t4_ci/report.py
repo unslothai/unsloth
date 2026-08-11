@@ -27,16 +27,16 @@ from pathlib import Path
 
 
 def _summary(text: str) -> None:
-    print(text, flush=True)
+    print(text, flush = True)
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding = "utf-8") as fh:
             fh.write(text + "\n")
 
 
 def _notice(level: str, title: str, message: str) -> None:
     flat = message.replace("\n", " ").replace("::", ":")
-    print(f"::{level} title={title}::{flat}", flush=True)
+    print(f"::{level} title={title}::{flat}", flush = True)
 
 
 def _fmt_metric(value) -> str:
@@ -52,50 +52,63 @@ def _fmt_metric(value) -> str:
 
 
 def render(report: dict) -> list[str]:
-    lines = [f"#### payload `{report.get('label', '?')}`  "
-             f"model `{report.get('model', '?')}`", ""]
+    lines = [
+        f"#### payload `{report.get('label', '?')}`  " f"model `{report.get('model', '?')}`",
+        "",
+    ]
     env = report.get("environment", {})
     if env:
         lines.append(
             f"GPU `{env.get('gpu_name', '?')}` ({env.get('gpu_capability', '?')}, "
             f"{env.get('gpu_total_gb', '?')} GB) - torch `{env.get('torch', '?')}` "
             f"- transformers `{env.get('transformers', '?')}` "
-            f"- trl `{env.get('trl', '?')}` - unsloth `{env.get('unsloth', '?')}`")
+            f"- trl `{env.get('trl', '?')}` - unsloth `{env.get('unsloth', '?')}`"
+        )
         lines.append("")
 
     lines += ["| step | loss | grad_norm |", "| --- | --- | --- |"]
     for entry in report.get("metrics", []):
-        lines.append(f"| {entry.get('step')} | {_fmt_metric(entry.get('loss'))} "
-                     f"| {_fmt_metric(entry.get('grad_norm'))} |")
+        lines.append(
+            f"| {entry.get('step')} | {_fmt_metric(entry.get('loss'))} "
+            f"| {_fmt_metric(entry.get('grad_norm'))} |"
+        )
     lines.append("")
 
     repro = report.get("reproducibility")
     if repro:
         if repro.get("identical"):
-            lines.append("Reproducibility: two fresh processes agreed "
-                         "**bitwise** on every step.")
+            lines.append(
+                "Reproducibility: two fresh processes agreed **bitwise** on every step."
+            )
         else:
             lines.append(
                 f"Reproducibility: **DIFFERED** from step "
                 f"{repro.get('first_diff_step')} "
-                f"(max abs {repro.get('max_abs_diff')}).")
+                f"(max abs {repro.get('max_abs_diff')})."
+            )
         lines.append("")
 
     for run in report.get("runs", []):
-        lines.append(f"Cycle {run.get('run_index')} generated: "
-                     f"`{run.get('generated', '')}` - canary "
-                     f"{'found' if run.get('canary_found') else '**MISSING**'}")
+        lines.append(
+            f"Cycle {run.get('run_index')} generated: "
+            f"`{run.get('generated', '')}` - canary "
+            f"{'found' if run.get('canary_found') else '**MISSING**'}"
+        )
     lines.append("")
 
     ref = report.get("reference_check")
     if ref:
         status = ref.get("status")
         if status == "ok":
-            lines.append(f"Reference band: within tolerance "
-                         f"(worst relative deviation {ref.get('worst_rel')}).")
+            lines.append(
+                f"Reference band: within tolerance "
+                f"(worst relative deviation {ref.get('worst_rel')})."
+            )
         elif status == "absent":
-            lines.append("Reference band: no committed reference for this "
-                         "configuration, so nothing was compared.")
+            lines.append(
+                "Reference band: no committed reference for this "
+                "configuration, so nothing was compared."
+            )
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
         lines.append("")
@@ -107,8 +120,15 @@ def render(report: dict) -> list[str]:
     return lines
 
 
-SENTINELS = ("KAGGLE_T4_CI_DRIVER", "KAGGLE_T4_CI_PAYLOAD", "Error",
-             "error:", "Traceback", "SystemExit", "papermill.exceptions")
+SENTINELS = (
+    "KAGGLE_T4_CI_DRIVER",
+    "KAGGLE_T4_CI_PAYLOAD",
+    "Error",
+    "error:",
+    "Traceback",
+    "SystemExit",
+    "papermill.exceptions",
+)
 
 
 def kernel_log_text(evidence: Path) -> str:
@@ -122,15 +142,14 @@ def kernel_log_text(evidence: Path) -> str:
     path = evidence / "kernel.log"
     if not path.exists():
         return ""
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_text(encoding = "utf-8", errors = "replace")
     try:
         records = json.loads(raw)
     except json.JSONDecodeError:
         return raw
     if not isinstance(records, list):
         return raw
-    return "".join(r.get("data", "") for r in records
-                   if isinstance(r, dict))
+    return "".join(r.get("data", "") for r in records if isinstance(r, dict))
 
 
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
@@ -145,28 +164,28 @@ def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
     text = kernel_log_text(evidence)
     if not text:
         return []
-    hits = [line.rstrip() for line in text.splitlines()
-            if any(s in line for s in SENTINELS)]
+    hits = [line.rstrip() for line in text.splitlines() if any(s in line for s in SENTINELS)]
     return hits[-limit:]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evidence", required=True)
-    ap.add_argument("--expect", type=int, default=2)
+    ap.add_argument("--evidence", required = True)
+    ap.add_argument("--expect", type = int, default = 2)
     args = ap.parse_args()
 
     evidence = Path(args.evidence)
     result_file = evidence / "launch_result.json"
     if not result_file.exists():
-        _summary("### Kaggle T4 smoke\n\nNo launch result was written. The "
-                 "launcher did not get far enough to record anything, so "
-                 "nothing is known about the code under test.")
-        _notice("warning", "Kaggle T4 smoke did not run",
-                "no launch_result.json was produced")
+        _summary(
+            "### Kaggle T4 smoke\n\nNo launch result was written. The "
+            "launcher did not get far enough to record anything, so "
+            "nothing is known about the code under test."
+        )
+        _notice("warning", "Kaggle T4 smoke did not run", "no launch_result.json was produced")
         return 0
 
-    result = json.loads(result_file.read_text(encoding="utf-8"))
+    result = json.loads(result_file.read_text(encoding = "utf-8"))
     verdict = result.get("verdict", "infra")
     reason = result.get("reason", "")
     reports = result.get("reports", [])
@@ -180,8 +199,10 @@ def main() -> int:
 
     lines = [header, "", reason, ""]
     if result.get("slug"):
-        lines.append(f"Kernel: `{result['slug']}` (private), terminal state "
-                     f"`{result.get('kernel_state')}`.")
+        lines.append(
+            f"Kernel: `{result['slug']}` (private), terminal state "
+            f"`{result.get('kernel_state')}`."
+        )
         lines.append("")
     for report in reports:
         lines += render(report)
@@ -189,8 +210,11 @@ def main() -> int:
     if verdict in ("infra", "partial") and len(reports) < args.expect:
         hits = diagnostic_lines(evidence)
         if hits:
-            lines += ["<details><summary>Kernel log, filtered</summary>", "",
-                      "```"] + hits + ["```", "", "</details>", ""]
+            lines += (
+                ["<details><summary>Kernel log, filtered</summary>", "", "```"]
+                + hits
+                + ["```", "", "</details>", ""]
+            )
 
     if verdict == "infra":
         lines += [

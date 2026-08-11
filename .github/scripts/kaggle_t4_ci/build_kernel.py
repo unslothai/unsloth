@@ -68,13 +68,19 @@ def _code_cell(source: str) -> dict:
         "id": uuid.uuid4().hex[:8],
         "metadata": {},
         "outputs": [],
-        "source": source.splitlines(keepends=True),
+        "source": source.splitlines(keepends = True),
     }
 
 
-def build_payload_notebook(payload_dir: Path, *, label: str,
-                           unsloth_ref: str, zoo_ref: str,
-                           smoke_args: str, reference: str) -> dict:
+def build_payload_notebook(
+    payload_dir: Path,
+    *,
+    label: str,
+    unsloth_ref: str,
+    zoo_ref: str,
+    smoke_args: str,
+    reference: str,
+) -> dict:
     """A single-GPU notebook that installs Unsloth and runs the smoke test."""
     files = {}
     for name in PAYLOAD_FILES:
@@ -87,7 +93,7 @@ def build_payload_notebook(payload_dir: Path, *, label: str,
         if ref_path.exists():
             files[f"references/{reference}"] = _encode_bytes(ref_path.read_bytes())
 
-    install = f'''# Install the code under test.
+    install = f"""# Install the code under test.
 #
 # unsloth_zoo first and WITH deps, then unsloth --no-deps on top, so the
 # editable-style overlay does not fight the dependency set zoo resolved.
@@ -124,9 +130,9 @@ pip("--no-deps", "unsloth @ git+https://github.com/unslothai/unsloth@{unsloth_re
 # The 4-bit load this test performs cannot happen without it.
 pip("bitsandbytes")
 print("{PAYLOAD_SENTINEL} install done", flush=True)
-'''
+"""
 
-    verify = f'''# Fail fast, and fail legibly.
+    verify = f"""# Fail fast, and fail legibly.
 #
 # Without this, a missing dependency surfaces as a traceback buried in a
 # child process's captured stdout, forty minutes and one GPU session later.
@@ -172,9 +178,9 @@ print("{PAYLOAD_SENTINEL} gpu " + json.dumps({{
 # which is a different test from the single T4 a Colab user gets.
 assert torch.cuda.device_count() == 1, (
     f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
-'''
+"""
 
-    materialise = f'''# Materialise the test sources carried inside this notebook.
+    materialise = f"""# Materialise the test sources carried inside this notebook.
 import base64, gzip, json, os, pathlib
 FILES = {json.dumps(files)}
 ROOT = pathlib.Path("/kaggle/working/t4_smoke_src")
@@ -183,7 +189,7 @@ for name, blob in FILES.items():
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(gzip.decompress(base64.b64decode(blob)))
 print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
-'''
+"""
 
     # The reference path is built at RUNTIME, from the notebook's own ROOT,
     # and appended as two list elements.
@@ -197,9 +203,12 @@ print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
     # would not have been substituted even if it had parsed. The workflow
     # always passes --reference, so this was on every path. Cheap and
     # airtight to prevent: test_generated_cells_compile.
-    ref_line = (f'cmd += ["--reference", str(ROOT / "references" / '
-                f'{json.dumps(reference)})]\n' if reference else "")
-    run = f'''# Run the smoke test in a child process.
+    ref_line = (
+        f'cmd += ["--reference", str(ROOT / "references" / ' f"{json.dumps(reference)})]\n"
+        if reference
+        else ""
+    )
+    run = f"""# Run the smoke test in a child process.
 #
 # A child, not an import, for two reasons: the determinism setup has to run
 # before torch is imported (and papermill has already imported plenty), and
@@ -237,14 +246,17 @@ else:
 print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 # Deliberately does NOT raise. A failing payload must not abort its partner
 # on the other T4 and cost the whole session.
-'''
+"""
 
     return {
-        "cells": [_code_cell(install), _code_cell(verify),
-                  _code_cell(materialise), _code_cell(run)],
+        "cells": [
+            _code_cell(install),
+            _code_cell(verify),
+            _code_cell(materialise),
+            _code_cell(run),
+        ],
         "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python",
-                           "name": "python3"},
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
             "accelerator": "GPU",
         },
@@ -255,10 +267,9 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
 
 def build_driver(payloads: dict[str, dict], per_run_timeout: int) -> dict:
     """Kernel notebook that fans the payloads out one per GPU."""
-    encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8"))
-               for name, nb in payloads.items()}
+    encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
 
-    setup = f'''import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
+    setup = f"""import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
 print("{DRIVER_SENTINEL} start", flush=True)
 
 WORK = pathlib.Path("/kaggle/working")
@@ -280,7 +291,7 @@ N_GPU = max(1, len(GPUS))
 for name, blob in PAYLOADS.items():
     (WORK / name).write_bytes(gzip.decompress(base64.b64decode(blob)))
 print("{DRIVER_SENTINEL}_PAYLOADS " + json.dumps(sorted(PAYLOADS)), flush=True)
-'''
+"""
 
     runner = f'''results = {{}}
 lock = threading.Lock()
@@ -364,7 +375,7 @@ for t in threads:
 print("{DRIVER_SENTINEL}_RESULTS " + json.dumps(results), flush=True)
 '''
 
-    tail = f'''# Surface each child's tail inline so the kernel log alone is diagnosable
+    tail = f"""# Surface each child's tail inline so the kernel log alone is diagnosable
 # even if artifact collection fails.
 for name in sorted(PAYLOADS):
     log = WORK / (pathlib.Path(name).stem + "_driver.log")
@@ -399,13 +410,12 @@ print("{DRIVER_SENTINEL}_PRUNED " + json.dumps(
     sorted(p.name for p in WORK.iterdir())), flush=True)
 
 print("{DRIVER_SENTINEL} complete", flush=True)
-'''
+"""
 
     return {
         "cells": [_code_cell(setup), _code_cell(runner), _code_cell(tail)],
         "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python",
-                           "name": "python3"},
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
             "accelerator": "GPU",
             "kaggle_t4_ci": {"payloads": sorted(payloads)},
@@ -417,17 +427,18 @@ print("{DRIVER_SENTINEL} complete", flush=True)
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--payload-dir", required=True)
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--count", type=int, default=2,
-                    help="payloads per kernel; 2 uses both T4s of a session")
-    ap.add_argument("--unsloth-ref", default="main")
-    ap.add_argument("--zoo-ref", default="main")
-    ap.add_argument("--reference", default="",
-                    help="filename under payload-dir/references to band-check")
-    ap.add_argument("--smoke-args", default="",
-                    help="extra args forwarded to run_t4_smoke.py")
-    ap.add_argument("--per-run-timeout", type=int, default=2400)
+    ap.add_argument("--payload-dir", required = True)
+    ap.add_argument("--out", required = True)
+    ap.add_argument(
+        "--count", type = int, default = 2, help = "payloads per kernel; 2 uses both T4s of a session"
+    )
+    ap.add_argument("--unsloth-ref", default = "main")
+    ap.add_argument("--zoo-ref", default = "main")
+    ap.add_argument(
+        "--reference", default = "", help = "filename under payload-dir/references to band-check"
+    )
+    ap.add_argument("--smoke-args", default = "", help = "extra args forwarded to run_t4_smoke.py")
+    ap.add_argument("--per-run-timeout", type = int, default = 2400)
     args = ap.parse_args()
 
     if args.count < 1:
@@ -438,16 +449,22 @@ def main() -> int:
     for i in range(args.count):
         label = f"gpu{i}"
         payloads[f"t4_smoke_{label}.ipynb"] = build_payload_notebook(
-            payload_dir, label=label, unsloth_ref=args.unsloth_ref,
-            zoo_ref=args.zoo_ref, smoke_args=args.smoke_args,
-            reference=args.reference)
+            payload_dir,
+            label = label,
+            unsloth_ref = args.unsloth_ref,
+            zoo_ref = args.zoo_ref,
+            smoke_args = args.smoke_args,
+            reference = args.reference,
+        )
 
     driver = build_driver(payloads, args.per_run_timeout)
     out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(driver, indent=1), encoding="utf-8")
-    print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB) packing "
-          f"{len(payloads)} payload(s): {', '.join(sorted(payloads))}")
+    out.parent.mkdir(parents = True, exist_ok = True)
+    out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")
+    print(
+        f"wrote {out} ({out.stat().st_size / 1024:.0f} KB) packing "
+        f"{len(payloads)} payload(s): {', '.join(sorted(payloads))}"
+    )
     return 0
 
 

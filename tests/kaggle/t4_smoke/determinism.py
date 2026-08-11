@@ -102,7 +102,7 @@ def set_deterministic_algorithms(warn_only: bool = True) -> dict:
 
     state: dict[str, Any] = {"requested": True, "warn_only": warn_only}
     try:
-        torch.use_deterministic_algorithms(True, warn_only=warn_only)
+        torch.use_deterministic_algorithms(True, warn_only = warn_only)
         state["use_deterministic_algorithms"] = True
     except Exception as exc:  # noqa: BLE001
         state["use_deterministic_algorithms"] = False
@@ -113,14 +113,12 @@ def set_deterministic_algorithms(warn_only: bool = True) -> dict:
         state["cudnn_deterministic"] = True
     except Exception:  # noqa: BLE001
         state["cudnn_deterministic"] = False
-    state["cublas_workspace_config"] = os.environ.get(
-        "CUBLAS_WORKSPACE_CONFIG", "")
+    state["cublas_workspace_config"] = os.environ.get("CUBLAS_WORKSPACE_CONFIG", "")
     return state
 
 
 def _trainer_callback_base():
     from transformers import TrainerCallback
-
     return TrainerCallback
 
 
@@ -141,7 +139,14 @@ class StatisticsCallback(_trainer_callback_base()):  # type: ignore[misc]
     def __init__(self) -> None:
         self.logs: list[dict] = []
 
-    def on_log(self, args, state, control, logs=None, **kwargs):  # noqa: ANN001
+    def on_log(
+        self,
+        args,
+        state,
+        control,
+        logs = None,
+        **kwargs,
+    ):  # noqa: ANN001
         if not logs or "loss" not in logs:
             return
         entry = {"step": int(state.global_step), "loss": float(logs["loss"])}
@@ -152,13 +157,12 @@ class StatisticsCallback(_trainer_callback_base()):  # type: ignore[misc]
         self.logs.append(entry)
 
     def save_logs(self, path: str) -> None:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(self.logs, fh, indent=2)
+        with open(path, "w", encoding = "utf-8") as fh:
+            json.dump(self.logs, fh, indent = 2)
 
 
 def _sampler_base():
     from torch.utils.data import Sampler
-
     return Sampler
 
 
@@ -172,9 +176,13 @@ class RepeatingSequentialSampler(_sampler_base()):  # type: ignore[misc]
     run happens to land near.
     """
 
-    def __init__(self, dataset_length: int, batch_size: int,
-                 gradient_accumulation_steps: int = 1,
-                 max_steps: int | None = None) -> None:
+    def __init__(
+        self,
+        dataset_length: int,
+        batch_size: int,
+        gradient_accumulation_steps: int = 1,
+        max_steps: int | None = None,
+    ) -> None:
         self.dataset_length = int(dataset_length)
         self.batch_size = int(batch_size)
         self.gradient_accumulation_steps = int(gradient_accumulation_steps)
@@ -198,8 +206,11 @@ class RepeatingSequentialSampler(_sampler_base()):  # type: ignore[misc]
         return self.total_samples
 
 
-def compare_metrics(a: list[dict], b: list[dict],
-                    fields: tuple[str, ...] = ("loss", "grad_norm")) -> dict:
+def compare_metrics(
+    a: list[dict],
+    b: list[dict],
+    fields: tuple[str, ...] = ("loss", "grad_norm"),
+) -> dict:
     """Max absolute deviation between two metric lists, per field.
 
     ``identical`` is bitwise equality of every compared field, not equality

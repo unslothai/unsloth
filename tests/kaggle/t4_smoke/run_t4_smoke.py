@@ -90,18 +90,18 @@ DEFAULT_MODEL = "unsloth/Qwen2.5-0.5B-Instruct"
 
 
 def _log(msg: str) -> None:
-    print(f"[t4-smoke] {msg}", flush=True)
+    print(f"[t4-smoke] {msg}", flush = True)
 
 
 def load_canary_rows(path: Path) -> list[dict]:
-    rows = [json.loads(line) for line in
-            path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = [
+        json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines() if line.strip()
+    ]
     if not rows:
         raise RuntimeError(f"canary dataset {path} is empty")
     for row in rows:
         if row.get("answer") != CANARY:
-            raise RuntimeError(
-                f"canary dataset row does not target {CANARY!r}: {row!r}")
+            raise RuntimeError(f"canary dataset row does not target {CANARY!r}: {row!r}")
     return rows
 
 
@@ -117,11 +117,12 @@ def build_dataset(rows: list[dict], eos_token: str):
     (``completion_only_loss``).
     """
     from datasets import Dataset
-
-    return Dataset.from_dict({
-        "prompt": [PROMPT_TEMPLATE.format(question=r["question"]) for r in rows],
-        "completion": [r["answer"] + eos_token for r in rows],
-    })
+    return Dataset.from_dict(
+        {
+            "prompt": [PROMPT_TEMPLATE.format(question = r["question"]) for r in rows],
+            "completion": [r["answer"] + eos_token for r in rows],
+        }
+    )
 
 
 def _make_trainer_class(sft_trainer_cls, sampler):
@@ -157,12 +158,11 @@ def train_once(args, run_index: int) -> dict:
         # SDPA changes the numeric path, so a local run under this flag is
         # evidence about the HARNESS, not about T4 numerics.
         from unsloth.utils import attention_dispatch
-
         attention_dispatch.HAS_XFORMERS = False
         _log("force-sdpa: HAS_XFORMERS pinned False (local repro only)")
 
     set_all_seeds_fast(SEED)
-    det_state = set_deterministic_algorithms(warn_only=not args.strict_deterministic)
+    det_state = set_deterministic_algorithms(warn_only = not args.strict_deterministic)
 
     rows = load_canary_rows(Path(args.dataset))
 
@@ -171,23 +171,30 @@ def train_once(args, run_index: int) -> dict:
     # rather than letting the loader pick means the local reproduction and the
     # Kaggle run take the same numeric path on the parts that can share one.
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=args.model,
-        max_seq_length=args.max_seq_length,
-        load_in_4bit=True,
-        dtype=torch.float16,
+        model_name = args.model,
+        max_seq_length = args.max_seq_length,
+        load_in_4bit = True,
+        dtype = torch.float16,
     )
     load_seconds = time.time() - t0
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=0.0,          # nonzero dropout is one more RNG consumer
-        bias="none",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
-        use_gradient_checkpointing=args.gradient_checkpointing,
-        random_state=SEED,
+        r = args.lora_r,
+        lora_alpha = args.lora_alpha,
+        lora_dropout = 0.0,  # nonzero dropout is one more RNG consumer
+        bias = "none",
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        use_gradient_checkpointing = args.gradient_checkpointing,
+        random_state = SEED,
     )
 
     eos = tokenizer.eos_token or ""
@@ -196,48 +203,48 @@ def train_once(args, run_index: int) -> dict:
     from trl import SFTConfig, SFTTrainer
 
     sampler = RepeatingSequentialSampler(
-        dataset_length=len(dataset),
-        batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        max_steps=args.max_steps,
+        dataset_length = len(dataset),
+        batch_size = args.batch_size,
+        gradient_accumulation_steps = args.grad_accum,
+        max_steps = args.max_steps,
     )
     stats = StatisticsCallback()
 
     config = SFTConfig(
-        output_dir=str(Path(args.outdir) / f"trainer_run{run_index}"),
-        completion_only_loss=True,
-        max_length=args.max_seq_length,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        max_steps=args.max_steps,
-        learning_rate=args.learning_rate,
+        output_dir = str(Path(args.outdir) / f"trainer_run{run_index}"),
+        completion_only_loss = True,
+        max_length = args.max_seq_length,
+        per_device_train_batch_size = args.batch_size,
+        gradient_accumulation_steps = args.grad_accum,
+        max_steps = args.max_steps,
+        learning_rate = args.learning_rate,
         # Constant schedule with no warmup: over 3 steps a warmup would spend
         # the whole run at a fraction of the target LR, and a linear decay
         # would make step 3's update depend on max_steps. Constant keeps the
         # reference meaningful and the overfit strong enough for the canary.
-        lr_scheduler_type="constant",
-        warmup_steps=0,
-        logging_steps=1,           # StatisticsCallback only fires on logs
-        optim=args.optim,
-        weight_decay=0.0,
-        seed=SEED,
-        data_seed=SEED,
-        fp16=True,
-        bf16=False,
-        dataloader_num_workers=0,  # worker processes reorder and reseed
-        dataloader_pin_memory=False,
-        group_by_length=False,
-        report_to="none",
-        save_strategy="no",
+        lr_scheduler_type = "constant",
+        warmup_steps = 0,
+        logging_steps = 1,  # StatisticsCallback only fires on logs
+        optim = args.optim,
+        weight_decay = 0.0,
+        seed = SEED,
+        data_seed = SEED,
+        fp16 = True,
+        bf16 = False,
+        dataloader_num_workers = 0,  # worker processes reorder and reseed
+        dataloader_pin_memory = False,
+        group_by_length = False,
+        report_to = "none",
+        save_strategy = "no",
     )
 
     trainer_cls = _make_trainer_class(SFTTrainer, sampler)
     trainer = trainer_cls(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
-        args=config,
-        callbacks=[stats],
+        model = model,
+        processing_class = tokenizer,
+        train_dataset = dataset,
+        args = config,
+        callbacks = [stats],
     )
 
     t0 = time.time()
@@ -246,8 +253,8 @@ def train_once(args, run_index: int) -> dict:
 
     if len(stats.logs) != args.max_steps:
         raise RuntimeError(
-            f"expected {args.max_steps} logged steps, got {len(stats.logs)}: "
-            f"{stats.logs}")
+            f"expected {args.max_steps} logged steps, got {len(stats.logs)}: " f"{stats.logs}"
+        )
 
     # Adapter save. The reload happens in the caller's separate verification
     # step; here we only prove the files land.
@@ -257,35 +264,31 @@ def train_once(args, run_index: int) -> dict:
     tokenizer.save_pretrained(str(adapter_dir))
     save_seconds = time.time() - t0
     saved_files = sorted(p.name for p in adapter_dir.iterdir())
-    adapter_weights = [f for f in saved_files
-                       if f.startswith("adapter_model.")]
+    adapter_weights = [f for f in saved_files if f.startswith("adapter_model.")]
     if not adapter_weights:
-        raise RuntimeError(
-            f"no adapter weights in {adapter_dir}: {saved_files}")
+        raise RuntimeError(f"no adapter weights in {adapter_dir}: {saved_files}")
 
     # Inference on the trained, in-memory model. Greedy, so the output is a
     # function of the weights alone.
     FastLanguageModel.for_inference(model)
-    prompt = PROMPT_TEMPLATE.format(question=rows[0]["question"])
-    inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+    prompt = PROMPT_TEMPLATE.format(question = rows[0]["question"])
+    inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
     t0 = time.time()
     with torch.inference_mode():
         out = model.generate(
             **inputs,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=False,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            use_cache=True,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            max_new_tokens = args.max_new_tokens,
+            do_sample = False,
+            temperature = None,
+            top_p = None,
+            top_k = None,
+            use_cache = True,
+            pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id,
         )
     infer_seconds = time.time() - t0
-    generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:],
-                                 skip_special_tokens=True)
+    generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens = True)
 
-    peak_gb = (torch.cuda.max_memory_reserved() / 1024 ** 3
-               if torch.cuda.is_available() else 0.0)
+    peak_gb = torch.cuda.max_memory_reserved() / 1024**3 if torch.cuda.is_available() else 0.0
 
     result = {
         "run_index": run_index,
@@ -324,19 +327,16 @@ def environment_fingerprint() -> dict:
     }
     try:
         import transformers
-
         info["transformers"] = transformers.__version__
     except Exception:  # noqa: BLE001
         pass
     try:
         import trl
-
         info["trl"] = trl.__version__
     except Exception:  # noqa: BLE001
         pass
     try:
         import unsloth
-
         info["unsloth"] = getattr(unsloth, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         pass
@@ -344,22 +344,27 @@ def environment_fingerprint() -> dict:
         props = torch.cuda.get_device_properties(0)
         info["gpu_name"] = props.name
         info["gpu_capability"] = f"sm_{props.major}{props.minor}"
-        info["gpu_total_gb"] = round(props.total_memory / 1024 ** 3, 1)
+        info["gpu_total_gb"] = round(props.total_memory / 1024**3, 1)
         info["gpu_count_visible"] = torch.cuda.device_count()
         info["driver_cuda"] = torch.version.cuda
     return info
 
 
-def check_reference(metrics: list[dict], reference_path: Path,
-                    rel_tol: float, abs_floor: float) -> dict:
+def check_reference(
+    metrics: list[dict], reference_path: Path, rel_tol: float, abs_floor: float
+) -> dict:
     """Compare against a committed reference. Never an equality check."""
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
-    ref = json.loads(reference_path.read_text(encoding="utf-8"))
+    ref = json.loads(reference_path.read_text(encoding = "utf-8"))
     ref_metrics = ref.get("metrics", [])
-    verdict: dict = {"status": "ok", "path": str(reference_path),
-                     "reference_env": ref.get("environment", {}),
-                     "deviations": [], "worst_rel": {}}
+    verdict: dict = {
+        "status": "ok",
+        "path": str(reference_path),
+        "reference_env": ref.get("environment", {}),
+        "deviations": [],
+        "worst_rel": {},
+    }
     if len(ref_metrics) != len(metrics):
         verdict["status"] = "length_mismatch"
         return verdict
@@ -373,11 +378,16 @@ def check_reference(metrics: list[dict], reference_path: Path,
                 # Present on one side and not the other is a change in the
                 # SHAPE of what the trainer logged, not a numeric drift, and
                 # no tolerance covers it.
-                verdict["deviations"].append({
-                    "step": (cur if has_cur else old).get("step"),
-                    "field": field, "reference": old.get(field, None),
-                    "observed": cur.get(field, None), "relative": None,
-                    "note": "field present on only one side"})
+                verdict["deviations"].append(
+                    {
+                        "step": (cur if has_cur else old).get("step"),
+                        "field": field,
+                        "reference": old.get(field, None),
+                        "observed": cur.get(field, None),
+                        "relative": None,
+                        "note": "field present on only one side",
+                    }
+                )
                 continue
             new, ref_val = float(cur[field]), float(old[field])
             # NaN, explicitly, and this is the whole reason the arithmetic is
@@ -391,21 +401,30 @@ def check_reference(metrics: list[dict], reference_path: Path,
             cur_nan, ref_nan = new != new, ref_val != ref_val
             if cur_nan or ref_nan:
                 if cur_nan != ref_nan:
-                    verdict["deviations"].append({
-                        "step": cur.get("step"), "field": field,
-                        "reference": old[field], "observed": cur[field],
-                        "relative": None,
-                        "note": "the fp16 scaler skip pattern moved: NaN on "
-                                "one side only"})
+                    verdict["deviations"].append(
+                        {
+                            "step": cur.get("step"),
+                            "field": field,
+                            "reference": old[field],
+                            "observed": cur[field],
+                            "relative": None,
+                            "note": "the fp16 scaler skip pattern moved: NaN on one side only",
+                        }
+                    )
                 continue
             base = max(abs(ref_val), abs_floor)
             rel = abs(new - ref_val) / base
             worst = max(worst, rel)
             if rel > rel_tol:
-                verdict["deviations"].append({
-                    "step": cur.get("step"), "field": field,
-                    "reference": old[field], "observed": cur[field],
-                    "relative": round(rel, 5)})
+                verdict["deviations"].append(
+                    {
+                        "step": cur.get("step"),
+                        "field": field,
+                        "reference": old[field],
+                        "observed": cur[field],
+                        "relative": round(rel, 5),
+                    }
+                )
         verdict["worst_rel"][field] = round(worst, 5)
     if verdict["deviations"]:
         verdict["status"] = "out_of_band"
@@ -418,8 +437,7 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
     a band check that has never been observed to fail is not yet a check.
     """
     if verdict["status"] == "out_of_band":
-        return [f"metrics outside +/-{rel_tol:.0%} of the reference: "
-                f"{verdict['deviations']}"]
+        return [f"metrics outside +/-{rel_tol:.0%} of the reference: " f"{verdict['deviations']}"]
     if verdict["status"] == "length_mismatch":
         return ["reference has a different number of steps"]
     return []
@@ -427,10 +445,9 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=DEFAULT_MODEL)
-    ap.add_argument("--dataset",
-                    default=str(_HERE / "canary_dataset.jsonl"))
-    ap.add_argument("--outdir", required=True)
+    ap.add_argument("--model", default = DEFAULT_MODEL)
+    ap.add_argument("--dataset", default = str(_HERE / "canary_dataset.jsonl"))
+    ap.add_argument("--outdir", required = True)
     # 10, not 3. Measured: under fp16 the gradient scaler starts at a high
     # loss scale and skips every step whose gradients overflow, and on this
     # model the first two steps overflow every time. A 3-step run therefore
@@ -439,54 +456,66 @@ def main() -> int:
     # '#1\ndef my_function():...'. At 10 steps the loss falls 10.32 -> 0.14
     # and the canary is emitted exactly. Ten steps of a 0.5B model on one T4
     # costs seconds, so the extra steps are free in quota terms.
-    ap.add_argument("--max-steps", type=int, default=10)
-    ap.add_argument("--batch-size", type=int, default=2)
-    ap.add_argument("--grad-accum", type=int, default=1)
-    ap.add_argument("--max-seq-length", type=int, default=512)
+    ap.add_argument("--max-steps", type = int, default = 10)
+    ap.add_argument("--batch-size", type = int, default = 2)
+    ap.add_argument("--grad-accum", type = int, default = 1)
+    ap.add_argument("--max-seq-length", type = int, default = 512)
     # 1e-3 with the prompt masked out. Higher rates overflow fp16 far more
     # often, and each overflow is a skipped step this short run cannot spare.
-    ap.add_argument("--learning-rate", type=float, default=1e-3)
-    ap.add_argument("--lora-r", type=int, default=16)
-    ap.add_argument("--lora-alpha", type=int, default=32)
-    ap.add_argument("--optim", default="adamw_8bit")
-    ap.add_argument("--gradient-checkpointing", default="unsloth")
-    ap.add_argument("--max-new-tokens", type=int, default=16)
-    ap.add_argument("--repeat", type=int, default=2,
-                    help="fresh-process cycles; >1 enables the bitwise check")
-    ap.add_argument("--cycle", type=int, default=-1,
-                    help=argparse.SUPPRESS)  # internal: child-mode marker
-    ap.add_argument("--force-sdpa", action="store_true",
-                    help="pin the SDPA attention backend. Local reproduction "
-                         "on hardware xformers has no kernel for; NOT for "
-                         "the T4 run, which must exercise the xformers path")
-    ap.add_argument("--strict-deterministic", action="store_true",
-                    help="use_deterministic_algorithms(warn_only=False)")
-    ap.add_argument("--reference", default="",
-                    help="committed reference JSON to band-check against")
-    ap.add_argument("--rel-tol", type=float, default=0.10)
-    ap.add_argument("--abs-floor", type=float, default=0.05,
-                    help="denominator floor so a near-zero reference value "
-                         "does not turn a tiny absolute drift into a huge "
-                         "relative one")
-    ap.add_argument("--require-canary", dest="require_canary",
-                    action="store_true", default=True)
-    ap.add_argument("--no-require-canary", dest="require_canary",
-                    action="store_false")
-    ap.add_argument("--label", default="t4-smoke")
+    ap.add_argument("--learning-rate", type = float, default = 1e-3)
+    ap.add_argument("--lora-r", type = int, default = 16)
+    ap.add_argument("--lora-alpha", type = int, default = 32)
+    ap.add_argument("--optim", default = "adamw_8bit")
+    ap.add_argument("--gradient-checkpointing", default = "unsloth")
+    ap.add_argument("--max-new-tokens", type = int, default = 16)
+    ap.add_argument(
+        "--repeat", type = int, default = 2, help = "fresh-process cycles; >1 enables the bitwise check"
+    )
+    ap.add_argument(
+        "--cycle", type = int, default = -1, help = argparse.SUPPRESS
+    )  # internal: child-mode marker
+    ap.add_argument(
+        "--force-sdpa",
+        action = "store_true",
+        help = "pin the SDPA attention backend. Local reproduction "
+        "on hardware xformers has no kernel for; NOT for "
+        "the T4 run, which must exercise the xformers path",
+    )
+    ap.add_argument(
+        "--strict-deterministic",
+        action = "store_true",
+        help = "use_deterministic_algorithms(warn_only=False)",
+    )
+    ap.add_argument(
+        "--reference", default = "", help = "committed reference JSON to band-check against"
+    )
+    ap.add_argument("--rel-tol", type = float, default = 0.10)
+    ap.add_argument(
+        "--abs-floor",
+        type = float,
+        default = 0.05,
+        help = "denominator floor so a near-zero reference value "
+        "does not turn a tiny absolute drift into a huge "
+        "relative one",
+    )
+    ap.add_argument("--require-canary", dest = "require_canary", action = "store_true", default = True)
+    ap.add_argument("--no-require-canary", dest = "require_canary", action = "store_false")
+    ap.add_argument("--label", default = "t4-smoke")
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents = True, exist_ok = True)
 
     # Child mode: exactly one cycle, report to disk, no assertions.
     if args.cycle >= 0:
         run = train_once(args, args.cycle)
         for entry in run["metrics"]:
-            _log(f"    step {entry['step']}  loss={entry['loss']!r}  "
-                 f"grad_norm={entry.get('grad_norm')!r}")
+            _log(
+                f"    step {entry['step']}  loss={entry['loss']!r}  "
+                f"grad_norm={entry.get('grad_norm')!r}"
+            )
         _log(f"    generated: {run['generated']!r}")
-        (outdir / "cycle_report.json").write_text(
-            json.dumps(run, indent=2), encoding="utf-8")
+        (outdir / "cycle_report.json").write_text(json.dumps(run, indent = 2), encoding = "utf-8")
         return 0
 
     # Parent mode: each cycle in a FRESH process.
@@ -503,21 +532,30 @@ def main() -> int:
     for i in range(args.repeat):
         _log(f"=== cycle {i + 1}/{args.repeat} (fresh process) ===")
         cycle_dir = outdir / f"cycle{i}"
-        cycle_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, str(Path(__file__).resolve()),
-               "--outdir", str(cycle_dir), "--cycle", str(i)]
+        cycle_dir.mkdir(parents = True, exist_ok = True)
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--outdir",
+            str(cycle_dir),
+            "--cycle",
+            str(i),
+        ]
         for flag, value in (
-                ("--model", args.model), ("--dataset", args.dataset),
-                ("--max-steps", args.max_steps),
-                ("--batch-size", args.batch_size),
-                ("--grad-accum", args.grad_accum),
-                ("--max-seq-length", args.max_seq_length),
-                ("--learning-rate", args.learning_rate),
-                ("--lora-r", args.lora_r), ("--lora-alpha", args.lora_alpha),
-                ("--optim", args.optim),
-                ("--gradient-checkpointing", args.gradient_checkpointing),
-                ("--max-new-tokens", args.max_new_tokens),
-                ("--label", args.label)):
+            ("--model", args.model),
+            ("--dataset", args.dataset),
+            ("--max-steps", args.max_steps),
+            ("--batch-size", args.batch_size),
+            ("--grad-accum", args.grad_accum),
+            ("--max-seq-length", args.max_seq_length),
+            ("--learning-rate", args.learning_rate),
+            ("--lora-r", args.lora_r),
+            ("--lora-alpha", args.lora_alpha),
+            ("--optim", args.optim),
+            ("--gradient-checkpointing", args.gradient_checkpointing),
+            ("--max-new-tokens", args.max_new_tokens),
+            ("--label", args.label),
+        ):
             cmd += [flag, str(value)]
         if args.force_sdpa:
             cmd.append("--force-sdpa")
@@ -527,25 +565,41 @@ def main() -> int:
         report_file = cycle_dir / "cycle_report.json"
         if proc.returncode != 0 or not report_file.exists():
             _log(f"cycle {i} failed (rc={proc.returncode})")
-            failed = {"label": args.label, "model": args.model,
-                      "passed": False, "runs": runs, "metrics": [],
-                      "failures": [f"cycle {i} did not complete "
-                                   f"(rc={proc.returncode})"]}
+            failed = {
+                "label": args.label,
+                "model": args.model,
+                "passed": False,
+                "runs": runs,
+                "metrics": [],
+                "failures": [f"cycle {i} did not complete " f"(rc={proc.returncode})"],
+            }
             (outdir / "t4_smoke_report.json").write_text(
-                json.dumps(failed, indent=2), encoding="utf-8")
-            print("T4_SMOKE_REPORT " + json.dumps(failed), flush=True)
+                json.dumps(failed, indent = 2), encoding = "utf-8"
+            )
+            print("T4_SMOKE_REPORT " + json.dumps(failed), flush = True)
             _log("T4_SMOKE_RESULT FAIL")
             return 1
-        runs.append(json.loads(report_file.read_text(encoding="utf-8")))
+        runs.append(json.loads(report_file.read_text(encoding = "utf-8")))
 
     env = environment_fingerprint()
     report: dict = {
         "label": args.label,
         "model": args.model,
-        "config": {k: getattr(args, k) for k in
-                   ("max_steps", "batch_size", "grad_accum", "max_seq_length",
-                    "learning_rate", "lora_r", "lora_alpha", "optim",
-                    "gradient_checkpointing", "repeat")},
+        "config": {
+            k: getattr(args, k)
+            for k in (
+                "max_steps",
+                "batch_size",
+                "grad_accum",
+                "max_seq_length",
+                "learning_rate",
+                "lora_r",
+                "lora_alpha",
+                "optim",
+                "gradient_checkpointing",
+                "repeat",
+            )
+        },
         "environment": env,
         "runs": runs,
         "metrics": runs[0]["metrics"],
@@ -561,7 +615,8 @@ def main() -> int:
         if not cmp["identical"]:
             failures.append(
                 f"run-to-run metrics differ (first diff at step "
-                f"{cmp['first_diff_step']}, max abs {cmp['max_abs_diff']})")
+                f"{cmp['first_diff_step']}, max abs {cmp['max_abs_diff']})"
+            )
         gen = {r["generated"] for r in runs}
         report["generated_identical"] = len(gen) == 1
         if len(gen) != 1:
@@ -570,8 +625,10 @@ def main() -> int:
     # 2. canary
     for run in runs:
         if not run["canary_found"]:
-            msg = (f"run {run['run_index']} did not emit the canary "
-                   f"{CANARY!r}; got {run['generated']!r}")
+            msg = (
+                f"run {run['run_index']} did not emit the canary "
+                f"{CANARY!r}; got {run['generated']!r}"
+            )
             if args.require_canary:
                 failures.append(msg)
             else:
@@ -586,8 +643,9 @@ def main() -> int:
 
     # 4. band check against the committed reference
     if args.reference:
-        ref = check_reference(runs[0]["metrics"], Path(args.reference),
-                              args.rel_tol, args.abs_floor)
+        ref = check_reference(
+            runs[0]["metrics"], Path(args.reference), args.rel_tol, args.abs_floor
+        )
         report["reference_check"] = ref
         failures += reference_failures(ref, args.rel_tol)
 
@@ -595,9 +653,9 @@ def main() -> int:
     report["passed"] = not failures
 
     report_path = outdir / "t4_smoke_report.json"
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report_path.write_text(json.dumps(report, indent = 2), encoding = "utf-8")
     _log(f"report -> {report_path}")
-    print("T4_SMOKE_REPORT " + json.dumps(report), flush=True)
+    print("T4_SMOKE_REPORT " + json.dumps(report), flush = True)
 
     if failures:
         for f in failures:
