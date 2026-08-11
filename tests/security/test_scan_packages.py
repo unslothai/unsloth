@@ -325,6 +325,28 @@ def test_the_builtin_reached_through_a_dot_is_still_flagged():
         assert high, f"{call} must still be flagged"
 
 
+def test_the_builtin_reached_through_an_alias_is_still_flagged():
+    # `import builtins as b; b.exec(...)` and `from builtins import exec as run;
+    # run(...)` are the builtin under another name. The alias is bound where it is
+    # created and required again at the call, so this costs nothing against
+    # `model.eval()`: an arbitrary object qualifies only if the file aliased
+    # `builtins` to that exact name.
+    aliased = (
+        ("import builtins as b\nmod = __import__('os')\nb.exec(marshal.loads(BLOB))\n"),
+        ("from builtins import exec as run\nmod = __import__('os')\nrun(marshal.loads(BLOB))\n"),
+    )
+    for payload in aliased:
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"aliased builtin must still be flagged:\n{payload}"
+
+    # And importing builtins does not by itself make an unrelated .eval() suspicious.
+    benign = "import builtins\nmod = __import__('os')\nmodel = load()\nmodel.eval()\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"unaliased model.eval() must stay clean: {high}"
+
+
 def test_the_real_exec_builtin_is_still_flagged():
     # The narrowing must not cost a true positive: a bare builtin call beside the
     # same dynamic import is what the rule is for.

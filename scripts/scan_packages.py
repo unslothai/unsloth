@@ -107,11 +107,22 @@ RE_BASE64 = re.compile(
 # caught `model.eval()`, which every torch package calls. Paired with a dynamic
 # import that promoted ordinary inference code to a HIGH "obfuscation + exec/eval",
 # and HIGH is what fails the scan. A payload calls the builtin; a method named eval
-# on some object is not one, so require no attribute access in front -- EXCEPT the
-# two spellings that are the builtin, `builtins.exec(...)` and `__builtins__.eval(...)`,
-# which a payload can use to reach it through a dot and must stay detectable.
+# on some object is not one, so require no attribute access in front.
+#
+# Four ways to reach the builtin, all of which must stay detectable:
+#   1. bare              `exec(payload)`
+#   2. through builtins  `builtins.exec(payload)`, `__builtins__.eval(payload)`
+#   3. aliased module    `import builtins as b` ... `b.exec(payload)`
+#   4. aliased function  `from builtins import exec as run` ... `run(payload)`
+# The last two are matched by binding the alias where it is created and requiring
+# the same name at the call, so they cost nothing against `model.eval()`: an
+# arbitrary object only qualifies if the file aliased `builtins` to that name.
 RE_EXEC_EVAL = re.compile(
-    r"(?<![\w.])(?:__builtins__|builtins)\s*\.\s*(exec|eval)\s*\(|(?<![\w.])(exec|eval)\s*\("
+    r"(?<![\w.])(?:__builtins__|builtins)\s*\.\s*(?:exec|eval)\s*\("
+    r"|(?<![\w.])(?:exec|eval)\s*\("
+    r"|(?<![\w.])import\s+builtins\s+as\s+(\w+)[\s\S]*?(?<![\w.])\1\s*\.\s*(?:exec|eval)\s*\("
+    r"|(?<![\w.])from\s+builtins\s+import\s+[^\n]*?\b(?:exec|eval)\s+as\s+(\w+)"
+    r"[\s\S]*?(?<![\w.])\2\s*\("
 )
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
