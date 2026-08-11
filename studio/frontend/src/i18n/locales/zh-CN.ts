@@ -17,6 +17,8 @@ export const zhCN = {
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
     pickModelFile: "从磁盘选择模型文件",
+    modelDropped: "已不再提供",
+    modelDroppedByProvider: "{provider} · 已不再提供",
     multipleMatches: "找到多个匹配的{noun}。请从列表中选择一个。",
     rateLimitedTitle: "已达到 Hugging Face 速率限制",
     rateLimitedBody: "请稍候，然后重试搜索{noun}。",

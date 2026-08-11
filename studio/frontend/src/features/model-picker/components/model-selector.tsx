@@ -43,6 +43,8 @@ import {
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import { missingExternalModel } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
@@ -676,6 +678,7 @@ export function ModelSelector({
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
+  const t = useT();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
@@ -735,18 +738,37 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
+    // A connection that dropped the picked model takes its option away and leaves the
+    // id in the checkpoint, and the generic fallback below cannot shorten an
+    // `external::` id. Name the model the user picked, and say it is gone: it cannot be
+    // loaded, so a tidy name on its own would hide the failure until the next send
+    // (#8405).
+    const missingExternal = found
+      ? null
+      : missingExternalModel(selected, externalModels);
     // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
     // The leaf, not the namespaced public id (#7966), matches the catalog row that
     // later replaces this one.
-    const fallbackName = modelDisplayName(selected);
+    const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
         : { id: selected, name: fallbackName, description: desc };
     }
+    if (missingExternal) {
+      return {
+        id: selected,
+        name: fallbackName,
+        description: missingExternal.providerName
+          ? t("picker.modelDroppedByProvider", {
+              provider: missingExternal.providerName,
+            })
+          : t("picker.modelDropped"),
+      };
+    }
     return found ?? { id: selected, name: fallbackName };
-  }, [selected, optionById, activeGgufVariant]);
+  }, [selected, optionById, activeGgufVariant, externalModels, t]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {

@@ -111,6 +111,7 @@ import {
   parseExternalModelId,
   providerTypeSupportsVision,
 } from "./external-providers";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -1163,11 +1164,6 @@ export function SharedComposer({
       });
       let loadedFromConfig = false;
 
-      function modelDisplayName(id: string): string {
-        const parts = id.split("/");
-        return parts[parts.length - 1] || id;
-      }
-
       // Warm the device cache before the snapshot below reconciles the GPU
       // pick: on a cold cache the reconcile passes a stale pick through.
       try {
@@ -1400,7 +1396,7 @@ export function SharedComposer({
           }
           if (!upgraded) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+              `${compareModelDisplayName(sel.id)} needs a newer transformers release to load.`,
             );
           }
         }
@@ -1419,7 +1415,7 @@ export function SharedComposer({
           });
           if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
+              `${compareModelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -1599,8 +1595,8 @@ export function SharedComposer({
       if (handle1) handle1.appendMessage(content);
       if (handle2) handle2.appendMessage(content);
 
-      const name1 = model1?.id ? modelDisplayName(model1.id) : "";
-      const name2 = model2?.id ? modelDisplayName(model2.id) : "";
+      const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
+      const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
       const toastId = toast("Comparing models…", { duration: Infinity });
 
       setComparing(true);

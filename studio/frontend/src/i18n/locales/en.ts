@@ -14,6 +14,8 @@ export const en = {
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
     pickModelFile: "Pick a model file from disk",
+    modelDropped: "No longer offered",
+    modelDroppedByProvider: "{provider} · no longer offered",
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
