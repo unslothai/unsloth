@@ -9,14 +9,12 @@ import { math } from "micromark-extension-math";
 import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
-// Cheap gate: a bullet marker then nothing but thematic-break punctuation. The
-// ambiguity is not asterisk specific, `- --verbose` and `* ___under___` stream
-// through a break frame too. Parsing below decides whether one really renders.
+// Cheap gate: a bullet marker then only thematic-break punctuation. Not
+// asterisk specific, `- --verbose` and `* ___under___` flash too.
 const AMBIGUOUS_BREAK_ITEM_RE = /^[ \t]*([*+-])[ \t]+[*\-_][*\-_ \t]*$/;
 const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
-// The streaming prefix of a bold list item is a handful of characters. A longer
-// run is degenerate output, and parsing one is quadratic (a 100k dash line costs
-// 8s), so leave it alone rather than freeze the frame.
+// Real prefixes are short, and parsing a long run is quadratic (100k dashes
+// cost 8s), so a runaway line is left alone.
 const MAX_AMBIGUOUS_LINE = 120;
 
 type MarkdownNode = {
@@ -28,8 +26,8 @@ type MarkdownNode = {
   readonly children?: readonly MarkdownNode[];
 };
 
-// Streamdown parses with GFM plus the math plugin, so a bare CommonMark parse
-// disagrees with what is on screen for footnotes and for dollar signs.
+// Streamdown parses with GFM and the math plugin; plain CommonMark disagrees
+// on footnotes and on dollar signs.
 function parse(text: string): MarkdownNode {
   return fromMarkdown(text, {
     extensions: [gfm(), math({ singleDollarTextMath: true })],
@@ -37,8 +35,7 @@ function parse(text: string): MarkdownNode {
   }) as MarkdownNode;
 }
 
-// Where the trailing line's bullet marker sits, or -1 if that line is not an
-// ambiguous one.
+// Index of the trailing line's bullet marker, or -1 if it is not ambiguous.
 function ambiguousMarkerIndex(text: string): number {
   const lineStart =
     Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
@@ -54,9 +51,8 @@ function ambiguousMarkerIndex(text: string): number {
     : lineStart + blockquotePrefix.length + content.indexOf(marker);
 }
 
-// Is a rule on screen right now? After an unclosed construct the repair alone
-// turns this frame into a list, so the unrepaired text is the wrong thing to
-// test.
+// Is a rule on screen now? After an unclosed construct the repair alone turns
+// this frame into a list, so unrepaired text is the wrong thing to test.
 function rendersTrailingThematicBreak(block: string): boolean {
   let node = parse(block);
   while (node.children?.length) {
@@ -65,9 +61,8 @@ function rendersTrailingThematicBreak(block: string): boolean {
   return node.type === "thematicBreak";
 }
 
-// Does this marker open an item that will hold text? Matching the offset is
-// what separates a nested item continuing a list from `* * *`, a break whose
-// completed form is nested lists with no paragraph of its own.
+// Will this marker hold text? The offset match separates a nested item from
+// `* * *`, whose completed form is nested lists with no paragraph of its own.
 function completesAsTrailingParagraphListItem(
   block: string,
   markerIndex: number,
@@ -106,9 +101,8 @@ export function stabilizeStreamingMarkdown(
     return text;
   }
 
-  // Predicting what Streamdown shows means running what Streamdown runs: repair
-  // with remend, then split into blocks. Both checks below then read only the
-  // trailing block, so the cost does not grow with the response.
+  // Run what Streamdown runs: repair, split, then read only the trailing block
+  // so the cost does not grow with the response.
   const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
   const markerIndex = block === undefined ? -1 : ambiguousMarkerIndex(block);
   if (
@@ -120,8 +114,8 @@ export function stabilizeStreamingMarkdown(
     return text;
   }
 
-  // The line is both a valid thematic break and the streaming prefix of a list
-  // item. Buffer it until content arrives instead of rendering the wrong block.
+  // Both a valid thematic break and a list-item prefix: hold the line back
+  // until content arrives instead of rendering the wrong block.
   return text.slice(
     0,
     Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1,
