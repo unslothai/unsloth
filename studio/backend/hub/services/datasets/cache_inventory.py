@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Optional
 
 from fastapi import HTTPException
@@ -154,7 +154,11 @@ def _is_payload_file(name: str) -> bool:
     # named, because the rows can be anywhere beneath it.
     if not _is_payload_name(name):
         return False
-    return PurePosixPath(name).suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
+    # the resolver's own suffix rule rather than a second reading of the name: it walks the
+    # whole chain and drops a trailing compression suffix first, so `train.parquet.backup` is
+    # still parquet and `data.py.gz` is still a script.
+    suffix = local_options._data_suffix(name)
+    return suffix is None or suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
 
 
 def _is_present_payload_file(path: Path) -> bool:

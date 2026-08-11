@@ -234,6 +234,25 @@ def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monke
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
+def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(monkeypatch, tmp_path):
+    """`_data_suffix` drops a trailing compression suffix and then walks the rest, so a gzipped
+    card or script is still metadata while `train.parquet.gz` and `records.parquet.backup` are
+    still payload. Reading only the last suffix got both of those backwards."""
+    metadata_only = _dataset_snapshot(
+        monkeypatch,
+        tmp_path / "meta",
+        ("README.md", "CITATION.cff.zip", "loader.py.gz"),
+    )
+    compressed_payload = _dataset_snapshot(
+        monkeypatch,
+        tmp_path / "data",
+        ("README.md", "train.parquet.gz", "records.parquet.backup"),
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", metadata_only) is False
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", compressed_payload) is True
+
+
 def test_raw_dataset_cache_has_data_ignores_payload_links_whose_blob_is_gone(monkeypatch, tmp_path):
     """A pruned blob leaves its snapshot link behind. `is_snapshot_partial` catches that on the
     newest snapshot, but this check judges the pinned revision, so it must not depend on the two
