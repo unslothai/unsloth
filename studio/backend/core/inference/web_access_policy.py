@@ -14,6 +14,9 @@ from urllib.parse import urlsplit
 
 _DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _MAX_DOMAINS_PER_LIST = 100
+# A cache key holds the caller's raw strings for the life of the process, so only an entry
+# short enough to be a real domain is eligible; see normalize_website_policy.
+_MAX_CACHEABLE_DOMAIN_LEN = 253
 # Most search engines stop honouring site: past a handful of OR terms.
 _SITE_FILTER_LIMIT = 8
 
@@ -90,8 +93,14 @@ def normalize_website_policy(value: Any) -> dict[str, list[str]]:
         if len(raw_domains) > _MAX_DOMAINS_PER_LIST:
             raise ValueError(f"{key} supports at most {_MAX_DOMAINS_PER_LIST} domains")
         # Exact ``str`` only: anything else can be unhashable, and its error message
-        # carries the original repr, so non-str entries stay on the uncached path.
-        if all(type(raw_domain) is str for raw_domain in raw_domains):
+        # carries the original repr, so non-str entries stay on the uncached path. An
+        # over-long entry stays off it too: nameprep deletes characters such as U+00AD, so
+        # an arbitrarily long raw string can still normalise to a valid domain, and caching
+        # would then pin a caller-sized string in memory. Both paths normalise identically.
+        if all(
+            type(raw_domain) is str and len(raw_domain) <= _MAX_CACHEABLE_DOMAIN_LEN
+            for raw_domain in raw_domains
+        ):
             normalized[key] = list(_normalized_domain_tuple(tuple(raw_domains)))
             continue
         domains: list[str] = []
