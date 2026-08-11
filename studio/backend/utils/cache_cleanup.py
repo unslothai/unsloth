@@ -212,7 +212,6 @@ def cache_coordination_dir() -> Path:
     are not coordinated, and clearing is best effort there, as it was before.
     """
     from utils.paths.storage_roots import studio_root
-
     return studio_root()
 
 
