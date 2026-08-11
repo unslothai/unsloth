@@ -551,25 +551,31 @@ WORKFLOW_ARGS = ("--unsloth-ref", "main", "--zoo-ref", "main",
                  "--per-run-timeout", "2100")
 
 
-def _payload_dir_with_a_reference(tmp_path) -> Path:
-    """A copy of the payload directory that HAS a committed reference.
+def _payload_dir(tmp_path, name: str, *, with_reference: bool) -> Path:
+    """A copy of the payload directory, with or without a reference file.
 
-    Once a green T4 run supplies one, the reference file is inlined into the
+    Both worlds are built explicitly rather than inherited from whatever
+    happens to be committed. When a reference exists it is inlined into the
     payload notebook as a fourth carried file, under a key with a directory
-    separator in it. That is a different build path from the one that runs
-    while the directory is empty, and it must be covered before the file
-    lands rather than after.
+    separator in it, which is a different build path from the empty
+    directory -- and each of them has, at some point, been the live one.
+    Deriving the two cases from the repo would mean one of them silently
+    stopped being covered the day the reference landed.
     """
     import shutil
 
-    dest = tmp_path / "payload_dir"
+    dest = tmp_path / name
     shutil.copytree(SMOKE_DIR, dest,
                     ignore=shutil.ignore_patterns("__pycache__"))
-    (dest / "references").mkdir(exist_ok=True)
-    (dest / "references" / "t4_qwen2.5-0.5b.json").write_text(json.dumps({
-        "metrics": [{"step": 1, "loss": 10.3, "grad_norm": float("nan")},
-                    {"step": 2, "loss": 0.14, "grad_norm": 13.8}],
-        "environment": {"gpu_name": "Tesla T4"}}, indent=2))
+    refs = dest / "references"
+    refs.mkdir(exist_ok=True)
+    for stale in refs.glob("*.json"):
+        stale.unlink()
+    if with_reference:
+        (refs / "t4_qwen2.5-0.5b.json").write_text(json.dumps({
+            "metrics": [{"step": 1, "loss": 10.3, "grad_norm": float("nan")},
+                        {"step": 2, "loss": 0.14, "grad_norm": 13.8}],
+            "environment": {"gpu_name": "Tesla T4"}}, indent=2))
     return dest
 
 
@@ -603,15 +609,17 @@ def _build_all_paths(tmp_path):
     return {
         # No band check at all.
         "no-reference": _build(tmp_path / "a"),
-        # What the workflow passes today: --reference named, but the file is
-        # not in the repo yet, so it is requested and not carried.
-        "workflow-reference-absent": _build(tmp_path / "b", *WORKFLOW_ARGS),
-        # What the workflow passes once a green T4 run supplies the file: the
-        # reference is carried inline as a fourth file, under a key with a
-        # directory separator in it.
+        # --reference named but the file not present: what the workflow did
+        # before a green T4 run supplied one, and what it does again for any
+        # configuration that has no reference yet.
+        "workflow-reference-absent": _build(
+            tmp_path / "b", *WORKFLOW_ARGS,
+            payload_dir=_payload_dir(tmp_path, "empty", with_reference=False)),
+        # --reference named and present: the reference is carried inline as a
+        # fourth file, under a key with a directory separator in it.
         "workflow-reference-present": _build(
             tmp_path / "c", *WORKFLOW_ARGS,
-            payload_dir=_payload_dir_with_a_reference(tmp_path)),
+            payload_dir=_payload_dir(tmp_path, "full", with_reference=True)),
     }
 
 
@@ -706,7 +714,7 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
     import gzip
     import re
 
-    payload_dir = _payload_dir_with_a_reference(tmp_path)
+    payload_dir = _payload_dir(tmp_path, "full", with_reference=True)
     driver = _build(tmp_path / "c", *WORKFLOW_ARGS, payload_dir=payload_dir)
     payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
     materialise = "".join(payload["cells"][2]["source"])

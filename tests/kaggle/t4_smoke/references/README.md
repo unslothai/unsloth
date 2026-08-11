@@ -15,8 +15,14 @@ not achievable and is not claimed:
   steps the scaler skips is deterministic within an environment but can move
   between them, and a skipped step shifts every later value.
 * Unsloth picks its attention backend by availability -- flash-attention,
-  then xformers, then SDPA. A T4 resolves to xformers. A different backend
-  is a different numeric path.
+  then xformers, then SDPA. A different backend is a different numeric path.
+  **On the Kaggle session this reference came from, xformers was not
+  installed at all**: the banner read `Bfloat16 = FALSE. FA [Xformers =
+  None. FA2 = False]`, because `unsloth` goes in with `--no-deps`,
+  `unsloth_zoo`'s dependency set does not carry xformers and the Kaggle
+  image does not either. So this trace is the fallback path, not the
+  xformers path. If xformers is ever added to the install, these numbers
+  move and the reference must be recaptured.
 
 The exact assertion in this test is **run-to-run bitwise equality between
 two fresh processes in the same session**. That one is exact, and it is what
@@ -35,8 +41,8 @@ moves a step by whole multiples, not by a few percent.
 
 **The absolute floor is currently inert, and that is a measurement.** The
 floor only engages where `|reference value| < 0.05`, and the smallest value
-this ten-step trajectory produces is a loss of 0.1428, with the smallest
-non-NaN grad_norm at 13.1. Nothing on the curve gets near 0.05, so
+this ten-step trajectory produces is a loss of 0.0871, with the smallest
+non-NaN grad_norm at 11.2. Nothing on the curve gets near 0.05, so
 `max(|reference|, 0.05)` is just `|reference|` at every step, and removing
 the floor entirely would not change a single verdict. It is retained as a
 guard for a configuration that does drive the loss below 0.05 -- more steps,
@@ -45,23 +51,35 @@ a higher learning rate, an easier target -- not because this one does.
 those two worlds the committed reference lives in and asserts the floor
 behaves accordingly, so the claim cannot quietly go stale.
 
-Those numbers come from a B200 with `--force-sdpa`, which is evidence about
-the shape of the trajectory and not about T4 numerics; the step at which a
-T4 crosses 0.05, if it ever does, is unmeasured.
+Those numbers are the committed T4 trace itself. The final loss, 0.0871, is
+under a factor of two above the floor, so a configuration change that pushes
+the trajectory a little further would engage it;
+`test_whether_the_absolute_floor_is_reached_at_all` re-derives which world
+the committed file is in on every run rather than trusting this paragraph.
 
 `NaN` grad_norm entries are expected, not corrupt: under fp16 the gradient
 scaler reports NaN on any step whose gradients overflowed and then skips
 that step. They are compared as NaN-equals-NaN.
 
-## Current state: there is no committed reference
+## Current state
 
-This directory holds no `.json` yet, so `check_reference` returns `absent`
-and the band check is inert. That is deliberate rather than an oversight: a
-valid reference has to come off a Kaggle T4, and no T4 run has yet got a
-payload as far as producing metrics. The two tests that perturb the
-committed reference skip until one exists, and they say so when they skip.
+`t4_qwen2.5-0.5b.json`, lifted from kernel
+`danielhanchen/unsloth-t4-ci-e3c6661f`, the first green run this workflow
+has had. What that run measured, on real `Tesla T4` / `sm_75` / 14.6 GB
+hardware:
 
-Do not fill this gap with numbers from other hardware. A trace captured on
+* Both payloads, one per T4 of the session, passed every assertion.
+* Two fresh processes agreed **bitwise** on all ten steps, on both cards:
+  `max_abs_diff` was exactly `0.0` for loss and for grad_norm.
+* The two cards, independently, produced the **same ten values to the last
+  bit** as each other. That is four processes agreeing, not two.
+* All four cycles emitted the canary `__UNSLOTH__!!!` exactly.
+* The fp16 scaler skipped steps 1, 2 and 3 on every cycle.
+
+The committed file is `reports[0]` of that run, per the recipe below. Peak
+reserved memory was 0.7 GB per payload and each cycle trained in 15-26 s.
+
+Do not fill this file with numbers from other hardware. A trace captured on
 any other card, or with `--force-sdpa`, is evidence about the harness and
 not about T4 numerics, and committing it here would produce a check that
 fails for a reason that is not a regression.
