@@ -61,6 +61,12 @@ function uiProvider(id: string, hasApiKey: boolean): UiProviderConfig {
   };
 }
 
+async function loadHfTokenStoreForTest() {
+  const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+  hfStore.__resetHfCredentialSessionForTests();
+  return hfStore;
+}
+
 test("provider migration is server-first and removes only confirmed keys", async () => {
   const removed: string[] = [];
   const saved: string[] = [];
@@ -398,9 +404,7 @@ test("HF store hydrates from the API without recreating plaintext storage", asyn
   }) as typeof fetch;
 
   try {
-    const hfStore = await import(
-      "../src/features/hub/stores/hf-token-store.ts"
-    );
+    const hfStore = await loadHfTokenStoreForTest();
     await hfStore.hydrateHfTokenFromBackend();
     assert.equal(hfStore.getHfToken(), "hf_server");
     assert.deepEqual(requests, ["/api/settings/hugging-face-token"]);
@@ -430,9 +434,7 @@ test("HF hydration does not overwrite an in-flight user edit", async () => {
     init?.method === "PUT" ? saveResponse : loadResponse) as typeof fetch;
 
   try {
-    const hfStore = await import(
-      "../src/features/hub/stores/hf-token-store.ts"
-    );
+    const hfStore = await loadHfTokenStoreForTest();
     const hydration = hfStore.hydrateHfTokenFromBackend();
     hfStore.useHfTokenStore.getState().setToken("hf_user_edit");
 
@@ -452,10 +454,7 @@ test("HF hydration does not overwrite an in-flight user edit", async () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await hfStore.waitForHfTokenPersistence();
     assert.equal(hfStore.getHfToken(), "hf_user_edit");
     assert.equal(hfStore.useHfTokenStore.getState().isPersisting, false);
   } finally {
@@ -487,7 +486,7 @@ test("cross-tab refresh replays after an active HF hydration", async () => {
   }) as typeof fetch;
 
   try {
-    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    const hfStore = await loadHfTokenStoreForTest();
     const hydration = hfStore.hydrateHfTokenFromBackend();
     await started;
     const refresh = hfStore.refreshHfTokenFromBackend();
@@ -527,7 +526,7 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
   }) as typeof fetch;
 
   try {
-    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    const hfStore = await loadHfTokenStoreForTest();
     hfStore.useHfTokenStore.getState().setToken("hf_delayed_tab");
     await startedWrite;
 
@@ -537,10 +536,7 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
       status: 200,
       headers: { "Content-Type": "application/json" },
     }));
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
-      await new Promise((resolve) => setImmediate(resolve));
-    }
+    await hfStore.waitForHfTokenPersistence();
 
     assert.equal(reads, 2);
     assert.equal(hfStore.getHfToken(), "hf_new_tab");
@@ -565,7 +561,7 @@ test("pending HF edits can be drained before navigation", async () => {
   globalThis.fetch = (async () => { saveStarted(); return response; }) as typeof fetch;
 
   try {
-    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    const hfStore = await loadHfTokenStoreForTest();
     hfStore.useHfTokenStore.getState().setToken("hf_before_exit");
     await started;
     let drained = false;
@@ -606,7 +602,7 @@ test("a superseded successful HF write advances the rollback baseline", async ()
   }) as typeof fetch;
 
   try {
-    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    const hfStore = await loadHfTokenStoreForTest();
     hfStore.useHfTokenStore.getState().setToken("hf_first");
     await firstRequest;
     hfStore.useHfTokenStore.getState().setToken("hf_second");
@@ -617,7 +613,7 @@ test("a superseded successful HF write advances the rollback baseline", async ()
     resolveSecond(new Response(JSON.stringify({ detail: "failed" }), {
       status: 500, headers: { "Content-Type": "application/json" },
     }));
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       if (!hfStore.useHfTokenStore.getState().isPersisting) break;
       await new Promise((resolve) => setImmediate(resolve));
     }

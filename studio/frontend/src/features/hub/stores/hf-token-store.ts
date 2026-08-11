@@ -310,11 +310,18 @@ function resetHfCredentialSession(): void {
 
   stagedLegacyToken = "";
   lastPersistedToken = "";
+  persistenceChain = Promise.resolve();
+  backendNotificationRevision = 0;
   useHfTokenStore.setState({
     token: "",
     isPersisting: false,
     persistenceError: null,
   });
+}
+
+/** Clears module-level HF credential state between frontend unit tests. */
+export function __resetHfCredentialSessionForTests(): void {
+  resetHfCredentialSession();
 }
 
 if (typeof window !== "undefined") {
