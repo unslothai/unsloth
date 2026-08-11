@@ -149,6 +149,40 @@ class TestFlashAttnWheelSelection:
         )
 
 
+class TestFlashAttnImportProbe:
+    """The probe is bounded: a native extension can hang in its initialiser, not just fail."""
+
+    def test_clean_exit_is_importable(self):
+        with mock.patch(
+            "subprocess.run",
+            return_value = subprocess.CompletedProcess(["python"], 0),
+        ):
+            assert ips._flash_attn_importable() is True
+
+    def test_non_zero_exit_is_not_importable(self):
+        with mock.patch(
+            "subprocess.run",
+            return_value = subprocess.CompletedProcess(["python"], 1),
+        ):
+            assert ips._flash_attn_importable() is False
+
+    def test_a_hung_import_is_not_importable(self):
+        with mock.patch(
+            "subprocess.run",
+            side_effect = subprocess.TimeoutExpired(cmd = "python", timeout = 300),
+        ):
+            assert ips._flash_attn_importable() is False
+
+    def test_the_probe_is_bounded(self):
+        with mock.patch(
+            "subprocess.run",
+            return_value = subprocess.CompletedProcess(["python"], 0),
+        ) as run:
+            ips._flash_attn_importable()
+
+        assert run.call_args.kwargs["timeout"] == ips._FLASH_ATTN_IMPORT_PROBE_TIMEOUT
+
+
 class TestEnsureFlashAttn:
     def _import_check(self, code: int = 1):
         return subprocess.CompletedProcess(["python", "-c", "import flash_attn"], code)

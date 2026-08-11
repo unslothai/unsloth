@@ -3648,21 +3648,28 @@ def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
 
 
+# Matches worker._is_importable_isolated: the same untrusted import, bounded the same way.
+_FLASH_ATTN_IMPORT_PROBE_TIMEOUT = 300
+
+
 def _flash_attn_importable() -> bool:
     """Whether flash_attn imports, checked out of process.
 
     A wrong-arch/ABI wheel installs fine and raises on import, so a zero pip exit code is
     not proof the install is usable. Run it in a child so a half-loaded native extension
-    cannot poison the installer.
+    cannot poison the installer, and bound it: initialisation can hang rather than fail,
+    and an unbounded probe would leave setup waiting forever instead of warning.
     """
-    return (
-        subprocess.run(
+    try:
+        result = subprocess.run(
             [sys.executable, "-c", "import flash_attn"],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
 
 
 def _ensure_flash_attn() -> None:
