@@ -84,7 +84,7 @@ function mentionsResource(haystack: string, name?: string): boolean {
 // no bare `token` stem: `tokenizing` is dataset work, `tokenizer` is part of loading the model.
 // the audio codecs are here because they are loaded only to preprocess the dataset.
 const DATASET_PREPARATION_RE =
-  /tokenizing|dataset|standardiz|\bmap\b|\bfilter\b|generating|resolving data|casting|formatting|\bsamples\b|local files|encoding audio|preprocessing|\brows\b|slic|snac|bicodec|outetts|whisper|codec|audio|eval split/i;
+  /tokenizing|dataset|standardiz|\bmap\b|\bfilter\b|generating|resolving data|casting|formatting|\bsamples\b|local files|encoding audio|preprocessing|\brows\b|slic|snac|bicodec|outetts|whisper|codec|audio|eval split|chat template|\bconverting\b/i;
 
 // checked before the dataset patterns. `Starting SNAC training...` and
 // `Starting Whisper training...` name a codec only because it names the run, and matching

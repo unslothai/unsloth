@@ -168,16 +168,14 @@ def _is_payload_file(name: str) -> bool:
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # every payload file in a hub snapshot is a link into `blobs/`, and pruning a blob leaves
-    # the link behind. one that resolves to nothing cannot be opened, so it is not evidence of
-    # payload. only links are tested: a plain file was just listed by the walk, and dropping it
-    # on a stat that happened to fail would hide a dataset that loads.
+    # the resolver's own emptiness rule rather than mere existence. `_empty_payload` is what
+    # decides whether the builder reads any bytes out of a file, and it answers True for the two
+    # shapes that look like payload and are not: a zero-byte `train.jsonl` left by a cancelled
+    # write, and a snapshot link into `blobs/` whose blob was pruned, which stats through to
+    # nothing. offering either put a row On Device that then failed to load offline.
     if not _is_payload_file(path.name):
         return False
-    try:
-        return not path.is_symlink() or path.exists()
-    except OSError:
-        return True
+    return not local_options._empty_payload(path)
 
 
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:

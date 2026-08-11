@@ -111,6 +111,30 @@ test("a step naming only a repo id routes by that name", () => {
   assert.equal(classifyPreparation("Loading checkpoint shards", {}), "model");
 });
 
+test("every tqdm description the dataset work emits reaches the dataset row", () => {
+  // Swept from the `desc =` literals under studio/backend/utils/datasets and
+  // studio/backend/core/training. `_monitor_tqdm` forwards these verbatim, and none of them
+  // carries a word the earlier patterns matched, so a mapping pass that runs for minutes
+  // rendered under Model weights while the dataset row sat on Ready.
+  const resources = {
+    modelName: "Qwen/Qwen3-0.6B",
+    datasetName: "ryanmarten/OpenThoughts-1k-sample",
+  };
+  const descriptions = [
+    "Applying chat template to chatml 15% (32,000/207,865)",
+    "Applying chat template to sharegpt 15% (32,000/207,865)",
+    "Converting VLM samples 10% (100/1,000)",
+    "Converting ShareGPT+image 5% (50/1,000)",
+  ];
+  for (const message of descriptions) {
+    const { title } = parsePreparationProgress(message, "Preparing");
+    assert.equal(classifyPreparation(title, resources), "dataset", message);
+  }
+  // The model's own loading steps must not be pulled across by the added words.
+  assert.equal(classifyPreparation("Loading checkpoint shards", resources), "model");
+  assert.equal(classifyPreparation("Loading tokenizer", resources), "model");
+});
+
 test("an id shared by both repos routes by wording, not by the tie-break", () => {
   // The Hub allows the same owner/name as a model and as a dataset, and then the id says
   // nothing about which row a message belongs to. The longer-id tie-break handed every one

@@ -292,6 +292,21 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
+def test_raw_dataset_cache_has_data_rejects_an_empty_payload_file(monkeypatch, tmp_path):
+    """A zero-byte `train.jsonl` from a cancelled write looks like payload and yields nothing.
+    `local_options._empty_payload` is what the resolver asks, so this asks the same thing
+    rather than settling for the file existing."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    snapshot = next((repo_root / "snapshots").iterdir())
+    (snapshot / "train.jsonl").write_bytes(b"")
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+    (snapshot / "train.jsonl").write_bytes(b'{"text": "x"}\n')
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
 def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it(
     monkeypatch, tmp_path
 ):
