@@ -466,7 +466,16 @@ try {
         'if ($env:PATH -eq $before) { Write-Output "PATH-UNTOUCHED" }',
         'Write-Output "SURVIVED"',
         'exit 0')
-    $_childOut = & $_hostExe -NoProfile -File $_child 2>$null | Out-String
+    # The corrupt script writes its parse error to stderr, and Windows PowerShell 5.1 wraps a
+    # native command's stderr in a NativeCommandError and applies $ErrorActionPreference to it,
+    # so the "Stop" set at the top of this file would end the run here. 7.1 stopped applying the
+    # preference to native stderr, which is why this passes under pwsh and only fails on the 5.1
+    # leg. Scope the preference to the call; the exit code is what this actually judges, and it is
+    # read on the next line.
+    $_childOut = & {
+        $ErrorActionPreference = "Continue"
+        & $_hostExe -NoProfile -File $_child 2>$null
+    } | Out-String
     $_childRc = $LASTEXITCODE
     Check "an unparseable activation script does not stop the script either" ($_childOut -match 'SURVIVED')
     Check "and it leaves PATH untouched too" ($_childOut -match 'PATH-UNTOUCHED')
