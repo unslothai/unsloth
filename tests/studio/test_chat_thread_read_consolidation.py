@@ -9,7 +9,7 @@ ADAPTER = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
 
 
 def test_chat_run_reuses_one_thread_metadata_read() -> None:
-    source = ADAPTER.read_text(encoding="utf-8")
+    source = ADAPTER.read_text(encoding = "utf-8")
     run = source[source.index("export function createOpenAIStreamAdapter(") :]
 
     assert run.count("getStoredChatThread(resolvedThreadId)") == 1
