@@ -286,6 +286,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [maxTokens, setMaxTokens] = useState(2048);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
+  // A pick that lost the race with a load still settling. Replayed once it does.
+  const pendingRoutedTtsPick = useRef<{
+    repoId: string;
+    ggufFilename?: string | null;
+    loadId?: string | null;
+  } | null>(null);
   const ttsStatusRefreshGeneration = useRef(0);
   const ttsLoadGeneration = useRef(0);
   const pendingTtsLoad = useRef<{
@@ -345,11 +351,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // holds, including a model chat dictation loaded, and that must survive a mode switch.
   // The identity, not a boolean: another surface can replace the sidecar's model while
   // Audio is inactive, and a bare flag then claimed that replacement too, so Eject
-  // unloaded a model this page never loaded.
-  const sttLoadedByThisPage = useRef<{
-    model: string;
-    engine: "transformers" | "gguf" | "mtmd";
-  } | null>(null);
+  // unloaded a model this page never loaded. Keyed on the model alone, deliberately: a
+  // "gguf" pick on a host without whisper-server is served by the Transformers fallback
+  // and comes back resident under that engine, so comparing the REQUESTED engine never
+  // matched and leaked the sidecar instead. The registry keeps one model resident, so the
+  // model id identifies it; the unload call resolves the serving engine server-side.
+  const sttLoadedByThisPage = useRef<string | null>(null);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
     repoId: string;
@@ -502,11 +509,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const selected = selectedSttRepoRef.current;
     const claim = sttLoadedByThisPage.current;
     const owned =
-      sttReady &&
-      selected !== null &&
-      claim !== null &&
-      claim.model === sttLoadedModel &&
-      claim.engine === sttLoadedEngine;
+      sttReady && selected !== null && claim !== null && claim === sttLoadedModel;
     const forget = () => {
       deferredSttLoad.current = null;
       selectedSttRepoRef.current = null;
@@ -523,7 +526,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     await unloadSttModel(sttEngineForRepoId(selected));
     forget();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady, sttLoadedModel, sttLoadedEngine]);
+  }, [refreshSttStatus, sttReady, sttLoadedModel]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -670,8 +673,22 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // --- Model selection ----------------------------------------------------
 
   const loadTtsModel = useCallback(
-    async (repoId: string, ggufFilename?: string | null) => {
-      if (ttsLoadInFlight.current) return;
+    async (
+      repoId: string,
+      ggufFilename?: string | null,
+      // Where the weights actually are. A row cached in a NON-ACTIVE HF cache is loadable
+      // only by its snapshot path, which the picker supplies as meta.loadId; sending the
+      // display repo id instead failed offline, or re-downloaded into the active cache.
+      // Chat threads the same field (chat-page.tsx).
+      loadId?: string | null,
+    ) => {
+      // A routed pick that arrives while a previous load is still tearing down would
+      // otherwise be dropped here, and the route effect has already cleared ?model=, so
+      // nothing retries it. Remembered and replayed from the finally below instead.
+      if (ttsLoadInFlight.current) {
+        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
+        return;
+      }
       const generation = ++ttsLoadGeneration.current;
       const controller = new AbortController();
       const loadRequestId = crypto.randomUUID();
@@ -692,7 +709,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       try {
         const res = await loadModel(
           {
-            model_path: repoId,
+            model_path: loadId || repoId,
             load_request_id: loadRequestId,
             hf_token: hfApiToken(getHfToken()) ?? null,
             max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
@@ -733,6 +750,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         busyRef.current = null;
         setBusy(null);
         if (activeRef.current) void refreshStatus();
+        // Replayed without an active check: the queue is only ever filled by an explicit
+        // pick, and a routed one arrives with a navigation to this page that may not have
+        // landed yet, so gating on activeRef here would drop exactly the pick being fixed.
+        const queued = pendingRoutedTtsPick.current;
+        pendingRoutedTtsPick.current = null;
+        if (queued)
+          void loadTtsModelRef.current(
+            queued.repoId,
+            queued.ggufFilename,
+            queued.loadId,
+          );
       }
     },
     [refreshStatus],
@@ -866,7 +894,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // may keep downloading globally, but its old completion cannot load here.
       invalidatePendingStagedTts();
       stageTtsDownload([]);
-      void loadTtsModelRef.current(repoId, ggufFilename);
+      void loadTtsModelRef.current(repoId, ggufFilename, meta.loadId);
     },
     [invalidatePendingStagedTts, stageTtsDownload],
   );
@@ -895,7 +923,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       try {
         try {
           await loadSttModel(sidecarKey, engine, controller.signal);
-          sttLoadedByThisPage.current = { model: sidecarKey, engine };
+          sttLoadedByThisPage.current = sidecarKey;
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
@@ -939,7 +967,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           if (!isCurrent()) return;
           toast.loading(`Loading ${sidecarKey}…`, { id: toastId });
           await loadSttModel(sidecarKey, engine, controller.signal);
-          sttLoadedByThisPage.current = { model: sidecarKey, engine };
+          sttLoadedByThisPage.current = sidecarKey;
         }
         if (isCurrent())
           toast.success("Transcription model ready", { id: toastId });

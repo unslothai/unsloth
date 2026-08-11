@@ -41,6 +41,7 @@ from core.inference.chat_template_helpers import (
     neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
+from core.inference.spark_tts_paths import spark_tts_base_repo
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -458,11 +459,12 @@ class InferenceBackend:
                         elif base_repo:
                             from huggingface_hub import snapshot_download
 
+                            hf_repo = spark_tts_base_repo(base_repo)
                             # Same token as the load below: a private or gated base would
                             # otherwise 401 here while resolving the BiCodec assets.
                             abs_repo_path = os.path.abspath(
                                 snapshot_download(
-                                    base_repo,
+                                    hf_repo,
                                     token = hf_token if hf_token and hf_token.strip() else None,
                                 )
                             )

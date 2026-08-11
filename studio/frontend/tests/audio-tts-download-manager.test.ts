@@ -29,10 +29,22 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
 test("cached and local TTS picks keep the direct load path and supersede stale staging", () => {
   assert.match(
     source,
-    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\(repoId, ggufFilename\)/,
+    // meta.loadId is the load target for a row cached in a non-active HF cache; sending
+    // the display repo id instead failed offline or re-downloaded into the active cache.
+    /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\(repoId, ggufFilename, meta\.loadId\)/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
-  assert.match(source, /if \(ttsLoadInFlight\.current\) return;/);
+  // Still single-flight, but the loser is queued rather than dropped: a pick arriving
+  // while a cancelled load settles used to vanish, and the route effect had already
+  // cleared ?model=, so nothing retried it.
+  assert.match(
+    source,
+    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+  );
+  assert.match(
+    source,
+    /const queued = pendingRoutedTtsPick\.current;\s*pendingRoutedTtsPick\.current = null;\s*if \(queued\)/,
+  );
 });
 
 test("managed completion loads the exact GGUF only when Audio is active and idle", () => {
