@@ -981,31 +981,6 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
-def _startup_marker_dirs() -> "list[Path]":
-    """Where a startup marker is written, and looked for.
-
-    Two places, because the studio home is the wrong key for this question. What
-    the marker protects is the compiled cache, and `clear_unsloth_compiled_cache`
-    also clears whatever UNSLOTH_COMPILE_LOCATION names, which is set
-    independently of UNSLOTH_STUDIO_HOME. Two studio homes can therefore point at
-    one cache directory, and a home-scoped marker leaves each of them believing
-    it is alone. `cache_coordination_dirs` is keyed per cache path, so any
-    install that would clear the same directory lands in the same place.
-    """
-    dirs = [_studio_root()]
-    try:
-        from utils.cache_cleanup import cache_coordination_dirs
-        shared = cache_coordination_dirs()
-    except Exception:
-        # An import or path failure here only costs cross-home discovery; the
-        # home-scoped marker, which is the common case, still gets written.
-        return dirs
-    for directory in shared:
-        if directory not in dirs:
-            dirs.append(directory)
-    return dirs
-
-
 def write_startup_marker() -> None:
     """Record that this process is coming up, before uvicorn starts.
 
@@ -1044,16 +1019,16 @@ def write_startup_marker() -> None:
                 "Publishing the startup marker without the cache lock: another backend "
                 "has held it for 30s"
             )
-        for directory in _startup_marker_dirs():
-            path = directory / f"studio-starting-{me}.marker"
-            try:
-                directory.mkdir(parents = True, exist_ok = True)
-                # Same layout as a per-port record, so _read_pid_record parses
-                # both. An unknown start time is a blank line, read back as None.
-                path.write_text(body, encoding = "utf-8")
-            except OSError:
-                continue
+        directory = _studio_root()
+        path = directory / f"studio-starting-{me}.marker"
+        try:
+            directory.mkdir(parents = True, exist_ok = True)
+            # Same layout as a per-port record, so _read_pid_record parses both.
+            # An unknown start time is a blank line, read back as None.
+            path.write_text(body, encoding = "utf-8")
             _OWN_STARTUP_MARKERS.append(path)
+        except OSError:
+            pass
     if not _OWN_STARTUP_MARKERS:
         return
     import atexit
@@ -1073,13 +1048,10 @@ def _remove_startup_marker() -> None:
 
 
 def _startup_marker_records() -> "list[tuple[int, float | None, str | None] | None]":
-    records: "list[tuple[int, float | None, str | None] | None]" = []
-    for directory in _startup_marker_dirs():
-        try:
-            records.extend(_read_pid_record(p) for p in directory.glob(STARTUP_MARKER_GLOB))
-        except OSError:
-            continue
-    return records
+    try:
+        return [_read_pid_record(p) for p in _studio_root().glob(STARTUP_MARKER_GLOB)]
+    except OSError:
+        return []
 
 
 def _legacy_record() -> "tuple[int, float | None, str | None] | None":
@@ -1125,20 +1097,6 @@ def live_sibling_backend() -> "int | None":
     """
     me = os.getpid()
     timed = [r for r in _startup_marker_records() + _per_port_records() if r is not None]
-    return _live_sibling(timed + [_legacy_record()], me, timed)
-
-
-def established_sibling_backend() -> "int | None":
-    """PID of a sibling that has already bound a port, or None.
-
-    Deliberately blind to startup markers. A sibling that is itself still
-    starting has not cleaned anything, so it is not a reason to keep a stale
-    cache; a sibling that is serving is, and a pre-upgrade one writes no marker
-    and no stamp, so judging it by whether it has cleared would clear the cache
-    underneath it.
-    """
-    me = os.getpid()
-    timed = [r for r in _per_port_records() if r is not None]
     return _live_sibling(timed + [_legacy_record()], me, timed)
 
 
@@ -2050,22 +2008,33 @@ _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4
 
 
-def run_server(*args, **kwargs):
-    """Start the server, and take the startup marker back if it never starts.
+def _drops_its_marker_on_failure(start):
+    """Take the startup marker back if the server never starts.
 
     An embedded caller keeps its process alive across a failure -- colab.py
-    catches SystemExit and Exception around this -- and no exit hook runs then.
-    A marker left behind would answer every later sibling probe as a live
+    catches SystemExit and Exception around run_server -- and no exit hook runs
+    then. A marker left behind would answer every later sibling probe as a live
     backend, so no backend of this install would clear the compiled cache again.
+
+    A decorator rather than a renamed inner function: run_server's signature is
+    a contract here, read both by inspect.signature and by tests that parse the
+    def out of this file, and functools.wraps keeps both intact.
     """
-    try:
-        return _run_server(*args, **kwargs)
-    except BaseException:
-        _remove_startup_marker()
-        raise
+    import functools
+
+    @functools.wraps(start)
+    def started(*args, **kwargs):
+        try:
+            return start(*args, **kwargs)
+        except BaseException:
+            _remove_startup_marker()
+            raise
+
+    return started
 
 
-def _run_server(
+@_drops_its_marker_on_failure
+def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = _DEFAULT_FRONTEND_PATH,
@@ -2218,10 +2187,6 @@ def _run_server(
     # shutdown, when a sibling may have started since. On app.state rather than
     # imported, because main.py must not import this module back.
     app.state.live_sibling_backend = live_sibling_backend
-    app.state.established_sibling_backend = established_sibling_backend
-    # Read here rather than in main.py: the decision is about whether anything
-    # cleared since THIS process started, and the marker is already written.
-    app.state.backend_started_at = _process_create_time(os.getpid())
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -2464,6 +2429,11 @@ def _run_server(
             loop.close()
             if not ready_event.is_set():
                 startup_failed.set()
+            # An embedded host stays alive after the server thread ends, and a
+            # post-readiness failure in here never reaches run_server's caller,
+            # so nothing else takes these back. They would keep validating
+            # against the still-live host PID with no backend serving.
+            _remove_pid_file()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread

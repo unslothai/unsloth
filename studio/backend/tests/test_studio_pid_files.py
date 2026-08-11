@@ -28,7 +28,6 @@ from utils import cache_cleanup  # noqa: E402
 # Captured before the autouse fixture stubs them, for the tests that exercise them.
 _REAL_IS_STUDIO_BACKEND = run._pid_is_studio_backend
 _REAL_PID_ALIVE = run._pid_alive
-_REAL_COORDINATION_DIRS = cache_cleanup.cache_coordination_dirs
 
 
 @pytest.fixture(autouse = True)
@@ -38,10 +37,7 @@ def isolated_root(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_OWN_PID_FILE", None)
     monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
-    # The cross-home coordination directory is a real path under the system temp
-    # dir, so without this the marker tests would see (and leave) markers from
-    # every other Studio on this machine.
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [tmp_path / "shared"])
+    # The lock lives in the studio home, which is already redirected above.
     monkeypatch.setattr(run, "_OWN_STARTUP_MARKERS", [])
     yield
 
@@ -702,56 +698,6 @@ def test_a_timed_record_for_another_pid_leaves_the_legacy_one_alone(tmp_path, mo
     assert run.live_sibling_backend() == 8550
 
 
-def test_the_startup_marker_is_written_where_cache_siblings_can_see_it(tmp_path):
-    # UNSLOTH_COMPILE_LOCATION is set independently of UNSLOTH_STUDIO_HOME, so a
-    # marker in the studio home alone cannot be seen by a backend of another home
-    # that clears the same cache.
-    run.write_startup_marker()
-
-    name = f"studio-starting-{os.getpid()}.marker"
-    assert (tmp_path / name).is_file()
-    assert (tmp_path / "shared" / name).is_file()
-
-
-def test_a_sibling_in_another_studio_home_is_found_through_the_shared_cache_dir(tmp_path):
-    shared = tmp_path / "shared"
-    shared.mkdir()
-    (shared / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
-
-    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
-    assert run.live_sibling_backend() == 8550
-
-
-def test_the_coordination_directory_follows_the_cache_path_not_the_studio_home(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "cache"))
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_a"))
-    first = _REAL_COORDINATION_DIRS()
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_b"))
-    assert _REAL_COORDINATION_DIRS() == first
-
-    # A different cache is a different set of backends to coordinate with.
-    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "other_cache"))
-    assert _REAL_COORDINATION_DIRS() != first
-
-
-def test_two_installs_sharing_one_cache_overlap_even_with_different_trees(tmp_path, monkeypatch):
-    # Keying the whole path set would give two installs different directories
-    # whenever their install-tree candidates differ, even though both delete out
-    # of the configured one. Coordination is per path, so the shared one matches.
-    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "shared_cache"))
-    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [tmp_path / "install_a"])
-    install_a = set(_REAL_COORDINATION_DIRS())
-
-    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [tmp_path / "install_b"])
-    install_b = set(_REAL_COORDINATION_DIRS())
-
-    assert install_a != install_b
-    assert install_a & install_b, "the shared cache must give them a common directory"
-
-
 def test_the_cache_lock_is_exclusive(tmp_path):
     # Two backends racing is the whole point, so the second one must be told the
     # section is taken rather than be let into it.
@@ -810,7 +756,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
     # cache is never cleared again on that machine; fall back to the plain probe.
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [blocked / "lock"])
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
     events = []
     monkeypatch.setattr(
         cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
@@ -868,106 +814,6 @@ def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypa
     assert events == [("lock", False), ("unlock", True)]
 
 
-def test_one_of_two_cold_starts_clears_the_stale_modules(tmp_path, monkeypatch):
-    # Both published a marker before either reached its clear, so each sees the
-    # other. Keeping the cache on both counts would leave modules that are stale
-    # for both of them, which is what the startup clear exists to remove.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
-    started = time.time()
-
-    cache_cleanup.clear_compiled_cache_unless_shared(
-        lambda: 8550, started_at = started, established_probe = lambda: None
-    )
-
-    assert events == ["clear"], "the first cold start clears"
-
-    # A second one, started at the same time, now finds a clear newer than itself.
-    cache_cleanup.clear_compiled_cache_unless_shared(
-        lambda: 8551, started_at = started, established_probe = lambda: None
-    )
-
-    assert events == ["clear"], "the second one keeps what the first just cleaned"
-
-
-def test_an_established_sibling_keeps_the_cache_even_with_no_stamp(tmp_path, monkeypatch):
-    # A pre-upgrade sibling writes no stamp at all, so judging it by stamps
-    # would read an established backend as a concurrent cold start and clear the
-    # cache underneath it.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
-
-    cache_cleanup.clear_compiled_cache_unless_shared(
-        lambda: 8550, started_at = time.time(), established_probe = lambda: 8550
-    )
-
-    assert events == []
-
-
-def test_one_install_stamp_does_not_speak_for_another_installs_caches(tmp_path, monkeypatch):
-    # Two installs sharing only UNSLOTH_COMPILE_LOCATION: a stamp for the shared
-    # directory must not stand in for this install's own cache dirs, whose stale
-    # modules register_compiled_cache_on_path would put back on sys.path.
-    shared = tmp_path / "shared"
-    private = tmp_path / "private"
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [shared, private])
-    shared.mkdir()
-    (shared / "cleared").write_text(str(time.time() + 60), encoding = "utf-8")
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
-
-    cache_cleanup.clear_compiled_cache_unless_shared(
-        lambda: 8550, started_at = time.time(), established_probe = lambda: None
-    )
-
-    assert events == ["clear"], "the unstamped private cache still needs clearing"
-
-
-def test_a_partial_lock_set_is_not_reported_as_held(tmp_path, monkeypatch):
-    # The directory that fails may be the shared one two installs coordinate
-    # through, so holding only the private locks is not protection.
-    blocked = tmp_path / "not-a-directory"
-    blocked.write_text("", encoding = "utf-8")
-    monkeypatch.setattr(
-        cache_cleanup, "cache_coordination_dirs", lambda: [tmp_path / "ok", blocked / "lock"]
-    )
-
-    with cache_cleanup.compiled_cache_lock() as state:
-        assert state == cache_cleanup.LOCK_UNAVAILABLE
-
-
-def test_coordination_paths_that_cannot_be_resolved_degrade(tmp_path, monkeypatch):
-    # No temp dir, or a configured path that will not expand: taking the lock has
-    # to degrade rather than abort a startup that only wanted to know about siblings.
-    def boom():
-        raise RuntimeError("no temp dir")
-
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", boom)
-
-    with cache_cleanup.compiled_cache_lock() as state:
-        assert state == cache_cleanup.LOCK_UNAVAILABLE
-
-
-def test_a_sibling_that_started_before_us_keeps_the_cache(tmp_path, monkeypatch):
-    # An established backend cleared long before this process started, so there
-    # is nothing stale and its modules must survive.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
-    cache_cleanup._record_clear()
-
-    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550, started_at = time.time() - 60)
-
-    assert events == []
-
-
 def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monkeypatch):
     # ENOSYS is the lock being unsupported, not a sibling holding it. Retrying it
     # to a timeout and answering busy would keep the cache forever, since busy is
@@ -1011,7 +857,7 @@ def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
     def explode(*args, **kwargs):
         raise RuntimeError("startup failed")
 
-    monkeypatch.setattr(run, "_run_server", explode)
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(explode))
 
     with pytest.raises(RuntimeError):
         run.run_server()
@@ -1027,9 +873,45 @@ def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
     def bail(*args, **kwargs):
         raise SystemExit(1)
 
-    monkeypatch.setattr(run, "_run_server", bail)
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(bail))
 
     with pytest.raises(SystemExit):
         run.run_server()
 
     assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+
+
+def test_a_server_thread_that_dies_after_readiness_drops_its_records(tmp_path, monkeypatch):
+    # An embedded host stays alive after the uvicorn thread ends, and a failure
+    # in there never reaches run_server's caller. Records left behind would keep
+    # validating against the still-live host PID with no backend serving.
+    run.write_startup_marker()
+    run._write_pid_file(8905, "127.0.0.1")
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+    assert _files(tmp_path) != []
+
+    run._remove_pid_file()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert _files(tmp_path) == []
+
+
+def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, monkeypatch):
+    # The documented limitation of scoping this back: both keep a cache neither
+    # cleaned, which is the safe direction. The failure being replaced is the two
+    # of them deleting each other's modules mid-run.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551)
+
+    assert events == []
+
+    # ...and a launch that really is alone still clears.
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]

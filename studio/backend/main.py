@@ -638,11 +638,7 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     that serializes it against a sibling's startup; run_server puts the probe on
     app.state because main.py must not import run.py back.
     """
-    _clear_compiled_cache_unless_shared(
-        getattr(app.state, "live_sibling_backend", None),
-        started_at = getattr(app.state, "backend_started_at", None),
-        established_probe = getattr(app.state, "established_sibling_backend", None),
-    )
+    _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
 
 
 @asynccontextmanager
