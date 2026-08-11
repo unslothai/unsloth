@@ -4609,6 +4609,19 @@ exit 0
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # The torch family THIS run settled on for this host. setup.ps1 rescans the hardware from
+    # scratch and keeps a GPU wheel rather than forcing another family over it -- but "a GPU
+    # wheel is in the venv" is not on its own evidence that this installer put it there. The
+    # migrated-venv arm above installs unsloth only and never touches torch, and the flavor
+    # repair no-ops whenever the expected tag is 'cpu' or unrecognised, so an upgrade from an
+    # older layout can hand setup a wheel from a previous install on different hardware.
+    # Empty means "no answer": --no-torch, or a custom index whose leaf names no flavor. Always
+    # assigned so a previous run in the same session cannot leak a value -- on 7.5+ that leaves
+    # it present and blank, and on 5.1 / 7.0-7.4 an empty assignment removes it; setup.ps1
+    # treats both as unknown.
+    $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
+        [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
+    }
     # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
     $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
     # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from

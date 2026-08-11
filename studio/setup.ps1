@@ -3845,6 +3845,16 @@ Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+# The torch family install.ps1 settled on for this host, in the same vocabulary the probe below
+# produces (cu<digits> / rocm / xpu / cpu). $null means it did not say: an installer old enough
+# to predate the variable (setup.ps1 ships in the pip package, install.ps1 is fetched from
+# unsloth.ai, so the two can be different ages), --no-torch, or a custom index whose leaf names
+# no flavor. Absent is treated as unknown rather than as a mismatch, which is what keeps an
+# older cached installer on exactly the behaviour it had before this variable existed.
+# IsNullOrWhiteSpace covers both spellings of "no answer": PowerShell 7.5+ keeps an empty
+# assignment as a present blank value, 5.1 and 7.0-7.4 remove the variable instead.
+$InstallerTorchTag = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_INSTALLER_TORCH_TAG)) { $null }
+                     else { $env:UNSLOTH_INSTALLER_TORCH_TAG.Trim().ToLowerInvariant() }
 # Only the stale-venv block below assigns this, but the XPU install reads it to decide whether to
 # force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
 # Set-StrictMode from making the read fatal.
@@ -4014,11 +4024,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedXpuVenv = $true
     }
 
-    # A GPU wheel is never force-reinstalled onto a DIFFERENT family on the strength of a rescan.
-    # Under $InstallerManagedSetup install.ps1 resolved the index and installed this trio minutes
-    # ago in this same run, off its own probe, and its flavor repair re-lands the trio whenever the
-    # venv disagrees with the index it chose -- so by the time setup runs, a GPU wheel here IS
-    # install.ps1's answer for this host. When setup's second, independent probe then lands
+    # A GPU wheel install.ps1 SELECTED is never force-reinstalled onto a different family on the
+    # strength of a rescan. install.ps1 reports the family it settled on in
+    # $env:UNSLOTH_INSTALLER_TORCH_TAG, and only a wheel matching it is treated as its answer,
+    # because "there is a GPU wheel in the venv" does not by itself mean this run put it there:
+    # the migrated-venv arm (install.ps1's `if ($_Migrated)`) installs unsloth alone and never
+    # touches torch, and install.ps1's flavor repair no-ops whenever its expected tag is 'cpu' or
+    # unrecognised. So an ordinary upgrade from the legacy ~/.unsloth/studio/.venv layout can hand
+    # setup a +cu118 wheel from a previous install on different hardware, and preserving THAT
+    # would leave the environment permanently wrong -- including on a mapped AMD host, where the
+    # kept cu* tag also blocks the ROCm reroute below (it needs $CuTag -eq "cpu"). Those repair,
+    # in place, as they did before this guard existed.
+    # $InstallerTorchTag $null means the installer did not say -- an older cached install.ps1,
+    # or --no-torch -- and unknown falls back to preserving, which is the behaviour that shipped
+    # before the variable existed. When setup's second, independent probe then lands
     # somewhere else, the disagreement is between the two probes, not with the hardware: a
     # Get-CimInstance that threw, an nvidia-smi that did not answer, the single-Radeon unroll of
     # #8335, a ROCm scan that failed on a box that also holds an NVIDIA card. Setup has no better
@@ -4040,7 +4059,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # reached only once $installedTorchTag has answered, which is only true on the path that
     # assigned it.
     if ($shouldRebuild -and $InstallerManagedSetup -and
-        $installedTorchTag -and $installedTorchTag -ne "cpu") {
+        $installedTorchTag -and $installedTorchTag -ne "cpu" -and
+        ((-not $InstallerTorchTag) -or $installedTorchTag -eq $InstallerTorchTag)) {
         substep "This host rescanned as $expectedTorchTag but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
         substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto another PyTorch build on purpose." "DarkGray"
         $shouldRebuild = $false

@@ -655,6 +655,47 @@ Check "a kept xpu venv still locks the xpu index" (
 # torch back regardless of $script:PinChangedForceReinstall, so the kept family has to reach the
 # index selection. Same treatment as $script:PreservedXpuVenv, including the declaration outside
 # the venv block that a fresh install never enters.
+
+# ── the half of the guard that keeps it from preserving a wheel nobody chose ──
+# "There is a GPU wheel in the venv" is not evidence that THIS install run put it there.
+# install.ps1's migrated-venv arm installs unsloth alone and never touches torch, and its flavor
+# repair no-ops whenever its own expected tag is 'cpu' or unrecognised -- so an ordinary upgrade
+# off the legacy ~/.unsloth/studio/.venv layout hands setup whatever wheel the previous install
+# left, on whatever hardware that was. Preserving THAT is not conservatism, it is a permanently
+# wrong environment that setup then refuses to repair, and on a mapped AMD host the kept cu* tag
+# also blocks the ROCm reroute (it needs $CuTag -eq "cpu"). So install.ps1 says which family it
+# settled on and only a wheel matching it counts as its answer.
+$installText = (Get-Content -Raw (Join-Path $root "install.ps1")) -replace "`r`n", "`n"
+Check "install.ps1 reports the family it settled on" (
+    $installText -match '\$env:UNSLOTH_INSTALLER_TORCH_TAG = if \(\$SkipTorch\) \{ "" \} else \{')
+Check "it reports the resolved flavor, not the raw index URL" (
+    $installText -match '\[string\]\(Get-ExpectedTorchFlavorTag -TorchIndexUrl \$TorchIndexUrl -ROCmIndexUrl \$ROCmIndexUrl\)')
+# Unconditional, like $env:UNSLOTH_NO_TORCH next to it: a second install in the same PowerShell
+# session must not inherit the first one's answer. Assigning "" clears it on every edition --
+# 7.5+ keeps a present blank value, 5.1 and 7.0-7.4 remove the variable outright -- and setup
+# reads both as unknown.
+# The -match half is the anti-vacuity half: a bare -notmatch passes against a tree that never
+# grew the assignment at all.
+Check "the report is assigned on every run, not only when known" (
+    ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
+    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG'))
+Check "it is handed over before setup is invoked" (
+    $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -ge 0 -and
+    $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -lt
+    $installText.IndexOf('$studioArgs = @(''studio'', ''setup'')'))
+# setup.ps1 ships in the pip package and install.ps1 is fetched from unsloth.ai, so the two can
+# be different ages. An absent variable therefore has to mean "unknown", not "mismatch", or a
+# cached older installer would start force-reinstalling over its own correct choice -- which is
+# the bug the guard was added for. Blank counts as absent for the 7.5+ spelling.
+Check "setup.ps1 reads the reported family"  (
+    $setupText -match '(?m)^\$InstallerTorchTag = if \(\[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_INSTALLER_TORCH_TAG\)\) \{ \$null \}')
+Check "an absent report is unknown, not a mismatch" (
+    $_guard -match '\(\(-not \$InstallerTorchTag\) -or \$installedTorchTag -eq \$InstallerTorchTag\)')
+Check "the read precedes the stale check" (
+    $setupText.IndexOf('$InstallerTorchTag = if ([string]::IsNullOrWhiteSpace(') -ge 0 -and
+    $setupText.IndexOf('$InstallerTorchTag = if ([string]::IsNullOrWhiteSpace(') -lt
+    $setupText.IndexOf('(-not $InstallerTorchTag) -or $installedTorchTag -eq $InstallerTorchTag'))
+
 Check "the kept family is recorded for the index selection" (
     $_guard -match '\$script:PreservedInstallerTorchTag = \$installedTorchTag')
 Check "that flag is declared outside the venv block" (
@@ -703,38 +744,81 @@ foreach ($srcText in (Get-HelperSources $setup @("Test-CudaFamilyLeaf"))) { Invo
 Check "Test-CudaFamilyLeaf came across"    ((Test-CudaFamilyLeaf "cu128") -and -not (Test-CudaFamilyLeaf "rocm"))
 function Get-PytorchCudaTag { return "cu128" }
 
-# One case = one host. Installed is what install.ps1 left in the venv; Expected is what setup's
-# rescan concluded; the Has* values are that same rescan, and they have to agree with Expected or
-# the case is not a real host. Run at script scope (Invoke-Expression inside a function would put
+# One case = one host. Installed is what setup found in the venv; InstallerTag is the family
+# install.ps1 reported settling on for this host (an empty string is the installer saying it has
+# no answer, $null is an installer too old to say at all); Expected is what setup's rescan
+# concluded; the Has* values are that same rescan, and they have to agree with Expected or the
+# case is not a real host. Run at script scope (Invoke-Expression inside a function would put
 # the extracted `$script:` writes and the reads in different scopes).
 $_cases = @(
     # +rocm venv, rescan found the GeForce in the same box and not the Radeon.
-    @{ Name = "rocm wheel, rescan says cu128"; Installed = "rocm";  Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "rocm wheel the installer chose, rescan says cu128"; Installed = "rocm"; InstallerTag = "rocm"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
     # +cu128 venv, nvidia-smi did not answer this time and the Radeon did.
-    @{ Name = "cu128 wheel, rescan says rocm";  Installed = "cu128"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
+    @{ Name = "cu128 wheel the installer chose, rescan says rocm";  Installed = "cu128"; InstallerTag = "cu128"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
        Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
     # +xpu venv on an Arc + GeForce box: the promotion above is gated on -not $HasNvidiaSmi.
-    @{ Name = "xpu wheel, rescan says cu128";   Installed = "xpu";   Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "xpu wheel the installer chose, rescan says cu128";   Installed = "xpu";   InstallerTag = "xpu"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "xpu";   Amd = $false; XpuArm = $true }
     # The direction round one closed, kept as a regression: no GPU found at all.
-    @{ Name = "rocm wheel, rescan says cpu";    Installed = "rocm";  Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "rocm wheel the installer chose, rescan says cpu";    Installed = "rocm";  InstallerTag = "rocm"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
-    @{ Name = "cu128 wheel, rescan says cpu";   Installed = "cu128"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "cu128 wheel the installer chose, rescan says cpu";   Installed = "cu128"; InstallerTag = "cu128"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
-    # ...and the repairs that MUST still happen, or this guard has reintroduced the loop.
-    @{ Name = "cpu wheel on a ROCm host";       Installed = "cpu";   Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
+    # An installer too old to carry the variable at all. setup.ps1 ships in the pip package and
+    # install.ps1 is fetched from unsloth.ai, so this pairing is normal, not exotic. Unknown has
+    # to keep preserving or a cached older installer starts losing its own correct choice.
+    @{ Name = "rocm wheel, installer did not say, rescan says cu128"; Installed = "rocm"; InstallerTag = $null; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
+    # ── the wheels the installer did NOT choose ──
+    # An upgrade off the legacy layout: install.ps1's migrated arm installs unsloth alone and
+    # never touches torch, and its flavor repair no-ops when its own expected tag is 'cpu'. So a
+    # +cu118 wheel from a previous install on different hardware arrives here untouched. Both
+    # scans agree the box has no NVIDIA GPU; preserving it would pin the whole dependency pass
+    # onto a cu118 index on a machine that has no CUDA device.
+    @{ Name = "stale cu118 wheel the installer did not choose, rescan says cpu"; Installed = "cu118"; InstallerTag = "cpu"; Expected = "cpu"; Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $false; CuTag = "cpu";   Amd = $false; XpuArm = $false }
+    # The same stale wheel on a mapped AMD host. This is the one that costs the most: preserving
+    # it would ALSO set $CuTag to cu118, and the ROCm reroute below needs $CuTag -eq "cpu", so
+    # the Radeon would never get a ROCm wheel and setup would still exit 0.
+    @{ Name = "stale cu118 wheel the installer did not choose, rescan says rocm"; Installed = "cu118"; InstallerTag = "cpu"; Expected = "rocm"; Nvidia = $false; Xpu = $false; Rocm = $true; Gfx = "gfx1151"
        Keep = $false; CuTag = "cpu";   Amd = $true;  XpuArm = $false }
-    @{ Name = "cpu wheel on a CUDA host";       Installed = "cpu";   Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+    # Mirror image: a stale +rocm wheel left by an old Radeon install, on a box that is now
+    # NVIDIA and that the installer resolved as CPU (its own ROCm scan found nothing to map).
+    @{ Name = "stale rocm wheel the installer did not choose, rescan says cu128"; Installed = "rocm"; InstallerTag = "cpu"; Expected = "cu128"; Nvidia = $true; Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
+    # The installer ran but had no answer to give (a custom index whose leaf names no flavor).
+    # Blank is unknown, exactly like absent, so this preserves.
+    @{ Name = "rocm wheel, installer reported blank, rescan says cu128"; Installed = "rocm"; InstallerTag = ""; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
+    # ...and the repairs that MUST still happen, or this guard has reintroduced the loop.
+    @{ Name = "cpu wheel on a ROCm host";       Installed = "cpu";   InstallerTag = "rocm"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
+       Keep = $false; CuTag = "cpu";   Amd = $true;  XpuArm = $false }
+    @{ Name = "cpu wheel on a CUDA host";       Installed = "cpu";   InstallerTag = "cu128"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
     # A cu* family move is a repair, not a family change, and escapes before the guard.
-    @{ Name = "cu126 wheel on a cu128 host";    Installed = "cu126"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "cu126 wheel on a cu128 host";    Installed = "cu126"; InstallerTag = "cu128"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
     # Torch does not import at all: the venv is broken, not a family disagreement.
-    @{ Name = "torch that will not import";     Installed = $null;   Expected = $null;   Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+    @{ Name = "torch that will not import";     Installed = $null;   InstallerTag = "cu128"; Expected = $null;   Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
        Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
 )
+# The installer report is normalised by setup.ps1's own line, lifted out and executed, not by a
+# retyped copy -- so the empty-string case is answered by the shipped code on whichever edition
+# is running (7.5+ keeps a blank value, 5.1 and 7.0-7.4 remove the variable on that assignment).
+$_tagReadPat = '(?m)^(\$InstallerTorchTag = if \(\[string\]::IsNullOrWhiteSpace\(\$env:UNSLOTH_INSTALLER_TORCH_TAG\)\) \{ \$null \}\n\s+else \{[^\n]*\}\n)'
+$_tagRead = if ($setupText -match $_tagReadPat) { $Matches[1] } else { "" }
+Check "the installer-report read was found" ($_tagRead -ne "")
+
 foreach ($case in $_cases) {
+    if ($null -eq $case.InstallerTag) { Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue }
+    else { $env:UNSLOTH_INSTALLER_TORCH_TAG = $case.InstallerTag }
+    # Guarded, not bare: Invoke-Expression on an empty string is a terminating error at this
+    # file's script-scope "Stop", so a tree whose read line is missing would unwind here and
+    # every behavioural case below would go unreported rather than FAIL. Same reasoning as the
+    # caught extraction in the activation section.
+    if ($_tagRead) { Invoke-Expression $_tagRead }
+    else { Remove-Variable -Name InstallerTorchTag -Scope Script -ErrorAction SilentlyContinue }
     $script:shouldRebuild = $true
     $script:InstallerManagedSetup = $true
     $script:installedTorchTag = $case.Installed
@@ -773,7 +857,12 @@ foreach ($case in $_cases) {
     Check "    XPU arm runs = $($case.XpuArm)"  ($_xpuRuns -eq $case.XpuArm)
     # The claim the whole guard rests on: no arm re-lands torch over the kept wheel.
     Check "    torch is force-reinstalled = $(-not $case.Keep)" ($_forced -eq (-not $case.Keep))
+    # The kept family must reach the index selection only when the wheel was actually kept, or a
+    # repaired case would still drag the old family through the install arms below.
+    Check "    kept family recorded = $($case.Keep)" (
+        [bool]$script:PreservedInstallerTorchTag -eq $case.Keep)
 }
+Remove-Item Env:UNSLOTH_INSTALLER_TORCH_TAG -ErrorAction SilentlyContinue
 
 # The guard must not read $expectedTorchTag before $installedTorchTag has answered, and the case
 # above proves the cascade survives it. Prove the hazard is real rather than taking it on trust:
