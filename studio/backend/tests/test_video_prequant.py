@@ -86,7 +86,8 @@ def test_minimax_h3_declares_hosted_denoiser_checkpoints():
     assert set(video_family_prequant_schemes(fam)) == {"int8", "fp8"}
     for scheme in ("int8", "fp8"):
         repo = video_family_prequant_repo(fam, scheme)
-        # Curated hosted artifacts only: a third-party repo here would be unpickled by the loader.
+        # Curated hosted artifacts only: a third-party repo here would be served as this
+        # family's own weights, for a load that may never have asked for a scheme at all.
         assert repo and repo.startswith("unsloth/")
 
 

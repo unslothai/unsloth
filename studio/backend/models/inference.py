@@ -2497,7 +2497,7 @@ class DiffusionLoadRequest(BaseModel):
         "scheme. Loads the already-quantized weights with the dense bf16 never on the "
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
         "checkpoint if configured, else quantises the dense transformer at load time. "
-        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "A local path installs arbitrary weights into the served model, so it is "
         "ignored unless the path resolves inside a directory the operator allowlisted "
         "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
         "the OS path separator). A bare on/off value such as '1' is deliberately not "

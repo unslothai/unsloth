@@ -320,22 +320,35 @@ def _stub_torch_accelerate(
     load_raises = False,
 ):
     torch = types.ModuleType("torch")
+    seen = {"weights_only": None, "safe_globals": None}
 
     def _load(
         path,
         weights_only = False,
         map_location = None,
+        **kwargs,
     ):
+        seen["weights_only"] = weights_only
         if load_raises:
             raise RuntimeError("corrupt checkpoint")
         return ckpt
 
+    @contextlib.contextmanager
+    def _safe_globals(entries):
+        seen["safe_globals"] = list(entries)
+        yield
+
     torch.load = _load
+    # The load runs inside ``safe_globals`` with ``weights_only``; a stub that omitted the
+    # namespace would let a regression back to an unrestricted load pass every test here.
+    torch.serialization = types.SimpleNamespace(safe_globals = _safe_globals)
     monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "torch.serialization", torch.serialization)
 
     accelerate = types.ModuleType("accelerate")
     accelerate.init_empty_weights = lambda: contextlib.nullcontext()
     monkeypatch.setitem(sys.modules, "accelerate", accelerate)
+    return seen
 
 
 def _good_ckpt(scheme = "fp8", base = "Tongyi-MAI/Z-Image-Turbo"):
@@ -363,7 +376,7 @@ def _load(
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
-    # The local-path branch is opt-in via a directory ALLOWLIST (it unpickles an arbitrary file); allowlist tmp_path unless a test checks the gate.
+    # The local-path branch is opt-in via a directory ALLOWLIST (it loads arbitrary weights); allowlist tmp_path unless a test checks the gate.
     if allow_local:
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
@@ -548,7 +561,106 @@ def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
     assert pq._resolve_checkpoint_path(source, None) == str(real)
 
 
-# ── local-path opt-in gate (RCE guard) ───────────────────────────────────────────
+# ── deserialization gate (RCE guard) ─────────────────────────────────────────────
+def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
+    """A pre-quant checkpoint is a pickle, so the load has to be ``weights_only``.
+
+    It is reached WITHOUT anyone asking for it -- auto resolves an unset precision to a hosted
+    checkpoint -- and the artifact is a mutable remote file, so "the repo is first-party" is not
+    a reason to run whatever bytes arrive. Everything the format needs is allowlisted instead."""
+    seen = _stub_torch_accelerate(monkeypatch, _good_ckpt())
+    monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: "/cache/x.pt")
+    load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "x.pt"),
+        device = "cpu",
+        dtype = "bf16",
+        hf_token = None,
+        scheme = "fp8",
+    )
+    assert seen["weights_only"] is True
+    assert seen["safe_globals"] is not None, "the allowlist has to be installed around the load"
+
+
+def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkeypatch):
+    """The exact set read out of the pickles Studio actually resolves.
+
+    Surveyed with ``pickletools`` (no unpickling) over every hosted prequant repo the family
+    tables name -- image and video, fp8 and int8, rotated and not -- so a checkpoint that names
+    anything beyond this is not one of ours. Torch's own default set covers the storages, dtypes,
+    ``_rebuild_*`` helpers, ``OrderedDict``, ``torch.device`` and ``_get_layout``; what is left is
+    torchao's subclasses plus ``TorchVersion``, which torch does not allow by default."""
+    listed = {f"{module}.{name}" for module, name in pq._PREQUANT_SAFE_GLOBALS}
+    required = {
+        "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
+        "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
+        "torchao.dtypes.utils.PlainLayout",
+        "torchao.quantization.linear_activation_quantized_tensor.LinearActivationQuantizedTensor",
+        "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant",
+        "torchao.quantization.quant_primitives.ZeroPointDomain",
+        "torchao.quantization.Float8Tensor",
+        "torchao.quantization.quantize_.workflows.float8.float8_tensor"
+        ".QuantizeTensorToFloat8Kwargs",
+        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+        "torchao.quantization.granularity.PerRow",
+        "torchao.float8.inference.Float8MMConfig",
+        "torch.torch_version.TorchVersion",
+    }
+    assert required <= listed, sorted(required - listed)
+    # Nothing outside torch/torchao, so the allowlist cannot grow a general-purpose callable.
+    assert all(
+        module.split(".")[0] in ("torch", "torchao")
+        for module, _ in pq._PREQUANT_SAFE_GLOBALS
+    )
+    # A name a given torchao release does not ship is skipped, not raised.
+    monkeypatch.setattr(
+        pq, "_PREQUANT_SAFE_GLOBALS", (("torchao.nowhere", "Nope"), ("collections", "OrderedDict"))
+    )
+    assert [name for _obj, name in pq._prequant_safe_globals()] == ["collections.OrderedDict"]
+
+
+def test_a_malicious_checkpoint_is_refused_before_it_executes():
+    """The whole point, against real torch: a checkpoint carrying a ``__reduce__`` payload must
+    fail to load rather than run. The unrestricted load this replaces executes it."""
+    import os
+
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch.serialization, "safe_globals"):
+        pytest.skip("torch < 2.6 has no safe_globals")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = os.path.join(tmp, "executed")
+
+        class _Payload:
+            # Creating a directory rather than running a command: an observable side effect that
+            # proves execution, with nothing to clean up outside the temp dir if it ever fires.
+            def __reduce__(self):
+                return (os.mkdir, (marker,))
+
+        path = os.path.join(tmp, "ckpt.pt")
+        torch.save(
+            {"format": PREQUANT_FORMAT, "metadata": {"scheme": "int8"}, "state_dict": _Payload()},
+            path,
+        )
+        with pytest.raises(Exception):
+            pq._torch_load_prequant(path, map_location = "cpu")
+        assert not os.path.exists(marker)
+
+
+def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(monkeypatch):
+    """No allowlist support means no load. Falling back to an unrestricted one would put the
+    sink back on exactly the installs least able to defend it."""
+    torch = types.ModuleType("torch")
+    torch.load = lambda *a, **k: pytest.fail("torch.load must not run without safe_globals")
+    torch.serialization = types.SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    with pytest.raises(RuntimeError, match = "safe_globals"):
+        pq._torch_load_prequant("/nonexistent.pt", map_location = "cpu")
+
+
+# ── local-path opt-in gate ───────────────────────────────────────────────────────
 def test_load_local_path_refused_by_default(monkeypatch, tmp_path):
     # Even a valid checkpoint is refused: torch.load must never run on a request-supplied path without the operator opt-in.
     called = {"load": False}
