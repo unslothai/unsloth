@@ -8,9 +8,9 @@ torch 2.11.0+rocm7.13. On Windows without a HIP SDK, amd-smi is permanently
 disabled (avoids a UAC/DiskPart prompt) and hipMemGetInfo returns free==total
 (used 0). Two symptoms followed:
 
-  * System tab (/api/system -> get_visible_gpu_utilization) showed ~0 VRAM used
-    on every GPU (torch mem_get_info free==total quirk; see
-    rocm_windows_free_is_untrusted for why the reading is optimistic).
+  * System tab (/api/system -> get_visible_gpu_utilization) showed ~0 VRAM used on
+    every GPU (mem_get_info free==total; see rocm_windows_free_is_untrusted for why
+    the reading is optimistic).
   * get_gpu_utilization()'s Windows fallback SUMMED "GPU Adapter Memory\\Dedicated
     Usage" across all adapters into ONE fake device with only GPU 0's total, so
     the second GPU never appeared.

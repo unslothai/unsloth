@@ -466,9 +466,8 @@ function FloatingMonitorPanel({
     : 0;
   const devices = displayedGpu?.devices ?? [];
   const vramTotal = aggregateGpuMemoryTotalGb(devices);
-  // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-  // fabricates a 0-used readout. The host-level figure can still be known when
-  // no single device's is, which is the #7452 case.
+  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+  // readout. The host figure can still be known when no device's is (#7452).
   const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
   const vramUsageKnown = resolvedVramUsed !== null;
   const vramUsed = resolvedVramUsed ?? 0;

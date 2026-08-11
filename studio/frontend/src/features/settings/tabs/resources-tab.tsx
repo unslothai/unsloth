@@ -242,9 +242,9 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const vramTotal = aggregateGpuMemoryTotalGb(devices);
-    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-    // fabricates a 0-used total, so a device's own row stays unknown. The
-    // host-level figure can still be known when no device's is (#7452).
+    // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+    // total, so the device's own row stays unknown. The host figure can still be
+    // known when no device's is (#7452).
     const perDeviceKnown = gpuVramUsedIsPerDevice(devices);
     const vramUsed = resolveGpuVramUsedGb(displayedGpu);
     const vramUsageKnown = vramUsed !== null;

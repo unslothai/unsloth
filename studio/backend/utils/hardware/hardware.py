@@ -1060,26 +1060,21 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
 def rocm_windows_free_is_untrusted() -> bool:
     """Whether ``mem_get_info``'s FREE half must be treated as an over-report.
 
-    AMD documents this. The hipMemGetInfo reference carries the warning verbatim:
-    "On Windows, the free memory only accounts for memory allocated by this
-    process and may be optimistic." WDDM virtualises video memory, so a process is
-    told its own budget rather than the card's residency, and a fresh process sees
-    free at or near total whatever else is resident. An AMD engineer states the
-    same in ROCm/librocdxg#57, with a measured 24410 MiB of 24560 reported free on
-    a deliberately filled card, and confirms it is the intended Windows model
-    rather than a defect. Corroborating symptom in ROCm/TheRock#3724: torch OOM on
-    Windows while reporting 52.71 GiB of a 53.92 GiB card free.
+    AMD documents this: the hipMemGetInfo reference warns "On Windows, the free
+    memory only accounts for memory allocated by this process and may be optimistic."
+    WDDM virtualises video memory, so a process is told its own budget rather than
+    the card's residency and a fresh process sees free at or near total whatever else
+    is resident. An AMD engineer confirms in ROCm/librocdxg#57 that this is the
+    intended Windows model rather than a defect, measuring 24410 MiB of 24560
+    reported free on a deliberately filled card; ROCm/TheRock#3724 is the same
+    symptom, torch OOM while reporting 52.71 GiB of a 53.92 GiB card free.
 
-    Near ``total``, not equal to it, which is why callers cap instead of testing
-    for a sentinel value. The TOTAL half is fine.
-
-    Every other platform is left alone, WSL included and deliberately: AMD keeps
-    the WSL2 reading consistent with native Linux, where free tracks physical
-    residency, and ``sys.platform`` is "linux" there, so this predicate is False
-    and the accurate figure is passed through uncapped.
-
-    One predicate for the whole backend so the sentinel is recognised in one place
-    (#7452 reporting side, #8403 guard side).
+    Near ``total``, not equal to it, so callers cap instead of testing for a
+    sentinel. The TOTAL half is fine. Every other platform is left alone, WSL
+    included and deliberately: AMD keeps the WSL2 reading consistent with native
+    Linux, where free tracks physical residency, and ``sys.platform`` is "linux"
+    there, so this is False and the accurate figure passes through uncapped. One
+    predicate for the whole backend (#7452 reporting side, #8403 guard side).
     """
     return sys.platform == "win32" and IS_ROCM
 
@@ -1088,10 +1083,9 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
     """Query torch for per-GPU name, total VRAM, and used VRAM.
 
     ``used_gb`` is ``None`` on Windows ROCm when the driver reports ``free ==
-    total``: that 0 means unknown, not empty. This is the DISPLAY path, so it
-    reports unknown rather than a pessimistic ceiling; a ceiling is the right
-    answer for a refusal and the wrong one for a number shown to the user as
-    measured.
+    total``: that 0 means unknown, not empty. This is the DISPLAY path, so unknown
+    rather than a pessimistic ceiling, which is the right answer for a refusal and
+    the wrong one for a number shown to the user as measured.
     """
     mod, _ = _torch_get_device_module()
     if mod is None:
@@ -1604,44 +1598,40 @@ def _rocm_windows_aggregate_used_bytes(
 
     Per-device attribution needs capacity to FORCE a pairing, and on an asymmetric
     pair (45 GiB + 8 GiB) nothing at or below 8 GiB is forced, so idle and every
-    small model report unknown (#7452). The SUM does not need the pairing: over a
-    bijection it is the same whichever way round the usages go, so the System tab
-    keeps a real figure where per-device honestly cannot.
-
-    Emitted only when the counter list IS the visible set, which is established by
-    cardinality alone: ``Get-Counter`` returns an instance for every WDDM adapter,
-    so a visible card is always somewhere in the list, and a list exactly as long
-    as the visible set therefore contains those cards and nothing else.
+    small model report unknown (#7452). The SUM does not need the pairing -- over a
+    bijection it is the same whichever way round the usages go -- so the System tab
+    keeps a real figure where per-device honestly cannot. Emitted only when the
+    counter list IS the visible set, established by cardinality alone:
+    ``Get-Counter`` returns an instance for every WDDM adapter, so a visible card is
+    always in the list and a list exactly as long as the visible set therefore holds
+    those cards and nothing else.
 
     Deliberately NOT the noise filter _match_adapter_used_to_devices uses. Dropping
-    the sub-threshold counters and summing the rest is safe for per-device
-    attribution, which only ever emits a capacity-FORCED value, but not for a sum,
-    which emits every counter it kept. The counters carry no vendor, LUID or PCI
-    key, so a retained counter cannot be told apart from a foreign adapter: a card
-    hidden by ``HIP_VISIBLE_DEVICES``, an iGPU, an NVIDIA card in the same box or a
-    Basic Render Driver placeholder above the cutoff. Whenever such an adapter is
-    busier than one visible card is idle, the filter drops the visible card and
-    keeps the foreign one, and the sum silently gains bytes that are on no visible
-    card at all. A host total that is confidently wrong is worse than Unknown, so
-    an unexplained instance means ``None``.
-
-    Extra instances are common, so this is narrow on purpose. Widening it needs the
-    counters joined to devices on LUID or PCI bus id rather than on capacity rank,
-    which is the same key _match_adapter_used_to_devices lacks.
+    sub-threshold counters and summing the rest is safe for per-device attribution,
+    which only ever emits a capacity-FORCED value, but not for a sum, which emits
+    every counter it kept. The counters carry no vendor, LUID or PCI key, so a
+    retained counter cannot be told apart from a foreign adapter: a card hidden by
+    ``HIP_VISIBLE_DEVICES``, an iGPU, an NVIDIA card in the same box or a Basic
+    Render Driver placeholder above the cutoff. Whenever such an adapter is busier
+    than one visible card is idle, the filter drops the visible card and keeps the
+    foreign one, and the sum silently gains bytes on no visible card at all. A host
+    total that is confidently wrong is worse than Unknown, so an unexplained instance
+    means ``None``. Extra instances are common, so this is narrow on purpose;
+    widening it needs the counters joined to devices on LUID or PCI bus id rather
+    than on capacity rank, the same key _match_adapter_used_to_devices lacks.
     """
     n = len(device_totals)
     if n == 0 or not adapter_useds:
         return None
-    # More counters than devices: an adapter in the list is not one of ours and
-    # there is no key that says which. Fewer: a visible card has no reading of its
-    # own, so the sum is not the visible set's total. Either way, unknown.
+    # More counters than devices: one is not ours, and no key says which. Fewer: a
+    # visible card has no reading. Either way the sum is not the visible set's.
     if len(adapter_useds) != n:
         return None
     useds = sorted(adapter_useds, reverse = True)
     ranked_totals = sorted(device_totals, reverse = True)
-    # A usage above its ranked capacity cannot be on any visible card, so the list
-    # is not the visible set after all even at matching length (a reading was
-    # dropped while parsing, or a counter is not a dedicated-VRAM figure).
+    # A usage above its ranked capacity is on no visible card, so even at matching
+    # length the list is not the visible set (a reading was dropped while parsing, or
+    # a counter is not a dedicated-VRAM figure).
     for rank in range(n):
         if useds[rank] > ranked_totals[rank]:
             return None
@@ -1655,11 +1645,11 @@ def _rocm_windows_per_device_vram(
     used from the per-adapter Dedicated Usage counter.
 
     Returns ``([{index, visible_ordinal, name, used_gb, total_gb}], aggregate_gb)``
-    per visible GPU (``used_gb`` may be ``None`` when the counter is unavailable or
-    the pairing is not capacity-forced), or ``([], None)`` when torch can't
-    enumerate devices so callers fall through to the torch last resort. The second
-    element is the visible set's total used VRAM, which survives a pairing that no
-    single device can claim (#7452), or ``None`` when even that is not established.
+    per visible GPU (``used_gb`` is ``None`` when the counter is unavailable or the
+    pairing is not capacity-forced), or ``([], None)`` when torch can't enumerate
+    devices so callers fall through to the torch last resort. ``aggregate_gb`` is the
+    visible set's total used VRAM, which survives a pairing no single device can
+    claim (#7452), and ``None`` when even that is not established.
     """
     if platform.system() != "Windows":
         return [], None
@@ -2160,8 +2150,8 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "parent_visible_gpu_ids": win_numeric_ids or [],
                     "devices": devices,
                     "index_kind": win_index_kind,
-                    # Host-level used VRAM for the System tab tile: known even when
-                    # no single device's usage is attributable (#7452).
+                    # Host total for the System tab tile: known even when no single
+                    # device's usage is attributable (#7452).
                     "vram_used_gb_aggregate": win_aggregate,
                 }
 

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Split out of use-system.ts so the VRAM reading rules can be unit tested without
-// pulling the auth and React graph in behind them. Typed structurally, so
-// SystemGpuInfo and GpuDevice satisfy these without importing them.
+// Split out of use-system.ts so the VRAM rules can be unit tested without pulling
+// the auth and React graph in behind them. Typed structurally, so SystemGpuInfo and
+// GpuDevice satisfy these without importing them.
 
 export interface VramReportingDevice {
   vram_used_gb?: number;
@@ -16,8 +16,7 @@ export interface VramReportingGpu {
   vram_used_gb_aggregate?: number | null;
 }
 
-/** Whether every device reports its own usage, so the per-device figures can be
- * summed and each row can show a real number. */
+/** Whether every device reports its own usage, so each row and their sum are real. */
 export function gpuVramUsedIsPerDevice(
   devices: VramReportingDevice[],
 ): boolean {
@@ -29,15 +28,14 @@ export function gpuVramUsedIsPerDevice(
 
 /** Used VRAM across the GPUs, or null when it is genuinely unknown.
  *
- * Per-device usage is the preferred source. On Windows ROCm there is no shared
- * key between the LUID usage counters and torch ordinals, so a usage that fits
- * more than one card cannot be attributed to either and every device reports
- * unknown -- which is idle and every small model on an asymmetric pair. The sum
- * does not depend on that attribution, so the backend still reports it, and
- * rendering Unknown for a figure it already has is what #7452 was.
+ * Per-device usage is preferred. On Windows ROCm nothing keys the LUID usage
+ * counters to torch ordinals, so a usage that fits more than one card cannot be
+ * attributed to either and every device reports unknown -- which is idle and every
+ * small model on an asymmetric pair. The sum does not depend on that attribution,
+ * so the backend still reports it, and rendering Unknown for a figure it already
+ * has is what #7452 was.
  *
- * Never falls back to 0: a fabricated 0 used / full free is the #7072 symptom
- * this pair started from. */
+ * Never falls back to 0: a fabricated 0 used / full free is the #7072 symptom. */
 export function resolveGpuVramUsedGb(
   gpu: VramReportingGpu | null | undefined,
 ): number | null {

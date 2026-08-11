@@ -11,8 +11,8 @@ import {
   type VramReportingGpu,
 } from "../src/hooks/gpu-vram.ts";
 
-// The payload shape as /api/system actually sends it: the helpers read two of
-// these fields structurally and the rest ride along, which is what the tile gets.
+// The payload as /api/system sends it: the helpers read two fields structurally and
+// the rest ride along, which is what the tile gets.
 interface SystemGpuPayload extends VramReportingGpu {
   available: boolean;
   backend?: string;
@@ -23,12 +23,10 @@ interface SystemGpuPayload extends VramReportingGpu {
   })[];
 }
 
-// Issue #7452, reported on a Windows 10 ROCm host with an AMD Radeon PRO W7900
-// (45 GiB) beside a W7500 (7.98 GiB). Windows shares no key between the LUID VRAM
-// counters and torch ordinals, so a usage that fits both cards cannot be pinned to
-// either and every device reads Unknown -- which on that pair is idle and every
-// small model. The backend still knows the host total, and the tile rendered
-// Unknown anyway.
+// Issue #7452: a Windows 10 ROCm host, AMD Radeon PRO W7900 (45 GiB) beside a W7500
+// (7.98 GiB). Nothing keys the LUID VRAM counters to torch ordinals, so a usage that
+// fits both cards reads Unknown on every device -- idle and every small model here.
+// The backend still knows the host total; the tile rendered Unknown anyway.
 function reporterGpu(
   overrides: Partial<SystemGpuPayload> = {},
 ): SystemGpuPayload {
@@ -59,7 +57,7 @@ test("per-device usage wins over the aggregate when every device reports", () =>
       },
       { index: 1, memory_total_gb: 7.98, vram_used_gb: 0.5 },
     ],
-    // Deliberately NOT 40.5. An aggregate equal to the per-device sum would pass
+    // Deliberately NOT 40.5: an aggregate equal to the per-device sum would pass
     // whichever source won, so it would not pin the precedence at all.
     vram_used_gb_aggregate: 99.0,
   });
@@ -68,8 +66,8 @@ test("per-device usage wins over the aggregate when every device reports", () =>
 });
 
 test("a partially attributed pair falls back to the aggregate, not a short sum", () => {
-  // 40 GiB is capacity-forced onto the W7900; the idle card's 0.5 GiB is not.
-  // Summing the known half alone would under-report the tile by that card.
+  // 40 GiB is capacity-forced onto the W7900, the idle card's 0.5 GiB is not;
+  // summing the known half alone would under-report the tile by that card.
   const gpu: SystemGpuPayload = reporterGpu({
     devices: [
       { index: 0, memory_total_gb: 45.0, vram_used_gb: 40.0 },
