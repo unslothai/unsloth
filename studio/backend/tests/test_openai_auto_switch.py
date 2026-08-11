@@ -12,6 +12,7 @@ import json
 import os
 import threading
 import time
+import types
 
 import pytest
 from fastapi import HTTPException
@@ -7382,6 +7383,18 @@ def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_pat
     assert kw._kv_resume is None
 
 
+def _age_resolver_clock(monkeypatch, seconds):
+    """Advance the resolver's monotonic clock by *seconds*.
+
+    Ageing a snapshot by rewriting its stamp assumes the host has been up longer
+    than the age; a fresh CI runner has not, and the subtraction flips the sign.
+    """
+    base = time.monotonic()
+    monkeypatch.setattr(
+        resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds)
+    )
+
+
 def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
     # A background rebuild that keeps failing must not leave the retained entries
     # trusted forever: a model deleted on disk would still trigger a switch.
@@ -7390,7 +7403,7 @@ def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
     monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
     resolver.invalidate_index(additions_only = True)
     assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
-    monkeypatch.setattr(resolver, "_scan", (-(time.monotonic() - 600.0), resolver._scan[1]))
+    _age_resolver_clock(monkeypatch, 600.0)
     assert resolver.resolve_trusted_cached_local_gguf("org/a") is None
 
 
@@ -7398,10 +7411,10 @@ def test_additions_only_trust_outlasts_a_scan_slower_than_the_ttl(monkeypatch):
     # The window tracks the rebuild's own cost, so the install this fix targets (a
     # multi-second multi-root scan) is not pushed back onto the request path.
     entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
     monkeypatch.setattr(resolver, "_last_scan_s", 16.0)
-    monkeypatch.setattr(
-        resolver, "_scan", (-(time.monotonic() - (resolver._CACHE_TTL_S * 4)), {"org/a": entry})
-    )
+    resolver.invalidate_index(additions_only = True)
+    _age_resolver_clock(monkeypatch, resolver._CACHE_TTL_S * 4)
     assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
 
 
@@ -7429,7 +7442,9 @@ def test_a_dead_warm_worker_releases_the_slot(monkeypatch):
 def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
     # monotonic() counts from boot, so on a host whose uptime is still under the
     # TTL an invalidated stamp used to read as recent and serve what was revoked.
-    monkeypatch.setattr(resolver.time, "monotonic", lambda: 1.0)
+    # Patch the module's reference, not the real time module: a stray warm thread
+    # shares that one, and a frozen global clock hangs its duty-cycle arithmetic.
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: 1.0))
     for kwargs in ({}, {"additions_only": True}):
         monkeypatch.setattr(resolver, "_scan", (1.0, {"org/a": "entry"}))
         resolver.invalidate_index(**kwargs)
