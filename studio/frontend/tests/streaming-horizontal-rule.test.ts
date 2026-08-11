@@ -29,6 +29,14 @@ test("buffers the thematic-break prefix of a bold asterisk list item", () => {
   assert.ok(!render(stabilized).includes(HORIZONTAL_RULE));
 });
 
+test("buffers an ambiguous item after a long accumulated response", () => {
+  const preceding = `${"word ".repeat(20_000)}\n\n`;
+  const markdown = `${preceding}* **`;
+
+  assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+  assert.equal(stabilizeStreamingMarkdown(markdown, true), preceding);
+});
+
 test("buffers triple-emphasis list prefixes", () => {
   for (const markdown of ["* ***", "* ****", "* *****"]) {
     assert.ok(render(markdown).includes(HORIZONTAL_RULE));

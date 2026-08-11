@@ -16,31 +16,13 @@ type MarkdownNode = {
   readonly children?: readonly MarkdownNode[];
 };
 
-function isTrailingThematicBreak(text: string, markerIndex: number): boolean {
-  const pending: MarkdownNode[] = [fromMarkdown(text) as MarkdownNode];
-  while (pending.length > 0) {
-    const node = pending.pop();
-    if (!node) {
-      continue;
-    }
-    if (
-      node.type === "thematicBreak" &&
-      node.position?.start.offset === markerIndex &&
-      node.position.end.offset === text.length
-    ) {
-      return true;
-    }
-    if (node.children) {
-      pending.push(...node.children);
-    }
-  }
-  return false;
-}
-
-function becomesTrailingParagraphListItem(
+function completesAsTrailingParagraphListItem(
   text: string,
   markerIndex: number,
 ): boolean {
+  // The completed form validates the active container while also rejecting
+  // code, raw HTML, and footnote content. Parsing the unfinished form too
+  // would repeat whole-document work without changing that decision.
   const completedText = `${text}x`;
   const pending: MarkdownNode[] = [fromMarkdown(completedText) as MarkdownNode];
   while (pending.length > 0) {
@@ -88,8 +70,7 @@ export function stabilizeStreamingMarkdown(
     lineStart + blockquotePrefix.length + content.indexOf("*");
   if (
     isWithinMathBlock(text, markerIndex) ||
-    !isTrailingThematicBreak(text, markerIndex) ||
-    !becomesTrailingParagraphListItem(text, markerIndex)
+    !completesAsTrailingParagraphListItem(text, markerIndex)
   ) {
     return text;
   }
