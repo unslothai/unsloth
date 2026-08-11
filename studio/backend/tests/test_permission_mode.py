@@ -1731,6 +1731,20 @@ def test_high_risk_dispatcher_non_terminal():
             "yaml.load(s, Loader=yaml.SafeLoader)",
             True,
         ),
+        (
+            "import yaml\nfrom yaml import SafeLoader, add_constructor\n"
+            "add_constructor('!e', h, Loader=SafeLoader)\nyaml.load(s, Loader=SafeLoader)",
+            True,
+        ),  # the registrar imported as a bare name
+        ("from yaml import unsafe_load as u\nh.loader = u\nh.loader(s)", True),  # alias onto attr
+        ("import yaml\np = (yaml.unsafe_load, s)\nq = p\nrun(*q)", True),  # container aliased
+        ("p = (1, 2)\nq = p\nprint(*q)", False),
+        # A loader factored into a local reads safely, until something rebinds it.
+        ("import yaml\nSafe = yaml.SafeLoader\nyaml.load(f, Loader=Safe)", False),
+        (
+            "import yaml\nSafe = yaml.SafeLoader\nSafe = yaml.Loader\nyaml.load(s, Loader=Safe)",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

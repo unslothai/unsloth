@@ -3684,12 +3684,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and node.attr not in assigned_attr_names
                 and _is_load_module(node.value)
             )
-        if isinstance(node, ast.Name):
-            # Any rebinding at all disqualifies the name: the import is not in
-            # assign_counts, so one assignment is enough to point it elsewhere
-            # (SafeLoader = getattr(yaml, "Loader")).
-            return node.id in safe_loader_aliases and node.id not in assign_counts
-        return False
+        # Membership already encodes the rebinding rule: a name only enters
+        # safe_loader_aliases if nothing can point it elsewhere later.
+        return isinstance(node, ast.Name) and node.id in safe_loader_aliases
 
     def _loads_safely(call) -> bool:
         # yaml.load(s, Loader=SafeLoader) reads data only. Fails closed on a
@@ -3776,10 +3773,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     # A registered constructor is a callback the YAML tags choose, so a loader
     # that has one is no longer the stock safe loader and loses the exemption.
+    _register_names = {"add_constructor", "add_multi_constructor"}
+    for _n in ast.walk(tree):
+        # from yaml import add_constructor [as ac] binds the registrar to a name.
+        if isinstance(_n, ast.ImportFrom):
+            for _al in _n.names:
+                if _al.name in _register_names:
+                    _register_names.add(_al.asname or _al.name)
     registers_constructor = any(
         isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr in ("add_constructor", "add_multi_constructor")
+        and (
+            (isinstance(n.func, ast.Attribute) and n.func.attr in _register_names)
+            or (isinstance(n.func, ast.Name) and n.func.id in _register_names)
+        )
         for n in ast.walk(tree)
     )
     for node in ast.walk(tree):
@@ -3844,7 +3850,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         load_class_aliases.add(alias.asname or alias.name)
                     # from yaml.loader import SafeLoader is the documented safe
                     # spelling; record it so Loader=SafeLoader stays auto-approved.
-                    elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES:
+                    # An import is not an assignment, so any later binding of the
+                    # name could point it at an unsafe loader: skip those.
+                    elif (
+                        alias.name in _AUTO_SAFE_PY_LOAD_CLASSES
+                        and (alias.asname or alias.name) not in assign_counts
+                    ):
                         safe_loader_aliases.add(alias.asname or alias.name)
                     else:
                         # Anything else imported from a loader package may be a
@@ -3878,8 +3889,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 writer_aliases.update(targets)  # s = save (numpy save alias)
             elif isinstance(value, ast.Name) and value.id in load_func_aliases:
                 load_func_aliases.update(targets)  # u = unsafe_load
+                attr_load_aliases.update(attr_targets)  # holder.loader = u
             elif isinstance(value, ast.Name) and value.id in load_class_aliases:
                 load_class_aliases.update(targets)  # U = UnsafeLoader
+                attr_load_aliases.update(attr_targets)
             elif isinstance(value, ast.Name) and value.id in load_module_aliases:
                 load_module_aliases.update(targets)  # c = yaml; c.load(...)
             elif _is_loader_attr(value):
@@ -3986,6 +3999,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 _held = value.values if isinstance(value, ast.Dict) else value.elts
                 if any(_passed_write_callable(e) for e in _held):
                     packed_callable_names.update(targets)
+            elif isinstance(value, ast.Name) and value.id in packed_callable_names:
+                packed_callable_names.update(targets)  # q = p; run(*q)
+            if _is_safe_loader(value):
+                # Safe = yaml.SafeLoader factors out a provably safe read, so keep
+                # the exemption, but only for a name bound exactly once here.
+                safe_loader_aliases.update(t for t in targets if assign_counts.get(t) == 1)
             if isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring binds each element like a single assignment, so an
                 # aliased callable (f, _ = (open, print)) AND a string / path
