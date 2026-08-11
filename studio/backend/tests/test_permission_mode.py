@@ -1767,6 +1767,21 @@ def test_high_risk_dispatcher_non_terminal():
         ("import yaml\ndef run(y=yaml): y.unsafe_load(s)\nrun()", True),  # module as default
         ("import yaml\nclass H:\n    loader = yaml.unsafe_load\nH.loader(s)", True),  # class body
         ("class H:\n    name = 'x'\nprint(H.name)", False),
+        # A registration puts a callback behind the tags of even a safe read.
+        ("import yaml\nyaml.SafeLoader.add_constructor('!e', cb)\nyaml.safe_load(s)", True),
+        (
+            "import yaml\nfrom yaml import safe_load\nyaml.SafeLoader.add_constructor('!e', cb)\n"
+            "safe_load(s)",
+            True,
+        ),
+        # setattr rebinds without ever being an assignment target.
+        (
+            "import yaml\nsetattr(yaml, 'SafeLoader', (yaml.Loader,)[0])\n"
+            "yaml.load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),
+        ("import yaml\nbox.mod = yaml\nbox.mod.unsafe_load(s)", True),  # module on an attr
+        ("import json\nbox.mod = json\nprint(box.mod.dumps({}))", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
