@@ -43,7 +43,7 @@ _run() {
     "$1" -c '
         . "'"$_FN"'"
         VENV_DIR=/tmp/venv; PYTHON_VERSION=3.12
-        run_install_cmd() {
+        _run_uv_venv() {
             shift
             case " $* " in
                 *" only-managed "*) echo "managed"; return '"$2"' ;;
@@ -68,7 +68,7 @@ for _sh in sh bash; do
     _out=$("$_sh" -c '
         . "'"$_FN"'"
         VENV_DIR=/tmp/venv; PYTHON_VERSION=3.12
-        run_install_cmd() { return 2; }
+        _run_uv_venv() { return 2; }
         _uv_venv_arm64 "create venv" && echo "rc=0" || echo "rc=$?"
     ' 2>&1)
     assert_eq "both attempts fail, non-zero propagates" "rc=2" "$_out"
@@ -108,7 +108,7 @@ _STREAM=$(mktemp)
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'
     printf 'step() { :; }\ntauri_log() { :; }\n'
     for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
-              run_install_cmd _uv_venv_arm64; do
+              run_install_cmd _macos_has_selected_install_name_tool _run_uv_venv _uv_venv_arm64; do
         sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
     done
 } > "$_STREAM"
@@ -123,7 +123,7 @@ chmod +x "$_UVDIR/uv"
 
 _emit() {  # UV_FAIL_MANAGED
     _sd=$(mktemp -d)
-    PATH="$_UVDIR:$PATH" VENV_DIR="$_sd/venv" PYTHON_VERSION=3.12 UV_FAIL_MANAGED="$1" \
+    PATH="$_UVDIR:$PATH" OS=linux VENV_DIR="$_sd/venv" PYTHON_VERSION=3.12 UV_FAIL_MANAGED="$1" \
         sh -c ". '$_STREAM'; _uv_venv_arm64 'create venv'; echo RC=\$?" 2>&1
     rm -rf "$_sd"
 }
