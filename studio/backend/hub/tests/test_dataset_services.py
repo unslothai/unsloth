@@ -258,9 +258,7 @@ def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     # Named like clutter, so it is not payload evidence either, and the tree behind it is
     # never entered -- which is what stops a scan from stalling on someone else's disk.
-    (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(
-        outside, target_is_directory = True
-    )
+    (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(outside, target_is_directory = True)
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
