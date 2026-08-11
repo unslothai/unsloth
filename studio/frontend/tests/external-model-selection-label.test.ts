@@ -15,7 +15,10 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 import { modelDisplayName } from "../src/features/hub/lib/model-identity.ts";
-import type { ExternalModelRef } from "../src/features/model-picker/components/model-selector/missing-external-model.ts";
+import type {
+  ExternalConnectionRef,
+  ExternalModelRef,
+} from "../src/features/model-picker/components/model-selector/missing-external-model.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 // Both helpers reach across the tree the way vite resolves it: the "@/" alias and an
@@ -43,6 +46,16 @@ const option = (
   ...overrides,
 });
 
+const connection = (
+  overrides: Partial<ExternalConnectionRef> = {},
+): ExternalConnectionRef => ({
+  id: CONNECTION_ID,
+  name: "Ollama",
+  providerType: "ollama",
+  availableModels: ["llama3.2", "kimi-k2.5"],
+  ...overrides,
+});
+
 // The premise: the shared helper cannot shorten this id, which is why the picker's
 // fallback printed it verbatim.
 test("the generic display helper leaves an external id untouched", () => {
@@ -50,12 +63,18 @@ test("the generic display helper leaves an external id untouched", () => {
 });
 
 test("a dropped connected model is named, never shown as its raw id", () => {
-  // Fetch Models replaced the connection's list and kimi-k2.5 is no longer in it.
-  const missing = missingExternalModel(DROPPED_ID, [option("llama3.2")]);
+  // Fetch Models replaced both lists and kimi-k2.5 is in neither, so the catalogue is
+  // positive evidence that the provider withdrew it.
+  const missing = missingExternalModel(
+    DROPPED_ID,
+    [option("llama3.2")],
+    [connection({ availableModels: ["llama3.2"] })],
+  );
   assert.deepEqual(missing, {
     modelName: "kimi-k2.5",
     providerName: "Ollama",
     providerType: "ollama",
+    state: "dropped",
   });
   assert.doesNotMatch(missing?.modelName ?? "", /external::/);
 });
@@ -65,6 +84,7 @@ test("a connection that dropped every model still names the model", () => {
     modelName: "kimi-k2.5",
     providerName: null,
     providerType: null,
+    state: "dropped",
   });
 });
 
@@ -79,7 +99,89 @@ test("a sibling under a different connection does not lend its name", () => {
     modelName: "kimi-k2.5",
     providerName: null,
     providerType: null,
+    state: "dropped",
   });
+});
+
+// The connection dialog writes the ticked ids to `models` and the fetched catalogue to
+// `availableModels`, and the picker's option list is built from `models` alone. Unticking
+// the active model therefore looks exactly like a withdrawal unless the catalogue is
+// consulted, and blaming the provider for the user's own edit is what these cover.
+test("a model the user unticked is reported as disabled, not dropped", () => {
+  assert.deepEqual(
+    missingExternalModel(DROPPED_ID, [option("llama3.2")], [connection()]),
+    {
+      modelName: "kimi-k2.5",
+      providerName: "Ollama",
+      providerType: "ollama",
+      state: "disabled",
+    },
+  );
+});
+
+test("unticking every model still names the connection", () => {
+  // No sibling option survives, so the connection itself is the only source for the name.
+  assert.deepEqual(missingExternalModel(DROPPED_ID, [], [connection()]), {
+    modelName: "kimi-k2.5",
+    providerName: "Ollama",
+    providerType: "ollama",
+    state: "disabled",
+  });
+});
+
+test("a connection saved before availableModels existed is not called dropped", () => {
+  // Legacy persisted connections carry no catalogue at all. Absent evidence, the claim the
+  // provider withdrew the model is exactly the guess that produced the wrong label, so the
+  // neutral reading wins: the id is out of `models`, which is all "not enabled" asserts.
+  assert.deepEqual(
+    missingExternalModel(
+      DROPPED_ID,
+      [option("llama3.2")],
+      [connection({ availableModels: undefined })],
+    ),
+    {
+      modelName: "kimi-k2.5",
+      providerName: "Ollama",
+      providerType: "ollama",
+      state: "disabled",
+    },
+  );
+});
+
+test("an empty cached catalogue is unknown, not proof of a withdrawal", () => {
+  assert.equal(
+    missingExternalModel(
+      DROPPED_ID,
+      [option("llama3.2")],
+      [connection({ availableModels: [] })],
+    )?.state,
+    "disabled",
+  );
+});
+
+test("another connection's catalogue does not vouch for this one", () => {
+  const missing = missingExternalModel(
+    DROPPED_ID,
+    [option("llama3.2")],
+    [
+      connection({ availableModels: ["llama3.2"] }),
+      connection({
+        id: "other",
+        name: "OpenRouter",
+        providerType: "openrouter",
+        availableModels: ["kimi-k2.5"],
+      }),
+    ],
+  );
+  assert.equal(missing?.state, "dropped");
+});
+
+test("re-ticking the model clears the label entirely", () => {
+  const restored = option("kimi-k2.5");
+  assert.equal(
+    missingExternalModel(restored.id, [restored], [connection()]),
+    null,
+  );
 });
 
 test("a percent-encoded model id is decoded for display", () => {
@@ -167,14 +269,35 @@ test("the picker trigger resolves a dropped connected model before naming it", (
   assert.ok(memo, "currentModel not found in model-selector.tsx");
   assert.match(
     memo,
-    /missingExternalModel\(\s*selected,\s*externalModels,?\s*\)/,
-    "the fallback must consult the connected-model list before modelDisplayName",
+    /missingExternalModel\(\s*selected,\s*externalModels,\s*externalConnections,?\s*\)/,
+    "the fallback must consult the connections as well as the enabled options",
   );
   // A name alone would hide that the model cannot be loaded, so the trigger says so.
   assert.match(memo, /picker\.modelDroppedByProvider/);
   assert.match(memo, /picker\.modelDropped\b/);
-  // A memo that reads externalModels must list it, or the label survives a refresh.
+  // The enabled list alone cannot tell a disabled model from a withdrawn one, so both
+  // readings must be reachable from here.
+  assert.match(memo, /picker\.modelDisabledByProvider/);
+  assert.match(memo, /picker\.modelDisabled\b/);
+  // A memo that reads these must list them, or the label survives a refresh.
   assert.match(memo, /\[[^\]]*\bexternalModels\b[^\]]*\]\s*\)?\s*$/);
+  assert.match(memo, /\[[^\]]*\bexternalConnections\b[^\]]*\]\s*\)?\s*$/);
+});
+
+// The catalogue only reaches the picker if chat-page builds it from the connections and
+// passes it down both the single-chat and compare paths.
+test("the chat page feeds the picker the connections behind the options", () => {
+  const page = readFileSync(
+    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(page, /availableModels: provider\.availableModels/);
+  // Once for the memo's own type, then every hop from chat-page to the picker.
+  assert.ok(
+    (page.match(/externalConnections=\{externalConnections\}/g) ?? []).length >=
+      5,
+    "externalConnections must reach the picker on both the chat and compare paths",
+  );
 });
 
 test("the compare and audio toasts use the external-aware labels", () => {
@@ -237,5 +360,16 @@ test("the dropped-model strings are translated everywhere", async () => {
     assert.equal(typeof picker.modelDropped, "string", locale);
     assert.equal(typeof picker.modelDroppedByProvider, "string", locale);
     assert.match(picker.modelDroppedByProvider, /\{provider\}/, locale);
+    assert.equal(typeof picker.modelDisabled, "string", locale);
+    assert.equal(typeof picker.modelDisabledByProvider, "string", locale);
+    assert.match(picker.modelDisabledByProvider, /\{provider\}/, locale);
+    // The two readings make different claims, so a locale that reuses one string for both
+    // puts the withdrawal wording back on the user's own edit.
+    assert.notEqual(picker.modelDisabled, picker.modelDropped, locale);
+    assert.notEqual(
+      picker.modelDisabledByProvider,
+      picker.modelDroppedByProvider,
+      locale,
+    );
   }
 });

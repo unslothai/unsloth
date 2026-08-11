@@ -20,6 +20,8 @@ export const de = {
     pickModelFile: "Modelldatei vom Datenträger auswählen",
     modelDropped: "Nicht mehr angeboten",
     modelDroppedByProvider: "{provider} · nicht mehr angeboten",
+    modelDisabled: "Nicht aktiviert",
+    modelDisabledByProvider: "{provider} · nicht aktiviert",
     multipleMatches:
       "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",

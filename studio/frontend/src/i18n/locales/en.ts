@@ -16,6 +16,8 @@ export const en = {
     pickModelFile: "Pick a model file from disk",
     modelDropped: "No longer offered",
     modelDroppedByProvider: "{provider} · no longer offered",
+    modelDisabled: "Not enabled",
+    modelDisabledByProvider: "{provider} · not enabled",
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
