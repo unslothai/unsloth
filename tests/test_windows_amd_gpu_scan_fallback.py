@@ -41,15 +41,16 @@ SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-_RADEON = "AMD Radeon(TM) 8060S Graphics"   # Strix Halo iGPU  -> gfx1151
-_RX9070 = "AMD Radeon RX 9070 XT"           # RDNA 4 discrete  -> gfx1201
-_R780M  = "AMD Radeon 780M Graphics"        # Phoenix iGPU     -> gfx1103, a shadowing arch
-_ARC    = "Intel(R) Arc(TM) A770 Graphics"
+_RADEON = "AMD Radeon(TM) 8060S Graphics"  # Strix Halo iGPU  -> gfx1151
+_RX9070 = "AMD Radeon RX 9070 XT"  # RDNA 4 discrete  -> gfx1201
+_R780M = "AMD Radeon 780M Graphics"  # Phoenix iGPU     -> gfx1103, a shadowing arch
+_ARC = "Intel(R) Arc(TM) A770 Graphics"
 
 HANDOFF = "_UNSLOTH_ROCM_GFX_ARCH_HANDOFF"
 
 
 # ── extracting the shipped source, so these tests exercise it rather than a copy ──────────────
+
 
 def _balanced(src: str, start: int, opener: str, closer: str) -> str:
     """Slice from `start` through the delimiter that closes the first `opener` after it."""
@@ -74,13 +75,20 @@ def _setup_source(revision: str | None = None) -> str:
         return SETUP_PS1.read_text(encoding = "utf-8")
     return subprocess.run(
         ["git", "show", f"{revision}:studio/setup.ps1"],
-        cwd = REPO_ROOT, capture_output = True, text = True, check = True,
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        check = True,
     ).stdout
 
 
 def _amd_scan_block(src: str) -> str:
     """The `if (-not $HasROCm)` WMI fallback: the adapter list the label is read from."""
-    m = re.search(r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n", src, re.DOTALL | re.MULTILINE)
+    m = re.search(
+        r"^    if \(-not \$HasROCm\) \{\n        try \{\n.*?^    \}\n",
+        src,
+        re.DOTALL | re.MULTILINE,
+    )
     assert m, "AMD adapter scan block not found in setup.ps1"
     return m.group(0)
 
@@ -96,16 +104,19 @@ def _prelude(src: str) -> str:
     """The declarations and helpers the two blocks close over."""
     shadowing = _balanced(src, src.index("$script:ShadowingIntegratedGfx = @("), "(", ")")
     arch_family = _balanced(src, src.index("$archFamilyMap = @{"), "{", "}")
-    return "\n".join([
-        "$script:ShadowingIntegratedGfx = " + shadowing[shadowing.index("@("):],
-        "$archFamilyMap = " + arch_family[arch_family.index("@{"):],
-        _function(src, "Test-VisibleDevicesPinned"),
-        _function(src, "Resolve-VisibleGpuIndex"),
-        _function(src, "Resolve-ShadowingGfxPick"),
-    ])
+    return "\n".join(
+        [
+            "$script:ShadowingIntegratedGfx = " + shadowing[shadowing.index("@(") :],
+            "$archFamilyMap = " + arch_family[arch_family.index("@{") :],
+            _function(src, "Test-VisibleDevicesPinned"),
+            _function(src, "Resolve-VisibleGpuIndex"),
+            _function(src, "Resolve-ShadowingGfxPick"),
+        ]
+    )
 
 
 # ── the driver: run the shipped blocks against a stubbed adapter list ─────────────────────────
+
 
 def _driver(
     src: str,
@@ -124,36 +135,38 @@ def _driver(
         f"[pscustomobject]@{{ Name = '{name}'; ConfigManagerErrorCode = {code}{count_member} }}"
         for name, code in adapters
     )
-    return "\n".join([
-        "$ErrorActionPreference = 'Stop'",
-        "Set-StrictMode -Version Latest" if strict else "Set-StrictMode -Off",
-        f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
-        "function substep { param($a, $b) }",
-        "$HasROCm = $false",
-        "$ROCmGpuLabel = $null",
-        "$script:ROCmGpuLabels = @()",
-        "$script:ROCmGfxArch = $null",
-        "$script:GpuNamesProbe = $null",
-        "$wmiGpus = $null",
-        _prelude(src),
-        _amd_scan_block(src),
-        # Captured from inside the arch block's own scope: $gpuNames is the value the indexing
-        # bug corrupts, and its first element is what Get-GfxArchFromGpuName is actually handed.
-        _arch_resolution_block(src).replace(
-            "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
-            "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
-        ),
-        # ConvertTo-Json, not string interpolation: a null stays null instead of becoming "".
-        "@{",
-        "  wmi_type    = $(if ($null -ne $wmiGpus) { $wmiGpus.GetType().FullName } else { $null })",
-        "  wmi_array   = [bool]($wmiGpus -is [array])",
-        "  label       = $ROCmGpuLabel",
-        "  labels      = @($script:ROCmGpuLabels)",
-        "  arch        = $script:ROCmGfxArch",
-        "  names_type  = $(if ($null -ne $script:GpuNamesProbe) { $script:GpuNamesProbe.GetType().FullName } else { $null })",
-        "  names_first = $(if ($null -ne $script:GpuNamesProbe) { $script:GpuNamesProbe[0] } else { $null })",
-        "} | ConvertTo-Json -Compress",
-    ])
+    return "\n".join(
+        [
+            "$ErrorActionPreference = 'Stop'",
+            "Set-StrictMode -Version Latest" if strict else "Set-StrictMode -Off",
+            f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+            "function substep { param($a, $b) }",
+            "$HasROCm = $false",
+            "$ROCmGpuLabel = $null",
+            "$script:ROCmGpuLabels = @()",
+            "$script:ROCmGfxArch = $null",
+            "$script:GpuNamesProbe = $null",
+            "$wmiGpus = $null",
+            _prelude(src),
+            _amd_scan_block(src),
+            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing
+            # bug corrupts, and its first element is what Get-GfxArchFromGpuName is actually handed.
+            _arch_resolution_block(src).replace(
+                "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
+                "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
+            ),
+            # ConvertTo-Json, not string interpolation: a null stays null instead of becoming "".
+            "@{",
+            "  wmi_type    = $(if ($null -ne $wmiGpus) { $wmiGpus.GetType().FullName } else { $null })",
+            "  wmi_array   = [bool]($wmiGpus -is [array])",
+            "  label       = $ROCmGpuLabel",
+            "  labels      = @($script:ROCmGpuLabels)",
+            "  arch        = $script:ROCmGfxArch",
+            "  names_type  = $(if ($null -ne $script:GpuNamesProbe) { $script:GpuNamesProbe.GetType().FullName } else { $null })",
+            "  names_first = $(if ($null -ne $script:GpuNamesProbe) { $script:GpuNamesProbe[0] } else { $null })",
+            "} | ConvertTo-Json -Compress",
+        ]
+    )
 
 
 def _run(
@@ -166,20 +179,26 @@ def _run(
     strict: bool = False,
 ) -> dict:
     script = tmp_path / "scan.ps1"
-    script.write_text(_driver(_setup_source(revision), adapters, ps51 = ps51, strict = strict), encoding = "utf-8")
+    script.write_text(
+        _driver(_setup_source(revision), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
+    )
     # Only what each case names may reach the child: a developer's own exported
     # UNSLOTH_ROCM_GFX_ARCH would otherwise silently win every inference assertion here.
     child_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     child_env.update(env or {})
     proc = subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True, text = True, timeout = 120, env = child_env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = child_env,
     )
     assert proc.returncode == 0, f"scan block failed:\n{proc.stdout}\n{proc.stderr}"
     return json.loads(proc.stdout)
 
 
 # ── source assertions ─────────────────────────────────────────────────────────────────────────
+
 
 def test_scan_wraps_the_whole_if_in_an_array():
     """The unwrapped form is the bug, so keep it out of the source."""
@@ -224,7 +243,9 @@ def test_installer_restores_the_private_handoff_after_setup():
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
     assert f"Remove-Item Env:{HANDOFF} -ErrorAction SilentlyContinue" in src
     # Saved after the last early return, so no path skips the restore.
-    assert src.index("$previousRocmGfxHandoff") > src.index("--with-llama-cpp-dir path does not exist")
+    assert src.index("$previousRocmGfxHandoff") > src.index(
+        "--with-llama-cpp-dir path does not exist"
+    )
 
 
 def test_setup_consumes_the_handoff_only_after_its_own_inference():
@@ -235,6 +256,7 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
 
 
 # ── runtime: the adapter scan ─────────────────────────────────────────────────────────────────
+
 
 @requires_pwsh
 @pytest.mark.parametrize("ps51", [False, True], ids = ["pwsh", "ps51"])
@@ -280,6 +302,7 @@ def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
 
 # ── runtime: name inference, where the second unwrapped if bites ──────────────────────────────
 
+
 @requires_pwsh
 def test_the_adapter_name_reaches_inference_whole(tmp_path):
     """Unwrapped, $gpuNames is a String and $gpuNames[0] is the character "A"."""
@@ -311,7 +334,9 @@ def test_a_single_adapter_infers_its_arch(tmp_path, name, expected):
 
 @requires_pwsh
 @pytest.mark.parametrize("mask", ["0", "1", "", "-1", "not-a-number", "9", " 0 ", "0,1"])
-@pytest.mark.parametrize("var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+@pytest.mark.parametrize(
+    "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
 def test_a_pinned_single_gpu_host_still_infers_its_arch(tmp_path, mask, var):
     """The mask disables the $nameArches[0] rescue, so the string-indexing bug surfaced here as a
     host with a perfectly good Radeon reporting no arch and looping the installer."""
@@ -331,6 +356,7 @@ def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
 
 
 # ── runtime: handoff precedence ───────────────────────────────────────────────────────────────
+
 
 @requires_pwsh
 def test_the_handoff_fills_the_gap_when_nothing_else_resolves(tmp_path):
@@ -352,7 +378,8 @@ def test_the_handoff_never_deposes_setups_own_inference(tmp_path):
 @requires_pwsh
 def test_a_user_override_still_wins_over_the_handoff(tmp_path):
     out = _run(
-        tmp_path, [(_R780M, 0)],
+        tmp_path,
+        [(_R780M, 0)],
         env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx90a", HANDOFF: "gfx1103"},
     )
     assert out["arch"] == "gfx90a", "the documented operator override outranks an inferred value"
@@ -371,6 +398,7 @@ def test_an_empty_handoff_is_ignored(tmp_path):
 
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
+
 def _handoff_lifecycle_block() -> str:
     """install.ps1's save / set / try / finally around the setup call, as shipped."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -379,40 +407,52 @@ def _handoff_lifecycle_block() -> str:
     return src[start:end]
 
 
-def _run_handoff_lifecycle(tmp_path: Path, *, arch: str | None, inherited: str | None, fails: bool) -> dict:
+def _run_handoff_lifecycle(
+    tmp_path: Path, *, arch: str | None, inherited: str | None, fails: bool
+) -> dict:
     body = _handoff_lifecycle_block().replace(
         "& $UnslothExe @studioArgs",
-        "throw 'setup exploded'" if fails else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",
+        "throw 'setup exploded'"
+        if fails
+        else "$script:SeenByChild = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF",
     )
     script = tmp_path / "handoff.ps1"
-    script.write_text("\n".join([
-        "$ErrorActionPreference = 'Stop'",
-        # The neighbouring handoffs the shipped finally also restores; not under test here, but
-        # the block does not compile without them.
-        "$previousUnslothStudioHome = $null; $hadPreviousUnslothStudioHome = $false",
-        "$previousTauriMode = $null; $hadPreviousTauriMode = $false",
-        "$previousSetupRuntimeGateHandoff = $null; $hadPreviousSetupRuntimeGateHandoff = $false",
-        "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
-        "$UnslothProxyHandoffJson = $null",
-        "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
-        "$script:SeenByChild = '<never ran>'",
-        "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
-        "try {",
-        body,
-        "} catch { }",
-        "@{",
-        "  seen_by_child = $script:SeenByChild",
-        "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
-        "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
-        "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
-        "} | ConvertTo-Json -Compress",
-    ]), encoding = "utf-8")
+    script.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                # The neighbouring handoffs the shipped finally also restores; not under test here, but
+                # the block does not compile without them.
+                "$previousUnslothStudioHome = $null; $hadPreviousUnslothStudioHome = $false",
+                "$previousTauriMode = $null; $hadPreviousTauriMode = $false",
+                "$previousSetupRuntimeGateHandoff = $null; $hadPreviousSetupRuntimeGateHandoff = $false",
+                "$previousProxyHandoff = $null; $hadPreviousProxyHandoff = $false",
+                "$UnslothProxyHandoffJson = $null",
+                "$UnslothExe = 'stub'; $studioArgs = @(); $setupExit = 0",
+                "$script:SeenByChild = '<never ran>'",
+                "$ROCmGfxArch = " + ("$null" if arch is None else f"'{arch}'"),
+                "try {",
+                body,
+                "} catch { }",
+                "@{",
+                "  seen_by_child = $script:SeenByChild",
+                "  after = $(if (Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) { $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF } else { $null })",
+                "  after_set = [bool](Test-Path Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF)",
+                "  public = $(if (Test-Path Env:UNSLOTH_ROCM_GFX_ARCH) { $env:UNSLOTH_ROCM_GFX_ARCH } else { $null })",
+                "} | ConvertTo-Json -Compress",
+            ]
+        ),
+        encoding = "utf-8",
+    )
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "UNSLOTH_ROCM_GFX_ARCH": "gfx90a"}
     if inherited is not None:
         env[HANDOFF] = inherited
     proc = subprocess.run(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True, text = True, timeout = 120, env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = env,
     )
     assert proc.returncode == 0, f"handoff block failed:\n{proc.stdout}\n{proc.stderr}"
     return json.loads(proc.stdout)
@@ -449,6 +489,7 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
 
 # ── the guard on the guards ───────────────────────────────────────────────────────────────────
 
+
 @requires_pwsh
 def test_these_assertions_fail_against_the_source_before_the_fix(tmp_path):
     """A regression test that passes on the unfixed source is not one.
@@ -463,7 +504,9 @@ def test_these_assertions_fail_against_the_source_before_the_fix(tmp_path):
     for ref in ("origin/main", "upstream/main", "main"):
         base = subprocess.run(
             ["git", "merge-base", "HEAD", ref],
-            cwd = REPO_ROOT, capture_output = True, text = True,
+            cwd = REPO_ROOT,
+            capture_output = True,
+            text = True,
         )
         if base.returncode == 0 and base.stdout.strip():
             revision = base.stdout.strip()
