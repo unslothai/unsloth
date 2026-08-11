@@ -447,15 +447,28 @@ if command -v patchelf >/dev/null 2>&1; then
   # first; the `|| true` on each patchelf call would otherwise hide it.
   chmod -R u+w "$libdir" "$webkit_exec" "$pixbuf_dir" "$gio_dir" 2>/dev/null || true
   chmod u+w "$binary_file" 2>/dev/null || true
+  # One rule for every object: point it at $libdir, relative to where IT sits.
+  #
+  # Hand-written per-directory depths are what went wrong before. The three loops
+  # this replaces used a fixed '$ORIGIN/../../lib/unsloth' for anything under
+  # usr/libexec/unsloth-webkit, which is right for the helpers themselves and wrong
+  # one level down; and they only matched `-perm -u+x` there, so
+  # injected-bundle/libwebkit2gtkinjectedbundle.so -- a plain, non-executable .so --
+  # got no RUNPATH at all. That went unnoticed because AppRun exported
+  # LD_LIBRARY_PATH, which resolved it anyway. With the export gone (see AppRun) the
+  # RUNPATH is load-bearing, so derive it instead of writing it out.
+  set_origin_rpath() {  # object -> RUNPATH reaching $libdir from that object
+    local obj="$1" rel
+    rel="$(realpath --relative-to="$(dirname -- "$obj")" "$libdir" 2>/dev/null)" || return 0
+    if [[ "$rel" == "." ]]; then
+      patchelf --set-rpath '$ORIGIN' "$obj" 2>/dev/null || true
+    else
+      patchelf --set-rpath "\$ORIGIN/$rel" "$obj" 2>/dev/null || true
+    fi
+  }
   while IFS= read -r -d '' obj; do
-    patchelf --set-rpath '$ORIGIN' "$obj" 2>/dev/null || true
-  done < <(find "$libdir" -maxdepth 1 -name '*.so*' -type f -print0)
-  while IFS= read -r -d '' obj; do
-    patchelf --set-rpath '$ORIGIN/../../lib/unsloth' "$obj" 2>/dev/null || true
-  done < <(find "$pixbuf_dir" "$gio_dir" -name '*.so' -type f -print0 2>/dev/null)
-  while IFS= read -r -d '' obj; do
-    patchelf --set-rpath '$ORIGIN/../../lib/unsloth' "$obj" 2>/dev/null || true
-  done < <(find "$webkit_exec" -type f -perm -u+x -print0)
+    set_origin_rpath "$obj"
+  done < <(find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0)
   patchelf --set-rpath '$ORIGIN/../lib/unsloth' "$binary_file" 2>/dev/null || true
 
   # Every executable must use the HOST's dynamic loader.
