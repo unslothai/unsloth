@@ -523,8 +523,7 @@ def measure(page, label: str) -> dict:
     for name in ("card", "llama", "footer", "toggle"):
         # As shown, where the rail can hide it; as measured otherwise. A card
         # entirely under the fold is None here and is the reach check's to make.
-        shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") \
-            else facts[name]
+        shown = facts.get(f"{name}Shown", facts[name]) if name in ("card", "llama") else facts[name]
         if name in ("card", "llama") and shown is None:
             continue
         check(
