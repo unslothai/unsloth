@@ -59,7 +59,9 @@ test("per-device usage wins over the aggregate when every device reports", () =>
       },
       { index: 1, memory_total_gb: 7.98, vram_used_gb: 0.5 },
     ],
-    vram_used_gb_aggregate: 40.5,
+    // Deliberately NOT 40.5. An aggregate equal to the per-device sum would pass
+    // whichever source won, so it would not pin the precedence at all.
+    vram_used_gb_aggregate: 99.0,
   });
   assert.equal(gpuVramUsedIsPerDevice(gpu.devices ?? []), true);
   assert.equal(resolveGpuVramUsedGb(gpu), 40.5);
