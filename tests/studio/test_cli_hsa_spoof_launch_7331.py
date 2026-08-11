@@ -31,7 +31,11 @@ import pytest
 import unsloth_cli.commands.studio as studio_cli
 
 
-def _make_venv(tmp_path: Path, dist: "str | None", layout: str = "posix") -> Path:
+def _make_venv(
+    tmp_path: Path,
+    dist: "str | None",
+    layout: str = "posix",
+) -> Path:
     """A venv tree carrying at most one rocm_sdk_libraries_* dist-info."""
     venv = tmp_path / "unsloth_studio"
     sp = (
@@ -63,7 +67,7 @@ class TestOverrideParsing:
             ("11.0.0", "gfx1100"),  # the circulated Strix workaround
             ("11.5.1", "gfx1151"),  # Strix Halo, naming its own arch
             ("10.3.0", "gfx1030"),  # the documented RX 6800 override
-            ("9.0.10", "gfx90a"),   # stepping 10 renders as 'a', not "gfx9010"
+            ("9.0.10", "gfx90a"),  # stepping 10 renders as 'a', not "gfx9010"
             ("  11.0.0  ", "gfx1100"),
             ("", None),
             ("garbage", None),
@@ -91,7 +95,9 @@ class TestOverrideParsing:
         stack = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(stack)
         for value in ("11.0.0", "11.5.1", "10.3.0", "9.0.10", "garbage", "", "11.0.16", "11.10.0"):
-            assert studio_cli._hsa_override_gfx_arch(value) == stack._hsa_override_gfx_arch(value), value
+            assert studio_cli._hsa_override_gfx_arch(value) == stack._hsa_override_gfx_arch(
+                value
+            ), value
 
 
 class TestInstalledArchReading:
