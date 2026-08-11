@@ -62,6 +62,21 @@ HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libGL|libGLX|libGLdispatch|libEGL|libOpenGL|libg
 HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libX11|libX11-xcb|libxcb.*|libXext|libXrandr|libXi|libXcursor|libXfixes|libXrender|libXcomposite|libXdamage|libXinerama|libXau|libXdmcp|libxshmfence)\.so'
 HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libwayland-.*)\.so'
 HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libasound|libpulse.*)\.so'
+#   libstdc++    : the same argument as glibc, and measured. A bundled libstdc++ is
+#                  pulled in by WebKit through its own $ORIGIN RUNPATH -- no
+#                  LD_LIBRARY_PATH involved -- and the loader then reuses that
+#                  already-loaded SONAME for every host library opened afterwards. On
+#                  a Steam Deck, with the bundle built on 22.04:
+#                    dlopen bundled libwebkit2gtk        -> ok
+#                    libstdc++ mapped                    -> BUNDLE's (GLIBCXX_3.4.30)
+#                    dlopen host libGLX_mesa.so.0        -> GLIBCXX_3.4.32 not found
+#                                                           (required by libSPIRV-Tools)
+#                  Host Mesa alone loads fine, and bundled WebKit alone loads fine; it
+#                  is only the combination. Dropping it from the bundle fixes that and
+#                  costs nothing: the bundle needs at most GLIBCXX_3.4.30, and any host
+#                  with the glibc this bundle already requires ships at least that.
+#   libgcc_s     : libstdc++'s own runtime, same reasoning and an ancient stable ABI.
+HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libstdc\+\+|libgcc_s)\.so'
 
 # Names the app dlopens, so they never appear in ldd output and must be pulled in
 # by hand. The tray crate looks these up at runtime; WebKit loads its own

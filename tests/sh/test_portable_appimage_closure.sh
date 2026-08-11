@@ -279,6 +279,26 @@ assert_eq "guard reads the link, not the target" "yes" \
 assert_eq "guard no longer uses the dereferencing -O test" "yes" \
     "$(grep -q '\-O "\$WEBKIT_LINK"' "$BUILD_SH" && echo no || echo yes)"
 
+echo "=== behavioural: libstdc++ is host-provided, not bundled ==="
+# Measured on a Steam Deck: WebKit pulls the bundled libstdc++ in through its own
+# $ORIGIN RUNPATH -- no LD_LIBRARY_PATH -- and the loader then reuses that SONAME for
+# every host library opened later, so host Mesa died on GLIBCXX_3.4.32 (required by
+# libSPIRV-Tools) while loading fine on its own. A bundled C++ runtime OLDER than the
+# host's poisons the host graphics stack, which is the same argument that keeps glibc
+# out of the bundle.
+grep '^HOST_LIBS_RE=' "$BUILD_SH" > "$_TMP/hostlibs.sh"
+_classify() {
+    bash -c '. "$1"; if [[ "$2" =~ $HOST_LIBS_RE ]]; then echo HOST; else echo bundled; fi' \
+        _ "$_TMP/hostlibs.sh" "$1"
+}
+for _h in libstdc++.so.6 libgcc_s.so.1 libc.so.6; do
+    assert_eq "$_h is host-provided" "HOST" "$(_classify "$_h")"
+done
+# The desktop stack must still travel with us, or this is a thin bundle again.
+for _b in libwebkit2gtk-4.1.so.0 libsoup-3.0.so.0 libsqlite3.so.0; do
+    assert_eq "$_b is bundled" "bundled" "$(_classify "$_b")"
+done
+
 echo "=== structural: the host/bundle boundary ==="
 # glibc and the GPU stack must stay on the host; the desktop stack must not.
 for _host in 'libc' 'libGL' 'libEGL' 'libdrm' 'libX11' 'libwayland-'; do

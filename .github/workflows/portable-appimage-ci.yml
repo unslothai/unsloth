@@ -220,13 +220,20 @@ jobs:
           cat > /tmp/probe.c <<'C'
           #include <dlfcn.h>
           #include <stdio.h>
+          /* argv[1] host library to open. argv[2], when given, is opened FIRST with
+             RTLD_GLOBAL -- the bundled WebKit, reproducing the real load order. */
           int main(int argc, char **argv) {
+            if (argc > 2 && !dlopen(argv[2], RTLD_NOW | RTLD_GLOBAL)) {
+              printf("FAILED to preload: %s\n", dlerror()); return 1;
+            }
             if (!dlopen(argv[1], RTLD_NOW)) { printf("FAILED: %s\n", dlerror()); return 1; }
             printf("ok\n"); return 0;
           }
           C
           gcc -o /tmp/probe /tmp/probe.c
           libdir=/work/squashfs-root/usr/lib/unsloth
+          webkit=$(find "$libdir" -maxdepth 1 -name 'libwebkit2gtk-4.1.so*' -type f | head -1)
+          [ -n "$webkit" ] || { echo "::error::no bundled libwebkit2gtk to preload"; exit 1; }
           rc=0
           for lib in libcurl-gnutls.so.4 libGLX_mesa.so.0 libGL.so.1 libEGL.so.1; do
             p=$(find /usr/lib/x86_64-linux-gnu -maxdepth 2 -name "$lib" | head -1)
@@ -242,6 +249,19 @@ jobs:
             # fail every build for a configuration the runtime no longer produces.
             printf '%-22s bundle-first (informational): ' "$lib"
             LD_LIBRARY_PATH="$libdir" /tmp/probe "$p" || true
+            # The load order users ACTUALLY hit, and the one no earlier check could
+            # see: WebKit is loaded first and pulls its own dependencies in through
+            # $ORIGIN RUNPATHs, then the host GL stack is dlopened afterwards. The
+            # loader reuses an already-loaded SONAME, so a bundled library that is
+            # OLDER than the host's poisons every host library opened later -- with
+            # no LD_LIBRARY_PATH involved at all. Measured on a Steam Deck before
+            # libstdc++ moved to the host boundary:
+            #   dlopen host libGLX_mesa.so.0 -> GLIBCXX_3.4.32 not found
+            #                                   (required by libSPIRV-Tools)
+            # This one IS gated: it is what the app does.
+            printf '%-22s after bundled WebKit: ' "$lib"
+            out=$(/tmp/probe "$p" "$webkit"); echo "$out"
+            case "$out" in FAILED\ *) rc=1 ;; esac
           done
           exit $rc
           SH
