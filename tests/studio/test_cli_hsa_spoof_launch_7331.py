@@ -3,18 +3,18 @@
 
 """Regression tests for the launch half of issue #7331.
 
-Routing the wheels is only half the fix. libhsakmt writes HSA_OVERRIDE_GFX_VERSION's
-major.minor.stepping straight into the KFD node's EngineId and ROCr names the agent
-from that, so the variable decides the ISA every later process reports. AMD's
-per-gfx index ships single-arch wheels (the distribution beside torch is literally
-named rocm_sdk_libraries_gfx1151), so an override naming a different arch leaves the
-runtime asking for kernels the install does not contain.
+Routing the wheels is only half the fix. libhsakmt (topology.c) writes
+HSA_OVERRIDE_GFX_VERSION's major.minor.stepping straight into the KFD node's EngineId
+and ROCr names the agent from that, so the variable decides the ISA every later
+process reports. AMD's per-gfx index ships single-arch wheels (the distribution beside
+torch is named rocm_sdk_libraries_gfx1151), so an override naming a different arch
+leaves the runtime asking for kernels the install does not contain.
 
 install.sh clears the variable for the one launch it performs itself, but that unset
 dies with the installer: `unsloth studio update` runs install_python_stack.py as a
-child (studio/setup.sh:1444), so the repair path, the generated launch-studio.sh and
-a hand-typed `unsloth studio` (issue #7331's own repro) all still start with the
-spoof in place. The CLI is the chokepoint all of them pass through.
+child (studio/setup.sh:1444), so the repair path, the generated launch-studio.sh and a
+hand-typed `unsloth studio` (issue #7331's own repro) all still start with the spoof
+in place. The CLI is the chokepoint all of them pass through.
 
 There is no AMD hardware and no ROCm CI in this repo; the venv layouts below are
 fixtures and nothing here was validated on real silicon.
@@ -46,15 +46,13 @@ def _make_venv(
     ``Requires-Dist: rocm-sdk-libraries-gfx1151==7.13.0; extra == "libraries"``.
     ``None`` is a generic multi-arch index, which installs neither.
 
-    ``orphans`` are superseded runtimes left behind by a family switch. pip has no
-    autoremove and the old distribution keeps its own name, so they accumulate; a
-    fixture that never carried one could not tell an orphan from the active family.
+    ``orphans`` are superseded runtimes left behind by a family switch: pip has no
+    autoremove and the old distribution keeps its own name, so they accumulate.
 
-    ``torch_needs_rocm`` is the dependency edge that makes the meta-package authoritative.
-    AMD's per-gfx torch resolves through ``rocm``; the generic pytorch.org ROCm wheels vendor
-    their runtime and require nothing, so setting it False with a ``dist`` present is the
-    "switched to generic, meta-package orphaned" shape, where the stale metadata must not
-    arbitrate.
+    ``torch_needs_rocm`` is the dependency edge that makes the meta-package
+    authoritative. AMD's per-gfx torch resolves through ``rocm``; the generic
+    pytorch.org ROCm wheels vendor their runtime and require nothing, so False with a
+    ``dist`` present is the "switched to generic, meta-package orphaned" shape.
     """
     venv = tmp_path / "unsloth_studio"
     sp = (
@@ -89,14 +87,13 @@ def _make_venv(
 
 @pytest.fixture(autouse = True)
 def _no_inherited_override(monkeypatch):
-    """The developer box running these tests may export the variable itself, and
-    every assertion below is about its presence."""
+    """The developer box may export the variable; every assertion is about it."""
     monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION", raising = False)
 
 
 class TestOverrideParsing:
-    """The third copy of the parser (install.sh and install_python_stack.py hold
-    the others) has to agree with libhsakmt, which reads the value with
+    """The third copy of the parser (install.sh and install_python_stack.py hold the
+    others) has to agree with libhsakmt, which reads the value with
     sscanf("%u.%u.%u%c") != 3 and concatenates the stepping in HEX."""
 
     @pytest.mark.parametrize(
@@ -120,8 +117,7 @@ class TestOverrideParsing:
         assert studio_cli._hsa_override_gfx_arch(value) == expected
 
     def test_matches_the_installer_copy(self):
-        """A parser that drifted from install_python_stack.py's would clear the
-        variable on hosts the installer left alone, and vice versa."""
+        """A drifted parser would clear the variable on hosts the installer left alone."""
         import importlib.util
         import sys
 
@@ -147,8 +143,8 @@ class TestInstalledArchReading:
         assert studio_cli._installed_rocm_single_arch(venv) == "gfx1151"
 
     def test_generic_index_installs_no_such_distribution(self, tmp_path):
-        """download.pytorch.org/whl/rocm6.3 wheels are multi-arch and bring no
-        rocm_sdk_libraries_* dist, so there is nothing to contradict."""
+        """Generic pytorch.org wheels are multi-arch and bring no rocm_sdk_libraries_*
+        dist, so there is nothing to contradict."""
         venv = _make_venv(tmp_path, None)
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
@@ -159,8 +155,8 @@ class TestInstalledArchReading:
 class TestClearingTheContradictingOverride:
     def test_the_reported_host(self, tmp_path, monkeypatch):
         """gfx1151 wheels installed, HSA_OVERRIDE_GFX_VERSION=11.0.0 still exported.
-        Every kernel image in that install is gfx1151, so the agent must stop
-        answering gfx1100 or the first allocation fails as it did before."""
+        Every kernel image is gfx1151, so the agent must stop answering gfx1100 or the
+        first allocation fails as before."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
@@ -176,9 +172,9 @@ class TestClearingTheContradictingOverride:
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1"
 
     def test_generic_wheels_keep_the_override(self, tmp_path, monkeypatch):
-        """The override is frequently the ONLY thing making an unsupported card
-        usable against a generic multi-arch index. Clearing it there would break
-        a working machine, which is worse than #7331."""
+        """The override is often the ONLY thing making an unsupported card usable against
+        a generic multi-arch index. Clearing it there breaks a working machine, which is
+        worse than #7331."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "10.3.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None)
@@ -199,8 +195,7 @@ class TestClearingTheContradictingOverride:
         assert studio_cli._clear_hsa_override_contradicting_install(venv) is None
 
     def test_windows_is_untouched(self, tmp_path, monkeypatch):
-        """ROCm on Windows does not honour HSA_OVERRIDE_GFX_VERSION at all, so
-        there is no spoof to undo and no reason to touch the user's environment."""
+        """ROCm on Windows ignores HSA_OVERRIDE_GFX_VERSION, so there is no spoof to undo."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Windows")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", "windows")
@@ -209,9 +204,8 @@ class TestClearingTheContradictingOverride:
 
 
 class TestTheLaunchPathActuallyCallsIt:
-    """A helper nothing calls fixes nothing, and the call has to sit ABOVE all
-    three launch paths: os.execvp, the Windows Popen, and the in-process
-    run_server. Below any of them and the child inherits the spoof anyway."""
+    """The call has to sit ABOVE all three launch paths (os.execvp, the Windows Popen,
+    the in-process run_server), or the child inherits the spoof anyway."""
 
     def test_called_before_every_launch_path(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
@@ -229,8 +223,8 @@ class TestTheLaunchPathActuallyCallsIt:
             assert call < at, f"the clear must precede {marker}"
 
     def test_it_mutates_the_environment_the_child_inherits(self, tmp_path, monkeypatch):
-        """os.execvp and Popen both pass os.environ through, so popping the key
-        there is what reaches the launched process. A local variable would not."""
+        """os.execvp and Popen pass os.environ through, so popping the key there is what
+        reaches the launched process. A local variable would not."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
@@ -239,9 +233,9 @@ class TestTheLaunchPathActuallyCallsIt:
 
 
 def test_the_installer_and_the_cli_agree_on_the_spoofable_arches():
-    """install.sh, install_python_stack.py and this module all key on the RDNA 3.5
-    APU arches. A per-gfx index for any of them ships a matching
-    rocm_sdk_libraries_* distribution, which is what the CLI keys on instead."""
+    """install.sh, install_python_stack.py and this module all key on the RDNA 3.5 APU
+    arches; a per-gfx index for any of them ships the matching rocm_sdk_libraries_*
+    distribution the CLI keys on instead."""
     install_sh = (Path(studio_cli.__file__).resolve().parents[2] / "install.sh").read_text(
         encoding = "utf-8"
     )
@@ -249,28 +243,25 @@ def test_the_installer_and_the_cli_agree_on_the_spoofable_arches():
 
 
 class TestOrphanedRuntimesFromAFamilySwitch:
-    """pip never uninstalls the superseded arch-specific runtime across a family
-    switch: `rocm` is upgraded in place, but rocm-sdk-libraries-<old> keeps its own
-    distribution name and stays on disk. Reading the arch by globbing for that
-    directory therefore reads whichever one the filesystem happens to hand back,
-    and clearing an override on a stale reading breaks a working machine.
-    install_python_stack.py's _installed_rocm_wheel_family documents the same
-    hazard; this is the launcher's copy of the rule."""
+    """pip never uninstalls the superseded arch-specific runtime across a family switch:
+    `rocm` is upgraded in place, but rocm-sdk-libraries-<old> keeps its own name and
+    stays on disk, so globbing for that directory reads whichever the filesystem hands
+    back and clearing on a stale reading breaks a working machine. Same hazard as
+    install_python_stack.py's _installed_rocm_wheel_family."""
 
     def test_the_active_family_wins_over_an_orphan(self, tmp_path):
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", orphans = ("gfx1100",))
         assert studio_cli._installed_rocm_single_arch(venv) == "gfx1151"
 
     def test_an_orphan_alone_arbitrates_nothing(self, tmp_path):
-        """Switched to generic wheels: `rocm` is gone, the old runtime is not.
-        There is no active single-arch install, so nothing may be cleared."""
+        """Switched to generic wheels: `rocm` is gone, the old runtime is not, so there
+        is no active single-arch install and nothing may be cleared."""
         venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
     def test_switching_to_generic_wheels_keeps_the_override(self, tmp_path, monkeypatch):
-        """The failure the orphan causes, end to end: a host that once had gfx1151
-        wheels and now runs generic ones would have had its override removed on the
-        strength of a directory nothing uses."""
+        """The failure the orphan causes end to end: a host that once had gfx1151 wheels
+        and now runs generic ones would lose its override to a directory nothing uses."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
@@ -278,8 +269,8 @@ class TestOrphanedRuntimesFromAFamilySwitch:
         assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
 
     def test_a_multi_arch_family_contradicts_nothing(self, tmp_path):
-        """gfx120x-all carries kernels for several ISAs, so an override naming one
-        of them is not asking for code the install lacks."""
+        """gfx120x-all carries kernels for several ISAs, so an override naming one is
+        not asking for code the install lacks."""
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx120X-all")
         assert studio_cli._installed_rocm_single_arch(venv) is None
 
@@ -296,9 +287,9 @@ class TestOrphanedRuntimesFromAFamilySwitch:
 
 
 class TestEveryLaunchEntryPointClearsIt:
-    """`unsloth studio` is not the only way in. The group callback returns as soon
-    as a subcommand is named, and `unsloth run` is bound straight to studio_run, so
-    the two commands people actually use to start a model would keep the spoof."""
+    """`unsloth studio` is not the only way in: the group callback returns as soon as a
+    subcommand is named and `unsloth run` is bound straight to studio_run, so the two
+    commands people actually use would keep the spoof."""
 
     def test_run_clears_it_itself(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
@@ -316,8 +307,8 @@ class TestEveryLaunchEntryPointClearsIt:
         ), "one definition plus a call from each entry point"
 
     def test_the_helper_is_idempotent(self, tmp_path, monkeypatch):
-        """studio_default and run can both run in one process; the second call
-        must not raise on an already-removed key."""
+        """studio_default and run can both run in one process; the second call must not
+        raise on an already-removed key."""
         monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
         monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
         venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
@@ -327,23 +318,20 @@ class TestEveryLaunchEntryPointClearsIt:
         assert "HSA_OVERRIDE_GFX_VERSION" not in os.environ
 
     def test_the_top_level_run_alias_is_the_same_function(self):
-        """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so
-        anything the group callback does is skipped there."""
+        """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so the
+        group callback is skipped there."""
         import unsloth_cli
         assert unsloth_cli.studio_run is studio_cli.run
 
 
 def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_nothing(tmp_path):
-    """Switching from AMD's per-gfx index to a generic ROCm one must stop the meta-package
-    deciding anything.
+    """A `rocm` meta-package orphaned by a switch to generic wheels must decide nothing.
 
     The generic pytorch.org ROCm wheels vendor their own runtime and depend on no
     meta-package, and pip has no autoremove, so `rocm` survives the switch describing the
-    family the OLD torch resolved. Trusting it there would clear an override that the generic
-    wheels may be the only reason the GPU works at all, which is the opposite of the fix.
-
-    Torch's own requirements are the discriminator, so the stale metadata is ignored while the
-    identical tree with an AMD torch still arbitrates.
+    family the OLD torch resolved. Trusting it would clear an override the generic wheels
+    may be the only reason the GPU works at all. Torch's own requirements are the
+    discriminator, so the identical tree with an AMD torch still arbitrates.
     """
     from unsloth_cli.commands.studio import _installed_rocm_single_arch
 

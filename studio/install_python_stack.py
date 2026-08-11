@@ -1480,16 +1480,14 @@ def _detect_amd_gfx_codes(
     filtered by a visible-device mask (and only by ROCR_VISIBLE_DEVICES).
 
     ignore_hsa_override=True strips HSA_OVERRIDE_GFX_VERSION from the probe's
-    environment. ROCr applies that override in userland, so rocminfo reports the
-    SPOOFED ISA to every consumer when it is set (unslothai#7331); re-probing
-    without it is the one way to see the physical arch. amd-smi reads the driver
-    and is unaffected either way, so stripping it there is a no-op.
+    environment. ROCr applies it in userland, so rocminfo reports the SPOOFED ISA
+    while it is set (unslothai#7331); re-probing without it is the one way to see
+    the physical arch. amd-smi reads the driver, so stripping it there is a no-op.
 
     ignore_visible_masks=True additionally strips ROCR_VISIBLE_DEVICES and
-    HIP_VISIBLE_DEVICES, so the re-probe sees the WHOLE machine. A mask left in
-    the caller's environment would otherwise hide the very second GPU whose
-    presence is the reason to decline the correction, and install.sh's re-probe
-    already unsets all three together.
+    HIP_VISIBLE_DEVICES so the re-probe sees the WHOLE machine: a mask would
+    otherwise hide the very second GPU whose presence is the reason to decline the
+    correction. install.sh's re-probe unsets all three together.
     """
     global _LAST_AMD_GFX_PROBE
     _LAST_AMD_GFX_PROBE = None
@@ -1529,8 +1527,7 @@ def _detect_amd_gfx_codes(
         if ignore_visible_masks:
             _strip.update(("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"))
         if _strip & set(os.environ):
-            # env=None means "inherit", so the variables have to be dropped from
-            # an explicit copy; _amd_smi_env() already returns an os.environ copy.
+            # env=None means "inherit", so drop the variables from an explicit copy.
             _env = {
                 k: v
                 for k, v in (_env if _env is not None else os.environ).items()
@@ -1556,11 +1553,10 @@ def _detect_amd_gfx_codes(
     return []
 
 
-# Arches whose physical identity the product name can establish on Linux and whose
-# wheels differ from the arch people spoof them to. These are exactly the arches
-# _linux_amd_gfx_from_cpuinfo() returns: RDNA 3.5 APUs that ROCm did not support
-# natively, so HSA_OVERRIDE_GFX_VERSION=11.0.0 became the circulated workaround.
-# Deliberately narrow -- the correction below only ever fires for these.
+# Arches the product name can establish on Linux whose wheels differ from the arch
+# people spoof them to: exactly what _linux_amd_gfx_from_cpuinfo() returns, RDNA 3.5
+# APUs ROCm did not support natively, so HSA_OVERRIDE_GFX_VERSION=11.0.0 became the
+# circulated workaround. The correction below only ever fires for these.
 _HSA_SPOOFABLE_PHYSICAL_GFX: frozenset[str] = frozenset({"gfx1151", "gfx1150", "gfx1152"})
 
 
@@ -1568,8 +1564,8 @@ def _hsa_override_gfx_arch(value: "str | None") -> "str | None":
     """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
 
     ROCr reads the variable as a major.minor.stepping triple and builds the target
-    name as gfx<major><minor><stepping in hex> -- which is why 9.0.10 is gfx90a
-    and not gfx9010. 11.0.0 -> gfx1100, 11.5.1 -> gfx1151, 10.3.0 -> gfx1030.
+    name as gfx<major><minor><stepping in hex>, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151, 10.3.0 -> gfx1030.
     """
     if not value:
         return None
@@ -1588,15 +1584,14 @@ def _kfd_gfx_targets() -> list[str]:
     """gfx arches of the AMD GPUs the KERNEL sees, from KFD topology sysfs.
 
     /sys/class/kfd/kfd/topology/nodes/<n>/properties carries gfx_target_version,
-    written by amdkfd from a per-IP-version table, so it is immune to
-    HSA_OVERRIDE_GFX_VERSION (which ROCr applies in userland). That makes it the
-    ground truth for #7331. Encoding is major * 10000 + minor * 100 + stepping,
-    with the stepping rendered in hex: 110000 -> gfx1100, 110501 -> gfx1151,
-    90010 -> gfx90a.
+    written by amdkfd itself, so it is immune to HSA_OVERRIDE_GFX_VERSION (which
+    ROCr applies in userland) and is the ground truth for #7331. Encoding is
+    major * 10000 + minor * 100 + stepping, the stepping in hex: 110000 -> gfx1100,
+    110501 -> gfx1151, 90010 -> gfx90a.
 
-    CPU nodes carry no gfx_target_version (or 0), so they drop out naturally; the
-    vendor_id 4098 (0x1002) guard mirrors _has_rocm_gpu() and keeps NVIDIA's
-    open-driver KFD nodes out. Returns one entry per GPU node, in node order.
+    CPU nodes carry no gfx_target_version (or 0) and drop out; the vendor_id 4098
+    (0x1002) guard mirrors _has_rocm_gpu() and keeps NVIDIA's open-driver KFD nodes
+    out. Returns one entry per GPU node, in node order.
     """
     if sys.platform == "win32":
         return []
@@ -1632,41 +1627,37 @@ def _hsa_spoofed_physical_gfx(
 ) -> "str | None":
     """Physical arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof (#7331).
 
-    Returns None -- meaning "believe the probe", today's behaviour -- unless every
-    one of these holds:
+    Returns None -- "believe the probe", today's behaviour -- unless all of:
 
-      * HSA_OVERRIDE_GFX_VERSION is set. Without it there is no reason to doubt
-        the runtime, so the deliberate #7305 precedence (a mixed Strix APU + dGPU
-        host with the dGPU selected must not get APU wheels) is untouched.
-      * The product name inferred an arch that people spoof, and the probe reports
+      * HSA_OVERRIDE_GFX_VERSION is set. Without it there is nothing to doubt, so
+        the deliberate #7305 precedence (a mixed Strix APU + dGPU host with the
+        dGPU selected must not get APU wheels) is untouched.
+      * The product name inferred an arch that people spoof and the probe reports
         a DIFFERENT one. An override naming the arch the hardware already is masks
         nothing.
       * The probe saw exactly one arch. A pre-filter, not the safety property:
         install.sh can only count DISTINCT tokens (its probe greps rocminfo, which
-        repeats the token per agent), so counting arches here is what keeps the two
+        repeats the token per agent), so counting arches here keeps the two
         implementations at the same verdict.
-      * The variable names EXACTLY the arch that was reported. ROCr can only ever
-        spoof to the target the variable names, so a probe reporting anything else
-        is reporting real silicon and is not the override's doing.
-      * The spoof is corroborated by a source the override cannot reach. Two, in
-        descending order of strength:
+      * The variable names EXACTLY the reported arch. ROCr can only spoof to the
+        target the variable names, so any other reading is real silicon.
+      * A source the override cannot reach corroborates it, strongest first:
 
         1. KFD topology sysfs (_kfd_gfx_targets). amdkfd writes gfx_target_version
-           from the kernel's own IP-version table; ROCr applies the override in
-           userland and never touches it. If the kernel names the inferred arch,
-           the matter is settled.
-        2. Re-probing rocminfo with HSA_OVERRIDE_GFX_VERSION stripped from its
-           environment (and the visible-device masks with it, so the re-probe sees
-           the whole machine): ROCr getenv()s the override while building agent
-           names, so without it the runtime itself retracts the spoofed name.
+           from the kernel's own IP-version table and ROCr, which applies the
+           override in userland, never touches it. If the kernel names the
+           inferred arch, the matter is settled.
+        2. Re-probing rocminfo with HSA_OVERRIDE_GFX_VERSION stripped (and the
+           visible masks with it, so the re-probe sees the whole machine): ROCr
+           getenv()s the override while building agent names, so without it the
+           runtime itself retracts the spoofed name.
 
-    Corroboration is REQUIRED. There is deliberately no "the variable names the
+    Corroboration is REQUIRED, with deliberately no "the variable names the
     reported arch, so assume a spoof" fallback: that shape is indistinguishable
     from a truthful host (a real gfx1100 dGPU in a Ryzen AI Max chassis whose owner
-    set the override for unrelated reasons reports exactly the same thing), and
-    rerouting a working machine to the wrong wheels is worse than #7331 itself.
-    Two independent readings (kernel or unspoofed runtime, plus the product name)
-    have to agree against the one spoofed reading before anything is overridden.
+    set the override for unrelated reasons), and rerouting a working machine to the
+    wrong wheels is worse than #7331 itself. Two independent readings have to agree
+    against the one spoofed reading before anything is overridden.
     """
     global _LAST_AMD_GFX_PROBE
 
@@ -1690,20 +1681,19 @@ def _hsa_spoofed_physical_gfx(
     )
 
     def _confirm(physical: "list[str]", source: str) -> "str | None":
-        """A source is decisive only when it names the product arch and nothing
-        else. Seeing a second arch means the single-arch premise was wrong -- a
-        mixed host whose second GPU the spoofed probe collapsed away -- so
-        decline. install.sh compares the same two strings, which is why the KFD
-        list is compared verbatim and the re-probe deduplicated."""
+        """Decisive only when the source names the product arch and nothing else: a
+        second arch means the single-arch premise was wrong (a mixed host whose
+        second GPU the spoofed probe collapsed away), so decline. install.sh
+        compares the same two strings, hence the verbatim KFD list and deduplicated
+        re-probe."""
         if physical == [inferred_gfx]:
             _safe_print(
                 f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
                 f"physical arch.\n"
             )
             return inferred_gfx
-        # Say so, rather than leaving "Checking whether..." hanging: on a real
-        # gfx1100 card in a Ryzen AI Max chassis this is the CORRECT outcome, and
-        # a user who sees only the question will read the silence as a failure.
+        # Say so rather than leaving "Checking whether..." hanging: on a real gfx1100
+        # card in a Ryzen AI Max chassis this is the CORRECT outcome.
         _safe_print(
             f"   {source} does not corroborate a spoof "
             f"({physical or 'no answer'}); keeping {probed}.\n"
@@ -1711,7 +1701,7 @@ def _hsa_spoofed_physical_gfx(
         return None
 
     # 1. The kernel, which the override cannot reach. Decisive either way: if it
-    # answers at all, no weaker source gets to overrule it.
+    # answers at all, no weaker source overrules it.
     kfd = _kfd_gfx_targets()
     if kfd:
         return _confirm(kfd, "KFD topology sysfs")
@@ -1727,10 +1717,9 @@ def _hsa_spoofed_physical_gfx(
         reprobed = []
     finally:
         _LAST_AMD_GFX_PROBE = _saved_probe
-    # A re-probe that still answers `probed` is evidence FOR the probe, not
-    # against it: the override was removed and the name did not move, so the
-    # silicon really is what was reported. Declining here is the whole reason a
-    # genuine gfx1100 dGPU in a Ryzen AI Max chassis keeps its own wheels.
+    # A re-probe that still answers `probed` is evidence FOR the probe: the override
+    # went away and the name did not move, so it is real silicon. Declining here is
+    # why a genuine gfx1100 dGPU in a Ryzen AI Max chassis keeps its own wheels.
     return _confirm(list(dict.fromkeys(reprobed)), "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
 
 
@@ -1739,17 +1728,16 @@ def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
 
     Routing the wheels is only half of #7331. ROCr reads the variable afresh in
     every LATER process -- libhsakmt writes props->EngineId straight from it while
-    building the agent, so the agent's ISA name becomes the spoofed arch -- and
-    AMD's per-gfx index ships code objects for the physical arch and nothing else.
-    Leave the variable in place and the freshly installed wheel is handed a device
-    whose reported name matches none of its code, so the first allocation fails
-    exactly as before and the install looks like it did nothing.
+    building the agent, so the agent's ISA name becomes the spoofed arch -- while
+    AMD's per-gfx index ships code objects for the physical arch alone. Leave it set
+    and the new wheel is handed a device whose name matches none of its code, so the
+    first allocation fails exactly as before.
 
-    Only ever called after corroboration and only on the branch that installs
-    native wheels for ``physical_gfx``, so the variable is provably lying about
-    this host's only GPU and nothing on this path still needs it. A shell profile
-    that exports it will set it again in the next login shell, which no installer
-    can undo from here, so name the variable and say to remove it.
+    Only ever called after corroboration and only on the branch installing native
+    wheels for ``physical_gfx``, so the variable is provably lying about this host's
+    only GPU and nothing on this path still needs it. A shell profile that exports
+    it will set it again next login, which no installer can undo from here, so name
+    the variable and say to remove it.
     """
     if os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None) is None:
         return
@@ -3036,11 +3024,10 @@ def _ensure_rocm_torch() -> None:
         # picks the wrong card when two GPUs share an arch (gfx1100,gfx1100,gfx1151
         # would read index 1 as the Strix).
         gfx_devices = _detect_amd_gfx_codes(dedup = False)
-        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes
-        # ROCr hand the SPOOFED ISA to rocminfo, so a gfx1151 host reports gfx1100
-        # and every check below misses it (unslothai#7331). Correct the reading
-        # back to the physical arch before it is used, and only in the narrow shape
-        # that cannot be a real mixed host -- see _hsa_spoofed_physical_gfx.
+        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
+        # hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and every
+        # check below misses it (unslothai#7331). Correct the reading back to the
+        # physical arch first, only in the narrow shape that cannot be a real mixed host.
         _physical_gfx = _hsa_spoofed_physical_gfx(_inferred_linux_gfx, gfx_devices)
         if _physical_gfx is not None:
             gfx_devices = [_physical_gfx]
@@ -3084,11 +3071,10 @@ def _ensure_rocm_torch() -> None:
                     f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
                     f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
-                # Only on this branch: the wheels being installed carry
-                # _selected_gfx kernels, so the runtime must stop reporting the
-                # spoofed arch or they have no code for the device (#7331). Never
-                # on the paths that keep generic wheels, where the override is
-                # the user's only source of usable kernels.
+                # Only on this branch: these wheels carry _selected_gfx kernels, so
+                # the runtime must stop reporting the spoofed arch or they have no
+                # code for the device (#7331). Never on the paths that keep generic
+                # wheels, where the override is the only source of usable kernels.
                 if _physical_gfx is not None:
                     _clear_confirmed_hsa_spoof(_selected_gfx)
             else:

@@ -256,13 +256,13 @@ def _studio_venv_python() -> Optional[Path]:
 def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
     """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
 
-    libhsakmt reads the variable as a major.minor.stepping triple
+    libhsakmt (topology.c) reads it as a major.minor.stepping triple
     (``sscanf(envvar, "%u.%u.%u%c") != 3`` rejects anything else) and the target
-    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a and not
-    gfx9010. 11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
+    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
 
-    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py
-    and in install.sh.
+    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py and
+    in install.sh.
     """
     if not value:
         return None
@@ -279,11 +279,10 @@ def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
 def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
     """Whether the installed torch actually resolves through the ``rocm`` meta-package.
 
-    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their own
-    runtime and depend on nothing, so after a switch from the former to the latter the
-    meta-package is left behind describing a family that no longer has any bearing on what
-    torch will load. Unknown shapes answer False: refusing to arbitrate leaves the
-    environment untouched, which is the safe direction here.
+    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their
+    own runtime and depend on nothing, so after a switch between them the meta-package is
+    left behind describing a family with no bearing on what torch loads. Unknown shapes
+    answer False: refusing to arbitrate leaves the environment untouched.
     """
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):
@@ -300,8 +299,8 @@ def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
                 for line in text.splitlines():
                     if not line.lower().startswith("requires-dist:"):
                         continue
-                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both count;
-                    # `rocm-sdk-core` does not, it is a component rather than the arbiter.
+                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both
+                    # count; `rocm-sdk-core` does not, it is a component not the arbiter.
                     if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
                         return True
                 return False
@@ -317,32 +316,29 @@ def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     whose ``Requires-Dist`` names the family AMD's torch resolved (verified on
     repo.amd.com/rocm/whl/gfx1151: ``rocm-sdk-libraries-gfx1151==7.13.0; extra ==
     "libraries"``). Globbing for a ``rocm_sdk_libraries_gfx*`` directory instead
-    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while
-    the superseded runtime keeps its own distribution name and is never
-    uninstalled, so a venv that has changed families holds both. Same reasoning,
-    and the same hazard, as _installed_rocm_wheel_family in
-    studio/install_python_stack.py.
+    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while the
+    superseded runtime keeps its own distribution name and is never uninstalled, so a
+    venv that has changed families holds both. Same reasoning and hazard as
+    _installed_rocm_wheel_family in studio/install_python_stack.py.
 
     None means "do not act": no ``rocm``, unreadable metadata, more than one family
     named, or a MULTI-arch family such as gfx120x-all, whose runtime carries kernels
-    for several ISAs and so contradicts no override. Callers leave the environment
-    alone on None.
+    for several ISAs and so contradicts no override.
     """
     # The bare `rocm` metadata only describes a LIVE install while torch still resolves
-    # through it. Switching from AMD's per-gfx index to a generic pytorch.org ROCm one does
-    # not uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
-    # meta-package, so `rocm` is orphaned outright, and pip never removes it. Reading it then
-    # would name the OLD family and clear an override the generic wheels may be the only
-    # reason the GPU works at all. Torch's own requirements are the discriminator, so a stale
-    # meta-package arbitrates nothing.
+    # through it. Switching from AMD's per-gfx index to a generic pytorch.org one does not
+    # uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
+    # meta-package, so `rocm` is orphaned and pip never removes it. Reading it then would
+    # name the OLD family and clear an override the generic wheels may be the only reason
+    # the GPU works at all.
     if not _torch_requires_rocm_metapackage(venv_dir):
         return None
     _metadata: Optional[Path] = None
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):
             for info in sp.glob("rocm-*.dist-info"):
-                # rocm-sdk-core, rocm-sdk-libraries-* and friends all start "rocm-";
-                # only the bare `rocm` meta-package arbitrates.
+                # rocm-sdk-core and rocm-sdk-libraries-* also start "rocm-"; only the
+                # bare `rocm` meta-package arbitrates.
                 if (
                     re.fullmatch(r"rocm-[^-]+\.dist-info", info.name)
                     and (info / "METADATA").is_file()
@@ -365,31 +361,30 @@ def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     if len(_families) != 1:
         return None  # nothing to arbitrate with, or two runtimes and no tie-break
     _family = _families.pop()
-    # Single ISA only. gfx120x-all style families cover several architectures, so
-    # an override naming one of them is not contradicted by anything.
+    # Single ISA only: gfx120x-all style families cover several architectures, so an
+    # override naming one of them is contradicted by nothing.
     return _family if re.fullmatch(r"gfx[0-9a-f]+", _family) else None
 
 
 def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
     """Drop an HSA_OVERRIDE_GFX_VERSION no installed kernel can satisfy (#7331).
 
-    libhsakmt writes the variable's major.minor.stepping straight into the KFD
-    node's EngineId and ROCr names the agent from that, so the override decides
-    the ISA every later process sees. Against per-gfx wheels, which hold code
+    libhsakmt (topology.c) writes the variable's major.minor.stepping straight into
+    the KFD node's EngineId and ROCr names the agent from that, so the override
+    decides the ISA every later process sees. Against per-gfx wheels, which hold code
     objects for one architecture, an override naming a different one leaves the
-    runtime asking for kernels the install does not contain and every launch
-    fails on the first allocation, exactly as it did before the routing fix.
+    runtime asking for kernels the install does not contain and every launch fails on
+    the first allocation, exactly as before the routing fix.
 
-    install.sh clears it for the one launch it performs itself, but that unset
-    dies with the installer: `unsloth studio update` runs install_python_stack.py
-    as a child (studio/setup.sh:1444), and every later launch inherits the user's
-    shell instead. This is the chokepoint the exec, the Windows Popen and the
-    in-process paths all pass through.
+    install.sh clears it for the one launch it performs itself, but that unset dies
+    with the installer: `unsloth studio update` runs install_python_stack.py as a
+    child (studio/setup.sh:1444) and every later launch inherits the user's shell
+    instead. This is the chokepoint the exec, the Windows Popen and the in-process
+    paths all pass through.
 
-    Keyed on the INSTALL, never on a hardware probe. On a generic multi-arch
-    index there is nothing to contradict and the override is often the only thing
-    making the GPU usable, so nothing is cleared there. Returns the installed
-    arch when the variable was dropped, else None.
+    Keyed on the INSTALL, never on a hardware probe: on a generic multi-arch index
+    there is nothing to contradict and the override is often the only thing making
+    the GPU usable. Returns the installed arch when the variable was dropped.
     """
     raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
     # Windows ROCm ignores the variable entirely, so there is nothing to correct.
@@ -410,11 +405,10 @@ def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch.
 
     Every launch needs it, not just plain ``unsloth studio``: the group callback
-    returns early once a subcommand is named, and ``unsloth run`` is bound
-    straight to ``studio_run``, so both would otherwise reach llama-server and the
-    backend with the contradicting override still set. Idempotent, since the
-    variable is gone after the first call, so the entry points that chain are free
-    to call it twice.
+    returns early once a subcommand is named, and ``unsloth run`` is bound straight
+    to ``studio_run``, so both would otherwise reach llama-server and the backend
+    with the contradicting override still set. Idempotent, so chained entry points
+    are free to call it twice.
     """
     _venv = STUDIO_HOME / "unsloth_studio"
     _arch = _clear_hsa_override_contradicting_install(
@@ -1724,10 +1718,9 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
-    # Before any of the three launch paths below, and before the environment is
-    # handed to a child: an override that contradicts single-arch wheels makes
-    # every kernel launch fail, and the installer's own unset cannot reach a
-    # launch it does not perform (#7331).
+    # Before any of the three launch paths below, and before the environment is handed
+    # to a child: an override contradicting single-arch wheels makes every kernel launch
+    # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
@@ -2277,10 +2270,9 @@ def run(
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
-    # The group callback returns before its own clear once a subcommand is named,
-    # and `unsloth run` is bound straight here, so this path has to do it itself or
-    # llama-server and the backend both start with the contradicting override
-    # (#7331). Idempotent, so the chained entry points may reach it twice.
+    # The group callback returns before its own clear once a subcommand is named, and
+    # `unsloth run` is bound straight here, so this path has to do it itself or
+    # llama-server and the backend start with the contradicting override (#7331).
     _clear_hsa_override_before_launch(silent = bool(silent))
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
