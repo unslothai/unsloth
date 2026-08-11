@@ -231,9 +231,8 @@ function migrateThroughVersion21(
   version: number,
 ): void {
   if (version < 21) {
-    // The onboarding wizard owned currentStep, and it was persisted rather than
-    // listed in NON_PERSISTED_STATE_KEYS. Without this the orphan survives every
-    // rehydrate and partializeTrainingConfig writes it straight back.
+    // currentStep belonged to the onboarding wizard and was persisted, so without
+    // this it survives every rehydrate and partialize writes it straight back.
     Reflect.deleteProperty(state, "currentStep");
   }
 }

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The onboarding wizard owned `currentStep`, and the store persisted it rather
-// than listing it in NON_PERSISTED_STATE_KEYS. Deleting the wizard without a
-// migration leaves that key in every existing install's localStorage, where
-// partializeTrainingConfig writes it back on every save. These tests pin the
-// retirement: an old blob loses the orphan, keeps everything else, and a blob
-// written by a NEWER build than the one reading it still hydrates.
+// `currentStep` was persisted, so deleting the wizard without a migration leaves
+// it in every existing install and partializeTrainingConfig keeps writing it back.
+// These pin the retirement: the orphan goes, everything else survives, and a blob
+// from a newer build still hydrates.
 
 import assert from "node:assert/strict";
 import test from "node:test";
