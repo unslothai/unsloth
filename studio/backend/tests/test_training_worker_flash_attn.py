@@ -172,8 +172,7 @@ def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
     monkeypatch.setattr(
         worker._sp,
         "run",
-        lambda cmd, **kwargs: pypi_calls.append(cmd)
-        or subprocess.CompletedProcess(cmd, 1, ""),
+        lambda cmd, **kwargs: pypi_calls.append(cmd) or subprocess.CompletedProcess(cmd, 1, ""),
     )
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
