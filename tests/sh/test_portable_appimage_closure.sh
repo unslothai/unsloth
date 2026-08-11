@@ -224,8 +224,21 @@ for _host in 'libc' 'libGL' 'libEGL' 'libdrm' 'libX11' 'libwayland-'; do
     assert_eq "$_host is host-provided" "yes" \
         "$(grep -q "$_host" "$BUILD_SH" && echo yes || echo no)"
 done
-assert_eq "AppRun puts the bundle first" "yes" \
-    "$(grep -q 'export LD_LIBRARY_PATH="\$libdir' "$BUILD_SH" && echo yes || echo no)"
+# AppRun must NOT export LD_LIBRARY_PATH. It is global, so it outranks the default
+# search path for every library the process opens -- including the host GL/EGL/curl
+# stack this bundle deliberately does not ship, which then resolves ITS dependencies
+# out of the 22.04 bundle. Measured on Ubuntu 24.04 (Linux Mint 22 Wilma's base) while
+# the export was in place: host libcurl-gnutls hit the #7953 undefined nghttp2 symbol
+# and host libGLX_mesa hit a missing GLIBCXX_3.4.32. The bundle resolves through
+# $ORIGIN RUNPATHs instead, which the build asserts on every object.
+assert_eq "AppRun does not export LD_LIBRARY_PATH" "yes" \
+    "$(grep -q '^export LD_LIBRARY_PATH=' "$BUILD_SH" && echo no || echo yes)"
+assert_eq "the build asserts \$ORIGIN RUNPATHs" "yes" \
+    "$(grep -q 'ORIGIN-relative RUNPATH' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "an empty RUNPATH is rejected" "yes" \
+    "$(grep -q 'RUNPATH empty (patchelf did nothing)' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "the closure check runs without LD_LIBRARY_PATH" "yes" \
+    "$(grep -q 'LD_LIBRARY_PATH="\$libdir" ldd' "$BUILD_SH" && echo no || echo yes)"
 assert_eq "WebKit helper path exported" "yes" \
     "$(grep -q 'WEBKIT_EXEC_PATH' "$BUILD_SH" && echo yes || echo no)"
 

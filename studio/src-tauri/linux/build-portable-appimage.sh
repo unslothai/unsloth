@@ -5,8 +5,8 @@
 # Build a SELF-CONTAINED Linux AppImage: the WebKit/GTK stack travels inside the
 # bundle instead of being required from the host.
 #
-# Why this replaced build-thin-appimage.sh in the release
-# -------------------------------------------------------
+# What this is for
+# ----------------
 # The thin AppImage reuses the deb payload and takes the desktop stack from the
 # host. That is correct on a distro that ships WebKitGTK 4.1, and its AppRun
 # prints an apt command when the host does not. But the distros with the
@@ -21,10 +21,12 @@
 # apps ship on those machines without trouble because Electron carries its own
 # browser engine; a Tauri app has to bundle WebKitGTK to reach parity.
 #
-# Shipping both left the obvious download -- the one named plainly *.AppImage --
-# as the one that does not work where an AppImage is most needed. So this is now
-# the only AppImage the release builds, under that plain name. The thin script
-# stays in the tree and keeps its tests, but the release path does not call it.
+# The release still ships the THIN AppImage (#7953). This bundle is built and
+# verified by portable-appimage-ci.yml, including against Ubuntu 24.04 host
+# libraries, which is where the first attempt at making it the only AppImage came
+# apart: AppRun exported LD_LIBRARY_PATH, so the host GL/curl stack resolved its
+# own dependencies out of the 22.04 bundle. That export is gone (see AppRun), and
+# the bundle now resolves purely through $ORIGIN RUNPATHs.
 #
 # Why not linuxdeploy
 # -------------------
@@ -146,8 +148,12 @@ assert_portable_appdir() {
     # Names on the host allowlist are supposed to come from the target system,
     # so their absence on THIS machine says nothing about the bundle. Everything
     # else unresolved is a genuine hole in the closure.
+    # No LD_LIBRARY_PATH here, deliberately: AppRun does not set one either (it
+    # captures host library loads and reproduces #7953), so the bundle has to
+    # resolve through the $ORIGIN RUNPATHs alone. Checking WITH it would pass a
+    # bundle that only works under an export the runtime no longer performs.
     unresolved="$(
-      LD_LIBRARY_PATH="$libdir" ldd "$target" 2>/dev/null |
+      ldd "$target" 2>/dev/null |
         sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p' |
         while IFS= read -r miss; do
           [[ "$miss" =~ $HOST_LIBS_RE ]] || printf '%s\n' "$miss"
@@ -515,11 +521,22 @@ if command -v patchelf >/dev/null 2>&1; then
   # Prove the rewrite happened. Every `patchelf ... || true` above is a place a
   # read-only file or an unsupported object silently keeps its build-host RUNPATH,
   # which produces a bundle that works only on the machine that built it.
+  # Every object must end up with an $ORIGIN-relative RUNPATH, not merely a
+  # non-absolute one. AppRun exports no LD_LIBRARY_PATH (see there: doing so captures
+  # host library loads and reproduces #7953), so RUNPATH is the ONLY thing resolving
+  # the bundle. A patchelf call that silently did nothing leaves an EMPTY RUNPATH,
+  # which the old absolute-path check waved through and which used to be masked by
+  # that export -- so the bundle would have shipped resolving through nothing.
   leaked=0
   while IFS= read -r -d '' obj; do
     case "$(patchelf --print-rpath "$obj" 2>/dev/null || true)" in
-      */nix/store/*|/usr/*|/opt/*)
-        printf 'RUNPATH still absolute: %s -> %s\n' \
+      '$ORIGIN'|'$ORIGIN/'*|'${ORIGIN}'|'${ORIGIN}/'*) ;;
+      '')
+        printf 'RUNPATH empty (patchelf did nothing): %s\n' "$obj" >&2
+        leaked=$((leaked + 1))
+        ;;
+      *)
+        printf 'RUNPATH not $ORIGIN-relative: %s -> %s\n' \
           "$obj" "$(patchelf --print-rpath "$obj" 2>/dev/null)" >&2
         leaked=$((leaked + 1))
         ;;
@@ -528,7 +545,7 @@ if command -v patchelf >/dev/null 2>&1; then
     printf '%s\0' "$binary_file"
     find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0
   )
-  [[ "$leaked" -eq 0 ]] || die "$leaked object(s) kept a build-host RUNPATH"
+  [[ "$leaked" -eq 0 ]] || die "$leaked object(s) lack an \$ORIGIN-relative RUNPATH"
   log "RUNPATHs rewritten to \$ORIGIN"
 
   bad_interp=0
@@ -649,7 +666,24 @@ appdir=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
 libdir="$appdir/usr/lib/unsloth"
 
 export PATH="$appdir/usr/bin${PATH:+:$PATH}"
-export LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Deliberately NO LD_LIBRARY_PATH.
+#
+# It is unnecessary: the build gives every bundled object an $ORIGIN-relative RUNPATH
+# (asserted at build time), so the bundle resolves itself, and a bare-soname dlopen
+# resolves through the RUNPATH of whichever bundled object called it.
+#
+# And it is harmful. LD_LIBRARY_PATH is global and outranks the default search path for
+# EVERY library the process opens, including host ones loaded later -- and this bundle
+# deliberately ships no glibc and no GL/EGL/DRM/GBM/X11/Wayland, so those always come
+# from the host. Exporting it made them resolve THEIR dependencies out of the 22.04
+# bundle, which is #7953 rebuilt from the other side. Measured on Ubuntu 24.04 (Linux
+# Mint 22 Wilma's base) with the export in place, both clean without it and clean on
+# 22.04 either way:
+#
+#   libcurl-gnutls.so.4 -> undefined symbol:
+#       nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation
+#   libGLX_mesa.so.0    -> libstdc++.so.6: version `GLIBCXX_3.4.32' not found
+#       (required by libLLVM.so.20.1)
 export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export GDK_PIXBUF_MODULE_FILE="$libdir/gdk-pixbuf/loaders.cache"
 export GDK_PIXBUF_MODULEDIR="$libdir/gdk-pixbuf"
