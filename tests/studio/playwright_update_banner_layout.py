@@ -190,17 +190,28 @@ RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
 # tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds
 # anything: one loaded model is all it takes to put the card in the rail.
 CHAT_LOADED = {
-    "active_model": "unsloth/Qwen3-4B", "loaded": ["unsloth/Qwen3-4B"],
-    "is_gguf": False, "is_mlx": False, "is_vision": False, "is_audio": False,
-    "audio_type": None, "gguf_variant": None,
+    "active_model": "unsloth/Qwen3-4B",
+    "loaded": ["unsloth/Qwen3-4B"],
+    "is_gguf": False,
+    "is_mlx": False,
+    "is_vision": False,
+    "is_audio": False,
+    "audio_type": None,
+    "gguf_variant": None,
 }
 NOTHING_DIFFUSION = {
-    "loaded": False, "repo_id": None, "family": None, "device": None,
-    "dtype": None, "model_kind": None,
+    "loaded": False,
+    "repo_id": None,
+    "family": None,
+    "device": None,
+    "dtype": None,
+    "model_kind": None,
 }
 NOTHING_VIDEO = dict(NOTHING_DIFFUSION, transformer_quant = None)
 NOTHING_STT = {
-    "available": True, "loaded_model": None, "device": None,
+    "available": True,
+    "loaded_model": None,
+    "device": None,
     "transformers": {"loaded_model": None, "device": None},
     "mtmd": {"loaded_model": None, "device": None},
     "gguf": {"loaded_model": None, "device": None},
@@ -568,7 +579,11 @@ RAIL_BOX = """
 """
 
 
-def settle_stack(page, tries: int = 24, gap_ms: int = 250) -> None:
+def settle_stack(
+    page,
+    tries: int = 24,
+    gap_ms: int = 250,
+) -> None:
     """Wait until the rail's box stops moving.
 
     Waits for STABILITY, not for the answer the checks want: a card mounting
