@@ -2556,6 +2556,15 @@ _AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset(
 # Only PyYAML gives Loader= its meaning, so the exemption below is scoped to it:
 # torch.load(f, Loader=yaml.SafeLoader) must stay gated.
 _AUTO_YAML_MODULES = frozenset({"yaml"})
+# PyYAML's own submodules, the only attribute hop the safe-loader exemption
+# follows (yaml.loader.SafeLoader is real; yaml.anything_else.SafeLoader is not).
+_AUTO_YAML_SUBMODULES = frozenset({"loader", "cyaml", "constructor"})
+# Structural pattern matching is 3.10+, and this package supports 3.9, so the
+# node classes are resolved defensively. An empty tuple makes isinstance False.
+_AST_MATCH_CAPTURE = tuple(
+    n for n in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None)) if n
+)
+_AST_MATCH_MAPPING = tuple(n for n in (getattr(ast, "MatchMapping", None),) if n)
 _AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
 # Loader classes that cannot construct arbitrary callables in any PyYAML
 # version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
@@ -3689,7 +3698,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # Whether anything in the snippet could point this name somewhere else:
         # more assignments than the binding we are trusting, or a loop / with /
         # comprehension / walrus / def / class target.
-        return assign_counts.get(name, 0) > allowed_assigns or name in rebindable_names
+        return (
+            assign_counts.get(name, 0) > allowed_assigns
+            or import_counts.get(name, 0) > 1
+            or name in rebindable_names
+        )
 
     def _is_load_module(node) -> bool:
         # The receiver of a loader: a tracked module name, a submodule path under
@@ -3724,11 +3737,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         if isinstance(node, ast.Attribute):
             # setattr can point yaml.SafeLoader at anything without ever being an
             # assignment target, so its presence withdraws the exemption.
+            if isinstance(node.value, ast.Attribute):
+                # yaml.loader.SafeLoader is PyYAML's own path; yaml.box.SafeLoader
+                # is whatever the snippet parked there.
+                if node.value.attr not in _AUTO_YAML_SUBMODULES:
+                    return False
+                _root = node.value.value
+            else:
+                _root = node.value
             return (
                 node.attr in _AUTO_SAFE_PY_LOAD_CLASSES
                 and node.attr not in assigned_attr_names
                 and not uses_setattr
-                and _is_load_module(node.value)
+                and isinstance(_root, ast.Name)
+                and _root.id in load_module_aliases
             )
         # Membership already encodes the rebinding rule: a name only enters
         # safe_loader_aliases if nothing can point it elsewhere later.
@@ -3842,6 +3864,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Attribute names assigned anywhere, so a rebound loader class
     # (yaml.SafeLoader = yaml.Loader) cannot buy the safe-loader exemption below.
     assigned_attr_names: "set[str]" = set()
+    # Imports bind names without appearing in assign_counts, so a name imported
+    # twice (from yaml import SafeLoader; from other import SafeLoader) is not
+    # necessarily the one we trusted.
+    import_counts: "dict[str, int]" = {}
+    for _n in ast.walk(tree):
+        if isinstance(_n, (ast.Import, ast.ImportFrom)):
+            for _al in _n.names:
+                _bound = _al.asname or _al.name.split(".")[0]
+                import_counts[_bound] = import_counts.get(_bound, 0) + 1
     # Set when a safe loader class has one of its own methods replaced.
     patches_loader = False
     for node in ast.walk(tree):
@@ -3908,11 +3939,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             _rebound = [i.optional_vars for i in node.items if i.optional_vars is not None]
         elif isinstance(node, ast.NamedExpr):
             _rebound = [node.target]
-        elif isinstance(node, ast.MatchAs) or isinstance(node, ast.MatchStar):
+        elif _AST_MATCH_CAPTURE and isinstance(node, _AST_MATCH_CAPTURE):
             # case SafeLoader: binds the subject to that name (3.10+).
             if node.name:
                 rebindable_names.add(node.name)
-        elif isinstance(node, ast.MatchMapping) and node.rest:
+        elif _AST_MATCH_MAPPING and isinstance(node, _AST_MATCH_MAPPING) and node.rest:
             rebindable_names.add(node.rest)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             rebindable_names.add(node.name)

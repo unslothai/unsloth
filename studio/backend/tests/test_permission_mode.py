@@ -1890,6 +1890,23 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),  # a seeded name taken over by assignment
         ("import yaml\nyaml.SafeLoader.add_constructor('!e', cb)\nrun(yaml.safe_load)", True),
+        # An import binds a name too, so a second one shadows the trusted class.
+        (
+            "from yaml import SafeLoader\nfrom custom import SafeLoader\nimport yaml\n"
+            "yaml.load(d, Loader=SafeLoader)",
+            True,
+        ),
+        (
+            "from yaml import SafeLoader\nimport yaml\nyaml.load(fh, Loader=SafeLoader)",
+            False,
+        ),
+        # The exemption follows PyYAML's own paths, not any chain rooted at yaml.
+        (
+            "import yaml\nclass Box:\n    SafeLoader = yaml.Loader\nyaml.box = Box\n"
+            "yaml.load(d, Loader=yaml.box.SafeLoader)",
+            True,
+        ),
+        ("import yaml.loader\nprint(yaml.load(fh, Loader=yaml.loader.SafeLoader))", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
@@ -3404,3 +3421,34 @@ def test_auto_mode_prompts_on_dangerous_python_work(code):
 @pytest.mark.parametrize("name", _DANGEROUS_MCP)
 def test_auto_mode_prompts_on_dangerous_mcp_work(name):
     assert is_high_risk_tool_call(f"{MCP_TOOL_PREFIX}{name}", {"code": "x"}) is True
+
+
+def test_python_classifier_runs_without_match_ast_nodes():
+    """The classifier must not touch ast.MatchAs & co, absent before Python 3.10.
+
+    requires-python is >=3.9, and reaching those names unguarded made every
+    Python tool call raise AttributeError there instead of being classified.
+    Run in a subprocess with the attributes removed, which is what 3.9 looks
+    like from this module's point of view.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend_root = Path(__file__).resolve().parent.parent
+    probe = (
+        "import ast, sys\n"
+        "for _n in ('Match', 'MatchAs', 'MatchStar', 'MatchMapping'):\n"
+        "    if hasattr(ast, _n):\n"
+        "        delattr(ast, _n)\n"
+        "from core.inference.tools import is_potentially_unsafe_tool_call as f\n"
+        "assert f('python', {'code': 'print(1)'}) is False\n"
+        "assert f('python', {'code': 'import yaml\\nyaml.load(p, Loader=yaml.Loader)'}) is True\n"
+        "print('ok')\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(backend_root)}
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, env=env, timeout=600
+    )
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert "ok" in done.stdout
