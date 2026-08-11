@@ -18,6 +18,7 @@ from core.inference.chat_template_helpers import (
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
+    prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
     trailing_assistant_text,
 )
@@ -1561,6 +1562,9 @@ class MLXInferenceBackend:
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
+        # Not the request flag: a later tool-loop pass keeps it but renders an
+        # ordinary post-tool prompt.
+        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
@@ -1593,7 +1597,12 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
-            ReasoningChannelNormalizer(*reasoning_channel_markers)
+            ReasoningChannelNormalizer(
+                *reasoning_channel_markers,
+                in_reasoning = prompt_opens_reasoning_channel(
+                    prompt, reasoning_channel_markers, _resumed_partial
+                ),
+            )
             if reasoning_channel_markers is not None
             else None
         )
@@ -1876,7 +1885,12 @@ class MLXInferenceBackend:
                         )
 
         yield from normalize_reasoning_snapshots(
-            _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
+            _stream_vlm_snapshots(),
+            chat_target,
+            cancel_event,
+            tools = tools,
+            prompt = prompt,
+            continued = bool(continue_final_message and trailing_assistant_text(messages)),
         )
 
     def generate_audio_input_response(
