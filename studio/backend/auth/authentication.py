@@ -186,9 +186,7 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
-async def allow_ambient_hf_token(
-    via_api_key: bool = Depends(authenticated_via_api_key),
-) -> bool:
+async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
     """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
 
     A UI session is the installation's owner: Settings hands it the saved Hugging Face token on

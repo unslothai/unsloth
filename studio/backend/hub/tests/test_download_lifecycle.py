@@ -773,7 +773,14 @@ def test_an_anonymous_job_stays_anonymous_on_the_http_retry(monkeypatch, tmp_pat
     )[0]
     retried = []
 
-    def fake_spawn(_args, _token, *, use_xet, allow_ambient_token = True, **_kwargs):
+    def fake_spawn(
+        _args,
+        _token,
+        *,
+        use_xet,
+        allow_ambient_token = True,
+        **_kwargs,
+    ):
         retried.append(allow_ambient_token)
         return _Proc(0)
 

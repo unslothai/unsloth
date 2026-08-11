@@ -37,7 +37,6 @@ def _client(via_api_key: bool) -> TestClient:
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])
 def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
     import asyncio
-
     assert asyncio.run(allow_ambient_hf_token(via_api_key = via_api_key)) is expected
 
 
@@ -45,7 +44,12 @@ def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
 def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, expected):
     seen = {}
 
-    async def _fake(body, hf_token = None, *, allow_ambient_token = True):
+    async def _fake(
+        body,
+        hf_token = None,
+        *,
+        allow_ambient_token = True,
+    ):
         seen["repo_id"] = body.repo_id
         seen["allow_ambient_token"] = allow_ambient_token
         return {"job_key": "k", "state": "running", "accepted": True, "generation": 1}
@@ -67,7 +71,12 @@ def test_model_download_route_gates_the_ambient_token(monkeypatch, via_api_key, 
 def test_dataset_download_route_gates_the_ambient_token(monkeypatch, via_api_key, expected):
     seen = {}
 
-    async def _fake(body, hf_token = None, *, allow_ambient_token = True):
+    async def _fake(
+        body,
+        hf_token = None,
+        *,
+        allow_ambient_token = True,
+    ):
         seen["repo_id"] = body.repo_id
         seen["allow_ambient_token"] = allow_ambient_token
         return {"repo_id": body.repo_id, "state": "running", "accepted": True, "generation": 1}
