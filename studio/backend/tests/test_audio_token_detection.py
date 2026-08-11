@@ -155,3 +155,65 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
     assert result is None
     # Nothing was read, so the answer is not definitive and must not be cached.
     assert definitive is False
+
+
+def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
+    """/loras probes every checkpoint and its base. Neither answers offline, and a
+    non-definitive result is never cached, so the walk repeated on every poll: with 50
+    checkpoints that measured 6ms -> 26ms per call, on the event loop."""
+    from utils.models import model_config
+
+    monkeypatch.setattr(model_config, "_audio_detection_cache", {})
+    monkeypatch.setattr(model_config, "_audio_offline_miss_cache", {})
+    probes = []
+    monkeypatch.setattr(
+        model_config,
+        "_detect_audio_from_tokenizer",
+        lambda name, token = None, **kw: (probes.append(name), (None, False))[1],
+    )
+
+    for _ in range(5):
+        assert model_config.detect_audio_type_checked(
+            "org/not-downloaded", local_files_only = True
+        ) == (None, False)
+    assert probes == ["org/not-downloaded"], probes
+
+
+def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
+    """Bounded, not permanent: the base may be downloaded, or a training run may finish
+    writing the tokenizer it was missing, and neither restarts Studio."""
+    from utils.models import model_config
+
+    monkeypatch.setattr(model_config, "_audio_detection_cache", {})
+    monkeypatch.setattr(model_config, "_audio_offline_miss_cache", {})
+    answers = iter([(None, False), ("snac", True)])
+    monkeypatch.setattr(
+        model_config, "_detect_audio_from_tokenizer",
+        lambda name, token = None, **kw: next(answers),
+    )
+    clock = [1000.0]
+    monkeypatch.setattr(model_config.time, "monotonic", lambda: clock[0])
+
+    assert model_config.detect_audio_type_checked("org/m", local_files_only = True)[0] is None
+    clock[0] += model_config._AUDIO_OFFLINE_MISS_TTL_S + 1
+    assert model_config.detect_audio_type_checked("org/m", local_files_only = True) == ("snac", True)
+    # Definitive now, so it is in the real cache and the miss entry is gone.
+    assert model_config._audio_offline_miss_cache == {}
+
+
+def test_an_online_transient_failure_still_retries_immediately(monkeypatch):
+    """The bound is deliberately only for probes that touched no network. A gated repo or
+    a 5xx must not be remembered, or fixing the token would take a minute to take."""
+    from utils.models import model_config
+
+    monkeypatch.setattr(model_config, "_audio_detection_cache", {})
+    monkeypatch.setattr(model_config, "_audio_offline_miss_cache", {})
+    probes = []
+    monkeypatch.setattr(
+        model_config, "_detect_audio_from_tokenizer",
+        lambda name, token = None, **kw: (probes.append(name), (None, False))[1],
+    )
+
+    for _ in range(3):
+        model_config.detect_audio_type_checked("org/gated", local_files_only = False)
+    assert len(probes) == 3, probes

@@ -34,6 +34,7 @@ from typing import Callable, List, Tuple, Union
 import hashlib
 import json
 import threading
+import time
 import yaml
 
 
@@ -1107,6 +1108,14 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 # Keyed like the vision cache so an unauthenticated/offline/other-revision miss can't poison.
 _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
+# An offline probe cannot answer for an adapter directory without its own tokenizer, nor
+# for a base repo that is not downloaded, and a non-definitive answer is deliberately
+# never cached, so /loras redid both for every checkpoint on every poll. Remembered for a
+# short while rather than permanently, because both can become answerable without a
+# restart: the base gets downloaded, or a training run finishes writing its output.
+_AUDIO_OFFLINE_MISS_TTL_S = 60.0
+_audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
+
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
 # ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
 # generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
@@ -1178,6 +1187,24 @@ def detect_audio_type_checked(
     if not model_name:
         return None, True
 
+    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
+    effective_offline = bool(local_files_only or _env_offline())
+    # Checked on the RAW name, before the casing resolution below, because resolving a
+    # repo id that is not in the cache walks every cache directory, and that walk is the
+    # cost this cache exists to avoid. A casing variant just takes its own entry, which
+    # for a short-lived negative is harmless.
+    miss_key: _CapabilityCacheKey = (
+        model_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+    )
+    if revision is not None:
+        miss_key += (revision,)
+    if effective_offline:
+        seen_at = _audio_offline_miss_cache.get(miss_key)
+        if seen_at is not None and time.monotonic() - seen_at < _AUDIO_OFFLINE_MISS_TTL_S:
+            return None, False
+
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
         if is_local_path(model_name):
@@ -1186,8 +1213,6 @@ def detect_audio_type_checked(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
-    effective_offline = bool(local_files_only or _env_offline())
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1206,10 +1231,16 @@ def detect_audio_type_checked(
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+    elif effective_offline:
+        _audio_offline_miss_cache[miss_key] = time.monotonic()
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
     elif not definitive:
-        logger.info(
+        # Offline, this is the ordinary answer for any base that is not downloaded, and
+        # /loras asks once per checkpoint, so info level made it one log line per row per
+        # poll. Online it is worth surfacing: it means gated or an upstream error.
+        (logger.debug if effective_offline else logger.info)(
             f"Could not determine whether {model_name} is an audio model: "
             f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
         )
