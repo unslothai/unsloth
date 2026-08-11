@@ -226,6 +226,98 @@ class TestEnsureFlashAttn:
         _, kwargs = install_calls[0]
         assert kwargs["uv_needs_system"] is True
 
+    def test_wheel_that_does_not_import_is_not_trusted(self):
+        """pip exits 0 on a wheel built for another arch/ABI; the import is what decides.
+
+        This is the #5420 / #6961 Blackwell shape: the wheel installs, then raises on import.
+        Setup has to report that rather than claiming flash-attn is ready.
+        """
+        step_messages: list[tuple[str, str]] = []
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+            ),
+            mock.patch.object(
+                ips,
+                "_step",
+                side_effect = lambda label, value, color_fn = None: step_messages.append(
+                    (label, value)
+                ),
+            ),
+            # Import never succeeds, before or after the install.
+            mock.patch("subprocess.run", return_value = self._import_check()),
+        ):
+            ips._ensure_flash_attn()
+
+        assert (
+            "warning",
+            "flash-attn wheel installed but is not importable on this GPU",
+        ) in step_messages
+        assert ("warning", "Continuing without flash-attn") in step_messages
+
+    def test_working_wheel_reports_no_warning(self):
+        """The happy path stays silent: install exits 0 and the module imports."""
+        step_messages: list[tuple[str, str]] = []
+        import_calls: list[int] = []
+
+        def fake_run(cmd, **kwargs):
+            # First call is the pre-install check (missing), the second verifies the install.
+            import_calls.append(1)
+            return self._import_check(1 if len(import_calls) == 1 else 0)
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+            ),
+            mock.patch.object(
+                ips,
+                "_step",
+                side_effect = lambda label, value, color_fn = None: step_messages.append(
+                    (label, value)
+                ),
+            ),
+            mock.patch("subprocess.run", side_effect = fake_run),
+        ):
+            ips._ensure_flash_attn()
+
+        assert step_messages == []
+        assert len(import_calls) == 2, "expected a verification import after the install"
+
     def test_wheel_failure_warns_and_continues(self):
         step_messages: list[tuple[str, str]] = []
         printed_failures: list[str] = []

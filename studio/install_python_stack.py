@@ -36,7 +36,6 @@ import install_manifest  # noqa: E402
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -3649,28 +3648,32 @@ def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
 
 
-def _ensure_flash_attn() -> None:
-    if _flash_attn_install_disabled():
-        return
-    if NO_TORCH:
-        return
-    if has_blackwell_gpu():
-        _step(
-            "warning",
-            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-            _cyan,
-        )
-        return
-    if IS_WINDOWS or IS_MACOS:
-        return
-    if (
+def _flash_attn_importable() -> bool:
+    """Whether flash_attn imports in this interpreter, checked out of process.
+
+    A wheel built for another arch/ABI installs fine and then raises OSError/RuntimeError
+    ("undefined symbol", "no kernel image is available") on import, so a zero pip exit code
+    is not proof the install is usable. Run it in a child so a half-loaded native extension
+    cannot poison the installer process.
+    """
+    return (
         subprocess.run(
             [sys.executable, "-c", "import flash_attn"],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
         ).returncode
         == 0
-    ):
+    )
+
+
+def _ensure_flash_attn() -> None:
+    if _flash_attn_install_disabled():
+        return
+    if NO_TORCH:
+        return
+    if IS_WINDOWS or IS_MACOS:
+        return
+    if _flash_attn_importable():
         return
 
     env = probe_torch_wheel_env()
@@ -3683,7 +3686,16 @@ def _ensure_flash_attn() -> None:
             uv_needs_system = UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
-                return
+                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch); verify
+                # rather than trusting the exit code, so setup reports what actually happened.
+                if _flash_attn_importable():
+                    return
+                _step(
+                    "warning",
+                    "flash-attn wheel installed but is not importable on this GPU",
+                    _cyan,
+                )
+                break
             _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
                 wheel_result,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import builtins
 import subprocess
 import sys
+import types
 from typing import Any
 from unittest import mock
 
@@ -55,6 +56,33 @@ def _missing_flash_attn_import():
     return fake_import
 
 
+def _flash_attn_import_until_installed(state: dict[str, bool]):
+    """Import stub for a flash_attn that appears only once ``state['installed']`` is set.
+
+    The installers verify the import after a zero exit code, so a mock that keeps failing
+    models a broken wheel, not a working one. Tests that mean "the wheel worked" have to
+    flip the flag when install_wheel runs.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(
+        name,
+        globals = None,
+        locals = None,
+        fromlist = (),
+        level = 0,
+    ):
+        if name == "flash_attn":
+            if not state.get("installed"):
+                raise ImportError
+            # A stub, not a real import: flash_attn is not installed in the test env, and
+            # whether it happens to be is not what these tests are about.
+            return types.ModuleType("flash_attn")
+        return real_import(name, globals, locals, fromlist, level)
+
+    return fake_import
+
+
 def _missing_module_import(missing: str):
     real_import = builtins.__import__
 
@@ -84,8 +112,45 @@ def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
 @linux_only
 def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     statuses: list[str] = []
+    state: dict[str, bool] = {"installed": False}
+
+    def _install(*_args, **_kwargs):
+        state["installed"] = True
+        return [("pip", subprocess.CompletedProcess(["pip"], 0, ""))]
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
+    monkeypatch.setattr(
+        worker,
+        "flash_attn_wheel_url",
+        lambda env: "https://example.com/fa.whl",
+    )
+    monkeypatch.setattr(worker, "url_exists", lambda url: True)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    monkeypatch.setattr(worker, "install_wheel", _install)
+
+    worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
+
+    assert statuses == ["Installing flash-attn for faster training..."]
+
+
+@linux_only
+def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
+    """A wheel for the wrong arch/ABI installs with rc=0 and then will not load.
+
+    This is the shape of the Blackwell breakage in #6961 and #5420: trusting the exit code
+    left a flash_attn in site-packages that raised on import mid-training. Verify the import
+    instead, so a wheel that cannot load is treated as not installed.
+    """
+    statuses: list[str] = []
+    pypi_calls: list[list[str]] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    # Never becomes importable, however the install exits.
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(
         worker,
@@ -103,10 +168,19 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
         "install_wheel",
         lambda *args, **kwargs: [("pip", subprocess.CompletedProcess(["pip"], 0, ""))],
     )
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **kwargs: pypi_calls.append(cmd)
+        or subprocess.CompletedProcess(cmd, 1, ""),
+    )
 
     worker._ensure_flash_attn_for_long_context(event_queue = [], max_seq_length = 32768)
 
-    assert statuses == ["Installing flash-attn for faster training..."]
+    # The wheel is not silently trusted: it falls through to the PyPI path.
+    assert "Installing flash-attn from PyPI for long-context training..." in statuses
+    assert pypi_calls, "expected a PyPI install attempt after the wheel failed to import"
 
 
 @linux_only
