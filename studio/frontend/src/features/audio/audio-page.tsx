@@ -1367,12 +1367,20 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     // teardown, and generating beside a dictation model OOMs a device that fits either
     // one alone. A release that failed leaves it resident, so go back to Transcribe,
     // where Eject can retry the unload.
+    // Claimed before the await below, not after: the button only disables on `busy`, so
+    // a slow release let several clicks through and each resumed into its own
+    // generateAudio while generateAbort tracked only the last, and either finally
+    // cleared the busy state out from under the other.
+    if (busyRef.current) return;
+    busyRef.current = "generating";
+    setBusy("generating");
     const releaseInFlight = pendingTranscribeRelease.current;
     if (releaseInFlight && !(await releaseInFlight)) {
+      busyRef.current = null;
+      setBusy(null);
       setMode("transcribe");
       return;
     }
-    setBusy("generating");
     const controller = new AbortController();
     generateAbort.current = controller;
     try {

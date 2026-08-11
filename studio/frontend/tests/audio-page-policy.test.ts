@@ -540,3 +540,17 @@ test("a gguf selection served by Transformers still reads as resident", () => {
   });
   assert.equal(resolveSttResidency({ gguf: { loaded_model: null } }, "gguf", true), null);
 });
+
+test("generation is claimed before the transcribe release is awaited", () => {
+  // The button only disables on `busy`, so awaiting first let several clicks through and
+  // each resumed into its own generateAudio while generateAbort tracked only the last.
+  assert.match(
+    audioPageSource,
+    /if \(busyRef\.current\) return;\s*busyRef\.current = "generating";\s*setBusy\("generating"\);\s*const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight/,
+  );
+  // And a release that failed hands the slot back rather than wedging the button.
+  assert.match(
+    audioPageSource,
+    /if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*busyRef\.current = null;\s*setBusy\(null\);\s*setMode\("transcribe"\);/,
+  );
+});
