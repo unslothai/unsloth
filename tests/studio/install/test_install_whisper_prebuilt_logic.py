@@ -1233,8 +1233,7 @@ def test_rocm_runtime_wires_packaged_dependency_closure_and_catalogs(tmp_path, m
 
 def test_rocm_runtime_requires_the_rocblas_kernel_catalog(tmp_path):
     # rocblas stays mandatory: libggml-hip.so lists librocblas.so.5 in its ELF
-    # NEEDED (checked on the published b10342 linux-x64-rocm-gfx103X bundle) and
-    # every published linux ROCm bundle carries rocblas/library.
+    # NEEDED (checked on the published b10342 linux-x64-rocm-gfx103X bundle).
     llama_bin = _fake_llama_bin(tmp_path, backend_module = "libggml-hip.so")
     (llama_bin / "hipblaslt").mkdir()
     (llama_bin / "hipblaslt" / "kernel.dat").write_bytes(b"kernel")
@@ -1274,9 +1273,8 @@ def _gfx103x_llama_bin(tmp_path: Path) -> Path:
 
 
 def test_rocm_runtime_wires_rocblas_when_hipblaslt_ships_no_kernels(tmp_path):
-    # #8364: reporter on Linux x64, AMD RX 6800 (gfx1030), ROCm 7.13.99004. The
-    # whisper update failed every startup with "paired ROCm runtime is missing
-    # its hipblaslt kernel catalog" while inference kept working.
+    # #8364: RX 6800 (gfx1030) on linux x64. The whisper update failed every
+    # startup on "missing its hipblaslt kernel catalog" while inference ran.
     llama_bin = _gfx103x_llama_bin(tmp_path)
     whisper_bin = tmp_path / "whisper-bin"
 
@@ -1325,7 +1323,7 @@ def test_rocm_runtime_treats_an_empty_hipblaslt_catalog_as_absent(tmp_path):
 )
 def test_runtime_directories_are_a_linux_rocm_concern_only(tmp_path, whisper_os, backend):
     # Non-regression for the backends #8364 must not touch: no catalog is looked
-    # for, so a bundle without one can never be rejected over it either.
+    # for, so a bundle without one is never rejected over it.
     llama_bin = _fake_llama_bin(tmp_path, backend_module = None)
     assert (
         M.link_runtime_directories(
@@ -1452,10 +1450,8 @@ def test_existing_rocm_install_reinstalls_over_an_empty_catalog_on_disk(
     tmp_path, monkeypatch, empty
 ):
     # Relaxing the marker check to membership must not relax the on-disk check:
-    # a marker that names a catalog still has to find files in it. An install
-    # whose hipblaslt/ went empty (a partial wipe, a half-finished copy) has to
-    # read as broken and reinstall, not as intact-but-broken, or dictation fails
-    # at launch with the marker insisting the install is current.
+    # a marker that names a catalog still has to find files in it, or dictation
+    # fails at launch with the marker insisting the install is current.
     host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
     monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
     bin_dir = tmp_path / "build" / "bin"
