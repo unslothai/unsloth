@@ -634,7 +634,10 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
 
 
 def _receiver_start(
-    stmt: list, dot_at: int, receivers: frozenset, loaders: frozenset = frozenset()
+    stmt: list,
+    dot_at: int,
+    receivers: frozenset,
+    loaders: frozenset = frozenset(),
 ) -> "tuple":
     """Where the receiver of `stmt[dot_at]` starts, and the alias that made it one.
 
@@ -749,7 +752,13 @@ class _Aliases:
         "loaders",
     )
 
-    def __init__(self, modules: set, funcs: set, cancel: dict, loader_funcs: "set | None" = None):
+    def __init__(
+        self,
+        modules: set,
+        funcs: set,
+        cancel: dict,
+        loader_funcs: "set | None" = None,
+    ):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
         self.cancel = cancel
