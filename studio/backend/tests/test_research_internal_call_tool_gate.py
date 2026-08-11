@@ -3,12 +3,10 @@
 
 """Deep Research's internal hop must never enter the local tool loop.
 
-Research puts gathered web/document text into its prompts and posts them back through
-/v1/chat/completions with an internal key. `unsloth run --enable-tools` sets a process-wide
-policy that overrides a per-request `enable_tools`, and an omitted `enabled_tools` resolves
-to every built-in (python/terminal included), so without a hard opt-out an injected page
-could steer that hop into executing tools. These tests pin the opt-out at the route, where
-the decision is actually made, and pin that the opt-out costs an ordinary run nothing.
+Its prompts carry gathered web and document text and go back through /v1/chat/completions,
+where --enable-tools overrides a per-request enable_tools and an omitted enabled_tools
+resolves to every built-in, python and terminal included. These tests pin the opt-out at the
+route, where the decision is made, and pin that it costs an ordinary run nothing.
 """
 
 import json
@@ -89,8 +87,8 @@ def _entry_point(monkeypatch, *, policy, opt_out):
 
 
 def test_forced_tool_policy_would_reach_the_tool_loop_without_the_opt_out(monkeypatch):
-    # Guards the test itself: it must fail if the route ever stops forcing tools on here,
-    # otherwise the assertion below would pass for the wrong reason.
+    # Guards the test below: without this, it would pass if the route ever stopped forcing
+    # tools on here, for entirely the wrong reason.
     entry, kwargs = _entry_point(monkeypatch, policy = True, opt_out = False)
     assert entry == "tool_loop"
     assert {t["function"]["name"] for t in kwargs["tools"]} >= {"python", "terminal"}
@@ -120,9 +118,9 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
 
 
 def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
-    # The JSON-mode phases take the llama-server passthrough instead of the loop above, so
-    # pin the wire body there too: no tools means no tool_choice is forwarded at all, and
-    # Unsloth-only extensions never leak upstream.
+    # The JSON-mode phases take the llama-server passthrough, not the loop above, so pin
+    # that wire body too: no tools means no tool_choice is forwarded, and Unsloth-only
+    # extensions never leave Studio.
     from models.inference import ChatCompletionRequest
 
     class _PassthroughBackend:

@@ -798,10 +798,8 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
 
 
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
-    # Research gathers untrusted page text into its prompts, so the internal hop must not
-    # enter Studio's tool loop. `unsloth run --enable-tools` overrides a per-request
-    # `enable_tools`, and an omitted `enabled_tools` means every built-in, so the payload
-    # carries both hard opt-outs.
+    # Gathered page text lands in these prompts, and --enable-tools would otherwise
+    # override the request and expand an omitted enabled_tools to every built-in.
     sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
     supervisor = _make_supervisor(_noop_check_active)
     assert _run_stream(supervisor) == ("report", "", "stop", None)
