@@ -5749,7 +5749,10 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
             # drafter and refuse loads that fit. A tag that matches nothing has
             # told us nothing -- repos label quants inconsistently -- and every
             # candidate goes back into the bound.
-            matched = {n: s for n, s in sizes.items() if hint in Path(n).name.lower()}
+            # Full relative name, not the basename: the quant-subdirectory layout
+            # (Q4_K_M/model.gguf) is supported everywhere else, and matching only
+            # the basename restores every quant and charges the repo's F16.
+            matched = {n: s for n, s in sizes.items() if hint in n.lower()}
             sizes = matched or sizes
         return dflash_budget_bytes(sizes, _gguf_extra_shards) or _REMOTE_DRAFTER_RESERVE_BYTES
     except Exception as e:
@@ -6017,19 +6020,30 @@ def _estimate_gguf_required_gb(
         # one would leave a multi-GB resident drafter charged nowhere and let the
         # guard admit a load that evicts the training job it protects.
         _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-        # Local file or remote repo alike: both are now charged as _extras_bytes
-        # below, a local one by stat and a remote one from its own listing (or the
-        # flat reserve). Charging the target repository's sidecar on top of either
-        # is the double count that 409s a load which fits. The earlier local-only
-        # form predates the remote pricing and would now over-charge.
-        _extras_own_drafter = bool(_extra_args_own_spec and _extras_own_draft_path)
+        # An extras draft path wins whether or not the extras also own --spec-type:
+        # the loader ranks _cli_draft_for_budget ahead of _studio_draft_for_budget,
+        # and the launch appends the caller's flags after Studio's, so last-wins
+        # leaves exactly one --model-draft resident. It is charged as _extras_bytes
+        # below, local by stat and remote from its own listing, so charging the
+        # repository's sidecar on top is the double count that 409s a load that fits.
+        _extras_own_drafter = bool(_extras_own_draft_path)
+        # -ngld 0 / --spec-draft-device cpu applies to whichever separate drafter
+        # launches, including one Studio discovered itself, so none of them belongs
+        # in a VRAM budget. An embedded head is unaffected by draft-only flags and
+        # is inside the main weights either way, so nothing here suppresses it.
+        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(
+            llama_extra_args, env = os.environ
+        )
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter
+        _auto_dspark = (
+            _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
+        )
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -6059,8 +6073,11 @@ def _estimate_gguf_required_gb(
                 or (_spec_mode == "dflash" and not _extra_args_own_spec)
             )
             and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
         )
-        _auto_dflash = _spec_mode == "auto" and not _extra_args_own_spec
+        _auto_dflash = (
+            _spec_mode == "auto" and not _extra_args_own_spec and not _draft_pinned_to_cpu
+        )
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
@@ -6080,7 +6097,8 @@ def _estimate_gguf_required_gb(
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
         _charge_no_drafter = (
-            _extras_own_drafter
+            _draft_pinned_to_cpu
+            or _extras_own_drafter
             or (_forced_dspark and not _dspark_capable)
             or (_forced_dflash and not _dflash_capable)
         )

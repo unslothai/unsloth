@@ -1341,8 +1341,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         """--model-draft usually names the very sidecar discovery already found,
         and charging it on both paths billed a 1.5 GiB drafter as 3 GiB, so the
         guard refused an inference load that fits. Identity is the resolved path,
-        so a symlink or another spelling of the same file dedupes too, while a
-        genuinely separate drafter outside the model directory is still charged.
+        so a symlink or another spelling of the same file dedupes too. A drafter
+        somewhere else is charged instead of the discovered sidecar, not on top of
+        it: the loader ranks the extras path ahead of Studio's and the launch
+        appends the caller's flags last, so only one --model-draft is resident.
         """
         import os
         import tempfile
@@ -1390,7 +1392,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(plain, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(same, 5000 / (1024**3), places = 9)  # not 8000
         self.assertAlmostEqual(through_link, 5000 / (1024**3), places = 9)
-        self.assertAlmostEqual(separate, 9000 / (1024**3), places = 9)  # 2000+3000+4000
+        # 2000 target + 4000 override; the 3000 sidecar loses to it and is not charged.
+        self.assertAlmostEqual(separate, 6000 / (1024**3), places = 9)
 
     def test_extras_owning_spec_type_charge_only_their_own_drafter(self):
         """--spec-type in the extras ends _build_speculative_flags before discovery's
@@ -1935,6 +1938,77 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 llama_extra_args = [*extras, "--spec-draft-ngl", "0"],
             )
         self.assertAlmostEqual(on_gpu - on_cpu, 8.0, places = 6)
+
+    def test_a_bare_model_draft_overrides_the_repository_sidecar(self):
+        """No --spec-type needed for the override to win: the loader ranks the
+        extras draft path ahead of Studio's and the launch appends the caller's
+        flags last, so exactly one --model-draft is resident. Charging the repo's
+        sidecar as well 409s a load that fits."""
+        import tempfile
+
+        import utils.models.model_config as mc
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "model.gguf"
+            sidecar = Path(d) / "dspark-model-Q8_0.gguf"
+            custom = Path(d) / "elsewhere.gguf"
+            target.write_bytes(b"t" * 2000)
+            sidecar.write_bytes(b"s" * 3000)
+            custom.write_bytes(b"c" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_dflash_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                charged = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "auto",
+                    llama_extra_args = ["--model-draft", str(custom)],
+                )
+        # 2000 target + 4000 override, not the 3000 sidecar it displaces.
+        self.assertAlmostEqual(charged, 6000 / (1024**3), places = 9)
+
+    def test_a_cpu_pinned_discovered_sidecar_is_not_charged_vram(self):
+        """-ngld 0 applies to whichever separate drafter launches, including one
+        Studio resolved itself with no draft path in the extras at all. It is then
+        host-resident, so charging it against the training job's VRAM 409s a load
+        that takes none."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "model.gguf"
+            sidecar = Path(d) / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"t" * 2000)
+            sidecar.write_bytes(b"s" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_dflash_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                on_gpu = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+                on_cpu = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "auto",
+                    llama_extra_args = ["--spec-draft-ngl", "0"],
+                )
+        self.assertAlmostEqual(on_gpu, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(on_cpu, 2000 / (1024**3), places = 9)
 
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a
