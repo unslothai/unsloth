@@ -1665,6 +1665,14 @@ def _child_env(token: Optional[str] = None) -> dict:
     return env
 
 
+# cloudflared opens login itself unless its platform launcher lookup fails.
+def _login_env(token: str) -> dict:
+    env = _child_env(token)
+    env["PATH"] = ""
+    env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    return env
+
+
 def _cli_argv(binary: str, *args: str) -> list:
     return [binary, "tunnel", "--no-autoupdate", "--origincert", str(origin_cert_path()), *args]
 
@@ -1715,7 +1723,7 @@ def _spawn_login(binary: str, token: str):
             stderr = subprocess.STDOUT,
             encoding = "utf-8",
             errors = "replace",
-            env = _child_env(token),
+            env = _login_env(token),
             **_lifetime_kwargs(),
             **_windows_hidden_kwargs(),
         )

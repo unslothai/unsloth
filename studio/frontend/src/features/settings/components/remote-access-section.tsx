@@ -40,7 +40,9 @@ import {
   type RemoteAccessProgressStepId,
   type RemoteAccessRequestAxis,
   type RemoteAccessStatus,
-  closeUnusedRemoteAccessWindow,
+  openRemoteAccessLoginWindow,
+  remoteAccessAuthorizationShouldOpen,
+  remoteAccessAuthorizationView,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
@@ -49,11 +51,10 @@ import {
   remoteAccessCustomTeardownMessageId,
   remoteAccessDnsConflictHostname,
   remoteAccessHeaderActionDisabled,
-  remoteAccessIsReady,
+  remoteAccessHeaderStatus,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
   remoteAccessPreferredKind,
-  remoteAccessProgressStep,
   remoteAccessRequestMessageId,
   remoteAccessSelfStopPoll,
   remoteAccessSetupDialogShouldOpen,
@@ -76,6 +77,7 @@ import {
   QrCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Loader2Icon } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
@@ -205,48 +207,102 @@ const PROGRESS_MESSAGE_KEYS: Record<
   disconnecting: "settings.general.remoteAccess.progressDisconnecting",
 };
 
-function ConnectionProgress({ status }: { status: RemoteAccessStatus | null }) {
+const STATE_MESSAGE_KEYS: Record<RemoteAccessStatus["state"], TranslationKey> =
+  {
+    off: "settings.general.remoteAccess.stateOff",
+    starting: "settings.general.remoteAccess.stateStarting",
+    online: "settings.general.remoteAccess.stateOnline",
+    stopping: "settings.general.remoteAccess.stateStopping",
+    error: "settings.general.remoteAccess.stateError",
+  };
+
+const OWNER_MESSAGE_KEYS: Record<
+  Exclude<RemoteAccessStatus["managedBy"], "settings" | null>,
+  TranslationKey
+> = {
+  launch: "settings.general.remoteAccess.ownerLaunch",
+  colab: "settings.general.remoteAccess.ownerColab",
+};
+
+function stateDotClass(state?: RemoteAccessStatus["state"]): string {
+  if (state === "online") {
+    return "bg-emerald-500";
+  }
+  if (state === "starting" || state === "stopping") {
+    return "animate-pulse bg-blue-500";
+  }
+  return state === "error" ? "bg-red-500" : "bg-muted-foreground";
+}
+
+function openAuthorizedRemoteLink(
+  url: string | null,
+  authorized: boolean,
+  openTauri: (url: string, reopen: boolean) => void,
+) {
+  if (!(url && authorized)) {
+    return;
+  }
+  if (isTauri) {
+    openTauri(url, true);
+    return;
+  }
+  openLink(url);
+}
+
+function CustomAuthorizationAction({
+  authorized,
+  loginUrl,
+  authorizationCurrent,
+  confirmationDisabled,
+  openTauri,
+  onConfirm,
+}: {
+  authorized: boolean;
+  loginUrl: string | null;
+  authorizationCurrent: boolean;
+  confirmationDisabled: boolean;
+  openTauri: (url: string, reopen: boolean) => void;
+  onConfirm: () => void;
+}) {
   const t = useT();
-  const ready = remoteAccessIsReady(status);
-  const step = remoteAccessProgressStep(status);
-  const [showReady, setShowReady] = useState(false);
-  useEffect(() => {
-    if (!ready) {
-      setShowReady(false);
-      return;
-    }
-    setShowReady(true);
-    const timer = window.setTimeout(() => setShowReady(false), 3200);
-    return () => window.clearTimeout(timer);
-  }, [ready]);
-  if (showReady) {
+  if (authorized) {
     return (
-      <output
-        className="flex items-center gap-1.5 text-xs text-emerald-600"
-        aria-live="polite"
+      <Button
+        type="button"
+        disabled={!(loginUrl && authorizationCurrent)}
+        onClick={() =>
+          openAuthorizedRemoteLink(loginUrl, authorizationCurrent, openTauri)
+        }
       >
-        <HugeiconsIcon icon={Tick02Icon} className="size-3.5" />
-        {t("settings.general.remoteAccess.ready")}
-      </output>
+        {t("settings.general.remoteAccess.openCloudflare")}
+      </Button>
     );
   }
-  if (step === null) {
-    return null;
-  }
+  return (
+    <Button type="button" disabled={confirmationDisabled} onClick={onConfirm}>
+      {t("settings.general.remoteAccess.setupConfirmAction")}
+    </Button>
+  );
+}
+
+function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
+  const t = useT();
+  const header = remoteAccessHeaderStatus(status);
+  const owner = header.owner ? t(OWNER_MESSAGE_KEYS[header.owner]) : null;
   return (
     <output
       className="flex items-center gap-1.5 text-xs text-muted-foreground"
       aria-live="polite"
     >
-      <span className="size-2 rounded-full bg-blue-500 animate-pulse" />
+      <span
+        className={cn("size-2 rounded-full", stateDotClass(status?.state))}
+      />
       <span>
-        {t(
-          step === "disconnecting"
-            ? "settings.general.remoteAccess.actionStopping"
-            : "settings.general.remoteAccess.actionStarting",
-        )}
-        {" · "}
-        {t(PROGRESS_MESSAGE_KEYS[step])}
+        {header.state
+          ? t(STATE_MESSAGE_KEYS[header.state])
+          : t("settings.general.remoteAccess.stateUnavailable")}
+        {header.step ? ` · ${t(PROGRESS_MESSAGE_KEYS[header.step])}` : ""}
+        {owner ? ` · ${owner}` : ""}
       </span>
     </output>
   );
@@ -481,17 +537,99 @@ function CustomTunnelSetup({
   const [requestedHostname, setRequestedHostname] = useState(
     status.customHostname ?? "",
   );
-  const cloudflareWindow = useRef<Window | null>(null);
+  const [authorizationGrant, setAuthorizationGrant] = useState<
+    number | "pending" | null
+  >(null);
   const openedLoginUrl = useRef<string | null>(null);
+  const pendingLoginUrl = useRef<string | null>(null);
+  const authorizationAttempt = useRef(0);
+  const authorizationRevisionRef = useRef<number | null>(null);
+  const confirmOpenRef = useRef(confirmOpen);
+  const statusRef = useRef(status);
+  confirmOpenRef.current = confirmOpen;
+  statusRef.current = status;
   const cancelledSetupRevision = useRef<number | null>(null);
   const disabled = remoteAccessCustomActionsDisabled(status, busy !== null);
   const waiting = busy === "provision" || status.customState === "provisioning";
+  const resetAuthorization = useCallback(() => {
+    authorizationAttempt.current += 1;
+    authorizationRevisionRef.current = null;
+    pendingLoginUrl.current = null;
+    setAuthorizationGrant(null);
+  }, []);
+  const openAuthorizedTauriUrl = useCallback(
+    (loginUrl: string, reopen = false) => {
+      if (pendingLoginUrl.current === loginUrl) {
+        return;
+      }
+      const attempt = authorizationAttempt.current;
+      pendingLoginUrl.current = loginUrl;
+      import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
+        const latestStatus = statusRef.current;
+        if (
+          authorizationAttempt.current !== attempt ||
+          pendingLoginUrl.current !== loginUrl ||
+          !remoteAccessAuthorizationShouldOpen(
+            latestStatus,
+            confirmOpenRef.current,
+            authorizationRevisionRef.current,
+            reopen ? null : openedLoginUrl.current,
+            cancelledSetupRevision.current,
+          )
+        ) {
+          if (pendingLoginUrl.current === loginUrl) {
+            pendingLoginUrl.current = null;
+          }
+          return;
+        }
+        pendingLoginUrl.current = null;
+        openedLoginUrl.current = loginUrl;
+        openUrl(loginUrl).catch(console.error);
+      });
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      authorizationAttempt.current += 1;
+      pendingLoginUrl.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authorizationGrant === null) {
+      return;
+    }
+    if (authorizationGrant === "pending") {
+      if (status.customState === "provisioning") {
+        authorizationRevisionRef.current = status.customOperationRevision;
+        setAuthorizationGrant(status.customOperationRevision);
+      } else if (busy === null) {
+        resetAuthorization();
+      }
+      return;
+    }
+    if (authorizationGrant === status.customOperationRevision) {
+      return;
+    }
+    resetAuthorization();
+  }, [
+    authorizationGrant,
+    busy,
+    resetAuthorization,
+    status.customState,
+    status.customOperationRevision,
+  ]);
 
   useEffect(() => {
     if (status.customState !== "provisioning") {
       if (cancelledSetupRevision.current !== null && busy === null) {
         cancelledSetupRevision.current = null;
         setConfirmOpen(false);
+      }
+      if (busy === null) {
+        resetAuthorization();
       }
       return;
     }
@@ -504,43 +642,33 @@ function CustomTunnelSetup({
     if (status.customHostname) {
       setRequestedHostname(status.customHostname);
     }
-  }, [busy, status]);
+  }, [busy, resetAuthorization, status]);
 
   useEffect(() => {
     const loginUrl = status.loginUrl;
     if (
-      !(confirmOpen && loginUrl) ||
-      openedLoginUrl.current === loginUrl ||
-      cancelledSetupRevision.current === status.customOperationRevision
+      !remoteAccessAuthorizationShouldOpen(
+        status,
+        confirmOpen,
+        typeof authorizationGrant === "number" ? authorizationGrant : null,
+        openedLoginUrl.current,
+        cancelledSetupRevision.current,
+      ) ||
+      loginUrl === null ||
+      pendingLoginUrl.current === loginUrl
     ) {
       return;
     }
     if (isTauri) {
-      openedLoginUrl.current = loginUrl;
-      import("@tauri-apps/plugin-opener").then(({ openUrl }) => {
-        openUrl(loginUrl).catch(console.error);
-      });
+      openAuthorizedTauriUrl(loginUrl);
       return;
     }
-    if (cloudflareWindow.current && !cloudflareWindow.current.closed) {
-      try {
-        cloudflareWindow.current.location.replace(loginUrl);
-        openedLoginUrl.current = loginUrl;
-      } catch {
-        // Manual Open remains available.
-      }
-    }
-  }, [confirmOpen, status.loginUrl, status.customOperationRevision]);
-
-  const closePendingWindow = () => {
-    if (openedLoginUrl.current === null) {
-      closeUnusedRemoteAccessWindow(cloudflareWindow.current);
-    }
-    cloudflareWindow.current = null;
-  };
+    openRemoteAccessLoginWindow(loginUrl, window.open.bind(window));
+    openedLoginUrl.current = loginUrl;
+  }, [authorizationGrant, confirmOpen, openAuthorizedTauriUrl, status]);
 
   const cancelSetup = () => {
-    closePendingWindow();
+    resetAuthorization();
     if (waiting) {
       cancelledSetupRevision.current = status.customOperationRevision;
       onCancel(status.customOperationRevision).then((cancelled) => {
@@ -554,6 +682,39 @@ function CustomTunnelSetup({
     setConfirmOpen(false);
   };
 
+  const confirmAuthorization = () => {
+    const loginUrl = status.loginUrl;
+    const revision =
+      status.customState === "provisioning"
+        ? status.customOperationRevision
+        : null;
+    authorizationAttempt.current += 1;
+    authorizationRevisionRef.current = revision;
+    setAuthorizationGrant(revision ?? "pending");
+    openedLoginUrl.current = null;
+    if (!loginUrl) {
+      return;
+    }
+    if (isTauri) {
+      openAuthorizedTauriUrl(loginUrl);
+      return;
+    }
+    openRemoteAccessLoginWindow(loginUrl, window.open.bind(window));
+    openedLoginUrl.current = loginUrl;
+  };
+  const authorizationView = remoteAccessAuthorizationView(
+    status,
+    busy === "provision",
+    authorizationGrant,
+    cancelledSetupRevision.current,
+  );
+  const authorizationMessage =
+    authorizationView.phase === "approval"
+      ? t("settings.general.remoteAccess.setupAuthorize", {
+          hostname: requestedHostname,
+        })
+      : t("settings.general.remoteAccess.setupPreparing");
+
   return (
     <>
       {waiting ? null : (
@@ -565,16 +726,11 @@ function CustomTunnelSetup({
             cancelledSetupRevision.current = null;
             setRequestedHostname(targetHostname);
             openedLoginUrl.current = null;
-            if (!isTauri) {
-              cloudflareWindow.current = window.open("", "_blank");
-              if (cloudflareWindow.current) {
-                cloudflareWindow.current.opener = null;
-              }
-            }
+            resetAuthorization();
             setConfirmOpen(true);
             onProvision(targetHostname).then((started) => {
               if (!started) {
-                closePendingWindow();
+                resetAuthorization();
               }
             });
           }}
@@ -600,6 +756,9 @@ function CustomTunnelSetup({
         open={confirmOpen}
         onOpenChange={(open) => {
           if (open || !waiting) {
+            if (!open) {
+              resetAuthorization();
+            }
             setConfirmOpen(open);
           }
         }}
@@ -616,13 +775,19 @@ function CustomTunnelSetup({
               <code className="block break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
                 {requestedHostname}
               </code>
-              <span className="block" aria-live="polite">
-                {status.loginUrl
-                  ? t("settings.general.remoteAccess.setupAuthorize", {
-                      hostname: requestedHostname,
-                    })
-                  : t("settings.general.remoteAccess.setupPreparing")}
-              </span>
+              {authorizationView.phase ? (
+                <span
+                  aria-atomic="true"
+                  aria-live="polite"
+                  className="flex items-center gap-2"
+                >
+                  <Loader2Icon
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 animate-spin"
+                  />
+                  {authorizationMessage}
+                </span>
+              ) : null}
               {requestError || status.customError ? (
                 <span className="block text-destructive" role="alert">
                   {requestError ?? localizedCustomError(status, t)}
@@ -642,18 +807,14 @@ function CustomTunnelSetup({
             >
               {t("common.cancel")}
             </Button>
-            {status.loginUrl ? (
-              <Button
-                type="button"
-                onClick={() => openLink(status.loginUrl as string)}
-              >
-                {t("settings.general.remoteAccess.openCloudflare")}
-              </Button>
-            ) : (
-              <Button type="button" disabled={true}>
-                {t("settings.general.remoteAccess.openCloudflare")}
-              </Button>
-            )}
+            <CustomAuthorizationAction
+              authorized={authorizationGrant !== null}
+              loginUrl={status.loginUrl}
+              authorizationCurrent={authorizationView.current}
+              confirmationDisabled={authorizationView.confirmationDisabled}
+              openTauri={openAuthorizedTauriUrl}
+              onConfirm={confirmAuthorization}
+            />
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -938,7 +1099,6 @@ function useRemoteAccessPolling(
   };
 }
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: lifecycle orchestration is intentionally centralized
 export function RemoteAccessSection() {
   const t = useT();
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
@@ -1054,10 +1214,6 @@ export function RemoteAccessSection() {
   const actionLabel = stopAction
     ? t("settings.general.remoteAccess.stopAction")
     : t("settings.general.remoteAccess.startAction");
-  const showHeaderAction =
-    stopAction ||
-    remoteAccessPreferredKind(status) === "temporary" ||
-    status?.customRunnable === true;
 
   return (
     <section
@@ -1077,25 +1233,23 @@ export function RemoteAccessSection() {
               <h2 className="text-base font-semibold font-heading text-foreground">
                 {t("settings.general.remoteAccess.sectionTitle")}
               </h2>
-              <ConnectionProgress status={status} />
+              <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
               {t("settings.general.remoteAccess.description")}
             </p>
           </div>
         </div>
-        {showHeaderAction ? (
-          <Button
-            type="button"
-            size="sm"
-            variant={stopAction ? "outline" : "default"}
-            className="min-w-20 shrink-0"
-            onClick={stopAction ? stop : start}
-            disabled={actionDisabled}
-          >
-            {actionLabel}
-          </Button>
-        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant={stopAction ? "outline" : "default"}
+          className="min-w-20 shrink-0"
+          onClick={stopAction ? stop : start}
+          disabled={actionDisabled}
+        >
+          {actionLabel}
+        </Button>
       </div>
 
       <StatusMessage

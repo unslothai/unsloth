@@ -638,10 +638,10 @@ def _set_custom_operation(
         )
 
 
-def _custom_login_callback(url: str) -> None:
+def _custom_login_callback(worker: threading.Thread, url: str) -> None:
     global _custom_login_url
     with _worker_lock:
-        if _custom_worker is threading.current_thread():
+        if _custom_worker is worker:
             _custom_login_url = url
 
 
@@ -667,6 +667,8 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
     def _provision() -> None:
         from cloudflare_tunnel import ensure_cloudflared
         from cloudflare_tunnel import ProvisioningError, provision_custom_tunnel
+
+        worker = threading.current_thread()
         try:
             binary = ensure_cloudflared()
             if not binary:
@@ -674,7 +676,7 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
             provision_custom_tunnel(
                 host,
                 binary = binary,
-                on_login_url = _custom_login_callback,
+                on_login_url = lambda url: _custom_login_callback(worker, url),
                 cancelled = cancel.is_set,
             )
         except ProvisioningError as exc:

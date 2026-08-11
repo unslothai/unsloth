@@ -212,24 +212,70 @@ export function remoteAccessSetupDialogShouldOpen(
   );
 }
 
-type RemoteAccessReservedWindow = {
-  closed: boolean;
-  close: () => void;
-  readonly location: { readonly href: string };
-};
+export function remoteAccessHeaderStatus(status: RemoteAccessStatus | null) {
+  return {
+    state: status?.state ?? null,
+    owner:
+      status?.managedBy === "settings" ? null : (status?.managedBy ?? null),
+    step:
+      status?.state === "starting" ? remoteAccessProgressStep(status) : null,
+  };
+}
 
-export function closeUnusedRemoteAccessWindow(
-  pendingWindow: RemoteAccessReservedWindow | null,
+export function remoteAccessAuthorizationShouldOpen(
+  status: RemoteAccessStatus,
+  dialogOpen: boolean,
+  confirmedRevision: number | null,
+  openedLoginUrl: string | null,
+  cancelledRevision: number | null,
+): boolean {
+  return (
+    dialogOpen &&
+    confirmedRevision === status.customOperationRevision &&
+    status.loginUrl !== null &&
+    openedLoginUrl !== status.loginUrl &&
+    cancelledRevision !== status.customOperationRevision
+  );
+}
+
+export function remoteAccessAuthorizationView(
+  status: RemoteAccessStatus,
+  provisionRequested: boolean,
+  grant: number | "pending" | null,
+  cancelledRevision: number | null,
+): {
+  confirmationDisabled: boolean;
+  current: boolean;
+  phase: "connecting" | "approval" | null;
+} {
+  const operationAvailable =
+    (provisionRequested || status.customState === "provisioning") &&
+    cancelledRevision !== status.customOperationRevision;
+  const current =
+    typeof grant === "number" &&
+    grant === status.customOperationRevision &&
+    cancelledRevision !== status.customOperationRevision;
+  return {
+    confirmationDisabled: !operationAvailable,
+    current,
+    phase:
+      (grant === "pending" || current) && operationAvailable
+        ? status.loginUrl
+          ? "approval"
+          : "connecting"
+        : null,
+  };
+}
+
+type RemoteAccessLoginWindow = { opener: unknown };
+
+export function openRemoteAccessLoginWindow(
+  loginUrl: string,
+  openWindow: (url: string, target: string) => RemoteAccessLoginWindow | null,
 ): void {
-  if (pendingWindow?.closed !== false) {
-    return;
-  }
-  try {
-    if (pendingWindow.location.href === "about:blank") {
-      pendingWindow.close();
-    }
-  } catch {
-    // A cross-origin tab no longer belongs to setup.
+  const cloudflareWindow = openWindow(loginUrl, "_blank");
+  if (cloudflareWindow) {
+    cloudflareWindow.opener = null;
   }
 }
 

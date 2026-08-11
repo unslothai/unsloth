@@ -11,12 +11,15 @@ register("./helpers/settings-api-resolver.mjs", import.meta.url);
 // cannot be imported here. These drive the pure state helpers it consumes.
 import {
   type ApiRemoteAccessStatus,
-  closeUnusedRemoteAccessWindow,
   normalizeRemoteAccessStatus,
+  openRemoteAccessLoginWindow,
+  remoteAccessAuthorizationShouldOpen,
+  remoteAccessAuthorizationView,
   remoteAccessAutoStartKind,
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessageId,
   remoteAccessHeaderActionDisabled,
+  remoteAccessHeaderStatus,
   remoteAccessIsReady,
   remoteAccessOperationRevision,
   remoteAccessPollDelay,
@@ -28,6 +31,7 @@ import {
   remoteAccessStopDisconnectsOrigin,
   remoteApiOrigin,
 } from "../src/features/settings/api/remote-access-state.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 const TUNNEL = "https://calm-otter-review.trycloudflare.com";
 
@@ -265,6 +269,41 @@ test("connection progress reports only the current step", () => {
   );
 });
 
+test("the header preserves lifecycle status and details only Starting", () => {
+  const starting = normalizeRemoteAccessStatus(
+    apiStatus({
+      state: "starting",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      managed_by: "settings",
+    }),
+  );
+  assert.deepEqual(remoteAccessHeaderStatus(starting), {
+    state: "starting",
+    owner: null,
+    step: "connecting",
+  });
+  assert.deepEqual(
+    remoteAccessHeaderStatus({
+      ...starting,
+      state: "online",
+      kind: "custom",
+      connectorRegistered: true,
+      tunnelServing: false,
+    }),
+    { state: "online", owner: null, step: null },
+  );
+  assert.equal(
+    remoteAccessHeaderStatus({ ...starting, managedBy: "launch" }).owner,
+    "launch",
+  );
+  assert.deepEqual(remoteAccessHeaderStatus(null), {
+    state: null,
+    owner: null,
+    step: null,
+  });
+  assert.equal(en.settings.general.remoteAccess.stopAction, "Stop");
+});
+
 test("the saved method is authoritative even when Custom is configured", () => {
   const temporary = normalizeRemoteAccessStatus(
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -306,7 +345,7 @@ test("an active Custom operation stays visible after a concurrent method change"
   );
 });
 
-test("setup dialog resumes provisioning unless this view cancelled it", () => {
+test("setup dialog and authorization follow the current provisioning revision", () => {
   const provisioning = normalizeRemoteAccessStatus(
     apiStatus({
       // biome-ignore lint/style/useNamingConvention: API schema
@@ -320,6 +359,85 @@ test("setup dialog resumes provisioning unless this view cancelled it", () => {
   assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, null), true);
   assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, 4), false);
   assert.equal(remoteAccessSetupDialogShouldOpen(provisioning, 3), true);
+  const beforeProvision = {
+    ...provisioning,
+    customState: "unconfigured" as const,
+  };
+  assert.deepEqual(
+    remoteAccessAuthorizationView(beforeProvision, false, null, null),
+    { confirmationDisabled: true, current: false, phase: null },
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(beforeProvision, true, null, null),
+    { confirmationDisabled: false, current: false, phase: null },
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(provisioning, false, null, null),
+    { confirmationDisabled: false, current: false, phase: null },
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(beforeProvision, true, "pending", null),
+    { confirmationDisabled: false, current: false, phase: "connecting" },
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(provisioning, false, 4, null),
+    { confirmationDisabled: false, current: true, phase: "connecting" },
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(
+      { ...provisioning, customOperationRevision: 5 },
+      false,
+      4,
+      null,
+    ),
+    { confirmationDisabled: false, current: false, phase: null },
+  );
+  assert.equal(
+    remoteAccessAuthorizationShouldOpen(
+      provisioning,
+      true,
+      4,
+      "https://dash.cloudflare.com/old-login",
+      null,
+    ),
+    false,
+  );
+  const readyToAuthorize = {
+    ...provisioning,
+    loginUrl: "https://dash.cloudflare.com/login",
+  };
+  assert.equal(
+    remoteAccessAuthorizationView(readyToAuthorize, false, 4, null).phase,
+    "approval",
+  );
+  assert.deepEqual(
+    remoteAccessAuthorizationView(readyToAuthorize, false, 4, 4),
+    { confirmationDisabled: true, current: false, phase: null },
+  );
+  assert.equal(
+    remoteAccessAuthorizationShouldOpen(
+      readyToAuthorize,
+      true,
+      null,
+      null,
+      null,
+    ),
+    false,
+  );
+  assert.equal(
+    remoteAccessAuthorizationShouldOpen(readyToAuthorize, true, 4, null, null),
+    true,
+  );
+  assert.equal(
+    remoteAccessAuthorizationShouldOpen(
+      { ...readyToAuthorize, customOperationRevision: 5 },
+      true,
+      4,
+      null,
+      null,
+    ),
+    false,
+  );
   assert.equal(
     remoteAccessSetupDialogShouldOpen(
       { ...provisioning, customState: "unconfigured" },
@@ -329,25 +447,24 @@ test("setup dialog resumes provisioning unless this view cancelled it", () => {
   );
 });
 
-test("reserved setup windows close only while still unused", () => {
-  const closes = (href: string | null, alreadyClosed = false) => {
-    const closeCalls: boolean[] = [];
-    closeUnusedRemoteAccessWindow({
-      closed: alreadyClosed,
-      close: () => closeCalls.push(true),
-      get location() {
-        if (href !== null) {
-          return { href };
-        }
-        throw new Error("SecurityError");
-      },
-    });
-    return closeCalls.length;
-  };
-  assert.equal(closes("about:blank"), 1);
-  assert.equal(closes("https://example.com"), 0);
-  assert.equal(closes("about:blank", true), 0);
-  assert.equal(closes(null), 0);
+test("web confirmation opens the real Cloudflare login URL", () => {
+  const calls: [string, string][] = [];
+  const page = { opener: "parent" as unknown };
+  openRemoteAccessLoginWindow(
+    "https://dash.cloudflare.com/login",
+    (url, target) => {
+      calls.push([url, target]);
+      return page;
+    },
+  );
+  assert.deepEqual(calls, [["https://dash.cloudflare.com/login", "_blank"]]);
+  assert.equal(page.opener, null);
+  assert.doesNotThrow(() =>
+    openRemoteAccessLoginWindow(
+      "https://dash.cloudflare.com/login",
+      () => null,
+    ),
+  );
 });
 
 test("custom request errors belong to one backend operation revision", () => {

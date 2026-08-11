@@ -42,6 +42,20 @@ def _load_ct():
 ct = _load_ct()
 
 
+def test_spawn_login_disables_cloudflared_browser_launcher(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(
+        ct.subprocess,
+        "Popen",
+        lambda argv, **kwargs: captured.update(argv = argv, **kwargs) or object(),
+    )
+    ct._spawn_login("/cloudflared", "operation-token")
+    assert captured["env"]["PATH"] == ""
+    assert captured["env"]["NoDefaultCurrentDirectoryInExePath"] == "1"
+    assert captured["env"][ct._TOKEN_VAR] == "operation-token"
+
+
 # ── URL parsing ──────────────────────────────────────────────────────
 
 

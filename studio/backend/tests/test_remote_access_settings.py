@@ -330,6 +330,51 @@ def test_custom_status_keeps_the_requested_hostname_during_setup(monkeypatch):
     assert status["custom_operation_revision"] == 5
 
 
+def test_custom_setup_publishes_login_url_from_its_reader_thread(monkeypatch):
+    published = threading.Event()
+    release = threading.Event()
+
+    def _provision(_hostname, *, binary, on_login_url, cancelled):
+        assert binary == "/cloudflared"
+        assert cancelled() is False
+        reader = threading.Thread(
+            target = lambda: on_login_url("https://dash.cloudflare.com/argotunnel/login")
+        )
+        reader.start()
+        reader.join()
+        published.set()
+        release.wait()
+
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: None)
+    monkeypatch.setattr(cloudflare_tunnel, "identity_is_runnable", lambda _identity: False)
+    monkeypatch.setattr(cloudflare_tunnel, "orphaned_hostnames", lambda: [])
+    monkeypatch.setattr(cloudflare_tunnel, "ensure_cloudflared", lambda: "/cloudflared")
+    monkeypatch.setattr(cloudflare_tunnel, "provision_custom_tunnel", _provision)
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(
+        remote_access,
+        "remote_access_status",
+        lambda _state: remote_access._custom_status(),
+    )
+
+    remote_access.provision_custom_remote_access(_state(), "studio.example.com")
+    try:
+        assert published.wait(1)
+        assert remote_access._custom_status()["login_url"] == (
+            "https://dash.cloudflare.com/argotunnel/login"
+        )
+        remote_access._custom_login_callback(
+            threading.Thread(), "https://dash.cloudflare.com/argotunnel/stale"
+        )
+        assert remote_access._custom_status()["login_url"] == (
+            "https://dash.cloudflare.com/argotunnel/login"
+        )
+    finally:
+        release.set()
+        remote_access._custom_worker.join(1)
+
+
 def test_custom_cancel_only_targets_the_displayed_operation(monkeypatch):
     cancelled = threading.Event()
     worker = SimpleNamespace(is_alive = lambda: True)
