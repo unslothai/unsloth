@@ -283,10 +283,7 @@ elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     try:
         gcn_arch = (
-            str(torch.cuda.get_device_properties(0).gcnArchName)
-            .split(":", 1)[0]
-            .strip()
-            .lower()
+            str(torch.cuda.get_device_properties(0).gcnArchName).split(":", 1)[0].strip().lower()
         )
     except Exception:
         gcn_arch = ""
