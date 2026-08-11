@@ -212,6 +212,18 @@ def _run(model, hf_token = None):
         # Still a path, not a variant: no Hub repo precedes the colon.
         ("/home/me/models/x:build/llama-13b", ("/home/me/models/x:build/llama-13b", None)),
         ("D:/models/repo:build/llama-13b", ("D:/models/repo:build/llama-13b", None)),
+        # A native Windows path is one reference: the drive letter is no repo id, so
+        # reading the rest of the path as its variant refused a model already loaded.
+        ("C:\\models\\qwen.gguf", ("C:\\models\\qwen.gguf", None)),
+        ("c:\\qwen.gguf", ("c:\\qwen.gguf", None)),
+        ("\\\\server\\share\\qwen.gguf", ("\\\\server\\share\\qwen.gguf", None)),
+        # A quant still pins one, on either spelling of the path.
+        ("C:\\models\\qwen.gguf:Q4_K_M", ("C:\\models\\qwen.gguf", "Q4_K_M")),
+        ("C:/models/qwen.gguf:Q4_K_M", ("C:/models/qwen.gguf", "Q4_K_M")),
+        ("\\\\server\\share\\qwen.gguf:Q4_K_M", ("\\\\server\\share\\qwen.gguf", "Q4_K_M")),
+        # A backslash-qualified variant key still parses behind a real Hub repo.
+        ("org/repo:build\\model.gguf", ("org/repo", "build\\model.gguf")),
+        ("D:\\models\\repo:build\\llama-13b", ("D:\\models\\repo:build\\llama-13b", None)),
     ],
 )
 def test_split_model_ref(raw, expected):
@@ -1173,6 +1185,18 @@ def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:8b") is True
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:UD-Q4_K_XL") is True
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:Q8_0") is False
+
+
+def test_a_windows_path_matches_the_gguf_loaded_from_it(monkeypatch):
+    # The drive letter read as the repo and the rest of the path as an explicit quant, so a
+    # model loaded from that path never matched its own name and the call was refused instead.
+    loaded = _Loaded("C:\\models\\qwen.gguf", "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf") is True
+    # Either spelling of the same path names the same weights.
+    assert inference_route._loaded_satisfies("C:/models/qwen.gguf") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q4_K_M") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q8_0") is False
 
 
 def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
