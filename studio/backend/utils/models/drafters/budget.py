@@ -35,10 +35,9 @@ def dflash_budget_bytes(
     halve a two-shard sidecar, and under-estimating is the direction that waves
     a load through and then exhausts VRAM.
 
-    ``target_bytes`` drops the candidates the fetch itself now refuses: a drafter is
-    a few layers of its target, so a set at least that large is an ordinary weight
-    wearing the prefix and is never made resident. Zero means unknown, which keeps
-    every candidate, as before.
+    ``target_bytes`` drops what the fetch itself refuses: a drafter is a few layers of
+    its target, so a set at least that large is an ordinary weight wearing the prefix.
+    Zero means unknown and keeps every candidate.
     """
     totals = (
         size + sum(sizes.get(shard, 0) for shard in extra_shards(sizes, name))

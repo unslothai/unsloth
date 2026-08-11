@@ -171,20 +171,17 @@ def dflash_plan_files(
 ) -> tuple[ExpectedFile, ...]:
     """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
 
-    Whole shard family, not just the ranked file: the loader refuses a companion whose
-    split set is incomplete, so planning shard 1 alone reports the variant complete and
-    then loses DFlash on the load. A family the listing only half publishes is dropped
-    for the same reason, before it can be ranked.
+    Whole shard family, not the ranked file alone: the loader refuses an incomplete
+    split set, so planning shard 1 reports the variant complete and then loses DFlash.
+    A half-published family is dropped for the same reason.
 
     Bounded by ``max_bytes``, the variant's own weights. ``dflash-`` is a prefix real
-    weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF), and a listing cannot read the
-    ``general.architecture`` the loader rejects them by. A drafter is a few layers of
-    its target, so one at least as large as the target cannot be drafting for it, and
-    an unknown size on either side stays out rather than risk planning a whole model.
+    weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the
+    ``general.architecture`` the loader rejects them by, but a drafter is a few layers
+    of its target and cannot outweigh it. An unknown size stays out.
 
-    Both rules filter families BEFORE the ranking, so an oversized or half-published
-    name at the top of the order steps aside for a usable sidecar behind it instead of
-    taking the plan down with it.
+    Both rules filter BEFORE the ranking, so an oversized or half-published name at the
+    top steps aside for a usable sidecar behind it.
     """
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
@@ -268,8 +265,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         )
         # Per variant, unlike mmproj and the MTP drafter: ranked against the weight
         # being fetched, so a multi-family repo does not hand B the drafter naming A.
-        # Ranked against the family plan_from_expected_files will KEEP, not the first
-        # in the listing, or a two-family variant key pairs the discarded one's sidecar.
+        # Against the family plan_from_expected_files KEEPS, not the listing's first,
+        # or a two-family variant key pairs the discarded one's sidecar.
         kept_main = _one_shard_family(main_expected)
         target_weight_name = (
             min(file.path for file in kept_main).rsplit("/", 1)[-1] if kept_main else None

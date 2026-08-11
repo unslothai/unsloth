@@ -5477,12 +5477,10 @@ def _remote_gguf_companion_bytes(
             # counting it here would price a file the load cannot fetch.
             if include_dflash and _is_root_dflash_drafter_path(name):
                 dflash_sizes[name] = size
-        # Same preference order the download uses, so the budget sizes the file the
-        # launch will actually fetch, and by whole shard SET: llama-server maps every
-        # shard, so pricing the one the ranking picked halved a two-shard sidecar and
-        # let the guard admit a load that evicts the training run it protects.
-        # Incomplete sets are dropped rather than priced, because the fetch now refuses
-        # them: a listing missing a shard is not a sidecar this load can end up on.
+        # The download's preference order, by whole shard SET: llama-server maps every
+        # shard, so pricing the picked one halved a two-shard sidecar and let the guard
+        # admit a load that evicts the training run. Incomplete sets are dropped, not
+        # priced, since the fetch refuses them.
         _dspark_sizes = dict(dspark_candidates)
         dspark_families = [
             (
@@ -5746,9 +5744,8 @@ def _estimate_gguf_required_gb(
         # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
         # protects a running training job still has to charge for it.
         # Extra args owning --spec-type end _build_speculative_flags before any mode
-        # branch runs, so neither the forced mode nor the Auto promotion reaches the
-        # sidecar and charging it refuses a load for bytes nothing will open. Extra
-        # args asking for draft-dflash themselves are the one case that still pays.
+        # branch, so neither forced nor Auto reaches the sidecar and charging it refuses
+        # a load for nothing. Extras asking for draft-dflash themselves still pay.
         _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
         _forced_dflash = bool(
             _extra_args_requests_dflash(llama_extra_args, env = {})
@@ -5801,11 +5798,10 @@ def _estimate_gguf_required_gb(
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
             elif dflash_requested:
-                # Only when the extras own --spec-type: _build_speculative_flags then
-                # returns before discovery's sidecar is ever emitted, so llama-server
-                # opens the extras' --model-draft alone and charging both billed two
-                # drafters for one. Without --spec-type Studio still emits its own, and
-                # which of the two lands is genuinely unknown, so both stay charged.
+                # Only when extras own --spec-type: _build_speculative_flags then
+                # returns before discovery's sidecar is emitted, so llama-server opens
+                # theirs alone. Without it Studio emits its own too and which lands is
+                # unknown, so both stay charged.
                 _manual_draft = (
                     _extra_args_mtp_draft_path(llama_extra_args, env = {})
                     if _extra_args_own_spec
@@ -5889,9 +5885,8 @@ def _estimate_gguf_required_gb(
                 ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
                 include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
-                # The size the DFlash bound measures candidates against, so the guard
-                # stops charging for weights the fetch would refuse as too big to be
-                # a drafter.
+                # What the DFlash bound measures candidates against, so the guard stops
+                # charging for weights the fetch refuses as too big to be a drafter.
                 weight_bytes = int(main_bytes or 0),
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which

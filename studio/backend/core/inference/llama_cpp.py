@@ -4134,11 +4134,9 @@ class LlamaCppBackend:
             and self._spec_fallback_reason == "drafter_not_found"
             and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
-            # DFlash asks through _dflash_retry_needed below instead. A permanent
-            # listing error (gated repo, offline) records no answer at all, so
-            # _dflash_sidecar_absent stays False and this arm relaunched a healthy
-            # server on every Apply; the flag is set only for the failures worth
-            # another attempt.
+            # DFlash asks through _dflash_retry_needed below, which is set only for
+            # retryable failures. A permanent listing error records no answer, so
+            # _dflash_sidecar_absent stays False and this arm relaunched forever.
             and self._spec_drafter_kind != "dflash"
             and not spec_owned_by_extra_args
         ):
@@ -8110,9 +8108,8 @@ class LlamaCppBackend:
         # disagree about what belongs to a set; empty for the single-file case,
         # which is every mmproj and every published sidecar so far.
         extra_shards = _gguf_extra_shards(available, target)
-        # The filename carries the set size, so a listing missing part of it is
-        # answerable before the download rather than after: half a split companion is
-        # not a companion, the same rule the snapshot and cache reuse above apply.
+        # The filename carries the set size, so a short listing is answerable before
+        # the download: half a split companion is not one, as the reuse paths above say.
         _shard_total = _SHARD_FULL_RE.match(target)
         if _shard_total and len(extra_shards) + 1 != int(_shard_total.group(3)):
             logger.info(
@@ -8122,9 +8119,8 @@ class LlamaCppBackend:
                 len(extra_shards) + 1,
                 _shard_total.group(3),
             )
-            # Settled, not retryable: the listing answered and this is what it said, so
-            # the caller records absence rather than reloading on every Apply hoping the
-            # same listing says something else.
+            # Settled, not retryable: the listing answered, so the caller records
+            # absence rather than reloading on every Apply.
             if outcome is not None:
                 outcome["listed"] = False
             return None
@@ -8532,10 +8528,9 @@ class LlamaCppBackend:
                 for name in candidates
                 if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
-            # Same bound dflash_plan_files applies, for the same reason: dflash- is a
-            # prefix real weights carry, the header only reads once the bytes are here,
-            # and a drafter is a few layers of its target so it cannot outweigh it.
-            # Sizes the listing does not carry leave the candidate in, as before.
+            # Same bound as dflash_plan_files: dflash- is a prefix real weights carry,
+            # the header only reads once the bytes are here, and a drafter is a few
+            # layers of its target. An unlisted size leaves the candidate in, as before.
             sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
             try:
                 target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
@@ -8547,12 +8542,11 @@ class LlamaCppBackend:
                     for name in candidates
                     if _is_root_dflash_drafter_path(name)
                     and Path(name).name not in rejected
-                    # Before the ranking, as dflash_plan_files is: a set the listing
-                    # only half carries is refused by the fetch, and returning it
-                    # ends the loop instead of reaching the complete one behind it.
+                    # Before the ranking, as dflash_plan_files is: the fetch refuses a
+                    # half-listed set, and returning it ends the loop.
                     and split_listing_is_complete(candidates, name)
-                    # Whole shard set, not the picked shard: each half of a split
-                    # ordinary weight can sit under the target while the set does not.
+                    # Whole set, not the picked shard: each half of a split weight can
+                    # sit under the target while the set does not.
                     and not (
                         target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
                     )
@@ -10444,9 +10438,8 @@ class LlamaCppBackend:
                 # drafter it was never going to carry.
                 self._spec_fallback_reason = None
                 self._spec_drafter_kind = None
-                # DFlash discovery runs before the metadata read that classifies this as
-                # diffusion, so a transient sidecar failure can have set the retry flag
-                # for a server that carries no drafter at all.
+                # Discovery runs before the metadata read that says diffusion, so a
+                # transient sidecar failure can set this for a drafterless server.
                 self._dflash_retry_needed = False
                 with self._lock:
                     if self._cancel_event.is_set():
