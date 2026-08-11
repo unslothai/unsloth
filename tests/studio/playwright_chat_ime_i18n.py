@@ -123,18 +123,35 @@ with sync_playwright() as p:
     # A send answers "does this thread / message row exist yet" with a GET that
     # 404s until the row lands (#8136 replaced a full listing with that read),
     # and the browser logs every 404 as a console.error with no URL in its text.
-    # Those two reads are expected traffic on a healthy send, so they are matched
-    # on the failing resource's URL -- taken from the console message's location,
-    # not its text -- and nothing else is exempted.
+    # Those two reads are expected traffic on a healthy send. The URL alone does
+    # not identify them: a persistence PUT or PATCH to the very same path 404s on
+    # exactly these patterns, and silently exempting that would hide a real
+    # failure to save. So the exemption is resolved against the response ledger
+    # below -- a console 404 is forgiven only if an actual GET 404 was observed
+    # at that URL, and each observed GET is spent by at most one console error.
     EXPECTED_404_URL_RES = (
         re.compile(r"/api/chat/threads/[^/?#]+$"),
         re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),
     )
 
-    def _is_expected_send_404(text: str, url: str) -> bool:
-        if "status of 404" not in text:
-            return False
+    # url -> count of GET responses that returned 404 and are not yet spent.
+    unspent_get_404s: dict[str, int] = {}
+    # (text, url) for console 404s whose URL matched; resolved after the run.
+    deferred_404_console: list[tuple[str, str]] = []
+
+    def _url_is_exemptible(url: str) -> bool:
         return any(pattern.search(url) for pattern in EXPECTED_404_URL_RES)
+
+    def _on_response(response):
+        try:
+            if response.status != 404:
+                return
+            url = response.url
+            if response.request.method != "GET" or not _url_is_exemptible(url):
+                return
+            unspent_get_404s[url] = unspent_get_404s.get(url, 0) + 1
+        except Exception:
+            return
 
     def _on_console(m):
         if m.type != "error":
@@ -146,15 +163,30 @@ with sync_playwright() as p:
                 url = (m.location or {}).get("url", "") or ""
             except Exception:
                 url = ""
-            if _is_expected_send_404(text, url):
+            if "status of 404" in text and _url_is_exemptible(url):
+                deferred_404_console.append((text, url))
                 return
             console_errors.append(text)
         except Exception:
             return
 
+    def _resolve_deferred_404s() -> None:
+        """Promote every console 404 with no matching unspent GET into a failure.
+
+        Ordering between the response event and the console error is not
+        guaranteed, so resolution happens once at the end rather than inline.
+        """
+        for text, url in deferred_404_console:
+            remaining = unspent_get_404s.get(url, 0)
+            if remaining > 0:
+                unspent_get_404s[url] = remaining - 1
+                continue
+            console_errors.append(text)
+
     def _attach_listeners(target):
         target.on("pageerror", lambda e: page_errors.append(str(e)))
         target.on("console", _on_console)
+        target.on("response", _on_response)
 
     _attach_listeners(page)
 
@@ -817,6 +849,7 @@ with sync_playwright() as p:
 
     # 7. Final state: filter benign 401 noise via is_benign_*; fail on real errors.
     shoot("07-final")
+    _resolve_deferred_404s()
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]
     probe_cancel_500_allowance = expected_probe_cancel_500s[0]
     real_console_errors = []
