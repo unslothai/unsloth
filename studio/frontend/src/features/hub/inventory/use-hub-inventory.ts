@@ -37,7 +37,10 @@ import {
   defaultCapabilities,
   normalizeTimestamp,
 } from "./view-models";
-import { INVENTORY_FRESHNESS_WINDOW_MS } from "./inventory-freshness";
+import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  isInventoryStampFresh,
+} from "./inventory-freshness";
 
 export interface HubInventory {
   cachedRows: CachedInventoryRow[];
@@ -610,8 +613,11 @@ export function useHubInventory(
   const emptyRevalidationFresh = relevantInventorySources.every(
     (source) =>
       source.error === null &&
-      source.revalidatedAt !== null &&
-      now - source.revalidatedAt < INVENTORY_FRESHNESS_WINDOW_MS,
+      isInventoryStampFresh(
+        source.revalidatedAt,
+        now,
+        INVENTORY_FRESHNESS_WINDOW_MS,
+      ),
   );
   const { emptyRevalidationRequired, inventorySettled } =
     resolveInventorySettlement({
