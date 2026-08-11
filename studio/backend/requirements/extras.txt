@@ -20,9 +20,10 @@ openai-whisper==20250625
 # unsatisfiable. Lift both together.
 av==15.1.0
 uroman==1.3.1.1                  # 4.0 MB - used for Outetts.
-# 19.9 MB - used for Outetts. The 0.996.11+ wheels stop at cp313, so a 3.14 macOS
-# host has no binary candidate and falls back to the last sdist-carrying release,
-# which is what the resolver already picked here before this was pinned.
+# 19.9 MB - used for Outetts. No release ships a macOS cp314 wheel (0.996.12 added
+# cp314 for Linux and win_amd64 only), so a 3.14 macOS host has no binary candidate
+# and falls back to 0.996.5, the last release carrying an sdist. That is what the
+# resolver already picked there before this was pinned.
 MeCab==0.996.13; sys_platform != "darwin" or python_version < "3.14"
 MeCab==0.996.5; sys_platform == "darwin" and python_version >= "3.14"
 inflect==7.5.0                   # number-to-words, required by OuteTTS

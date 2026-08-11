@@ -29,7 +29,8 @@ nest-asyncio==1.6.0
 # HF ecosystem (from [huggingfacenotorch] extras in pyproject.toml)
 wheel>=0.42.0
 packaging==26.3
-# numpy raises its Python floor every minor release, so the pin is per-interpreter.
+# numpy moves its Python floor every second minor release (2.0 >=3.9, 2.1 >=3.10,
+# 2.3 >=3.11, 2.5 >=3.12), so the pin is per-interpreter.
 numpy==2.5.2; python_version >= "3.12"
 numpy==2.4.6; python_version >= "3.11" and python_version < "3.12"
 numpy==2.2.6; python_version >= "3.10" and python_version < "3.11"
@@ -66,6 +67,8 @@ httpcore==1.0.9
 # so distrusted roots stay trusted and newly added ones never arrive. It is pinned
 # here for the same reason as everything else in this file, but treat a bump as a
 # security update rather than routine churn, and refresh it on its own schedule.
+# The same applies to idna, h11 and httpcore above and below: they sit on the TLS
+# and HTTP request path, so they belong on that schedule too, not on churn.
 certifi==2026.7.22
 idna==3.18
 anyio>=3.0,<4.14.0               # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
@@ -77,8 +80,11 @@ tokenizers<=0.23.0
 transformers==5.5.0; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 trl>=0.18.2,!=0.19.0,<=0.24.0
-sentence-transformers==5.7.0; python_version >= "3.10"
-sentence-transformers==5.1.2; python_version < "3.10"
+# Matches extras-no-deps.txt rather than the newest release: that file installs
+# --no-deps too and runs after this one, so whatever it names wins. Pinning a
+# higher version here would record a number no install ever ends up with. Bump
+# both together.
+sentence-transformers==5.2.0
 cut_cross_entropy==25.1.1
 pillow==12.3.0; python_version >= "3.10"
 pillow==11.3.0; python_version < "3.10"
