@@ -265,3 +265,24 @@ test("the rejection reaches the caller that queued it", async () => {
     /second failed/,
   );
 });
+
+test("per item keys let a later pin be stamped first, one key per gallery does not", async () => {
+  // The server stamps pinned_at when it RUNS the PATCH and orders pins by that stamp. Two requests
+  // in flight together can therefore be stamped in either order, which is what a per-item key
+  // allowed: the strip showed the click order and the next load showed the stamp order.
+  const stamped = async (keyFor: (id: string) => string) => {
+    const order: string[] = [];
+    const patch = (id: string, ms: number) => async () => {
+      await new Promise((r) => setTimeout(r, ms));
+      order.push(id);
+    };
+    // "a" is clicked first but is the slower request.
+    await Promise.all([
+      serializeById(keyFor("a"), patch("a", 20)),
+      serializeById(keyFor("b"), patch("b", 0)),
+    ]);
+    return order;
+  };
+  assert.deepEqual(await stamped((id) => `per-item:${id}`), ["b", "a"]);
+  assert.deepEqual(await stamped(() => "one-gallery"), ["a", "b"]);
+});

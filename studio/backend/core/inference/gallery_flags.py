@@ -71,15 +71,21 @@ def _valid_entry(entry: Any) -> bool:
 
 
 def _sanitize_entry(entry: Any) -> Optional[dict[str, Any]]:
-    """The entry with unreadable fields dropped, or None when nothing usable is left.
+    """The entry rewritten into a shape this module can read, or None when it held nothing.
 
-    Repairs rather than discards: a bad ``pinned_at`` must not take an ``archived`` flag down with
-    it, since dropping that would hand the item to the next ``clear``."""
+    Damage to ``archived`` is RESOLVED to True, never dropped. Dropping it would turn "we cannot
+    tell whether this was archived" into "this is active", and active is what ``clear`` deletes;
+    an item wrongly moved to the archive shelf is one click to undo, an item wrongly deleted is
+    gone. An ABSENT ``archived`` is not damage: unarchiving removes the key, so absent genuinely
+    means active. A non-dict entry has no readable field at all and only exists because something
+    was flagged, so it resolves the same safe way.
+
+    ``pinned_at`` is dropped instead, since losing a pin costs the user an ordering, not a file."""
     if not isinstance(entry, dict):
-        return None
+        return {"archived": True}
     clean = dict(entry)
     if "archived" in clean and not isinstance(clean["archived"], bool):
-        clean.pop("archived")
+        clean["archived"] = True
     if "pinned_at" in clean and _pinned_at(clean) is None:
         clean.pop("pinned_at")
     return clean or None

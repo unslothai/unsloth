@@ -148,9 +148,9 @@ export async function hasUnknownRecord<T extends FlaggableItem>(
 const queues = new Map<string, Promise<unknown>>();
 
 /**
- * Run `task` after every task already queued under `key`, so two fast clicks on the same item
- * cannot have their PATCHes land out of click order and leave the server on the earlier intent.
- * Different keys stay parallel: pinning two images should not queue behind each other.
+ * Run `task` after every task already queued under `key`, so a burst of clicks reaches the server
+ * in click order rather than whichever request happens to arrive first. Different keys stay
+ * parallel, so one gallery's writes never wait on another's.
  *
  * A rejected task does not break the chain; the next one still runs, and the rejection is still
  * delivered to whoever awaited it.

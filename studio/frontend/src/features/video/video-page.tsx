@@ -1220,9 +1220,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     })();
   }, [selected, ensureSrc]);
 
+  // Bumped by every local change to the strip: a pin, an archive, a delete, a merged generation,
+  // a page appended. A resync started before one of those cannot tell that its snapshot is now
+  // behind, so it compares this instead of applying a window the user has already moved off.
+  const stripEpoch = useRef(0);
+
   const loadGallery = useCallback(async () => {
     try {
       const page = await getVideoGallery(0, PAGE_SIZE);
+      stripEpoch.current += 1;
       galleryCache.videos = page.videos;
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
@@ -1241,6 +1247,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     loadingMore.current = true;
     try {
       const page = await getVideoGallery(galleryCache.videos.length, PAGE_SIZE);
+      stripEpoch.current += 1;
       setVideos((prev) => {
         const seen = new Set(prev.map((v) => v.id));
         const next = [...prev, ...page.videos.filter((v) => !seen.has(v.id))];
@@ -1290,11 +1297,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Drop a clip from the strip. `discardLink` is for a real delete: the bytes are gone, so the
   // cached link must go and any mint in flight must throw its result away. An archived clip keeps
   // both, since the archived view plays the same file.
-  // Bumped by every local change to the strip (pin, archive, delete). A resync started before a
-  // change cannot tell that its snapshot is now behind, so it compares this instead of applying a
-  // window the user has already moved off.
-  const stripEpoch = useRef(0);
-
   const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
     if (discardLink) {
       galleryCache.srcById.delete(id);
@@ -1390,9 +1392,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         return next;
       });
       try {
-        // Serialized per clip: two quick toggles must reach the server in click order, or it
-        // settles on the earlier one and the strip disagrees on the next load.
-        await serializeById(`video-pin:${id}`, () => setGalleryVideoFlags(id, { pinned }));
+        // One queue for the whole gallery, not one per clip. The server stamps `pinned_at` when
+        // it runs the PATCH and orders pins by that stamp, so two requests in flight together can
+        // be stamped in either order and the strip disagrees with the next load. Issuing them one
+        // at a time makes the stamps follow the clicks.
+        await serializeById("video-pin", () => setGalleryVideoFlags(id, { pinned }));
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to pin video");
         // Put the old order back rather than leave the strip lying about server state, but only
@@ -1462,6 +1466,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     galleryCache.refreshed.clear();
     // Every mint in flight now belongs to a cleared gallery, so their links are discarded on arrival. The epoch covers unlisted ids too.
     galleryCache.epoch += 1;
+    stripEpoch.current += 1;
     galleryCache.videos = [];
     galleryCache.hasMore = false;
     galleryCache.selectedId = null;
@@ -1687,6 +1692,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             // Merge the new clip and mint its link. Sorted, not prepended: a new clip is unpinned,
             // so the server puts it after the pinned group.
             const clip = p.video;
+            stripEpoch.current += 1;
             setVideos((prev) =>
               sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
             );
@@ -1751,6 +1757,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           const clip = g.video;
           // Deleted this session: the backend clears its terminal record on delete, but a client racing that must not merge a record whose file is gone.
           if (!galleryCache.deleted.has(clip.id)) {
+            stripEpoch.current += 1;
             setVideos((prev) =>
               prev.some((v) => v.id === clip.id) ? prev : sortGalleryItems([clip, ...prev]),
             );

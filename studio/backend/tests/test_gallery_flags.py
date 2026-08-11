@@ -241,10 +241,12 @@ def test_a_write_repairs_a_store_with_a_malformed_entry(gdir):
     flags.set_flags(gdir, "new", pinned = True)
     # Trusted again, so a default clear is no longer blocked.
     items = flags.read_trusted(gdir)
-    assert set(items) == {"good", "new"}
+    assert set(items) == {"good", "bad", "new"}
     # The readable flags survived the repair.
     assert flags.is_archived(items, "good") is True
     assert flags.flags_for(items, "new")["pinned"] is True
+    # The unreadable one is kept on the archive shelf rather than handed to the next clear().
+    assert flags.is_archived(items, "bad") is True
 
 
 @pytest.mark.parametrize("archived", [None, 1, "yes", []])
@@ -278,13 +280,25 @@ def test_a_write_repairs_a_bad_field_without_dropping_the_archive(gdir):
     assert flags.flags_for(items, "a")["pinned"] is False
 
 
-def test_a_write_repairs_a_non_bool_archived(gdir):
+def test_a_write_never_repairs_an_archive_into_an_active_item(gdir):
+    # Dropping the unreadable flag would leave the store trusted and the item active, so the next
+    # default clear() would delete a file that was on the archive shelf. Resolve it the safe way.
     _store(gdir).write_text(
         json.dumps({"version": 1, "items": {"a": {"archived": None}}}), encoding = "utf-8"
     )
     flags.set_flags(gdir, "b", pinned = True)
-    # The entry had nothing readable left, so it goes; "b" is trusted from here on.
-    assert set(flags.read_trusted(gdir)) == {"b"}
+    items = flags.read_trusted(gdir)
+    assert flags.is_archived(items, "a") is True
+    assert flags.flags_for(items, "b")["pinned"] is True
+
+
+def test_an_absent_archived_key_is_not_treated_as_damage(gdir):
+    # Unarchiving removes the key, so absent means active and must stay active through a repair.
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400}}}), encoding = "utf-8"
+    )
+    flags.set_flags(gdir, "b", pinned = True)
+    assert flags.is_archived(flags.read_trusted(gdir), "a") is False
 
 
 def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):

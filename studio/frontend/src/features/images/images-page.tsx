@@ -1477,9 +1477,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  // Bumped by every local change to the strip: a pin, an archive, a delete, a merged generation,
+  // a page appended. A resync started before one of those cannot tell that its snapshot is now
+  // behind, so it compares this instead of applying a window the user has already moved off.
+  const stripEpoch = useRef(0);
+
   const loadGallery = useCallback(async () => {
     try {
       const page = await getGallery(0, PAGE_SIZE);
+      stripEpoch.current += 1;
       galleryCache.images = page.images;
       galleryCache.hasMore = page.has_more;
       setImages(page.images);
@@ -1499,6 +1505,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadingMore.current = true;
     try {
       const page = await getGallery(galleryCache.images.length, PAGE_SIZE);
+      stripEpoch.current += 1;
       setImages((prev) => {
         const seen = new Set(prev.map((i) => i.id));
         const next = [...prev, ...page.images.filter((i) => !seen.has(i.id))];
@@ -1557,11 +1564,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
-
-  // Bumped by every local change to the strip (pin, archive, delete). A resync started before a
-  // change cannot tell that its snapshot is now behind, so it compares this instead of applying a
-  // window the user has already moved off.
-  const stripEpoch = useRef(0);
 
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
@@ -1662,9 +1664,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return next;
       });
       try {
-        // Serialized per image: two quick toggles must reach the server in click order, or it
-        // settles on the earlier one and the strip disagrees on the next load.
-        await serializeById(`image-pin:${id}`, () => setGalleryImageFlags(id, { pinned }));
+        // One queue for the whole gallery, not one per image. The server stamps `pinned_at` when
+        // it runs the PATCH and orders pins by that stamp, so two requests in flight together can
+        // be stamped in either order and the strip disagrees with the next load. Issuing them one
+        // at a time makes the stamps follow the clicks.
+        await serializeById("image-pin", () => setGalleryImageFlags(id, { pinned }));
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to pin image");
         // Put the old order back rather than leave the strip lying about server state, but only
@@ -3069,6 +3073,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Merge this run's records and load their blobs. Sorted, not prepended: a new image is
         // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
         // ahead of pins until the next reload.
+        stripEpoch.current += 1;
         setImages((prev) => sortGalleryItems([...res.images, ...prev]));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);

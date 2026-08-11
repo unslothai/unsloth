@@ -30,6 +30,11 @@ const ARCHIVED_PAGE_SIZE = 20;
 // rows in a settings list, and only the loaded pages are ever on screen.
 const ARCHIVED_THUMB_BUDGET_BYTES = 32 * 1024 * 1024;
 
+// Retries for a thumbnail that failed to load, and the step between them. Capped so a row whose
+// file is genuinely gone stops asking instead of retrying for as long as the dialog is open.
+const THUMB_RETRY_LIMIT = 2;
+const THUMB_RETRY_DELAY_MS = 750;
+
 export type ArchivedMediaKind = "images" | "videos";
 
 /** The shape both galleries share, once flattened for this list. */
@@ -173,6 +178,21 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // Thumbnails for VISIBLE rows that do not have one yet. `requested` is a ref, not state, so a
   // landing thumbnail cannot re-enter this effect and refetch the rest.
   const requested = useRef<Set<string>>(new Set());
+  // Failed attempts per row. Clearing `requested` on a failure changes nothing this effect
+  // watches, so a visible row would stay blank until the user happened to scroll it away and
+  // back. The tick schedules the retry; the count stops a permanently broken row from looping.
+  const failures = useRef(new Map<string, number>());
+  const [retryTick, setRetryTick] = useState(0);
+  // Only an unmount has to discard a fetch that already completed. A plain effect re-run (a
+  // scroll, another page) leaves that work perfectly usable, and throwing it away is what left
+  // rows blank: `requested` outlives the effect, so nothing would ever fetch them again.
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -184,10 +204,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         try {
           if (isImages) {
             const { url, bytes } = await fetchGalleryObjectUrl(row.url);
-            if (cancelled) {
+            // Dropped from the list, or the dialog closed: there is no row left to show it on,
+            // and caching it after the unmount sweep would leak the blob.
+            if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
               URL.revokeObjectURL(url);
-              // `requested` outlives this effect, so abandoning the id here would make every later
-              // pass skip the row as already fetched and leave its thumbnail blank for good.
               requested.current.delete(row.id);
               return;
             }
@@ -204,26 +224,36 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               }
               return next;
             });
+            // Stale generation: stop iterating, but keep what this fetch already paid for.
+            if (cancelled) return;
             continue;
           }
           // A clip is a short-lived signed link, not a blob: nothing to budget or revoke.
           const src = await fetchGalleryVideoSignedUrl(row.id);
-          if (cancelled) {
+          if (!alive.current || !rowsRef.current.some((r) => r.id === row.id)) {
             requested.current.delete(row.id);
             return;
           }
           setThumbs((prev) => ({ ...prev, [row.id]: src }));
+          if (cancelled) return;
         } catch {
-          // A missing thumbnail still leaves a usable, actionable row. Allow a retry on the next
-          // pass rather than pinning the failure forever.
+          // A missing thumbnail still leaves a usable, actionable row, so a failure is not fatal.
+          // Schedule the retry rather than only clearing the flag, which nothing would act on.
           requested.current.delete(row.id);
+          const attempts = (failures.current.get(row.id) ?? 0) + 1;
+          failures.current.set(row.id, attempts);
+          if (attempts <= THUMB_RETRY_LIMIT) {
+            setTimeout(() => {
+              if (alive.current) setRetryTick((tick) => tick + 1);
+            }, THUMB_RETRY_DELAY_MS * attempts);
+          }
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages, visible]);
+  }, [rows, isImages, visible, retryTick]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
