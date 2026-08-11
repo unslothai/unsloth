@@ -49,3 +49,48 @@ test("retries after a successful value marked as non-cacheable", async () => {
   assert.equal(await read(), 2);
   assert.equal(attempts, 2);
 });
+
+test("every concurrent caller sees a rejection, from one underlying read", async () => {
+  let calls = 0;
+  const read = createRetryableSharedRead(async () => {
+    calls += 1;
+    await Promise.resolve();
+    throw new Error("backend down");
+  });
+
+  const settled = await Promise.allSettled([read(), read(), read()]);
+  assert.deepEqual(
+    settled.map((r) => r.status),
+    ["rejected", "rejected", "rejected"],
+  );
+  assert.equal(calls, 1);
+});
+
+test("a read that throws synchronously rejects rather than escaping", async () => {
+  let calls = 0;
+  const read = createRetryableSharedRead(() => {
+    calls += 1;
+    throw new Error("synchronous failure");
+  });
+
+  await assert.rejects(read(), /synchronous failure/);
+  await assert.rejects(read(), /synchronous failure/);
+  assert.equal(calls, 2);
+});
+
+test("an undefined record still counts as a cached value", async () => {
+  // Incognito and deleted threads resolve to undefined; that is an answer, not
+  // a miss, so it must not be re-read on every consumer.
+  let calls = 0;
+  const read = createRetryableSharedRead(
+    async () => {
+      calls += 1;
+      return { thread: undefined, cacheable: true };
+    },
+    (result) => result.cacheable,
+  );
+
+  assert.equal((await read()).thread, undefined);
+  assert.equal((await read()).thread, undefined);
+  assert.equal(calls, 1);
+});
