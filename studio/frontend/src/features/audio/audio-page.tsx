@@ -297,6 +297,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const pendingTtsLoad = useRef<{
     generation: number;
     repoId: string;
+    /** What the load request actually sent, which is what a cancel has to name. */
+    loadTarget: string;
     loadRequestId: string;
     controller: AbortController;
     requestStarted: boolean;

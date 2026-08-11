@@ -4582,7 +4582,6 @@ export function HubModelPicker({
           <GgufVariantExpander
             repoId={c.repo_id}
             pipelineTag={c.task ?? null}
-            filenamePrefix={curatedGgufFilenamePrefix(c.repo_id)}
             loadId={c.load_id}
             cachePath={c.cache_path}
             onDevice={true}
@@ -5818,7 +5817,6 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
-                                filenamePrefix={curatedGgufFilenamePrefix(id)}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
@@ -5942,7 +5940,6 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               pipelineTag={pipelineTagById.get(id) ?? null}
-                              filenamePrefix={curatedGgufFilenamePrefix(id)}
                               onSelect={onSelect}
                               resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
@@ -6057,7 +6054,6 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 repoId={id}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
-                                filenamePrefix={curatedGgufFilenamePrefix(id)}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
