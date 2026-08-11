@@ -1,0 +1,253 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Deterministic notebook training smoke test on real Kaggle T4 hardware.
+#
+# Why T4 and why not a GitHub runner: every other GPU-adjacent job in this
+# repo either has no GPU at all or has one nobody's free Colab session has.
+# T4 is the card the notebooks are written against -- sm_75, no bf16, no
+# flash-attention 2, 16GB. A regression that only appears there is invisible
+# to the rest of CI. Kaggle gives us that card for free, two per session.
+#
+# What runs: tests/kaggle/t4_smoke/run_t4_smoke.py, one instance per T4.
+# 4-bit load of a tiny model, a few LoRA steps on an in-repo canary dataset,
+# adapter save, greedy inference. It asserts run-to-run bitwise equality of
+# per-step loss and grad_norm, exact emission of the canary string, and
+# per-step metrics inside a band around a committed reference. See that
+# file's docstring for what each assertion is worth.
+#
+# ---------------------------------------------------------------------
+# BUDGET. Read this before changing any trigger.
+# ---------------------------------------------------------------------
+# The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
+# budget (60h on this account at time of writing; Kaggle's documented
+# baseline is 30h and the surplus is a discretionary "floating" allowance
+# that can be withdrawn). It is shared with every other use of that account,
+# so this workflow is built to be a minority consumer of it, in four
+# independent layers:
+#
+#   1. paths filters. Measured over one week of this repo: 444 commits
+#      landed on main and 517 pull requests were opened, but only 9.9% of
+#      those commits and 7.5% of a 40-PR sample touched unsloth/ at all.
+#      The filter is what turns a four-figure event count into a low
+#      three-figure one.
+#   2. A ~10% sampling gate (.github/scripts/kaggle_t4_ci/gate.py), derived
+#      from the run id so a re-run cannot reroll the dice.
+#   3. A quota floor. The gate reads Kaggle's own accelerator-quota API and
+#      refuses to start unless what remains covers this run's worst case
+#      PLUS a large reserve. The reserve is the real ceiling on what CI can
+#      consume in a week and is deliberately set so CI yields to human use
+#      of the same account rather than competing with it.
+#   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2
+#      per ACCOUNT, and that cap is not workflow-aware. If anything of this
+#      account's is already in flight, this job stands down.
+#
+# Expected steady-state cost, with the numbers above: roughly 150-200
+# eligible invocations a week, ~10% sampled, one kernel each, bounded at 45
+# minutes and typically far under that. See
+# plans/kaggle_t4_notebook_ci.md for the full arithmetic.
+#
+# ---------------------------------------------------------------------
+# FAILURE SEMANTICS
+# ---------------------------------------------------------------------
+# Red ONLY when the payload ran on a T4 and its assertions failed. Every
+# other outcome -- not sampled, no quota, account busy, push throttled,
+# kernel died on Kaggle's side, evidence would not download -- is a SKIP or
+# a warning and exits 0. Nothing was learned about the code in those cases,
+# so nothing should block a merge.
+#
+# This job is NOT intended to be a required check. It runs on a minority of
+# commits by design, so requiring it would block every commit it declined
+# to run on.
+#
+# ---------------------------------------------------------------------
+# CREDENTIALS
+# ---------------------------------------------------------------------
+# KAGGLE_ACCESS_TOKEN_GH is passed as KAGGLE_API_TOKEN to the gate and the
+# launcher only. It is never echoed, never written to an output or an
+# artifact, and never travels to the Kaggle kernel: the kernel receives the
+# notebook and nothing else. Fork pull requests do not receive the secret,
+# and the gate skips cleanly when it is absent.
+
+name: Kaggle T4 Notebook CI
+
+on:
+  pull_request:
+    paths:
+      - 'unsloth/**'
+      - 'tests/kaggle/**'
+      - '.github/scripts/kaggle_t4_ci/**'
+      - '.github/workflows/kaggle-t4-notebook-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'unsloth/**'
+      - 'tests/kaggle/**'
+      - '.github/scripts/kaggle_t4_ci/**'
+      - '.github/workflows/kaggle-t4-notebook-ci.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the sampling gate (quota and concurrency still apply)'
+        type: boolean
+        default: true
+      payloads:
+        description: 'Payloads per kernel (2 uses both T4s of one session)'
+        default: '2'
+      max_steps:
+        description: 'Training steps per payload'
+        default: '10'
+      unsloth_ref:
+        description: 'unslothai/unsloth ref to install and test'
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+
+      # budget-hours is the worst case ONE invocation can cost: the kernel
+      # ceiling set below (45 min), rounded up.
+      #
+      # reserve-hours is a backstop, not the primary control. The primary
+      # control is the sampling rate, which bounds EXPECTED spend to roughly
+      # 5-7 GPU-hours a week (see the arithmetic at the top of this file).
+      # The reserve exists for the case where that estimate is wrong, or
+      # where another consumer of the same account has already spent most of
+      # the week: at 20h it guarantees CI never touches the last third of
+      # the budget, while still leaving normal weeks unaffected.
+      #
+      # Raise it to throttle CI harder. Do not raise it above roughly 45 or
+      # CI will never run at all on a week with any other usage.
+      - name: Decide
+        id: decide
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/gate.py \
+            --percent 10 \
+            --force '${{ github.event.inputs.force || 'false' }}' \
+            --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
+            --label-name kaggle-t4-ci \
+            --budget-hours 1 \
+            --reserve-hours 20
+
+  t4-smoke:
+    name: T4 smoke
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    # 90 min: the kernel ceiling is 45 and collection of the executed
+    # notebooks adds a few, so this only fires if the launcher itself wedged.
+    timeout-minutes: 90
+    # Deliberately NOT keyed on the ref. The Kaggle account is one global
+    # resource with a 2-kernel cap, so two runs of this workflow on
+    # different branches must not overlap. cancel-in-progress is false: a
+    # cancelled run cannot stop the kernel it already pushed, and an
+    # orphaned kernel burns quota to its own ceiling with nobody watching.
+    concurrency:
+      group: kaggle-t4-notebook-ci-account
+      cancel-in-progress: false
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+
+      # The ref the kernel installs and tests. For a pull request that is
+      # the head SHA, so the kernel exercises the proposed code and not the
+      # merge base. Pinned to a SHA rather than a branch name so a push
+      # landing mid-run cannot change what was tested.
+      - name: Resolve the ref under test
+        id: ref
+        run: |
+          REF='${{ github.event.inputs.unsloth_ref }}'
+          if [ -z "$REF" ]; then
+            REF='${{ github.event.pull_request.head.sha || github.sha }}'
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "testing unslothai/unsloth@$REF"
+
+      - name: Build the kernel notebook
+        run: |
+          python .github/scripts/kaggle_t4_ci/build_kernel.py \
+            --payload-dir tests/kaggle/t4_smoke \
+            --out kernel.ipynb \
+            --count '${{ github.event.inputs.payloads || 2 }}' \
+            --unsloth-ref '${{ steps.ref.outputs.ref }}' \
+            --zoo-ref main \
+            --reference t4_qwen2.5-0.5b.json \
+            --smoke-args "--max-steps ${{ github.event.inputs.max_steps || 10 }}" \
+            --per-run-timeout 2100
+
+      # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
+      # kills the session at that point. A runner that is cancelled cannot
+      # clean up after itself, so the ceiling has to be enforced on Kaggle's
+      # side rather than here.
+      - name: Launch on Kaggle and collect
+        id: launch
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/launch.py \
+            --notebook kernel.ipynb \
+            --user danielhanchen \
+            --outdir kaggle_evidence \
+            --expect '${{ github.event.inputs.payloads || 2 }}' \
+            --kernel-timeout-sec 2700 \
+            --max-wait 3600 \
+            --poll-every 60
+
+      # always(): the evidence is most valuable exactly when something went
+      # wrong, and the executed notebooks are kilobytes.
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: kaggle-t4-evidence-${{ github.run_id }}
+          path: |
+            kaggle_evidence/**
+            kernel.ipynb
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Report
+        if: always()
+        run: |
+          python .github/scripts/kaggle_t4_ci/report.py \
+            --evidence kaggle_evidence \
+            --expect '${{ github.event.inputs.payloads || 2 }}'
