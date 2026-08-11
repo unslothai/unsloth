@@ -366,7 +366,9 @@ def set_flags_locked(
             # reported would read back as unset AND take the store's trust down with it, blocking
             # the default clear. Tie with the largest stamp instead: the group then falls back to
             # mtime for those two, which costs an ordering rather than the store.
-            entry["pinned_at"] = now if now > latest else (nudged if math.isfinite(nudged) else latest)
+            entry["pinned_at"] = (
+                now if now > latest else (nudged if math.isfinite(nudged) else latest)
+            )
         else:
             entry.pop("pinned_at", None)
     if archived is not None:
