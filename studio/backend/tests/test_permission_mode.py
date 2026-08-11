@@ -1706,6 +1706,17 @@ def test_high_risk_dispatcher_non_terminal():
         ("import yaml\nyaml.load(s, Loader=pick())", True),  # dynamic loader
         ("import yaml\nyaml.load(s, **kw)", True),  # loader hidden in a splat
         ("import yaml\nyaml.load(s, Loader=yaml.FullLoader)", True),  # RCE before PyYAML 5.4
+        ("import yaml\nyaml.full_load(s)", True),  # same FullLoader, convenience name
+        ("from yaml import full_load\nfull_load(s)", True),
+        # A safe import rebound even once points somewhere else.
+        (
+            "import yaml\nfrom yaml import SafeLoader\nSafeLoader = yaml.Loader\n"
+            "yaml.load(s, Loader=SafeLoader)",
+            True,
+        ),
+        ("import yaml.loader\nyaml.loader.Loader(s).get_data()", True),  # dotted receiver
+        ("from yaml import loader as yl\nyl.Loader(s).get_data()", True),  # submodule name
+        ("import yaml\nfor d in yaml.safe_load_all(open('c.yml')): print(d)", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

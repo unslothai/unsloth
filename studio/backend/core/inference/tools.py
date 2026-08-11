@@ -2530,8 +2530,11 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # is the common way to read a config file.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
 # Loader functions on those modules: `load`/`load_all` carry PyYAML's Loader=
-# form, the `unsafe_*` names are its explicit unsafe helpers.
-_AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset({"load", "load_all", "unsafe_load", "unsafe_load_all"})
+# form, the `unsafe_*` names are its explicit unsafe helpers, and `full_*` build
+# the FullLoader that was an RCE before PyYAML 5.4 (pyyaml is declared unpinned).
+_AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset(
+    {"load", "load_all", "unsafe_load", "unsafe_load_all", "full_load", "full_load_all"}
+)
 # The same deserialize one level down: yaml.Loader(s).get_data() constructs the
 # tagged objects without going through yaml.load, and subclassing one of these
 # (the documented way to extend PyYAML) inherits that.
@@ -3643,14 +3646,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             )
         return False
 
+    def _is_load_module(node) -> bool:
+        # The receiver of a loader: a tracked module name, or a submodule path
+        # under one (yaml.loader.Loader, so the chain is walked to its root).
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in load_module_aliases
+
     def _is_loader_attr(node) -> bool:
         # yaml.unsafe_load / yl.CLoader / torch.load: a loader reached through a
         # tracked module, so json.load and a same-named local method are not it.
         return (
             isinstance(node, ast.Attribute)
             and node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-            and isinstance(node.value, ast.Name)
-            and node.value.id in load_module_aliases
+            and _is_load_module(node.value)
         )
 
     def _is_safe_loader(node) -> bool:
@@ -3660,11 +3669,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             return (
                 node.attr in _AUTO_SAFE_PY_LOAD_CLASSES
                 and node.attr not in assigned_attr_names
-                and isinstance(node.value, ast.Name)
-                and node.value.id in load_module_aliases
+                and _is_load_module(node.value)
             )
         if isinstance(node, ast.Name):
-            return node.id in safe_loader_aliases and node.id not in multi_assigned_names
+            # Any rebinding at all disqualifies the name: the import is not in
+            # assign_counts, so one assignment is enough to point it elsewhere
+            # (SafeLoader = getattr(yaml, "Loader")).
+            return node.id in safe_loader_aliases and node.id not in assign_counts
         return False
 
     def _loads_safely(call) -> bool:
@@ -3802,6 +3813,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # spelling; record it so Loader=SafeLoader stays auto-approved.
                     elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES:
                         safe_loader_aliases.add(alias.asname or alias.name)
+                    else:
+                        # Anything else imported from a loader package may be a
+                        # submodule that carries the loaders (from yaml import
+                        # loader as yl), so treat the name as a receiver.
+                        load_module_aliases.add(alias.asname or alias.name)
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
