@@ -3480,11 +3480,7 @@ async def upload_diffusion_dataset(
                     # Only a media name whose stem casefolds to this one can share the
                     # sidecar, which is exactly what the per-stem index holds.
                     clash = next(
-                        (
-                            n
-                            for n in media_names_by_stem_cf.get(stem_cf, ())
-                            if _shares_sidecar(n)
-                        ),
+                        (n for n in media_names_by_stem_cf.get(stem_cf, ()) if _shares_sidecar(n)),
                         None,
                     )
                 if clash is not None:
@@ -3514,9 +3510,9 @@ async def upload_diffusion_dataset(
             seen_names.add(filename)
             first_name_by_casefold.setdefault(fname_cf, filename)
             if ext in _DIFFUSION_DATASET_MEDIA_EXTS:
-                media_names_by_stem_cf.setdefault(
-                    Path(filename).stem.casefold(), []
-                ).append(filename)
+                media_names_by_stem_cf.setdefault(Path(filename).stem.casefold(), []).append(
+                    filename
+                )
             names.append(filename)
         # Stage each file to a temp name and move it in only once the whole batch is written, so a mid-batch failure leaves the dataset untouched, including any same-name file a direct write would truncate.
         staged: list[tuple[Path, Path]] = []  # (temp, final)
