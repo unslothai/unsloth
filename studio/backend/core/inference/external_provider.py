@@ -6479,13 +6479,54 @@ def _friendly_provider_error_text(
     return raw_message
 
 
+def _readable_provider_error(status_code: int, message: str, provider_type: str) -> str:
+    """Reduce an upstream error body to the sentence it carries.
+
+    OpenAI, Anthropic and Gemini all nest the text under `error`, so the raw
+    body would otherwise reach the UI as a JSON blob. Non-JSON input (already
+    friendly text) passes through unchanged.
+    """
+    import json
+
+    try:
+        payload = json.loads(message)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = None
+
+    text = code = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        source = error if isinstance(error, dict) else payload
+        text = error if isinstance(error, str) else source.get("message")
+        # Gemini sends an int `code`; prefer whichever label is a string.
+        code = next(
+            (
+                c
+                for c in (source.get("code"), source.get("type"), source.get("status"))
+                if isinstance(c, str) and c
+            ),
+            None,
+        )
+
+    if not isinstance(text, str) or not text.strip():
+        # Not JSON means already-friendly text: collapse whitespace and cap so
+        # a stray HTML page can't flood the chat.
+        raw = " ".join(message.split())[:500] if isinstance(message, str) else ""
+        if isinstance(payload, dict) or not raw:
+            return f"{provider_type} returned HTTP {status_code} with no error details."
+        return raw
+
+    text = text.strip()
+    return f"{text} ({code})" if code and code not in text else text
+
+
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
     """Format an error as an SSE data line in OpenAI error format."""
     import json
 
     error_obj = {
         "error": {
-            "message": message,
+            "message": _readable_provider_error(status_code, message, provider_type),
             "type": "provider_error",
             "code": str(status_code),
             "provider": provider_type,

@@ -879,3 +879,45 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         if payload["choices"][0]["delta"]
     )
     assert "<think>plan</think>answer" in combined
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        # OpenAI, Anthropic and Gemini error envelopes.
+        (
+            '{"error": {"message": "You have no credits remaining.",'
+            ' "type": "insufficient_quota", "code": "credit_balance_exhausted"}}',
+            "You have no credits remaining. (credit_balance_exhausted)",
+        ),
+        (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"`temperature` is deprecated for this model."},"request_id":"req_1"}',
+            "`temperature` is deprecated for this model. (invalid_request_error)",
+        ),
+        (
+            '{"error": {"code": 400, "message": "API key not valid.",'
+            ' "status": "INVALID_ARGUMENT"}}',
+            "API key not valid. (INVALID_ARGUMENT)",
+        ),
+        # Already-friendly text passes through; empty/detail-free bodies fall back.
+        ("Timeout waiting for openai response", "Timeout waiting for openai response"),
+        ("", "openai returned HTTP 500 with no error details."),
+        ('{"error": {}}', "openai returned HTTP 500 with no error details."),
+    ),
+)
+def test_upstream_error_body_reduced_to_its_message(body, expected):
+    assert ep_mod._readable_provider_error(500, body, "openai") == expected
+
+
+def test_error_sse_line_carries_no_json_blob(monkeypatch):
+    """A raw upstream body must not reach the client as nested JSON."""
+    line = ep_mod._error_sse_line(
+        429,
+        '{"error": {"message": "Rate limit reached.", "code": "rate_limit_exceeded"}}',
+        "openai",
+    )
+    error = json.loads(line[len("data:"):].strip())["error"]
+    assert error["message"] == "Rate limit reached. (rate_limit_exceeded)"
+    assert "{" not in error["message"]
+    assert error["code"] == "429"
