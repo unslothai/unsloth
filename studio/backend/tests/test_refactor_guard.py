@@ -122,7 +122,10 @@ def test_no_guarded_function_is_driven_by_a_sentinel():
     Every guarded function has to be actually called, or its golden digest pins nothing
     and an arbitrary rewrite of it passes.
     """
-    corpus = refactor_guard.build_corpus()[:200]
+    # The whole corpus, not a slice: several of these functions are constant over any
+    # small prefix of it and only become interesting once the rarer serializations
+    # appear, so a slice reports coverage gaps that are not there.
+    corpus = refactor_guard.build_corpus()
     undrivable = sorted(
         name
         for module in refactor_guard.BEHAVIOUR_MODULES
