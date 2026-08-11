@@ -152,7 +152,14 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 
 
 # ── usable_prequant_source ───────────────────────────────────────────────────────
-def test_usable_source_missing_path_is_none(tmp_path, monkeypatch):
+@pytest.fixture
+def restricted_load_available(monkeypatch):
+    """usable_prequant_source asks whether this install could open a checkpoint, which depends on
+    the host's torchao. The resolution tests below are not about that, so pin it on."""
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
+
+def test_usable_source_missing_path_is_none(tmp_path, monkeypatch, restricted_load_available):
     # An allowlisted but ABSENT path is not a prequant source: load_prequantized_transformer would find no file and fall back
     # to the dense bf16 build after evicting, so the planner must run the dense fit checks up front.
     import os
@@ -163,7 +170,7 @@ def test_usable_source_missing_path_is_none(tmp_path, monkeypatch):
     assert pq.usable_prequant_source(fam, "fp8", path_override = missing) is None
 
 
-def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
+def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch, restricted_load_available):
     # A path OUTSIDE the UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH allowlist (including the empty default) is refused by the loader, so it resolves to None even when it exists.
     ckpt = tmp_path / "model.pt"
     ckpt.write_bytes(b"x")
@@ -172,7 +179,7 @@ def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
 
 
-def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
+def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch, restricted_load_available):
     # Allowlisted, present AND baked for this scheme: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
     import os
 
@@ -185,7 +192,7 @@ def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
 
 
-def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, monkeypatch):
+def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, monkeypatch, restricted_load_available):
     """An int8 checkpoint must not read as an available fp8 pre-quant.
 
     resolve_prequant_source hands back a path source for ANY override without inspecting the file,
@@ -206,7 +213,7 @@ def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, mo
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
 
 
-def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch):
+def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch, restricted_load_available):
     # A file we cannot parse as a pre-quant checkpoint is "unknown", and the loader would reject it
     # too, so planning must budget dense rather than assume a shortcut it will not get.
     import os
@@ -253,7 +260,7 @@ def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
     assert pq.local_prequant_scheme(str(ckpt)) == "fp8"
 
 
-def test_usable_source_repo_unaffected_by_allowlist(monkeypatch):
+def test_usable_source_repo_unaffected_by_allowlist(monkeypatch, restricted_load_available):
     # Hosted-repo sources are first-party and keep resolving with no allowlist at all.
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
@@ -829,6 +836,42 @@ def test_a_torchao_that_resolves_nothing_reports_no_support(monkeypatch):
     assert len(registered) == 1
 
 
+def test_support_is_answered_per_scheme(monkeypatch):
+    """The schemes do not share constructors, and torchao does not retire them together.
+
+    AffineQuantizedTensor and its layout carry every int8 checkpoint and are already deprecated
+    upstream (pytorch/ao#2752), so a release that drops them while keeping Float8Tensor leaves
+    fp8 loadable and int8 not. One answer for both would let planning drop the dense shards for
+    an int8 pick this install cannot open."""
+    torch = types.ModuleType("torch")
+    torch.__version__ = "2.9.1"
+    torch.serialization = types.SimpleNamespace(add_safe_globals = lambda entries: None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    fp8_only = set(pq._SCHEME_REQUIRED_GLOBALS["fp8"])
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
+    monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: [(object(), n) for n in fp8_only])
+
+    assert pq.restricted_prequant_load_supported("fp8") is True
+    assert pq.restricted_prequant_load_supported("int8") is False
+    assert pq.restricted_prequant_load_supported("nvfp4") is False
+    # An unnamed or unknown scheme gets the floor answer the registration already checked.
+    assert pq.restricted_prequant_load_supported() is True
+    assert pq.restricted_prequant_load_supported("something-else") is True
+    # And the source resolver carries the scheme through, so an int8 pick is not offered.
+    fam = _fam(prequant_repos = (("int8", "org/hosted-int8"), ("fp8", "org/hosted-fp8")))
+    assert pq.usable_prequant_source(fam, "int8") is None
+    assert pq.usable_prequant_source(fam, "fp8") is not None
+
+
+def test_the_required_sets_are_a_subset_of_the_allowlist():
+    """A required name the allowlist never registers would refuse its scheme forever."""
+    listed = {f"{module}.{name}" for module, name in pq._PREQUANT_SAFE_GLOBALS}
+    for scheme, required in pq._SCHEME_REQUIRED_GLOBALS.items():
+        assert required <= listed, (scheme, sorted(required - listed))
+
+
 def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monkeypatch, tmp_path):
     """Planning has to ask the loader's question BEFORE it sizes the load.
 
@@ -839,9 +882,9 @@ def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monk
     import os
 
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda: True)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: True)
     assert pq.usable_prequant_source(fam, "int8") is not None
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda: False)
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: False)
     # Hosted and local alike: the loader refuses both, so neither is usable.
     assert pq.usable_prequant_source(fam, "int8") is None
     ckpt = tmp_path / "model.pt"

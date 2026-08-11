@@ -18,6 +18,20 @@ from core.inference.diffusion_prequant import (
     resolve_prequant_source,
 )
 from core.inference.video import VideoBackend
+
+
+@pytest.fixture(autouse = True)
+def _assume_the_restricted_load_is_available(monkeypatch):
+    """These are policy/planning tests, not a check on whether this host's torchao imports.
+
+    ``restricted_prequant_load_supported`` asks whether a pre-quant checkpoint could be
+    deserialized here, and answers no on a machine with no (or a skewed) torchao -- which would
+    turn every hosted-prequant decision below into "keep the dense weights" for a reason these
+    tests are not about. The capability itself is covered in test_diffusion_prequant.py."""
+    import core.inference.diffusion_prequant as _pq
+
+    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
 from core.inference.video_families import (
     VideoFamily,
     detect_video_family,

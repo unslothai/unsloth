@@ -778,7 +778,7 @@ def _h3_auto_denoiser_scheme(
         return None
     from .diffusion_prequant import restricted_prequant_load_supported
 
-    if not restricted_prequant_load_supported():
+    if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
         # An install that cannot restrict the deserialization cannot open a hosted checkpoint at
         # all, and this decision runs BEFORE the download plan: choosing one here would drop the
         # dense denoiser shards for an artifact the loader is going to refuse.
@@ -1870,7 +1870,7 @@ class VideoBackend:
             return False
         from .diffusion_prequant import restricted_prequant_load_supported
 
-        if not restricted_prequant_load_supported():
+        if not restricted_prequant_load_supported(transformer_quant):
             # An install that cannot open a pre-quant checkpoint has to keep the dense shards.
             # This is the decision that COMMITS -- it is what drops 66 GB from the pull -- and it
             # runs for an EXPLICIT request too, which the auto selector's gate never sees.

@@ -129,6 +129,45 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
+# Filled in by the registration: which of the names above this install actually resolved.
+_RESOLVED_SAFE_GLOBALS: set = set()
+
+# What a checkpoint of each scheme actually NAMES, read off the artifacts themselves with
+# pickletools rather than assumed: every hosted repo the family tables list, plus a local bake of
+# each scheme from scripts/build_prequant_checkpoint.py for the two no repo hosts. Only these are
+# required, so a torchao that drops a name nothing serializes does not fail a scheme that works.
+_SCHEME_REQUIRED_GLOBALS: dict = {
+    "int8": frozenset({
+        "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
+        "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
+        "torchao.dtypes.utils.PlainLayout",
+        "torchao.quantization.linear_activation_quantized_tensor."
+        "LinearActivationQuantizedTensor",
+        "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant",
+        "torchao.quantization.quant_primitives.ZeroPointDomain",
+        "torch.torch_version.TorchVersion",
+    }),
+    "fp8": frozenset({
+        # The ALIAS spelling, which is what the fp8 pickles record.
+        "torchao.quantization.Float8Tensor",
+        "torchao.quantization.quantize_.workflows.float8.float8_tensor."
+        "QuantizeTensorToFloat8Kwargs",
+        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+        "torchao.quantization.granularity.PerRow",
+        "torchao.float8.inference.Float8MMConfig",
+        "torch.torch_version.TorchVersion",
+    }),
+    "mxfp8": frozenset({
+        "torchao.prototype.mx_formats.mx_tensor.MXTensor",
+        "torchao.prototype.mx_formats.mx_tensor.QuantizeTensorToMXKwargs",
+        "torchao.prototype.mx_formats.config.ScaleCalculationMode",
+        "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+    }),
+    "nvfp4": frozenset({
+        "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
+        "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
+    }),
+}
 
 
 def _tuple_safe_globals_supported() -> bool:
@@ -191,16 +230,15 @@ def _register_prequant_safe_globals() -> bool:
                 resolved = {name for _obj, name in pairs}
                 # A name a release does not ship is skipped rather than raised, which is right for
                 # a scheme this install cannot produce anyway -- but "some entries resolved" is not
-                # the same as "a checkpoint can be opened". Require the two every artifact needs
-                # whatever its scheme: the version string torch.save stamps into the subclass
-                # state, and at least one real torchao tensor class. Absent, torchao is missing or
-                # too skewed to rebuild anything, and planning must not size a load on it.
-                # Deliberately not per-scheme: the scheme is not known here, and all three torchao
-                # releases install_python_stack pins resolve the whole set.
+                # the same as "a checkpoint can be opened". The floor here is what EVERY artifact
+                # needs whatever its scheme: the version string torch.save stamps into the subclass
+                # state, plus at least one real torchao tensor class. Per-SCHEME completeness is
+                # asked separately, by the caller that knows which scheme it is about to plan for.
                 if "torch.torch_version.TorchVersion" in resolved and any(
                     name.startswith("torchao.") for name in resolved
                 ):
                     add(pairs)
+                    _RESOLVED_SAFE_GLOBALS.update(resolved)
                     # The same derivation the unpickler runs, so a form this torch cannot express
                     # fails here, once, rather than under a load a plan was already sized on.
                     try:
@@ -214,16 +252,26 @@ def _register_prequant_safe_globals() -> bool:
         return ok
 
 
-def restricted_prequant_load_supported() -> bool:
-    """Whether this install can read a pre-quant checkpoint at all.
+def restricted_prequant_load_supported(scheme: Optional[str] = None) -> bool:
+    """Whether this install can read a pre-quant checkpoint, for ``scheme`` when one is named.
 
     Pre-quant is a pickle format, so without the allowlist there is no safe way to open one and
     the loader refuses. Planning has to ask the same question BEFORE it sizes the load: a plan
     that counts on a 6 GB pre-quant artifact, drops the dense shards, evicts the resident
     pipeline and only then meets the refusal has nothing left to fall back to but a dense
     download it never budgeted for. ``usable_prequant_source`` therefore answers None here, for
-    hosted and local sources alike, which is the same answer the loader will give."""
-    return _register_prequant_safe_globals()
+    hosted and local sources alike, which is the same answer the loader will give.
+
+    PER SCHEME, because the schemes do not share constructors and torchao does not retire them
+    together: ``AffineQuantizedTensor`` and its layout carry every int8 checkpoint and are
+    already deprecated upstream (pytorch/ao#2752), so a release that drops them while keeping
+    ``Float8Tensor`` leaves fp8 loadable and int8 not. One answer for both would plan an int8
+    pick on an install that cannot open it. An unknown or unnamed scheme gets the floor answer,
+    which is what the registration itself already checked."""
+    if not _register_prequant_safe_globals():
+        return False
+    required = _SCHEME_REQUIRED_GLOBALS.get((scheme or "").strip().lower())
+    return True if required is None else required <= _RESOLVED_SAFE_GLOBALS
 
 
 def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
@@ -460,7 +508,7 @@ def usable_prequant_source(
     An install that cannot restrict the load has no usable pre-quant source AT ALL, hosted
     included: the loader refuses every checkpoint there, and a plan that had already dropped the
     dense shards for one would find that out after the eviction."""
-    if not restricted_prequant_load_supported():
+    if not restricted_prequant_load_supported(scheme):
         return None
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is not None and src.kind == "path":
