@@ -317,6 +317,7 @@ test("a page fetch re-reads its offset when the shelf shortens mid request", asy
   const result = await fetchNextPage(
     () => loaded.length,
     () => epoch,
+    () => 0,
     async (offset) => {
       requested.push(offset);
       // The archive lands while the first request is in flight: "d" leaves the shelf, so every
@@ -340,6 +341,7 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
   let calls = 0;
   const result = await fetchNextPage(
     () => loaded,
+    () => 0,
     () => 0,
     async () => {
       calls += 1;
@@ -428,6 +430,7 @@ test("a page fetch is refused when an archive is merely IN FLIGHT", async () => 
   const result = await fetchNextPage(
     () => loaded,
     () => epoch,
+    () => 0,
     async (offset) => {
       if (seen.length === 0) {
         epoch += 1; // the user clicks Archive while this request is in flight
@@ -445,4 +448,32 @@ test("a page fetch is refused when an archive is merely IN FLIGHT", async () => 
   assert.ok(result);
   assert.deepEqual(result.page, ["c", "b"], "the retry picks the skipped record back up");
   assert.equal(full.length, 5);
+});
+
+test("a page fetch is refused while a shelf mutation is still pending", async () => {
+  // The token is an EDGE, not a state. A page that starts after the archive bumped it and lands
+  // before the row is dropped sees both the token and the count hold still across a shelf the
+  // server has already shortened, so only "is anything in flight" catches this one.
+  const shortened = ["e", "c", "b", "a"]; // the server has already archived "d"
+  let loaded = 2;
+  let pending = 1; // the PATCH is in flight for the whole of the first read
+  const epoch = 7; // bumped before this page even started, so it never moves again
+  const seen: string[][] = [];
+  const result = await fetchNextPage(
+    () => loaded,
+    () => epoch,
+    () => pending,
+    async (offset) => {
+      const page = shortened.slice(offset, offset + 2);
+      seen.push(page);
+      if (seen.length === 1) {
+        pending = 0; // the archive lands, the row is dropped
+        loaded = 1;
+      }
+      return page;
+    },
+  );
+  assert.deepEqual(seen[0], ["b", "a"], "the first read did skip the boundary record");
+  assert.ok(result);
+  assert.deepEqual(result.page, ["c", "b"], "the retry, once nothing is pending, recovers it");
 });

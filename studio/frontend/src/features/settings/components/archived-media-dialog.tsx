@@ -71,6 +71,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
   const mutations = useRef(0);
+  // Restores and deletes currently in flight. The counter above is an EDGE: a page that starts
+  // after it moves and lands before the row is dropped sees it hold still while the server shelf
+  // has already shortened. A page is only applied while this is zero.
+  const pendingMutations = useRef(0);
   const loadingMore = useRef(false);
   const putRows = useCallback((next: ArchivedRow[]) => {
     rowsRef.current = next;
@@ -308,16 +312,19 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   );
 
   async function handleRestore(row: ArchivedRow) {
-    // Counted BEFORE the request, not just when the row is dropped: the server shortens the
-    // shelf when it processes this, and a page read inside that round trip would see the shortened
+    // Counted BEFORE the request and held for its whole round trip: the server shortens the shelf
+    // when it processes this, so a page read anywhere inside that window would see the shortened
     // list at the offset it captured, with nothing locally changed for showMore to notice.
     mutations.current += 1;
+    pendingMutations.current += 1;
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
       dropRow(row.id, true);
+      pendingMutations.current -= 1;
       toast.success(`${isImages ? "Image" : "Video"} restored`);
     } catch (err) {
+      pendingMutations.current -= 1;
       toast.error(`Failed to restore ${noun}`, {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -325,16 +332,19 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
 
   async function handleDelete(row: ArchivedRow) {
-    // Counted BEFORE the request, not just when the row is dropped: the server shortens the
-    // shelf when it processes this, and a page read inside that round trip would see the shortened
+    // Counted BEFORE the request and held for its whole round trip: the server shortens the shelf
+    // when it processes this, so a page read anywhere inside that window would see the shortened
     // list at the offset it captured, with nothing locally changed for showMore to notice.
     mutations.current += 1;
+    pendingMutations.current += 1;
     try {
       if (isImages) await deleteGalleryImage(row.id);
       else await deleteGalleryVideo(row.id);
       dropRow(row.id, false);
+      pendingMutations.current -= 1;
       toast.success(`${isImages ? "Image" : "Video"} deleted`);
     } catch (err) {
+      pendingMutations.current -= 1;
       toast.error(`Failed to delete ${noun}`, {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -352,7 +362,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const before = mutations.current;
         const page = await loadPage(rowsRef.current.length);
-        if (mutations.current !== before) continue;
+        if (mutations.current !== before || pendingMutations.current > 0) continue;
         const seen = new Set(rowsRef.current.map((r) => r.id));
         putRows([...rowsRef.current, ...page.rows.filter((r) => !seen.has(r.id))]);
         setHasMore(page.hasMore);

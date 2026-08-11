@@ -1496,6 +1496,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Only the most recently started resync may apply. Two restores in a row start two of them, and
   // the older snapshot arriving last would drop whatever the newer one had already shown.
   const resyncSeq = useRef(0);
+  // Shelf mutations currently in flight. The epoch alone is an EDGE: a page that starts after the
+  // bump and lands before the row is dropped sees both it and the count hold still while the
+  // server shelf moved underneath. A page is only trusted while this is zero.
+  const pendingShelfMutations = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
@@ -1532,6 +1536,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const result = await fetchNextPage(
         () => galleryCache.images.length,
         () => stripEpoch.current,
+        () => pendingShelfMutations.current,
         (offset) => getGallery(offset, PAGE_SIZE),
       );
       if (!result) return;
@@ -1622,17 +1627,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
-      // shelf when it processes this, and a page read inside that round trip would see the
-      // shortened list at the old offset with nothing locally changed to reveal it.
+      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
+      // when it processes this, and a page read anywhere inside that window would see the shortened
+      // list at an offset nothing locally has changed to contradict.
       stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
       try {
         await deleteGalleryImage(id);
       } catch (err) {
+        pendingShelfMutations.current -= 1;
         toast.error(err instanceof Error ? err.message : "Failed to delete image");
         return;
       }
       dropFromStrip(id, true);
+      pendingShelfMutations.current -= 1;
     },
     [dropFromStrip],
   );
@@ -1768,17 +1776,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const handleArchive = useCallback(
     async (id: string) => {
-      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
-      // shelf when it processes this, and a page read inside that round trip would see the
-      // shortened list at the old offset with nothing locally changed to reveal it.
+      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
+      // when it processes this, and a page read anywhere inside that window would see the shortened
+      // list at an offset nothing locally has changed to contradict.
       stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
       try {
         await setGalleryImageFlags(id, { archived: true });
       } catch (err) {
+        pendingShelfMutations.current -= 1;
         toast.error(err instanceof Error ? err.message : "Failed to archive image");
         return;
       }
       dropFromStrip(id, false);
+      pendingShelfMutations.current -= 1;
       const toastId = toast(
         <button
           type="button"

@@ -495,7 +495,10 @@ export function DataTab() {
               : t("settings.data.archivedVideosDescription")}
           </p>
         </div>
-        <ArchivedMediaView kind={isImages ? "images" : "videos"} />
+        {/* Keyed by kind: switching shelves on an already-mounted tab otherwise keeps the
+            instance, and a showMore still awaiting the old shelf appends its rows to the new one,
+            which then drives restore and delete through the wrong media API. */}
+        <ArchivedMediaView key={subpage} kind={isImages ? "images" : "videos"} />
       </div>
     );
   }

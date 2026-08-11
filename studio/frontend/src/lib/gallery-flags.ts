@@ -257,10 +257,16 @@ export async function fetchWhileStable<T>(
  * and the row is dropped locally. A page read inside that gap sees the shortened shelf at the old
  * offset and the count agrees with itself, so the boundary record is skipped with nothing to
  * notice. Callers bump the token when the request STARTS, which covers the whole round trip.
+ *
+ * `pending()` is why a token alone is still not enough. A token is an edge, not a state: a page
+ * that begins AFTER the bump and ends BEFORE the row is dropped sees both the count and the token
+ * hold still across a shelf that moved underneath it. So a page is only accepted while nothing is
+ * in flight, and the retry runs once the mutation has landed and the count is true again.
  */
 export async function fetchNextPage<T>(
   count: () => number,
   token: () => number,
+  pending: () => number,
   fetchPage: (offset: number) => Promise<T>,
   maxAttempts: number = PAGE_MAX_ATTEMPTS,
 ): Promise<{ page: T; offset: number } | null> {
@@ -268,7 +274,9 @@ export async function fetchNextPage<T>(
     const offset = count();
     const before = token();
     const page = await fetchPage(offset);
-    if (count() === offset && token() === before) return { page, offset };
+    if (pending() === 0 && count() === offset && token() === before) {
+      return { page, offset };
+    }
   }
   return null;
 }

@@ -187,6 +187,9 @@ const galleryCache: {
   inflight: Set<string>;
   // Ids deleted while their link was still being minted, so a reply landing after the delete is not cached. Clear-all bumps the epoch instead.
   deleted: Set<string>;
+  /** Clips archived locally. A terminal progress response snapshotted before the archive cannot be
+   *  revoked, so the merges below have to refuse it or the clip returns to the active strip. */
+  archived: Set<string>;
   epoch: number;
 } = {
   videos: [],
@@ -197,6 +200,7 @@ const galleryCache: {
   refreshed: new Set(),
   inflight: new Set(),
   deleted: new Set(),
+  archived: new Set(),
   epoch: 0,
 };
 
@@ -1238,6 +1242,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Only the most recently started resync may apply. Two restores in a row start two of them, and
   // the older snapshot arriving last would drop whatever the newer one had already shown.
   const resyncSeq = useRef(0);
+  // Shelf mutations currently in flight. The epoch alone is an EDGE: a page that starts after the
+  // bump and lands before the row is dropped sees both it and the count hold still while the
+  // server shelf moved underneath. A page is only trusted while this is zero.
+  const pendingShelfMutations = useRef(0);
 
   const loadGallery = useCallback(async () => {
     try {
@@ -1273,6 +1281,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const result = await fetchNextPage(
         () => galleryCache.videos.length,
         () => stripEpoch.current,
+        () => pendingShelfMutations.current,
         (offset) => getVideoGallery(offset, PAGE_SIZE),
       );
       if (!result) return;
@@ -1350,17 +1359,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
-      // shelf when it processes this, and a page read inside that round trip would see the
-      // shortened list at the old offset with nothing locally changed to reveal it.
+      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
+      // when it processes this, and a page read anywhere inside that window would see the shortened
+      // list at an offset nothing locally has changed to contradict.
       stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
       try {
         await deleteGalleryVideo(id);
       } catch (err) {
+        pendingShelfMutations.current -= 1;
         toast.error(err instanceof Error ? err.message : "Failed to delete video");
         return;
       }
       dropFromStrip(id, true);
+      pendingShelfMutations.current -= 1;
     },
     [dropFromStrip],
   );
@@ -1495,17 +1507,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   const handleArchive = useCallback(
     async (id: string) => {
-      // Bumped BEFORE the request, not just when the row is dropped: the server shortens the
-      // shelf when it processes this, and a page read inside that round trip would see the
-      // shortened list at the old offset with nothing locally changed to reveal it.
+      // Held for the whole round trip, not just bumped at the start: the server shortens the shelf
+      // when it processes this, and a page read anywhere inside that window would see the shortened
+      // list at an offset nothing locally has changed to contradict.
       stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
       try {
         await setGalleryVideoFlags(id, { archived: true });
       } catch (err) {
+        pendingShelfMutations.current -= 1;
         toast.error(err instanceof Error ? err.message : "Failed to archive video");
         return;
       }
+      galleryCache.archived.add(id);
       dropFromStrip(id, false);
+      pendingShelfMutations.current -= 1;
       const toastId = toast(
         <button
           type="button"
@@ -1760,12 +1776,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             // Merge the new clip and mint its link. Sorted, not prepended: a new clip is unpinned,
             // so the server puts it after the pinned group.
             const clip = p.video;
-            stripEpoch.current += 1;
-            setVideos((prev) =>
-              sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
-            );
-            setSelectedId(clip.id);
-            void ensureSrc(clip);
+            // Refused when the user archived it while this poll was in flight: the backend forgets
+            // its terminal record on archive, but that cannot revoke a response already on the
+            // wire, and the record still says archived: false.
+            if (!galleryCache.archived.has(clip.id) && !galleryCache.deleted.has(clip.id)) {
+              stripEpoch.current += 1;
+              setVideos((prev) =>
+                sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
+              );
+              setSelectedId(clip.id);
+              void ensureSrc(clip);
+            }
           } else if (p.phase === "failed") {
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
@@ -1824,7 +1845,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // The job finished while no page was mounted. The terminal record persists until the next job; merging here covers the race where it completed after the mount fetch.
           const clip = g.video;
           // Deleted this session: the backend clears its terminal record on delete, but a client racing that must not merge a record whose file is gone.
-          if (!galleryCache.deleted.has(clip.id)) {
+          if (!galleryCache.deleted.has(clip.id) && !galleryCache.archived.has(clip.id)) {
             stripEpoch.current += 1;
             setVideos((prev) =>
               prev.some((v) => v.id === clip.id) ? prev : sortGalleryItems([clip, ...prev]),
