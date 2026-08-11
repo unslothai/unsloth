@@ -260,7 +260,7 @@ def test_a_non_bool_archived_is_refused_rather_than_read_as_active(gdir, archive
 
 def test_an_unusable_pin_time_also_costs_the_store_its_trust(gdir):
     _store(gdir).write_text(
-        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400}}}), encoding = "utf-8"
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10**400}}}), encoding = "utf-8"
     )
     with pytest.raises(flags.FlagsUnavailable):
         flags.read_trusted(gdir)
@@ -269,7 +269,7 @@ def test_an_unusable_pin_time_also_costs_the_store_its_trust(gdir):
 def test_a_write_repairs_a_bad_field_without_dropping_the_archive(gdir):
     # Dropping the whole entry over its pin time would hand an archived item to the next clear().
     _store(gdir).write_text(
-        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400, "archived": True}}}),
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10**400, "archived": True}}}),
         encoding = "utf-8",
     )
     flags.set_flags(gdir, "b", pinned = True)
