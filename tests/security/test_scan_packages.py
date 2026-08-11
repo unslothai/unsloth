@@ -383,10 +383,7 @@ def test_a_rebound_alias_is_not_treated_as_the_builtin():
     # torch call. Treating every later use of the spelling as the module would
     # reintroduce the false positive this whole rule exists to remove.
     payload = (
-        "import builtins as m\n"
-        "plugin = __import__(name)\n"
-        "m = load_model()\n"
-        "m.eval()\n"
+        "import builtins as m\nplugin = __import__(name)\nm = load_model()\nm.eval()\n"
     )
     findings = sp.check_py_file(payload, "pkg/_infer.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]

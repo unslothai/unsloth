@@ -135,9 +135,7 @@ RE_BUILTINS_EXEC_EVAL = re.compile(
 
 # `import builtins as b`, and `from builtins import exec as run`.
 RE_BUILTINS_MODULE_ALIAS = re.compile(r"(?<![\w.])import\s+builtins\s+as\s+(\w+)")
-RE_BUILTINS_FUNC_ALIAS = re.compile(
-    r"(?<![\w.])from\s+builtins\s+import\s+([^\n]*)"
-)
+RE_BUILTINS_FUNC_ALIAS = re.compile(r"(?<![\w.])from\s+builtins\s+import\s+([^\n]*)")
 RE_FUNC_ALIAS_ITEM = re.compile(r"(?<![\w.])(?:exec|eval)\s+as\s+(\w+)")
 # Any name this file assigns to. One pass for the whole file, then a set
 # difference: an alias that is also an assignment target is not the builtin at
