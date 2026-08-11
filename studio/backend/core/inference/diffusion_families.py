@@ -512,24 +512,15 @@ def supported_family_names() -> tuple[str, ...]:
 def detect_family_by_pipeline_class(class_name: Optional[str]) -> Optional[DiffusionFamily]:
     """The family a saved pipeline's ``model_index.json`` ``_class_name`` names, or None.
 
-    Evidence out of the checkpoint rather than out of its name, the counterpart of reading
-    ``general.architecture`` from a GGUF. A local diffusers pipeline whose directory carries no
-    family keyword -- an HF cache snapshot, whose leaf is a commit hash, is the ordinary case
-    (#8407) -- has no name left to match, so the listing dropped it as task=null and the Images
-    picker hid a model the load path accepts.
+    Evidence out of the checkpoint rather than out of its name, the counterpart of a GGUF's
+    ``general.architecture``: an HF cache snapshot's leaf is a commit hash, so the listing had no
+    name to match and hid a model the load path accepts (#8407).
 
-    Only the BASE pipeline class matches. The task variants deliberately do not: the loader
-    instantiates ``fam.pipeline_class`` (``diffusion.py:2946``) and never the class the index
-    declared, so answering a family for an inpaint or img2img checkpoint would tag it visible and
-    then load it through the wrong pipeline. An inpaint checkpoint is not merely a differently
-    named base one, it carries its own UNet input shape, so that load fails after selection. This
-    function exists to stop exactly that split between what the listing shows and what the loader
-    accepts, and matching a variant here would reintroduce it one layer down.
-
-    A variant checkpoint therefore stays untagged, which is the same answer it got before the index
-    was consulted at all: no model that used to load stops loading, and none becomes visible that
-    cannot. Exact class names only: this cannot fire on a checkpoint that is not the family it
-    claims to be."""
+    Only the BASE class matches. The loader instantiates ``fam.pipeline_class``
+    (``diffusion.py:2946``), never the declared class, so tagging an inpaint or img2img checkpoint
+    would list it and then load it through the wrong pipeline (its UNet input shape differs), which
+    is the listing-versus-loader split this exists to close. A variant stays untagged, the answer
+    it got before the index was read at all."""
     key = (class_name or "").strip()
     if not key:
         return None
@@ -542,17 +533,14 @@ def detect_family_by_pipeline_class(class_name: Optional[str]) -> Optional[Diffu
 def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
     """The ``_class_name`` the diffusers pipeline saved at ``path`` declares, or None.
 
-    Read with a size cap and no schema assumptions: an index is a small JSON manifest, and neither
-    a listing nor a load may be held up (or brought down) by whatever a scan folder happens to
-    contain. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio cannot
-    load anyway, so only a plain string answers.
+    Size-capped and schema-free: neither a listing nor a load may be held up by whatever a scan
+    folder contains. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio
+    cannot load, so only a plain string answers.
 
-    ``utf-8-sig`` because a hand-authored index is an ordinary thing to find beside a converted
-    checkpoint and Windows PowerShell writes JSON with a BOM; read as ``utf-8`` that file raises
-    and the model stays hidden, which is #8407 again by another road. ``RecursionError`` is caught
-    with the rest because a nesting bomb raises it and it is NOT a ``ValueError``: both callers
-    wrap this in a blanket except that reads a raise as detection having succeeded, so an index
-    this cannot parse has to come back as None rather than as an answer."""
+    ``utf-8-sig`` because PowerShell writes JSON with a BOM and a hand-authored index is ordinary
+    beside a converted checkpoint; read as ``utf-8`` it raises and the model stays hidden, #8407
+    again. ``RecursionError`` (a nesting bomb, not a ``ValueError``) is caught too: both callers
+    wrap this in a blanket except that reads a raise as detection having succeeded."""
     root = Path(path or "")
     if not str(root):
         return None
@@ -574,13 +562,12 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
 def detect_family_by_pipeline_index(path: Optional[str]) -> Optional[DiffusionFamily]:
     """The family the pipeline saved at ``path`` declares in its ``model_index.json``, or None.
 
-    The path-shaped counterpart of ``detect_family_by_pipeline_class``, and the one both the
-    listing and the loader use, so a model the picker shows on this evidence is a model
-    ``validate_load_request`` accepts on the same evidence (#8407).
+    The path-shaped counterpart of ``detect_family_by_pipeline_class``, used by BOTH the listing
+    and the loader so the picker and ``validate_load_request`` answer off the same evidence (#8407).
 
     Carries over ``detect_family``'s variant guard: a directory NAMED for a checkpoint the matched
-    family cannot run (``...-layered``) is still refused, so reading the index only ever adds
-    models whose name said nothing, never overrides a name that said no."""
+    family cannot run (``...-layered``) is still refused, so the index only adds models whose name
+    said nothing, never overrides a name that said no."""
     fam = detect_family_by_pipeline_class(pipeline_class_from_index(path))
     if fam is None:
         return None
@@ -604,20 +591,18 @@ def detect_family_for_pick(
     local diffusers pipeline directory. Only fallbacks, so remote picks and overrides behave
     exactly as ``detect_family``. Shared by both engines.
 
-    The index fallback is what keeps the listing and the loader on one answer. The listing
-    classifies a moved pipeline from its ``model_index.json`` because its directory name is a
-    commit hash; the pick the picker then sends is that same opaque path with no family_override,
-    so without this the model is shown as text-to-image and refused as an unsupported family
-    (#8407)."""
+    The index keeps the listing and the loader on one answer: the listing classifies a moved
+    pipeline from its ``model_index.json`` (its directory name is a commit hash), and the pick sent
+    back is that same opaque path with no family_override, so without this the model is shown as
+    text-to-image and then refused as an unsupported family (#8407)."""
     fam = None
     if not override:
-        # The checkpoint's own declaration outranks any guess made from its path. A family keyword
-        # in ANY ancestor segment otherwise shadows the index entirely: a QwenImagePipeline saved
-        # under `.../flux.1/checkpoint` matched FLUX on the directory name and never reached the
-        # index. The listing reads the index, so the two named different families for one
-        # directory and the model was listed as one and instantiated as another.
-        # Remote picks are unaffected: with no local model_index.json this returns None and the
-        # name-based paths below run exactly as before.
+        # The checkpoint's own declaration outranks any guess made from its path: a family keyword
+        # in ANY ancestor segment otherwise shadows the index (a QwenImagePipeline under
+        # `.../flux.1/checkpoint` matched FLUX and never reached it), so the listing, which reads
+        # the index, named one family and the loader another for one directory.
+        # Remote picks are unaffected: with no local index this is None and the name-based paths
+        # below run as before.
         fam = detect_family_by_pipeline_index(repo_id)
     if fam is None:
         fam = detect_family(repo_id, override)
