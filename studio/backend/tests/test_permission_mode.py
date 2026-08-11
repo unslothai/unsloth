@@ -1678,6 +1678,22 @@ def test_high_risk_dispatcher_non_terminal():
         ("from builtins import open as w\nw('x', 'w')", True),
         ("globals()['open']('x', 'w')", True),  # dynamic open lookup
         ("import pickle\npickle.loads(b'')", True),  # code exec on load
+        # PyYAML's non-safe loaders build arbitrary Python objects from tags
+        # (!!python/object/apply:os.system), so the command runs from the data.
+        ("import yaml\nyaml.load(s, Loader=yaml.Loader)", True),
+        ("import yaml as y\ny.unsafe_load(s)", True),  # via module alias
+        ("from yaml import unsafe_load\nunsafe_load(s)", True),  # bare name
+        ("import yaml\nld = yaml.load\nld(s, Loader=yaml.Loader)", True),  # alias
+        ("import yaml\nc = yaml\nc.load(s, Loader=yaml.Loader)", True),  # module rebound
+        ("import yaml\nprint(yaml.Loader(s).get_data())", True),  # loader class directly
+        ("from yaml import Loader\nprint(Loader(s).get_data())", True),
+        ("import yaml\ndef g(fn): fn(s, Loader=yaml.Loader)\ng(yaml.load)", True),  # via helper
+        ("import json\ndef g(fn): return fn(open('a.json'))\nprint(g(json.load))", False),
+        ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
+        ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
+        ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
+        ("import json\nprint(json.load(open('a.json')))", False),  # json.load is data
+        ("from torch import load\nload('m.pt')", True),  # bare pickle-backed load
         ("import io\nio.FileIO('out', 'w')", True),  # raw write handle
         (
             "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",

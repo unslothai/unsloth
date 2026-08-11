@@ -2521,9 +2521,31 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "read_pickle",
     }
 )
-# Pickle-backed loaders that can execute code embedded in the file; gated by
+# Loaders that can execute code embedded in the data they deserialize; gated by
 # receiver module (torch.load, joblib.load) since bare `load` is too common.
-_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# yaml is here for PyYAML's non-safe loaders: yaml.load(s, Loader=yaml.Loader) /
+# yaml.unsafe_load(s) construct arbitrary Python objects from tags
+# (!!python/object/apply:os.system), so the call the AST sees is harmless while
+# the payload is data. yaml.safe_load stays auto-approved: it cannot do this and
+# is the common way to read a config file.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# Loader entry points on those modules. `load`/`load_all` cover PyYAML's
+# Loader= form, the `unsafe_*` names its explicit unsafe helpers. The loader
+# classes are the same deserialize one level down (yaml.Loader(s).get_data()
+# constructs the tagged objects without going through yaml.load); SafeLoader and
+# FullLoader are absent because neither can construct arbitrary callables.
+_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset(
+    {
+        "load",
+        "load_all",
+        "unsafe_load",
+        "unsafe_load_all",
+        "Loader",
+        "UnsafeLoader",
+        "CLoader",
+        "CUnsafeLoader",
+    }
+)
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3526,9 +3548,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to os/posix (import os as o), so o.open(...) is still
     # recognized as the low-level create/write that os.open is.
     os_aliases = {"os", "posix"}
-    # Module names bound to a pickle-backed loader (import torch as t), so
+    # Module names bound to a code-executing loader (import torch as t), so
     # t.load(...) is still gated as a code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # Names bound to such a loader directly (from yaml import unsafe_load [as u];
+    # ld = yaml.load), so calling the bare name is gated like the attribute call.
+    load_func_aliases: "set[str]" = set()
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup
     # aliased through it (rm = g(os, "remove"); rm("f")) still fails closed.
     getattr_aliases = {"getattr"}
@@ -3630,9 +3655,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # merely passed or printed (print(getattr(o, 'name'))).
         if isinstance(arg, ast.Name):
             return (
-                arg.id in open_aliases or arg.id in writer_aliases or arg.id in archive_ctor_aliases
+                arg.id in open_aliases
+                or arg.id in writer_aliases
+                or arg.id in archive_ctor_aliases
+                or arg.id in load_func_aliases
             )
         if isinstance(arg, ast.Attribute):
+            # A loader is receiver-matched (yaml.load, torch.load) so a helper
+            # handed the harmless json.load is unaffected.
+            if (
+                arg.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                and isinstance(arg.value, ast.Name)
+                and arg.value.id in load_module_aliases
+            ):
+                return True
             return (
                 arg.attr == "open"
                 or arg.attr in _AUTO_UNSAFE_PY_ATTRS
@@ -3710,6 +3746,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name == _ctor:
                         archive_ctor_aliases.add(alias.asname or _ctor)
+            if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                for alias in node.names:
+                    if alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
+                        load_func_aliases.add(alias.asname or alias.name)
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
@@ -3735,6 +3775,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 partial_aliases.update(targets)  # p = partial
             elif isinstance(value, ast.Name) and value.id in writer_aliases:
                 writer_aliases.update(targets)  # s = save (numpy save alias)
+            elif isinstance(value, ast.Name) and value.id in load_func_aliases:
+                load_func_aliases.update(targets)  # u = unsafe_load
+            elif isinstance(value, ast.Name) and value.id in load_module_aliases:
+                load_module_aliases.update(targets)  # c = yaml; c.load(...)
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                and isinstance(value.value, ast.Name)
+                and value.value.id in load_module_aliases
+            ):
+                load_func_aliases.update(targets)  # ld = yaml.load
             elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
                 archive_ctor_aliases.update(targets)  # z = ZipFile
             elif isinstance(value, ast.Name) and value.id in invoker_aliases:
@@ -4011,6 +4062,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # A writer imported as a bare name (from numpy import save).
                     if func.id in writer_aliases:
                         return True
+                    # A code-executing loader bound to a bare name
+                    # (from yaml import unsafe_load; ld = yaml.load).
+                    if func.id in load_func_aliases:
+                        return True
                     # A bare archive constructor (from zipfile import ZipFile)
                     # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
                     # writes but ZipFile(x) reads.
@@ -4067,10 +4122,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         and func.value.id in os_aliases
                     ):
                         return True
-                    # A pickle-backed loader (torch.load, joblib.load) can execute
-                    # code embedded in the file it deserializes.
+                    # A code-executing loader (torch.load, joblib.load,
+                    # yaml.load/unsafe_load) runs code embedded in the data it
+                    # deserializes.
                     if (
-                        func.attr == "load"
+                        func.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
                         and isinstance(func.value, ast.Name)
                         and func.value.id in load_module_aliases
                     ):
