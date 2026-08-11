@@ -18,6 +18,7 @@ from hub.services.datasets import downloads
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.dataset_cache import (
+    dataset_snapshot_from_cache_path,
     hf_datasets_cache_roots,
     processed_dataset_cache_has_artifacts,
 )
@@ -109,6 +110,46 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
         return 0
 
 
+# Repo metadata plus the OS clutter a file browser leaves behind. Anything else in a snapshot
+# counts as payload, so formats the app has never heard of are never mistaken for an empty one.
+# The Windows names are spelled out because huggingface_hub only added them after 0.36.
+_DATASET_NON_PAYLOAD_FILENAMES = frozenset(
+    {
+        ".ds_store",
+        ".gitattributes",
+        ".huggingface.yaml",
+        "dataset_infos.json",
+        "desktop.ini",
+        "license",
+        "license.md",
+        "license.txt",
+        "readme.md",
+        "thumbs.db",
+    }
+) | {name.lower() for name in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE}
+
+
+def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
+    """Whether the snapshot holds anything beyond repo metadata.
+
+    A cancelled download can leave the dataset card and nothing else, which every
+    structural check reads as a complete snapshot, so the repo was offered On Device and
+    then failed inside ``load_dataset()``.
+    """
+    snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
+    if snapshot is None:
+        return False
+    try:
+        for directory, dirnames, filenames in os.walk(snapshot, followlinks = False):
+            base = Path(directory)
+            dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
+            if any(name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES for name in filenames):
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def _scan_hub_dataset_cache_dirs() -> list[dict]:
     """Fallback scanner: ``scan_cache_dir()`` skips repos when one cache entry is partially corrupt, so this keeps On Device matching disk."""
     seen_lower: dict[str, dict] = {}
@@ -128,14 +169,16 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 continue
             key = repo_id.lower()
             existing = seen_lower.get(key)
-            snapshot_partial = _hub_dataset_snapshot_count(
-                entry
-            ) == 0 or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
+            snapshot_partial = (
+                _hub_dataset_snapshot_count(entry) == 0
+                or hf_cache_scan.is_snapshot_partial("dataset", repo_id, entry)
+                or not _raw_dataset_cache_has_data(repo_id, entry)
+            )
             row = {
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.resolve()),
-                # snapshot_count == 0 catches blobs-but-no-snapshot; is_snapshot_partial adds row-state checks.
+                # snapshot_count == 0 catches blobs-but-no-snapshot, is_snapshot_partial adds row-state checks, and the data check rejects a card-only snapshot.
                 "partial": snapshot_partial,
                 "partial_transport": (
                     hf_cache_scan.partial_transport_for(
@@ -283,7 +326,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
                     "dataset",
                     repo_info.repo_id,
                     cache_dir,
-                )
+                ) or not _raw_dataset_cache_has_data(repo_info.repo_id, cache_dir)
                 row = {
                     "repo_id": repo_info.repo_id,
                     "size_bytes": total_size,
@@ -321,14 +364,19 @@ def _scan_hf_dataset_caches() -> list[dict]:
     for row in _scan_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)
-        if existing is None or (bool(existing.get("partial")) and not bool(row.get("partial"))):
+        if existing is None:
             seen_lower[key] = row
-        else:
-            existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
-            # Preserve the raw path for scoped deletion and expose the processed Arrow path separately.
-            if row.get("processed_cache"):
-                existing["processed_cache"] = True
-                existing["load_cache_path"] = row.get("cache_path")
+            continue
+        existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
+        # Preserve the raw path for scoped deletion and expose the processed Arrow path separately.
+        if row.get("processed_cache"):
+            existing["processed_cache"] = True
+            existing["load_cache_path"] = row.get("cache_path")
+        # The Arrow cache loads on its own, so it settles a raw row that cannot. Annotating
+        # rather than replacing keeps the hub cache_path that scoped deletion needs.
+        if existing.get("partial") and not row.get("partial"):
+            existing["partial"] = False
+            existing["partial_transport"] = None
     for row in _scan_app_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)

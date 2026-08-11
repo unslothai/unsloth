@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The training-start overlay showed cached resources as "Downloading -- 99%" with no
-// download running (#7858): the backend caps progress at 99% until a Studio manifest
-// verifies the snapshot, and cache entries made outside Studio never have one. These
-// pin the distinction the overlay now draws -- finalized bytes decide whether anything
-// is still arriving -- including the resumed-download case the 99% cap exists for.
+// The training-start overlay showed resources as "Downloading -- 99%" with no download
+// running (#7858). The backend caps progress at 0.99 until it verifies the snapshot, and
+// verification compares against `expected_bytes`, which counts every file in the repo while a
+// training run fetches a subset -- so the cap never lifts. These pin the settling rule that
+// replaces it, and the readings it must refuse to settle.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type DownloadProgressReading,
   type DownloadState,
+  EMPTY_DOWNLOAD_STATE,
   coerceCachedStateReady,
+  downloadStateFromProgress,
 } from "../src/features/studio/download-state.ts";
 
 const MB = 1e6;
@@ -25,43 +28,129 @@ function state(over: Partial<DownloadState> = {}): DownloadState {
     totalBytes: 0,
     percent: 0,
     cachePath: "/home/u/.cache/huggingface/hub/datasets--unsloth--alpaca-cleaned",
+    completeOnDisk: false,
+    settled: false,
     ...over,
   };
 }
 
-test("a cache entry with no manifest reads as ready, not as a transfer", () => {
-  // Observed with unsloth/alpaca-cleaned: 42.3 MB of 42.3 MB, no worker running.
-  const coerced = coerceCachedStateReady(
-    state({
-      downloadedBytes: 42.3 * MB,
-      completedBytes: 42.3 * MB,
-      totalBytes: 42.3 * MB,
-      percent: 99,
+/** Feed the same reading twice, as the 1.5s poll would when nothing is moving. */
+function pollTwice(reading: DownloadProgressReading): DownloadState {
+  const first = downloadStateFromProgress(reading, EMPTY_DOWNLOAD_STATE);
+  return downloadStateFromProgress(reading, first);
+}
+
+test("a verified snapshot settles on the first reading", () => {
+  const verified = downloadStateFromProgress({
+    downloaded_bytes: 1.51 * GB,
+    completed_bytes: 1.51 * GB,
+    expected_bytes: 1.51 * GB,
+    progress: 1,
+    complete_on_disk: true,
+    cache_path: "/home/u/.cache/huggingface/hub/datasets--unsloth--LaTeX_OCR",
+  });
+  assert.equal(verified.percent, 100);
+  assert.equal(verified.settled, true);
+});
+
+test("a subset fetch settles once its bytes stop moving", () => {
+  // Qwen3.5-0.8B-Base: expected counts README.md, LICENSE and .gitattributes, which the
+  // trainer never fetches, so completed sits 16,640 bytes short and progress is pinned at
+  // the 0.99 cap for a model that is entirely present.
+  const reading: DownloadProgressReading = {
+    downloaded_bytes: 1_769_897_109,
+    completed_bytes: 1_769_897_109,
+    expected_bytes: 1_769_913_749,
+    progress: 0.99,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+  };
+  assert.equal(downloadStateFromProgress(reading).settled, false);
+  assert.equal(pollTwice(reading).settled, true);
+});
+
+test("a settled subset fetch reports the bytes it actually holds", () => {
+  // Not `expected_bytes`: OpenThoughts-1k-sample ships a second config load_dataset never
+  // wants, so settling at the expected total would claim 28.1 MB for a 14.0 MB fetch.
+  const settled = coerceCachedStateReady(
+    pollTwice({
+      downloaded_bytes: 14_002_749,
+      completed_bytes: 14_002_749,
+      expected_bytes: 28_059_770,
+      progress: 0.499,
+      complete_on_disk: false,
+      cache_path: "/home/u/.cache/huggingface/hub/datasets--ryanmarten--OpenThoughts-1k-sample",
     }),
   );
-  assert.equal(coerced.percent, 100);
+  assert.equal(settled.percent, 100);
+  assert.equal(settled.totalBytes, 14_002_749);
 });
 
-test("a resumed download still reports progress while blobs are incomplete", () => {
-  // The case the backend's 99% cap protects: finalized bytes sit just under the
-  // total while the remaining `.incomplete` blob is still growing.
-  const resuming = state({
-    downloadedBytes: 20 * GB,
-    completedBytes: 19.9 * GB,
-    totalBytes: 20 * GB,
-    percent: 99,
+test("one quiet reading is not enough, because blobs finalize between files", () => {
+  // Mid-download, huggingface_hub has just linked a blob and not yet opened the next, so
+  // downloaded == completed for this single tick.
+  const betweenFiles = downloadStateFromProgress({
+    downloaded_bytes: 5 * GB,
+    completed_bytes: 5 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.25,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--unsloth--gpt-oss-120b",
   });
-  assert.deepEqual(coerceCachedStateReady(resuming), resuming);
+  assert.equal(betweenFiles.settled, false);
+  assert.equal(coerceCachedStateReady(betweenFiles).percent, 25);
 });
 
-test("an ordinary in-flight download is left alone", () => {
-  const downloading = state({
-    downloadedBytes: 5 * GB,
-    completedBytes: 4.8 * GB,
-    totalBytes: 20 * GB,
-    percent: 25,
+test("bytes in flight never settle, however long they sit", () => {
+  // A resumed download: finalized bytes near the total with an `.incomplete` blob growing.
+  const resuming: DownloadProgressReading = {
+    downloaded_bytes: 20 * GB,
+    completed_bytes: 19.9 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.99,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--unsloth--gpt-oss-120b",
+  };
+  assert.equal(pollTwice(resuming).settled, false);
+});
+
+test("a growing download never settles", () => {
+  const first = downloadStateFromProgress({
+    downloaded_bytes: 5 * GB,
+    completed_bytes: 5 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.25,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--unsloth--gpt-oss-120b",
   });
-  assert.deepEqual(coerceCachedStateReady(downloading), downloading);
+  const second = downloadStateFromProgress(
+    {
+      downloaded_bytes: 6 * GB,
+      completed_bytes: 6 * GB,
+      expected_bytes: 20 * GB,
+      progress: 0.3,
+      complete_on_disk: false,
+      cache_path: "/home/u/.cache/huggingface/hub/models--unsloth--gpt-oss-120b",
+    },
+    first,
+  );
+  assert.equal(second.settled, false);
+});
+
+test("a settled resource stays settled while the run consumes it", () => {
+  const settled = state({ settled: true, downloadedBytes: 42.3 * MB });
+  const next = downloadStateFromProgress(
+    {
+      downloaded_bytes: 42.3 * MB,
+      completed_bytes: 0,
+      expected_bytes: 42.3 * MB,
+      progress: 0.99,
+      complete_on_disk: false,
+      cache_path: "/home/u/.cache/huggingface/hub/datasets--unsloth--alpaca-cleaned",
+    },
+    settled,
+  );
+  assert.equal(next.settled, true);
 });
 
 test("a resource with no cache path is never coerced", () => {
@@ -71,13 +160,13 @@ test("a resource with no cache path is never coerced", () => {
     totalBytes: 42.3 * MB,
     percent: 99,
     cachePath: null,
+    settled: true,
   });
   assert.deepEqual(coerceCachedStateReady(uncached), uncached);
 });
 
 test("a cached entry of unknown size still settles instead of hanging", () => {
-  const unsized = coerceCachedStateReady(
-    state({ downloadedBytes: 0, completedBytes: 0, totalBytes: 0, percent: 0 }),
-  );
+  const unsized = coerceCachedStateReady(state());
   assert.equal(unsized.percent, 100);
+  assert.equal(unsized.settled, true);
 });

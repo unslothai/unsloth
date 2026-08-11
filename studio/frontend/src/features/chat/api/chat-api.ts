@@ -446,6 +446,11 @@ export interface DownloadProgressResponse {
    * nothing is in flight.
    */
   completed_bytes: number;
+  /**
+   * True once the backend verified a usable snapshot on disk. `progress` is capped at
+   * 0.99 until then, so this is the only reading that means "finished".
+   */
+  complete_on_disk: boolean;
   expected_bytes: number;
   progress: number;
   /**

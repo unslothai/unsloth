@@ -29,8 +29,15 @@ import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
 import {
   EMPTY_DOWNLOAD_STATE,
   coerceCachedStateReady,
+  downloadStateFromProgress,
   type DownloadState,
 } from "@/features/studio/download-state";
+import {
+  classifyPreparation,
+  parsePreparationProgress,
+  shouldShowPreparationStatus,
+  type PreparationProgress,
+} from "./preparation-progress";
 import {
   useTrainingActions,
   useTrainingConfigStore,
@@ -66,8 +73,9 @@ type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
 
 /**
  * Polls a HF repo's download progress on a 1.5s tick. Serves both model weights
- * and dataset blobs by swapping the fetcher. Stops once `progress >= 1.0`; the
- * bar freezes at the final value rather than disappearing, matching chat flow.
+ * and dataset blobs by swapping the fetcher. Stops once the backend verifies the
+ * snapshot; the bar freezes at the final value rather than disappearing, matching
+ * chat flow.
  */
 function useHfDownloadProgress(
   repoId: string | null,
@@ -95,25 +103,21 @@ function useHfDownloadProgress(
     let cancelled = false;
     let finished = false;
     let interval: ReturnType<typeof setInterval> | null = null;
+    // Settling compares each reading against the one before it, so the poll carries the
+    // previous state rather than reading it back out of React.
+    let latest = EMPTY_DOWNLOAD_STATE;
 
     const poll = async () => {
       if (cancelled || finished) return;
       try {
         const prog = await fetcher(repoId);
         if (cancelled) return;
-        const downloaded = prog.downloaded_bytes ?? 0;
-        const total = prog.expected_bytes ?? 0;
-        const ratio = prog.progress ?? 0;
-        const pct =
-          total > 0 ? Math.min(100, Math.round(ratio * 100)) : 0;
-        setState({
-          downloadedBytes: downloaded,
-          completedBytes: prog.completed_bytes ?? 0,
-          totalBytes: total,
-          percent: pct,
-          cachePath: prog.cache_path ?? null,
-        });
-        if (ratio >= 1.0) {
+        const next = downloadStateFromProgress(prog, latest);
+        latest = next;
+        setState(next);
+        // Only a verified snapshot stops the tick: a settled row can still be waiting on
+        // files, and a stopped poll could never notice them arrive.
+        if (next.completeOnDisk) {
           finished = true;
           if (interval) {
             clearInterval(interval);
@@ -145,55 +149,80 @@ function useDatasetDownloadProgress(datasetName: string | null): DownloadState {
   return useHfDownloadProgress(datasetName, getDatasetDownloadProgress);
 }
 
-type DownloadRowProps = {
+const PROGRESS_INDICATOR_CLASS =
+  "bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]";
+
+type ResourceRowProps = {
   label: string;
   state: DownloadState;
+  preparation: PreparationProgress | null;
 };
 
-function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
+/**
+ * One row per resource for the whole of its setup. It reports the transfer while bytes are
+ * moving, then carries that resource's preparation step once they stop, so tokenizing a
+ * dataset reuses the dataset's row instead of opening another one.
+ */
+function ResourceRow({
+  label,
+  state,
+  preparation,
+}: ResourceRowProps): ReactElement | null {
   const t = useT();
   // Rolling-window rate + ETA from the cumulative-byte series the poll hook
   // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (state.downloadedBytes <= 0 && !state.cachePath) return null;
-  const isComplete = state.totalBytes > 0 && state.percent >= 100;
-  const statusLabel = isComplete
-    ? t("studio.trainingStart.ready")
-    : state.totalBytes > 0
-      ? t("studio.trainingStart.downloading")
-      : state.downloadedBytes === 0
-        ? t("studio.trainingStart.preparing")
-        : null;
+  const isComplete = state.settled;
+  const preparing = isComplete ? preparation : null;
+  const statusLabel = preparing
+    ? preparing.title
+    : isComplete
+      ? t("studio.trainingStart.ready")
+      : state.totalBytes > 0
+        ? t("studio.trainingStart.downloading")
+        : state.downloadedBytes === 0
+          ? t("studio.trainingStart.preparing")
+          : null;
   const showRate = stats.stable && !isComplete;
   const rateSuffix = showRate ? ` • ${formatRate(stats.rateBytesPerSecond)}` : "";
   const etaStr =
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
   const etaSuffix =
     etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
-  const sizeLabel =
-    state.totalBytes > 0
+  const sizeLabel = preparing
+    ? preparing.detail
+    : state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
         ? `${t("studio.trainingStart.downloaded", {
             size: formatBytes(state.downloadedBytes),
           })}${rateSuffix}`
         : null;
+  const percentLabel = preparing
+    ? preparing.percent !== null
+      ? `${preparing.percent}%`
+      : ""
+    : state.totalBytes > 0
+      ? `${state.percent}%`
+      : "";
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-foreground/90">{label}</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-xs text-foreground/90">{label}</span>
           {statusLabel ? (
             <span
-              className={`rounded-full px-1.5 py-0.5 text-ui-10 font-medium ${isComplete ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+              className={`truncate rounded-full px-1.5 py-0.5 text-ui-10 font-medium ${isComplete && !preparing ? "bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200/80 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30" : "bg-muted text-muted-foreground"}`}
+              title={statusLabel}
             >
               {statusLabel}
             </span>
           ) : null}
         </div>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {state.totalBytes > 0 ? `${state.percent}%` : ""}
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+          {percentLabel}
         </span>
       </div>
       {sizeLabel ? (
@@ -201,10 +230,16 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
           {sizeLabel}
         </div>
       ) : null}
-      {state.totalBytes > 0 ? (
+      {preparing ? (
+        <Progress
+          value={preparing.percent ?? undefined}
+          indeterminate={preparing.percent === null}
+          indicatorClassName={PROGRESS_INDICATOR_CLASS}
+        />
+      ) : state.totalBytes > 0 ? (
         <Progress
           value={state.percent}
-          indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
+          indicatorClassName={PROGRESS_INDICATOR_CLASS}
         />
       ) : null}
       {state.cachePath ? (
@@ -272,6 +307,16 @@ export function TrainingStartOverlay({
   const datasetDownload = isDownloadPhase
     ? rawDatasetDownload
     : coerceCachedStateReady(rawDatasetDownload);
+  const preparationProgress = shouldShowPreparationStatus(
+    phase,
+    currentStep,
+    isStarting,
+  )
+    ? parsePreparationProgress(displayMessage, t("studio.trainingStart.preparing"))
+    : null;
+  const preparationTarget = preparationProgress
+    ? classifyPreparation(preparationProgress.title, { modelName, datasetName })
+    : null;
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [cancelRequested, setCancelRequested] = useState(false);
 
@@ -369,17 +414,23 @@ export function TrainingStartOverlay({
             </AnimatedSpan>
           ) : datasetDownload.downloadedBytes > 0 || datasetDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
-              <DownloadRow
+              <ResourceRow
                 label={t("studio.trainingStart.dataset")}
                 state={datasetDownload}
+                preparation={
+                  preparationTarget === "dataset" ? preparationProgress : null
+                }
               />
             </AnimatedSpan>
           ) : null}
           {modelDownload.downloadedBytes > 0 || modelDownload.cachePath ? (
             <AnimatedSpan className="mt-3">
-              <DownloadRow
+              <ResourceRow
                 label={t("studio.trainingStart.modelWeights")}
                 state={modelDownload}
+                preparation={
+                  preparationTarget === "model" ? preparationProgress : null
+                }
               />
             </AnimatedSpan>
           ) : null}
