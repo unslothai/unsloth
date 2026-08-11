@@ -896,7 +896,6 @@ export const ar = {
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
       thinking: {
-        title: "التفكير",
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
           "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",

@@ -894,7 +894,6 @@ export const ko = {
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       thinking: {
-        title: "사고 과정",
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
           "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",

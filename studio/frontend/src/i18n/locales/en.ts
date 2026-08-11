@@ -890,8 +890,7 @@ export const en = {
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
       thinking: {
-        title: "Thinking",
-        collapseByDefault: "Collapse thinking by default",
+        collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
           "Keep reasoning collapsed while the model thinks instead of streaming it open. Expand any block to read it.",
       },

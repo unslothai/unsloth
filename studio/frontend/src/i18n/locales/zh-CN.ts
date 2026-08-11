@@ -871,7 +871,6 @@ export const zhCN = {
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
       thinking: {
-        title: "思考",
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
           "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",

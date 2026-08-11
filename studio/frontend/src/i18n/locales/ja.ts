@@ -883,7 +883,6 @@ export const ja = {
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       thinking: {
-        title: "思考",
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
           "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",

@@ -24,10 +24,7 @@ import { Columns2Icon } from "lucide-react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
-import {
-  SettingsGroupDivider,
-  SettingsSection,
-} from "../components/settings-section";
+import { SettingsSection } from "../components/settings-section";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -242,7 +239,18 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
-        <SettingsGroupDivider />
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.chat.thinking.collapseByDefault")}
+          description={t("settings.chat.thinking.collapseByDefaultDescription")}
+        >
+          <Switch
+            checked={collapseThinkingByDefault}
+            onCheckedChange={setCollapseThinkingByDefault}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -261,9 +269,6 @@ export function ChatTab() {
             onCheckedChange={setShowResponseModel}
           />
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
           description={t("settings.general.autoTitleNewChatsDescription")}
@@ -278,18 +283,6 @@ export function ChatTab() {
             id="profile-greeting-sloth"
             checked={showGreetingSloth}
             onCheckedChange={setShowGreetingSloth}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.thinking.title")}>
-        <SettingsRow
-          label={t("settings.chat.thinking.collapseByDefault")}
-          description={t("settings.chat.thinking.collapseByDefaultDescription")}
-        >
-          <Switch
-            checked={collapseThinkingByDefault}
-            onCheckedChange={setCollapseThinkingByDefault}
           />
         </SettingsRow>
       </SettingsSection>

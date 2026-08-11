@@ -926,7 +926,6 @@ export const fr = {
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
       thinking: {
-        title: "Réflexion",
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
           "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",

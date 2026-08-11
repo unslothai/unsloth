@@ -896,7 +896,6 @@ export const it = {
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
       thinking: {
-        title: "Ragionamento",
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
           "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
