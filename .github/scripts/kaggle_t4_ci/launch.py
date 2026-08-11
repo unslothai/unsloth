@@ -64,16 +64,27 @@ PUSH_BACKOFF_SEC = 45
 # accelerator, missing credentials -- is deterministic and must not be
 # retried.
 THROTTLED_PUSH = (
-    "expecting value: line 1 column 1", "429", "too many requests",
-    "502", "503", "service unavailable", "bad gateway", "timed out",
-    "connection reset", "connection aborted",
+    "expecting value: line 1 column 1",
+    "429",
+    "too many requests",
+    "502",
+    "503",
+    "service unavailable",
+    "bad gateway",
+    "timed out",
+    "connection reset",
+    "connection aborted",
 )
 
 # Kaggle's concurrency cap, reported as a push rejection rather than a queue.
 CAPACITY_MARKERS = (
-    "maximum batch gpu session count", "session count of 2 reached",
-    "toomanyassignments", "precondition failed", "412",
-    "no accelerator quota", "no quota for",
+    "maximum batch gpu session count",
+    "session count of 2 reached",
+    "toomanyassignments",
+    "precondition failed",
+    "412",
+    "no accelerator quota",
+    "no quota for",
 )
 
 # Consecutive unreadable statuses before we stop waiting. One is not enough:
@@ -84,13 +95,13 @@ MAX_CONSECUTIVE_UNKNOWN = 10
 
 
 def _log(msg: str) -> None:
-    print(f"[launch] {msg}", flush=True)
+    print(f"[launch] {msg}", flush = True)
 
 
 def _out(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding = "utf-8") as fh:
             if "\n" in value:
                 delim = f"ghadelim{uuid.uuid4().hex}"
                 fh.write(f"{key}<<{delim}\n{value}\n{delim}\n")
@@ -111,8 +122,12 @@ def _api():
     return api
 
 
-def push(notebook: Path, user: str, kernel_timeout_sec: int,
-         accelerator: str = "NvidiaTeslaT4") -> dict:
+def push(
+    notebook: Path,
+    user: str,
+    kernel_timeout_sec: int,
+    accelerator: str = "NvidiaTeslaT4",
+) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
     A fresh slug per attempt is not cosmetic: reusing one lets a later
@@ -125,55 +140,71 @@ def push(notebook: Path, user: str, kernel_timeout_sec: int,
     # mismatch files the kernel at an unexpected address and every later
     # status/output call 403s, so assert the round trip.
     title = slug_name.replace("-", " ")
-    assert _slugify(title) == slug_name, (
-        f"title {title!r} slugifies to {_slugify(title)!r}")
+    assert _slugify(title) == slug_name, f"title {title!r} slugifies to {_slugify(title)!r}"
 
-    workdir = Path(tempfile.mkdtemp(prefix="kaggle-t4-ci-"))
+    workdir = Path(tempfile.mkdtemp(prefix = "kaggle-t4-ci-"))
     try:
         code_file = workdir / f"{slug_name}.ipynb"
         shutil.copy(notebook, code_file)
-        (workdir / "kernel-metadata.json").write_text(json.dumps({
-            "id": f"{user}/{slug_name}",
-            "title": title,
-            "code_file": code_file.name,
-            "language": "python",
-            "kernel_type": "notebook",
-            "is_private": "true",
-            "enable_gpu": "true",
-            "enable_internet": "true",
-            "machine_shape": accelerator,
-            "dataset_sources": [], "competition_sources": [],
-            "kernel_sources": [], "model_sources": [],
-        }, indent=2), encoding="utf-8")
+        (workdir / "kernel-metadata.json").write_text(
+            json.dumps(
+                {
+                    "id": f"{user}/{slug_name}",
+                    "title": title,
+                    "code_file": code_file.name,
+                    "language": "python",
+                    "kernel_type": "notebook",
+                    "is_private": "true",
+                    "enable_gpu": "true",
+                    "enable_internet": "true",
+                    "machine_shape": accelerator,
+                    "dataset_sources": [],
+                    "competition_sources": [],
+                    "kernel_sources": [],
+                    "model_sources": [],
+                },
+                indent = 2,
+            ),
+            encoding = "utf-8",
+        )
 
         out = ""
         for attempt in range(PUSH_ATTEMPTS):
             proc = subprocess.run(
-                ["kaggle", "kernels", "push", "-p", str(workdir),
-                 "--accelerator", accelerator,
-                 "-t", str(kernel_timeout_sec)],
-                capture_output=True, text=True, timeout=600)
+                [
+                    "kaggle",
+                    "kernels",
+                    "push",
+                    "-p",
+                    str(workdir),
+                    "--accelerator",
+                    accelerator,
+                    "-t",
+                    str(kernel_timeout_sec),
+                ],
+                capture_output = True,
+                text = True,
+                timeout = 600,
+            )
             out = proc.stdout + proc.stderr
             lowered = out.lower()
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
-                    return {"ok": False, "reason": "slug_mismatch",
-                            "detail": out.strip()[:400]}
+                    return {"ok": False, "reason": "slug_mismatch", "detail": out.strip()[:400]}
                 return {"ok": True, "slug": f"{user}/{slug_name}"}
             if any(m in lowered for m in CAPACITY_MARKERS):
-                return {"ok": False, "reason": "at_capacity",
-                        "detail": out.strip()[:400]}
-            if attempt + 1 == PUSH_ATTEMPTS or not any(
-                    m in lowered for m in THROTTLED_PUSH):
-                return {"ok": False, "reason": "push_failed",
-                        "detail": out.strip()[:400]}
-            delay = PUSH_BACKOFF_SEC * (2 ** attempt)
-            _log(f"push looks throttled, retrying in {delay}s "
-                 f"(attempt {attempt + 1}/{PUSH_ATTEMPTS})")
+                return {"ok": False, "reason": "at_capacity", "detail": out.strip()[:400]}
+            if attempt + 1 == PUSH_ATTEMPTS or not any(m in lowered for m in THROTTLED_PUSH):
+                return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
+            delay = PUSH_BACKOFF_SEC * (2**attempt)
+            _log(
+                f"push looks throttled, retrying in {delay}s "
+                f"(attempt {attempt + 1}/{PUSH_ATTEMPTS})"
+            )
             time.sleep(delay)
         return {"ok": False, "reason": "push_failed", "detail": out.strip()[:400]}
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors = True)
 
 
 def poll(api, slug: str) -> str:
@@ -230,17 +261,21 @@ def list_outputs(slug: str, timeout: int = 120) -> dict:
     log = ""
     for _ in range(20):
         url = f"{API_ROOT}/kernels/output?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {_bearer()}",
-            "User-Agent": "unsloth-kaggle-t4-ci/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        req = urllib.request.Request(
+            url,
+            headers = {
+                "Authorization": f"Bearer {_bearer()}",
+                "User-Agent": "unsloth-kaggle-t4-ci/1.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read())
         files.extend(f for f in data.get("files") or [] if f.get("fileName"))
         log = log or (data.get("log") or "")
         token = data.get("nextPageToken") or ""
         if not (data.get("hasNextPageToken") and token):
             break
-        params = dict(params, pageToken=token)
+        params = dict(params, pageToken = token)
     return {"files": files, "log": log}
 
 
@@ -256,7 +291,11 @@ def _dest_name(file_name: str) -> str:
     return name or PurePosixPath(file_name).name
 
 
-def fetch_evidence(slug: str, outdir: Path, timeout: int = 300) -> dict:
+def fetch_evidence(
+    slug: str,
+    outdir: Path,
+    timeout: int = 300,
+) -> dict:
     """Pull the executed notebooks and the kernel log by direct URL.
 
     Evidence first, and by direct URL rather than the bulk download: the
@@ -265,8 +304,8 @@ def fetch_evidence(slug: str, outdir: Path, timeout: int = 300) -> dict:
     model sorted alphabetically ahead of them and the stream broke partway
     through.
     """
-    outdir.mkdir(parents=True, exist_ok=True)
-    listing = list_outputs(slug, timeout=min(timeout, 120))
+    outdir.mkdir(parents = True, exist_ok = True)
+    listing = list_outputs(slug, timeout = min(timeout, 120))
     fetched = []
     for entry in listing["files"]:
         name = _dest_name(entry["fileName"])
@@ -278,24 +317,22 @@ def fetch_evidence(slug: str, outdir: Path, timeout: int = 300) -> dict:
         dest = outdir / name
         part = dest.with_suffix(dest.suffix + ".part")
         try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-kaggle-t4-ci/1.0"})
+            with urllib.request.urlopen(req, timeout = timeout) as resp:
                 part.write_bytes(resp.read())
             # Only publish once it parses: a download killed mid-write leaves
             # a file of plausible size, and the whole point here is not to
             # produce evidence that looks present and is not.
-            json.loads(part.read_text(encoding="utf-8", errors="replace"))
+            json.loads(part.read_text(encoding = "utf-8", errors = "replace"))
             part.replace(dest)
             fetched.append(dest.name)
         except Exception as exc:  # noqa: BLE001
             _log(f"could not fetch {name}: {type(exc).__name__}")
-            part.unlink(missing_ok=True)
+            part.unlink(missing_ok = True)
     log_path = outdir / "kernel.log"
     if listing.get("log"):
-        log_path.write_text(listing["log"], encoding="utf-8")
-    return {"notebooks": fetched, "log": log_path.name
-            if log_path.exists() else None}
+        log_path.write_text(listing["log"], encoding = "utf-8")
+    return {"notebooks": fetched, "log": log_path.name if log_path.exists() else None}
 
 
 def extract_reports(outdir: Path) -> list[dict]:
@@ -313,7 +350,7 @@ def extract_reports(outdir: Path) -> list[dict]:
         for line in text.splitlines():
             if not line.startswith(RESULT_PREFIX):
                 continue
-            blob = line[len(RESULT_PREFIX):].strip()
+            blob = line[len(RESULT_PREFIX) :].strip()
             try:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
@@ -326,8 +363,7 @@ def extract_reports(outdir: Path) -> list[dict]:
 
     for nb_path in sorted(outdir.glob(f"*{OUTPUT_SUFFIX}")):
         try:
-            nb = json.loads(nb_path.read_text(encoding="utf-8",
-                                              errors="replace"))
+            nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
         for cell in nb.get("cells", []):
@@ -338,34 +374,45 @@ def extract_reports(outdir: Path) -> list[dict]:
                 _consume(text)
     log_path = outdir / "kernel.log"
     if log_path.exists():
-        _consume(log_path.read_text(encoding="utf-8", errors="replace"))
+        _consume(log_path.read_text(encoding = "utf-8", errors = "replace"))
     return reports
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--notebook", required=True)
-    ap.add_argument("--user", required=True)
-    ap.add_argument("--outdir", required=True)
-    ap.add_argument("--expect", type=int, default=2,
-                    help="payload reports this kernel should produce")
-    ap.add_argument("--kernel-timeout-sec", type=int, default=3600,
-                    help="hard ceiling enforced by KAGGLE on the session")
-    ap.add_argument("--max-wait", type=int, default=4200,
-                    help="how long this process waits before giving up")
-    ap.add_argument("--poll-every", type=int, default=60)
-    ap.add_argument("--keep-kernel", action="store_true",
-                    help="do not delete the kernel after collecting")
+    ap.add_argument("--notebook", required = True)
+    ap.add_argument("--user", required = True)
+    ap.add_argument("--outdir", required = True)
+    ap.add_argument(
+        "--expect", type = int, default = 2, help = "payload reports this kernel should produce"
+    )
+    ap.add_argument(
+        "--kernel-timeout-sec",
+        type = int,
+        default = 3600,
+        help = "hard ceiling enforced by KAGGLE on the session",
+    )
+    ap.add_argument(
+        "--max-wait", type = int, default = 4200, help = "how long this process waits before giving up"
+    )
+    ap.add_argument("--poll-every", type = int, default = 60)
+    ap.add_argument(
+        "--keep-kernel", action = "store_true", help = "do not delete the kernel after collecting"
+    )
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    result: dict = {"verdict": "infra", "reason": "", "slug": None,
-                    "kernel_state": None, "reports": []}
+    outdir.mkdir(parents = True, exist_ok = True)
+    result: dict = {
+        "verdict": "infra",
+        "reason": "",
+        "slug": None,
+        "kernel_state": None,
+        "reports": [],
+    }
 
     def finish(code: int = 0) -> int:
-        (outdir / "launch_result.json").write_text(
-            json.dumps(result, indent=2), encoding="utf-8")
+        (outdir / "launch_result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
         _out("verdict", result["verdict"])
         _out("reason", result["reason"])
         _out("slug", result["slug"] or "")
@@ -380,8 +427,7 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
-    _log(f"pushing {args.notebook} (kernel ceiling "
-         f"{args.kernel_timeout_sec}s)")
+    _log(f"pushing {args.notebook} (kernel ceiling " f"{args.kernel_timeout_sec}s)")
     pushed = push(Path(args.notebook), args.user, args.kernel_timeout_sec)
     if not pushed["ok"]:
         result["reason"] = f"{pushed['reason']}: {pushed.get('detail', '')}"
@@ -410,7 +456,8 @@ def main() -> int:
     if not reports:
         result["reason"] = (
             f"kernel ended {state} but produced no payload report; nothing "
-            f"was learned about the code under test")
+            f"was learned about the code under test"
+        )
         return finish()
 
     # A kernel that ended badly but still produced reports is worth reading:
@@ -421,21 +468,26 @@ def main() -> int:
     if failing:
         result["verdict"] = "fail"
         result["reason"] = (
-            f"{len(failing)} of {len(reports)} payload(s) failed their "
-            f"assertions")
+            f"{len(failing)} of {len(reports)} payload(s) failed their " f"assertions"
+        )
     elif len(reports) < args.expect:
         result["verdict"] = "partial"
         result["reason"] = (
             f"only {len(reports)} of {args.expect} payload(s) reported back "
-            f"(kernel state {state}); the ones that did, passed")
+            f"(kernel state {state}); the ones that did, passed"
+        )
     else:
         result["verdict"] = "pass"
         result["reason"] = f"all {len(reports)} payload(s) passed"
 
     if not args.keep_kernel:
         try:
-            subprocess.run(["kaggle", "kernels", "delete", slug, "-y"],
-                           capture_output=True, text=True, timeout=120)
+            subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 120,
+            )
         except Exception:  # noqa: BLE001
             pass
 
