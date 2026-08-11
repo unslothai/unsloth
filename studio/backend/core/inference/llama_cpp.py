@@ -11295,7 +11295,15 @@ class LlamaCppBackend:
                         # would release the reserve for a drafter the child still
                         # loads, and the load OOMs. It is also an explicit choice.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
-                        and not _draft_cpu_no_embedded
+                        # The drafter this load will launch, not whether an embedded
+                        # head also exists: a separate sidecar wins over one (llama.cpp
+                        # loads the draft model on has_dft()), so with the sidecar
+                        # pinned to CPU there is no GPU drafter reserve to drop. An
+                        # embedded head with no sidecar does sit on GPU, and is probed.
+                        and not (
+                            _draft_on_cpu
+                            and (mtp_draft_path or _spec_canon in ("dspark", "dflash"))
+                        )
                         and not tensor_parallel
                         and gpus
                         and effective_ctx > 0
@@ -11396,26 +11404,32 @@ class LlamaCppBackend:
                             # / _every_gpu_holds_reserve / _cap_ctx_to_per_device_reserve),
                             # so the two cannot disagree. Auto only: an explicit context
                             # is honored verbatim, never capped, and overflows to --fit.
-                            if not explicit_ctx:
-                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
-                                _probe_reserve_at = lambda c, _k = _n: (
-                                    (_pipeline_overhead_bytes if _k > 1 else 0)
-                                    + _cc_bytes(c, _k) // _k
+                            _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                            _probe_reserve_at = lambda c, _k = _n: (
+                                (_pipeline_overhead_bytes if _k > 1 else 0)
+                                + _cc_bytes(c, _k) // _k
+                            )
+                            if not self._every_gpu_holds_reserve(
+                                _usable_wo, _probe_reserve_at(_ctx_wo)
+                            ):
+                                if explicit_ctx:
+                                    # Honored verbatim, so there is nothing to cap: this
+                                    # subset simply cannot hold it, and _select_gpus_
+                                    # split_aware will say so too by going to --fit.
+                                    # Calling it a fit here would drop the drafter and
+                                    # then report a pin that never happened.
+                                    continue
+                                _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                    _ctx_wo, _usable_wo, _probe_reserve_at
                                 )
-                                if not self._every_gpu_holds_reserve(
-                                    _usable_wo, _probe_reserve_at(_ctx_wo)
-                                ):
-                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
-                                        _ctx_wo, _usable_wo, _probe_reserve_at
-                                    )
-                                    if _ctx_wo <= 0:
-                                        continue
-                                    # Every pooled term shrinks with the context, so this
-                                    # cannot newly fail; re-price rather than lean on it.
-                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
-                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
-                                    if _foot_wo > _budget_wo:
-                                        continue
+                                if _ctx_wo <= 0:
+                                    continue
+                                # Every pooled term shrinks with the context, so this
+                                # cannot newly fail; re-price rather than lean on it.
+                                _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                if _foot_wo > _budget_wo:
+                                    continue
                             _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
                                 1024 * 1024
                             )

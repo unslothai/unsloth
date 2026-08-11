@@ -5754,7 +5754,45 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         return dflash_budget_bytes(sizes, _gguf_extra_shards) or _REMOTE_DRAFTER_RESERVE_BYTES
     except Exception as e:
         logger.warning(f"Could not size remote drafter repo {spec}: {e}")
-        return _REMOTE_DRAFTER_RESERVE_BYTES
+    # Unreadable listings are the case where the repo is already in the local HF
+    # cache: that is what lets llama-server open it with the Hub unreachable, and
+    # it is also what makes the flat reserve dangerous, since --spec-draft-hf takes
+    # any repo and an ordinary 30 GB GGUF is a legal value. Measure the cache.
+    cached = _cached_repo_gguf_bytes(repo)
+    if cached:
+        return cached
+    # Neither listable nor cached: llama-server would have to download it over the
+    # same Hub that just refused us, so the reserve is a cushion for a drafter that
+    # most likely never arrives, not a bound on one that has.
+    return _REMOTE_DRAFTER_RESERVE_BYTES
+
+
+def _cached_repo_gguf_bytes(repo: str) -> int:
+    """Largest whole GGUF shard set already on disk for ``repo``, else 0.
+
+    Same bound as the listing path, taken from the local Hugging Face cache, so a
+    drafter llama-server can open offline is charged at its real size rather than
+    a class-based guess.
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        from core.inference.llama_cpp import _gguf_extra_shards
+        from utils.models.drafters import dflash_budget_bytes
+
+        sizes: dict[str, int] = {}
+        for cached_repo in scan_cache_dir().repos:
+            if (cached_repo.repo_id or "").lower() != repo.lower():
+                continue
+            for revision in cached_repo.revisions:
+                for f in revision.files:
+                    name = str(f.file_name)
+                    if name.lower().endswith(".gguf"):
+                        sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
+        return dflash_budget_bytes(sizes, _gguf_extra_shards)
+    except Exception as e:
+        logger.warning(f"Could not measure the cached drafter repo {repo}: {e}")
+        return 0
 
 
 # Upper bound on any current tokenizer, used to rebuild the compute buffer when a

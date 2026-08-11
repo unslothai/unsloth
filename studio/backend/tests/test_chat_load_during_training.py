@@ -1826,6 +1826,45 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         underprices the load the guard is protecting a training run from."""
         self.assertGreaterEqual(self.route._REMOTE_DRAFTER_RESERVE_BYTES, 11 * 1024**3)
 
+    def test_an_unlistable_remote_drafter_is_measured_from_the_local_cache(self):
+        """An unreadable listing is exactly the case where the repo is already
+        cached, which is what lets llama-server open it offline, and --spec-draft-hf
+        takes any repo, so a class-based constant can undercount a 30 GB drafter by
+        a lot. Measure what is on disk instead, with the same whole-shard-set bound
+        the listing path uses."""
+        cached = SimpleNamespace(
+            repo_id = "org/drafter",
+            revisions = [
+                SimpleNamespace(
+                    files = [
+                        SimpleNamespace(file_name = "big-00001-of-00002.gguf", size_on_disk = 16 * 1024**3),
+                        SimpleNamespace(file_name = "big-00002-of-00002.gguf", size_on_disk = 14 * 1024**3),
+                        SimpleNamespace(file_name = "notes.txt", size_on_disk = 10),
+                    ]
+                )
+            ],
+        )
+        with (
+            patch("huggingface_hub.model_info", side_effect = OSError("no network")),
+            patch(
+                "huggingface_hub.scan_cache_dir",
+                return_value = SimpleNamespace(repos = [cached]),
+            ),
+        ):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        # The whole 30 GB set that is actually resident, not the flat reserve.
+        self.assertEqual(charged, 30 * 1024**3)
+
+    def test_a_remote_drafter_that_is_neither_listable_nor_cached_pays_the_reserve(self):
+        """Nothing to measure and nothing to download over the Hub that just
+        refused the listing, so the reserve is a cushion rather than a bound."""
+        with (
+            patch("huggingface_hub.model_info", side_effect = OSError("no network")),
+            patch("huggingface_hub.scan_cache_dir", return_value = SimpleNamespace(repos = [])),
+        ):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        self.assertEqual(charged, self.route._REMOTE_DRAFTER_RESERVE_BYTES)
+
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a
         listing caught mid-publication must not be billed for its listed half:

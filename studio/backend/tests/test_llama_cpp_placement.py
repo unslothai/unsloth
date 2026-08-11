@@ -717,3 +717,27 @@ def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
     # a drafter that is not launching.
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert cmd[cmd.index("--fit") + 1] == "off"
+
+
+def test_a_cpu_offloaded_sidecar_is_not_probed_because_a_head_also_exists(tmp_path):
+    """The drafter that launches decides, not one that merely exists.
+
+    llama.cpp loads the draft model on has_dft(), so a separate sidecar wins over
+    an embedded head; pinned to CPU it takes no GPU reserve, and there is nothing
+    for the shortfall probe to drop. Keying the exemption on "no embedded head"
+    dropped a sidecar that was never on the GPU in the first place.
+    """
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+        extra_args = ["--spec-draft-ngl", "0"],
+    )
+
+    assert backend.spec_fallback_reason != "drafter_no_vram"
+    assert "--model-draft" in result["cmd"]
