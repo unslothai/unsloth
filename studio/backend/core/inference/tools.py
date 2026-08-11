@@ -2538,7 +2538,9 @@ _AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset(
 # The same deserialize one level down: yaml.Loader(s).get_data() constructs the
 # tagged objects without going through yaml.load, and subclassing one of these
 # (the documented way to extend PyYAML) inherits that.
-_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "UnsafeLoader", "CLoader", "CUnsafeLoader"})
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset(
+    {"Loader", "UnsafeLoader", "CLoader", "CUnsafeLoader", "FullLoader", "CFullLoader"}
+)
 _AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
 # Loader classes that cannot construct arbitrary callables in any PyYAML
 # version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
@@ -3551,7 +3553,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
     # Names bound to such a loader directly (from yaml import unsafe_load [as u];
     # ld = yaml.load), so calling the bare name is gated like the attribute call.
+    # The class aliases stay separate: only the load functions take a Loader=
+    # keyword, so only they can earn the safe-loader exemption below.
     load_func_aliases: "set[str]" = set()
+    load_class_aliases: "set[str]" = set()
+    # Loaders bound onto an attribute (holder.load = yaml.unsafe_load), like
+    # attr_open_aliases does for open.
+    attr_load_aliases: "set[str]" = set()
+    # Names bound to a literal container that holds a forwardable callable
+    # (packed = (yaml.load, s)), so run(*packed) is still seen as an escape.
+    packed_callable_names: "set[str]" = set()
     # Names bound to a loader class that cannot execute code (from yaml import
     # SafeLoader), so yaml.load(s, Loader=SafeLoader) is recognized as a safe read.
     safe_loader_aliases: "set[str]" = set()
@@ -3665,6 +3676,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     def _is_safe_loader(node) -> bool:
         # The Loader= value is statically one of the loaders that cannot build
         # arbitrary callables. Anything else (absent, dynamic, rebound) is not.
+        if registers_constructor:
+            return False
         if isinstance(node, ast.Attribute):
             return (
                 node.attr in _AUTO_SAFE_PY_LOAD_CLASSES
@@ -3685,20 +3698,29 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             return False
         return any(kw.arg == "Loader" and _is_safe_loader(kw.value) for kw in call.keywords or [])
 
-    def _escaping_args(call):
-        # Every callable a call can forward to a helper, including the ones an
-        # unpacking hides: run(*(yaml.load, s)) and run(**{"fn": yaml.load}).
+    def _forwards_callable(call) -> bool:
+        # Whether a call hands a concrete write/loader callable to a helper,
+        # including the ones an unpacking hides: run(*(yaml.load, s)),
+        # run(**{"fn": yaml.load}) and the same containers bound to a name first.
         for arg in call.args:
             if isinstance(arg, ast.Starred):
                 if isinstance(arg.value, (ast.Tuple, ast.List, ast.Set)):
-                    yield from arg.value.elts
-            else:
-                yield arg
+                    if any(_passed_write_callable(e) for e in arg.value.elts):
+                        return True
+                elif isinstance(arg.value, ast.Name) and arg.value.id in packed_callable_names:
+                    return True
+            elif _passed_write_callable(arg):
+                return True
         for kw in call.keywords:
-            if kw.arg is None and isinstance(kw.value, ast.Dict):
-                yield from kw.value.values
-            else:
-                yield kw.value
+            if kw.arg is None:
+                if isinstance(kw.value, ast.Dict):
+                    if any(_passed_write_callable(v) for v in kw.value.values):
+                        return True
+                elif isinstance(kw.value, ast.Name) and kw.value.id in packed_callable_names:
+                    return True
+            elif _passed_write_callable(kw.value):
+                return True
+        return False
 
     def _passed_write_callable(arg) -> bool:
         # A concrete write callable handed as an argument to another call: a
@@ -3714,6 +3736,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 or arg.id in writer_aliases
                 or arg.id in archive_ctor_aliases
                 or arg.id in load_func_aliases
+                or arg.id in load_class_aliases
             )
         if isinstance(arg, ast.Attribute):
             # A loader is receiver-matched (yaml.load, torch.load) so a helper
@@ -3751,6 +3774,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 elif isinstance(sub, ast.Attribute):
                     assigned_attr_names.add(sub.attr)
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
+    # A registered constructor is a callback the YAML tags choose, so a loader
+    # that has one is no longer the stock safe loader and loses the exemption.
+    registers_constructor = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr in ("add_constructor", "add_multi_constructor")
+        for n in ast.walk(tree)
+    )
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -3807,8 +3838,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         archive_ctor_aliases.add(alias.asname or _ctor)
             if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
                 for alias in node.names:
-                    if alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
+                    if alias.name in _AUTO_UNSAFE_PY_LOAD_FUNCS:
                         load_func_aliases.add(alias.asname or alias.name)
+                    elif alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES:
+                        load_class_aliases.add(alias.asname or alias.name)
                     # from yaml.loader import SafeLoader is the documented safe
                     # spelling; record it so Loader=SafeLoader stays auto-approved.
                     elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES:
@@ -3845,15 +3878,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 writer_aliases.update(targets)  # s = save (numpy save alias)
             elif isinstance(value, ast.Name) and value.id in load_func_aliases:
                 load_func_aliases.update(targets)  # u = unsafe_load
+            elif isinstance(value, ast.Name) and value.id in load_class_aliases:
+                load_class_aliases.update(targets)  # U = UnsafeLoader
             elif isinstance(value, ast.Name) and value.id in load_module_aliases:
                 load_module_aliases.update(targets)  # c = yaml; c.load(...)
-            elif (
-                isinstance(value, ast.Attribute)
-                and value.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                and isinstance(value.value, ast.Name)
-                and value.value.id in load_module_aliases
-            ):
-                load_func_aliases.update(targets)  # ld = yaml.load
+            elif _is_loader_attr(value):
+                # ld = yaml.load / L = yaml.Loader, on a name or an attribute
+                # (holder.ld = yaml.unsafe_load), which is called like the module
+                # attribute it was taken from.
+                if value.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
+                    load_func_aliases.update(targets)
+                else:
+                    load_class_aliases.update(targets)
+                attr_load_aliases.update(attr_targets)
             elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
                 archive_ctor_aliases.update(targets)  # z = ZipFile
             elif isinstance(value, ast.Name) and value.id in invoker_aliases:
@@ -3943,7 +3980,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 if folded is not None and "\x00" not in folded and "\x02" not in folded:
                     for t in targets:
                         literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
-            elif isinstance(value, (ast.Tuple, ast.List)):
+            if isinstance(value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
+                # packed = (yaml.load, s); run(*packed) forwards the loader just
+                # like the inline literal does, so remember the container name.
+                _held = value.values if isinstance(value, ast.Dict) else value.elts
+                if any(_passed_write_callable(e) for e in _held):
+                    packed_callable_names.update(targets)
+            if isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring binds each element like a single assignment, so an
                 # aliased callable (f, _ = (open, print)) AND a string / path
                 # literal (base, leaf = ('/etc', 'passwd')) both propagate; without
@@ -3969,8 +4012,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                 archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
                             elif isinstance(val_el, ast.Name) and val_el.id in load_func_aliases:
                                 load_func_aliases.add(tid)  # ld, _ = (unsafe_load, 1)
+                            elif isinstance(val_el, ast.Name) and val_el.id in load_class_aliases:
+                                load_class_aliases.add(tid)  # L, _ = (UnsafeLoader, 1)
                             elif _is_loader_attr(val_el):
-                                load_func_aliases.add(tid)  # ld, _ = (yaml.load, 1)
+                                if val_el.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
+                                    load_func_aliases.add(tid)  # ld, _ = (yaml.load, 1)
+                                else:
+                                    load_class_aliases.add(tid)  # L, _ = (yaml.Loader, 1)
                             elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
                                 literal_str_vars[tid] = (
                                     "\x02" if tid in multi_assigned_names else val_el.value
@@ -3993,9 +4041,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             # class L(yaml.Loader) makes L a loader too.
             for base in node.bases:
                 if _is_loader_attr(base) or (
-                    isinstance(base, ast.Name) and base.id in load_func_aliases
+                    isinstance(base, ast.Name)
+                    and (base.id in load_class_aliases or base.id in load_func_aliases)
                 ):
-                    load_func_aliases.add(node.name)
+                    load_class_aliases.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # A callable captured as a parameter default (def f(o=open): o('x','w'))
             # binds that parameter to the same alias set, so a later call through
@@ -4029,9 +4078,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         dynamic_aliases.add(_param.arg)
                     elif _did in load_func_aliases:
                         load_func_aliases.add(_param.arg)
+                    elif _did in load_class_aliases:
+                        load_class_aliases.add(_param.arg)
                 elif _is_loader_attr(_default):
                     # def run(loader=yaml.unsafe_load): loader(payload)
-                    load_func_aliases.add(_param.arg)
+                    if _default.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
+                        load_func_aliases.add(_param.arg)
+                    else:
+                        load_class_aliases.add(_param.arg)
                 elif isinstance(_default, ast.Attribute):
                     # An attribute writer / archive ctor / captured .open used as
                     # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
@@ -4136,7 +4190,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # branches below gate, but through a user-defined helper
                 # (def run(fn): fn('o','w').write('x'); run(open)). A benign
                 # callable argument (run(len)) is unaffected.
-                if any(_passed_write_callable(a) for a in _escaping_args(node)):
+                if _forwards_callable(node):
                     return True
                 if isinstance(func, ast.Name):
                     if func.id in dynamic_aliases:
@@ -4147,7 +4201,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     if func.id in writer_aliases:
                         return True
                     # A code-executing loader bound to a bare name
-                    # (from yaml import unsafe_load; ld = yaml.load).
+                    # (from yaml import unsafe_load; ld = yaml.load). Only the
+                    # load functions honour Loader=, so a class alias never does.
+                    if func.id in load_class_aliases:
+                        return True
                     if func.id in load_func_aliases and not _loads_safely(node):
                         return True
                     # A bare archive constructor (from zipfile import ZipFile)
@@ -4218,6 +4275,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # An open bound onto an attribute (box.f = open; box.f('o','w'))
                     # writes on 'w'/'a'/'x' like the builtin, so gate the attr name.
                     if func.attr in attr_open_aliases and _builtin_open_writes(node):
+                        return True
+                    # A loader parked on an attribute (holder.load = yaml.load).
+                    if func.attr in attr_load_aliases:
                         return True
                     # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
                     # the 2nd arg (like builtin open), so ZipFile(name, "w") writes

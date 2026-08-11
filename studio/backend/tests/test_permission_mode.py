@@ -1717,6 +1717,20 @@ def test_high_risk_dispatcher_non_terminal():
         ("import yaml.loader\nyaml.loader.Loader(s).get_data()", True),  # dotted receiver
         ("from yaml import loader as yl\nyl.Loader(s).get_data()", True),  # submodule name
         ("import yaml\nfor d in yaml.safe_load_all(open('c.yml')): print(d)", False),
+        ("import yaml\nh.loader = yaml.unsafe_load\nh.loader(s)", True),  # parked on an attr
+        ("import yaml\np = (yaml.unsafe_load, s)\nrun(*p)", True),  # named container
+        ("import yaml\np = {'fn': yaml.unsafe_load}\nrun(**p)", True),
+        ("p = (open, 'o', 'w')\nrun(*p)", True),  # same, writer
+        ("p = (1, 2)\nprint(*p)", False),  # a plain container stays safe
+        ("import yaml\nyaml.FullLoader(s).get_data()", True),  # FullLoader class
+        # A loader subclass takes no Loader= keyword, so one cannot buy an exemption.
+        ("import yaml\nclass L(yaml.Loader): pass\nL(s, Loader=yaml.SafeLoader)", True),
+        # A registered constructor makes even SafeLoader tag-directed.
+        (
+            "import yaml\nyaml.SafeLoader.add_constructor('!e', h)\n"
+            "yaml.load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
