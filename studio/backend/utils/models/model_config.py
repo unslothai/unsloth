@@ -30,7 +30,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, List, Tuple, Union
+from typing import Callable, List, Tuple, Union
 import hashlib
 import json
 import threading
@@ -1658,25 +1658,36 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
 
 # Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so
 # one rule serves the local scan, the download, the snapshot reuse and the
-# offline cache alike. Re-exported here deliberately: these names were part of
-# this module's surface and are imported from it across the backend and the
-# tests, so the move stays source compatible.
+# offline cache alike. Only the names this module still calls are imported here;
+# everything else is imported from utils.models.drafters directly at its use
+# site. A re-export shim would be the friendlier move, but scripts/
+# verify_import_hoist.py scopes its __all__ exemption to package __init__.py and
+# blocks unused imports in an ordinary module on purpose -- see its
+# reexport_in_ordinary_module_is_still_blocked self-test.
 from utils.models.drafters import (  # noqa: E402
     _drafter_launch_path,
     _drafter_matches_weight,
-    _drafter_names_other_weight,
-    _drafter_pairing_stem,
     _drafter_split_is_complete,
     _drafter_stem_rank,
     _drafter_total_size,
     detect_dflash_file,
-    dflash_precision_rank,
-    dflash_preference_key,
-    dflash_repo_preference_key,
     dspark_precision_rank,
-    dspark_preference_key,
-    is_dflash_architecture,
 )
+from utils.models.drafters import (  # noqa: E402
+    dspark_preference_key as _drafters_dspark_preference_key,
+)
+
+
+def dspark_preference_key(name: str) -> Tuple[int, str]:
+    """Sort key picking the preferred DSpark sidecar by name alone.
+
+    Delegates rather than re-exports: routes/inference.py has imported this from
+    model_config since #7968, and repointing that call site would trip
+    scripts/verify_import_hoist.py's TARGET-CHANGED rule, whose relocation
+    exemption only covers module-level imports. One implementation still, in
+    utils.models.drafters.
+    """
+    return _drafters_dspark_preference_key(name)
 
 
 def detect_mtp_file(

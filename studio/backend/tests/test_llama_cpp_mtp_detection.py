@@ -770,6 +770,19 @@ def _make_fake_llama_server(path: Path, help_text: str) -> Path:
     return path
 
 
+# One fixed wall-clock second, so two revisions of a file differ only below the
+# resolution a whole-second mtime can see.
+_FIXED_MTIME_SECOND = 1_700_000_000
+
+
+def _pin_mtime(path: Path, *, nanos: int) -> Path:
+    """Pin a file's mtime `nanos` into one fixed second, so a later rewrite of it
+    differs only below the resolution a whole-second mtime can see."""
+    stamp = _FIXED_MTIME_SECOND * 1_000_000_000 + nanos
+    os.utime(path, ns = (stamp, stamp))
+    return path
+
+
 _NEEDS_BASH = pytest.mark.skipif(
     sys.platform == "win32",
     reason = "fake llama-server is a bash stub; Windows has no direct executor",
@@ -804,6 +817,31 @@ def test_probe_server_capabilities_detects_dspark(tmp_path):
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps["supports_dspark"] is True
+
+
+_DFLASH_SPEC_HELP = "--spec-type none,draft-mtp,draft-dflash,ngram-mod"
+# Padded to the same length as the DFlash one, so the two builds are the same size on
+# disk and only the sub-second mtime tells them apart.
+_PRE_DFLASH_SPEC_HELP = "--spec-type none,draft-mtp,ngram-mod".ljust(len(_DFLASH_SPEC_HELP))
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_rereads_a_binary_replaced_in_the_same_second(tmp_path):
+    """`unsloth studio update` overwrites llama-server in place. Keyed on whole
+    seconds, an update landing in the second the old build was probed in kept the key
+    identical and the new build was answered with the old one's capabilities -- and
+    "the user just installed the missing capability" is exactly the moment the cache
+    has to notice."""
+    binary = _make_fake_llama_server(tmp_path / "llama-server", _PRE_DFLASH_SPEC_HELP)
+    _pin_mtime(binary, nanos = 100_000)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(binary))["supports_dflash"] is False
+
+    before = binary.stat().st_size
+    _make_fake_llama_server(binary, _DFLASH_SPEC_HELP)
+    _pin_mtime(binary, nanos = 900_000)
+    assert binary.stat().st_size == before
+    assert LlamaCppBackend.probe_server_capabilities(str(binary))["supports_dflash"] is True
 
 
 @_NEEDS_BASH
@@ -2560,6 +2598,184 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
     assert _matches(ok, **_drafter_not_found_kwargs()) is True
+
+
+# ── A binary that has since gained the drafter ───────────────────────
+#
+# Standing down on speculative decoding because llama-server cannot run it tells the
+# user to run `unsloth studio update`. The update changes nothing about the request, so
+# the comparators see the same intent and skip the reload: the one load the update
+# exists to fix is the one that never happens again.
+
+
+def _binary_fallback_kwargs():
+    """An Auto request for the model the fallen-back server is already running."""
+    return dict(
+        model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,
+    )
+
+
+def _stood_down_backend(**overrides):
+    """Live server that dropped its drafter because the binary could not run it."""
+    state = dict(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _spec_fallback_reason = "binary_no_mtp",
+        _gguf_path = None,
+    )
+    state.update(overrides)
+    return _mtp_backend(**state)
+
+
+def _fake_caps(monkeypatch, **capabilities):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: dict(capabilities)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "capability"),
+    [("dflash", "supports_dflash"), ("dspark", "supports_dspark"), ("mtp", "supports_mtp")],
+)
+def test_already_in_target_state_reloads_once_the_binary_can_run_the_drafter(
+    monkeypatch, kind, capability
+):
+    _fake_caps(monkeypatch, **{capability: True})
+    backend = _stood_down_backend(_spec_drafter_kind = kind)
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
+
+
+@pytest.mark.parametrize("kind", ["dflash", "dspark", "mtp"])
+def test_already_in_target_state_keeps_deduping_while_the_binary_still_cannot(monkeypatch, kind):
+    """The half that stops this becoming a reload loop: nothing has changed, so the
+    healthy drafterless server has to be left alone."""
+    _fake_caps(
+        monkeypatch,
+        supports_dflash = False,
+        supports_dspark = False,
+        supports_mtp = False,
+    )
+    backend = _stood_down_backend(_spec_drafter_kind = kind)
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_asks_about_the_drafter_that_actually_stood_down(monkeypatch):
+    """Every kind records the same "binary_no_mtp", so a check keyed on the reason
+    alone would read a DSpark stand-down as answered by any build carrying MTP -- and
+    tear down a healthy server on every Apply for a capability it never gained."""
+    _fake_caps(monkeypatch, supports_mtp = True, supports_dspark = False, supports_dflash = False)
+    backend = _stood_down_backend(_spec_drafter_kind = "dspark")
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_never_reprobes_a_binary_nothing_has_touched(tmp_path, monkeypatch):
+    """The steady state, and the reason it has to be cheap: this runs on every Apply,
+    while the probe behind it spawns `llama-server --help` on a cold cache -- and the
+    cache is cold exactly when the binary was just replaced."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"unchanged build")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: pytest.fail("an untouched binary was reprobed")),
+    )
+    backend = _stood_down_backend(_spec_drafter_kind = "dflash")
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_sits_out_an_install_still_in_flight(tmp_path, monkeypatch):
+    """An update is not atomic, and mid-install the binary is unreadable. Reading that
+    as "a different build is installed" would tear the server down for a file that is
+    not there yet, and the reload would kill the process before finding that out."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"old build")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    backend = _stood_down_backend(
+        _spec_fallback_reason = "binary_outdated",
+        _spec_drafter_kind = "mtp",
+    )
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+
+    binary.unlink()
+    assert LlamaCppBackend._binary_revision(str(binary)) == ()
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
+def test_already_in_target_state_reloads_when_the_crashed_binary_was_replaced(
+    tmp_path, monkeypatch
+):
+    """A binary_outdated stand-down comes from a launch that died on an architecture
+    the build did not know, and no --help flag advertises those, so this one has to
+    compare the file itself."""
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"old build")
+    _pin_mtime(binary, nanos = 100_000)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_find_llama_server_binary",
+        staticmethod(lambda **_kwargs: str(binary)),
+    )
+    backend = _stood_down_backend(
+        _spec_fallback_reason = "binary_outdated",
+        _spec_drafter_kind = "mtp",
+    )
+    backend._launch_binary_revision = LlamaCppBackend._binary_revision(str(binary))
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+    # Same path, same size, same second: an update landing right after the crash.
+    binary.write_bytes(b"new build")
+    _pin_mtime(binary, nanos = 900_000)
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
+
+
+def test_diffusion_load_clears_the_previous_models_spec_fallback():
+    """The diffusion early-return skips _build_speculative_flags, which is what clears
+    the stand-down on every other load, and only /unload clears it otherwise. Both
+    retry rules in the dedupe read it, so an MTP model's verdict left behind by a
+    switch to DiffusionGemma relaunches the diffusion server on every Apply -- forever,
+    since the relaunch takes this same path and leaves the verdict exactly as it was."""
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    diffusion = src.find("if self._is_diffusion:")
+    assert diffusion != -1
+    start = src.find("return self._start_diffusion_server", diffusion)
+    assert start != -1
+    assert "self._spec_fallback_reason = None" in src[diffusion:start]
+    assert "self._spec_drafter_kind = None" in src[diffusion:start]
+
+
+def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():
+    """Under Auto a lost sidecar leaves no fallback reason at all -- the promotion
+    never ran -- so the flag is the only thing that can ask for one more attempt."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _gguf_path = None,
+    )
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+    backend._dflash_retry_needed = True
+    assert _matches(backend, **_binary_fallback_kwargs()) is False
 
 
 _MODERN_DRAFT_NGL_HELP = """usage: llama-server [options]

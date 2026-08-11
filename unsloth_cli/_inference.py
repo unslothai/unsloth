@@ -474,6 +474,7 @@ def _load_gguf_backend(
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
             dspark_draft_path = model_config.gguf_dspark_file,
+            dflash_draft_path = model_config.gguf_dflash_file,
         )
     if speculative_type is not None:
         intent_fields["speculative_type"] = speculative_type

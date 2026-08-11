@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import ast
 import atexit
 import contextlib
+import errno
 import functools
 import json
 import logging
@@ -217,6 +218,39 @@ _SPEC_ENV_VARS = (
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_HFD_REPO",
 )
+
+# Hub failures that answer the question for good: the repo, the revision or the file is
+# not there, or it is there and this token may not have it, or the Hub was never going to
+# be asked. Retrying any of them, on this load or the next Apply, buys nothing.
+_PERMANENT_HUB_ERRORS = (
+    "RepositoryNotFoundError",
+    "GatedRepoError",
+    "RevisionNotFoundError",
+    "EntryNotFoundError",
+    "OfflineModeIsEnabled",
+)
+
+# The other kind of settled failure a download can hit: this machine, not the Hub. Told
+# apart by errno rather than by exception type, because the Hub client raises OSError
+# subclasses for network trouble too (requests' ConnectionError is one of them) and
+# those DO deserve another attempt.
+_UNRECOVERABLE_LOCAL_ERRNOS = frozenset(
+    {
+        errno.EACCES,  # cache dir not writable
+        errno.EPERM,
+        errno.ENOSPC,  # disk full
+        errno.EROFS,
+    }
+)
+
+# What llama-server has to advertise for each drafter kind. Every kind records the same
+# "binary_no_mtp" when it stands down, so the reason alone cannot say which capability
+# to ask about again.
+_SPEC_KIND_CAPABILITY: dict[str, str] = {
+    "dspark": "supports_dspark",
+    "dflash": "supports_dflash",
+    "mtp": "supports_mtp",
+}
 
 _PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR = (
     "This Mac's Metal device is virtualised, where offloaded layers can return "
@@ -3238,6 +3272,16 @@ class LlamaCppBackend:
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
         self._dflash_sidecar_absent: bool = False
+        # Set when the DFlash sidecar could not be fetched for a reason that says
+        # nothing about the repo (a listing blip, a download that dropped). Unlike
+        # _dflash_sidecar_absent, which is the permanent answer for almost every repo,
+        # this one is worth one more Apply: under Auto the fetch failing silently
+        # leaves the load with no drafter and nothing else recording why.
+        self._dflash_retry_needed: bool = False
+        # Which llama-server file the last load resolved. `unsloth studio update`
+        # replaces it in place, so a load that blamed the binary can tell an update
+        # from the same build still being installed.
+        self._launch_binary_revision: tuple = ()
         # Set after an auto-Vulkan crash recovers with all devices disabled.
         self._cpu_fallback_reason: Optional[str] = None
         self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
@@ -3493,6 +3537,50 @@ class LlamaCppBackend:
     def spec_fallback_reason(self) -> Optional[str]:
         """Why MTP was disabled on the last MTP-requesting load, else None."""
         return self._spec_fallback_reason
+
+    def _binary_changed_since_launch(self) -> bool:
+        """Whether a different llama-server file is installed than the live server was
+        launched from. False when either side is unreadable, so the install's own window
+        is not mistaken for a finished install: the next Apply asks again."""
+        current = self._binary_revision(self._find_llama_server_binary())
+        if not current or not self._launch_binary_revision:
+            return False
+        return current != self._launch_binary_revision
+
+    def spec_binary_fallback_can_retry(self) -> bool:
+        """Whether the binary has since gained what the last load stood down for.
+
+        A load that drops speculative decoding because llama-server cannot run it tells
+        the user to run `unsloth studio update`. Doing so changes nothing about the
+        request, so the duplicate-load comparators see an identical intent and skip the
+        reload: the model keeps serving without a drafter until something unrelated
+        forces a relaunch, and the hint reads as a lie. Re-reading the binary here is
+        what turns it into a working instruction.
+
+        Which question to ask depends on what the binary was blamed for. A missing
+        ``--spec-type`` is answered by the capability the drafter kind needs, since every
+        kind records the same "binary_no_mtp" and asking about MTP after a DSpark
+        stand-down would say yes on a build that never gained draft-dspark. An
+        architecture the build did not know is advertised by no flag at all, so that one
+        can only compare the file.
+        """
+        if self._spec_fallback_reason == "binary_outdated":
+            return self._binary_changed_since_launch()
+        if self._spec_fallback_reason != "binary_no_mtp":
+            return False
+        if self._launch_binary_revision and not self._binary_changed_since_launch():
+            # An untouched file cannot advertise anything new, and this runs on every
+            # duplicate-load check, where the probe below is a subprocess on a cold
+            # cache -- which is precisely the state an update leaves it in.
+            return False
+        capability = _SPEC_KIND_CAPABILITY.get(self._spec_drafter_kind or "")
+        if capability is None:
+            return False
+        try:
+            return bool(self.probe_server_capabilities().get(capability))
+        except Exception as exc:
+            logger.debug("Could not recheck the speculative capability: %s", exc)
+            return False
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -4045,6 +4133,21 @@ class LlamaCppBackend:
             and not spec_owned_by_extra_args
         ):
             return False
+        # The other recoverable stand-down, and the one the UI actively asks the user to
+        # fix: the drafter was there and llama-server could not run it. Updating the
+        # binary leaves the request identical, so without this the load the update was
+        # meant to repair is exactly the load that never happens again.
+        if (
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            and self.spec_binary_fallback_can_retry()
+        ):
+            return False
+        # A DFlash fetch that failed on the way out leaves no other trace under Auto:
+        # the promotion never ran, so no fallback reason was recorded and the branch
+        # above cannot see it. A repo that simply publishes no sidecar is
+        # _dflash_sidecar_absent's business and is never retried here.
+        if self._dflash_retry_needed and speculative_type in ("auto", "dflash"):
+            return False
         compared_draft_n_max = self._spec_draft_n_max
         if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
             # The MTP-free recovery clears the runtime value but retains the
@@ -4352,8 +4455,12 @@ class LlamaCppBackend:
         match = re.match(r"b(\d+)", str(release_tag or ""))
         return bool(match) and int(match.group(1)) in cls._BROKEN_DSPARK_BUILDS
 
-    # Cached on (path, mtime); `unsloth studio update` bumps mtime.
-    _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+    # Cached on the revision of the file, not on the path: `unsloth studio update`
+    # replaces the binary in place. Nanoseconds and size rather than int(st_mtime),
+    # since an update landing in the same second as the probe kept the key identical and
+    # the new build was answered with the old one's capabilities -- which is exactly the
+    # moment a capability the user just installed has to become visible.
+    _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
@@ -4399,10 +4506,13 @@ class LlamaCppBackend:
                 "spec_draft_ngl_flag": None,
             }
         try:
-            mtime = int(Path(bin_path).stat().st_mtime)
+            binary_stat = Path(bin_path).stat()
+            mtime_ns = binary_stat.st_mtime_ns
+            size = binary_stat.st_size
         except OSError:
-            mtime = 0
-        cache_key = (bin_path, mtime)
+            mtime_ns = 0
+            size = 0
+        cache_key = (bin_path, mtime_ns, size)
         cached = cls._capability_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -7799,6 +7909,7 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         outcome: Optional[dict] = None,
+        on_transient_failure: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -7816,6 +7927,13 @@ class LlamaCppBackend:
         then cannot open, so the load fell back to no speculation with nothing to
         show for the download -- and it disagreed with the local scan, which
         accepts a split drafter only when every shard is present.
+
+        ``on_transient_failure`` fires when the companion was lost to something that
+        says nothing about the repo: a listing that never completed, or a download that
+        dropped. That is the one None worth another attempt, and it is a callback rather
+        than a second ``outcome`` key because the DFlash caller runs this in a loop and
+        needs the answer as each attempt ends. Permanent errors, offline mode and a
+        cancelled load never fire it.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
@@ -7852,6 +7970,10 @@ class LlamaCppBackend:
         # completed (offline, transient Hub failure) leaves target None for a
         # reason that says nothing about the repo's contents.
         listing_answered = False
+        # Whether the last listing attempt died of something that could yet succeed.
+        # Distinct from listing_answered: a permanent error also leaves the listing
+        # unanswered, and retrying that one buys nothing.
+        listing_failed = False
         from huggingface_hub import list_repo_files
 
         # Retry a transient listing blip; permanent repo/auth errors and offline
@@ -7862,17 +7984,13 @@ class LlamaCppBackend:
             try:
                 target = _pick_from(list_repo_files(hf_repo, token = hf_token))
                 listing_answered = True
+                listing_failed = False
                 break
             except Exception as e:
-                if type(e).__name__ in (
-                    "RepositoryNotFoundError",
-                    "GatedRepoError",
-                    "RevisionNotFoundError",
-                    "EntryNotFoundError",
-                    "OfflineModeIsEnabled",
-                ):
+                if type(e).__name__ in _PERMANENT_HUB_ERRORS:
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
+                listing_failed = True
                 logger.debug(
                     f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
@@ -7903,6 +8021,10 @@ class LlamaCppBackend:
         ):
             outcome["listed"] = target is not None
         if target is None or cancel_event.is_set():
+            # The listing is the only step that can fail this far in, and it failing
+            # transiently is the one None the caller may want to come back for.
+            if target is None and listing_failed and not cancel_event.is_set():
+                self._report_transient_companion_failure(on_transient_failure, label)
             return None
 
         # Offline, resolve the companion straight from the cache snapshot that
@@ -7956,7 +8078,35 @@ class LlamaCppBackend:
             return local_path
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
+            # The listing already named the file, so this is the fetch itself dropping:
+            # worth another attempt, unless the Hub answered for good, this machine did
+            # (a full disk stays full), the load was cancelled, or there was never going
+            # to be a download (offline).
+            if (
+                not cancel_event.is_set()
+                and type(e).__name__ not in _PERMANENT_HUB_ERRORS
+                and getattr(e, "errno", None) not in _UNRECOVERABLE_LOCAL_ERRNOS
+                and not _hf_env_offline()
+            ):
+                self._report_transient_companion_failure(on_transient_failure, label)
             return None
+
+    @staticmethod
+    def _report_transient_companion_failure(
+        on_transient_failure: Optional[Callable[[], None]], label: str
+    ) -> None:
+        """Tell the caller its companion was lost to something retryable.
+
+        Best-effort in both directions: no caller cares (the callback is optional), and
+        a caller whose callback raises must not lose the load over bookkeeping for a
+        companion that is already best-effort.
+        """
+        if on_transient_failure is None:
+            return
+        try:
+            on_transient_failure()
+        except Exception as exc:
+            logger.debug("Could not record the transient %s failure: %s", label, exc)
 
     def _download_mmproj(
         self,
@@ -8189,12 +8339,12 @@ class LlamaCppBackend:
         before.
         """
         try:
-            from utils.models.model_config import (
+            from utils.models.drafters import (
                 _drafter_split_is_complete,
-                _iter_hf_cache_snapshots,
                 dflash_repo_preference_key,
                 is_dflash_architecture,
             )
+            from utils.models.model_config import _iter_hf_cache_snapshots
 
             snapshots = (
                 _iter_hf_cache_snapshots(hf_repo)
@@ -8271,6 +8421,12 @@ class LlamaCppBackend:
         """
 
         weight_name = Path(near_path).name if near_path else None
+        # Whatever a previous load concluded, this one is asking again.
+        self._dflash_retry_needed = False
+
+        def _mark_retry_needed() -> None:
+            self._dflash_retry_needed = True
+
         # Basenames whose header turned out not to say dflash. A name lands here
         # only once the file is readable on disk, and _pick_dflash then skips it,
         # so a repo whose best-ranked candidate is an impostor still reaches the
@@ -8285,7 +8441,7 @@ class LlamaCppBackend:
             # The rest of the listing supplies the neighbouring weights that make
             # a foreign sidecar recognisable (a sidecar naming no family at all
             # stays eligible, which is what the published one does).
-            from utils.models.model_config import dflash_repo_preference_key
+            from utils.models.drafters import dflash_repo_preference_key
 
             # Root level only, as the local scan is: a nested dflash-*.gguf is an
             # ordinary weight, and offering it here spends its entire download
@@ -8317,7 +8473,7 @@ class LlamaCppBackend:
             file llama-server then refuses as --model-draft. Same helper as
             detect_dflash_file so the two rules cannot drift.
             """
-            from utils.models.model_config import is_dflash_architecture
+            from utils.models.drafters import is_dflash_architecture
 
             if not path:
                 return None
@@ -8384,6 +8540,10 @@ class LlamaCppBackend:
                 label = "DFlash drafter",
                 near_path = near_path,
                 outcome = outcome,
+                # A header rejection is not this: that candidate is settled, and the
+                # loop moves on to the next one. Only the Hub dropping out from under
+                # the fetch leaves a sidecar this repo really publishes unfetched.
+                on_transient_failure = _mark_retry_needed,
             )
             if candidate is None or candidate in fetched:
                 break
@@ -8418,8 +8578,8 @@ class LlamaCppBackend:
         can never launch and the load ends up with no drafter at all.
 
         A raised probe answers False, which keeps Auto on its other options
-        exactly as the promotion does. probe_server_capabilities caches on
-        (binary path, mtime), so asking here and at the promotion is one probe.
+        exactly as the promotion does. probe_server_capabilities caches on the
+        binary's revision, so asking here and at the promotion is one probe.
         """
         if spec_canon != "auto" or not dspark_draft_path:
             return False
@@ -9562,6 +9722,21 @@ class LlamaCppBackend:
             return ()
         return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
+    @staticmethod
+    def _binary_revision(binary: Optional[str]) -> tuple:
+        """Which build of llama-server a path currently holds, () when unreadable.
+
+        The path alone cannot answer that: an update swaps the file in place, which is
+        why the CPU staging above stamps its source too. Empty on an unreadable file, so
+        a caller comparing two revisions treats "cannot tell" as "unchanged" -- the
+        install window itself is unreadable, and reading that as a finished update would
+        tear a healthy server down for a binary that is not there yet.
+        """
+        if not binary:
+            return ()
+        stamp = LlamaCppBackend._binary_stamp(Path(binary))
+        return (str(binary),) + stamp if stamp else ()
+
     def _cleanup_cpu_fallback_runtime(self) -> None:
         runtime = getattr(self, "_cpu_fallback_runtime", None)
         self._cpu_fallback_runtime = None
@@ -9826,6 +10001,14 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+            # Which build this load is about to run, kept so a stand-down blamed on the
+            # binary can tell a later `unsloth studio update` from the same file still
+            # being installed.
+            self._launch_binary_revision = self._binary_revision(binary)
+            # Cleared per load, not only where the fetch runs: a local-file load never
+            # reaches the DFlash fetch, and a verdict left over from the previous model
+            # would make every Apply for this one reload.
+            self._dflash_retry_needed = False
             is_vulkan_backend = self._is_vulkan_backend(binary)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -10119,6 +10302,14 @@ class LlamaCppBackend:
                 # reloads a healthy diffusion server on every Apply.
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
+                # And the verdict on why the last load had no drafter, for the same
+                # reason once more: _build_speculative_flags clears it at the top of
+                # every load that reaches it, and this path never does. Both retry
+                # rules in the dedupe read it -- the drafter one and the binary one --
+                # and a stale answer would relaunch this server on every Apply for a
+                # drafter it was never going to carry.
+                self._spec_fallback_reason = None
+                self._spec_drafter_kind = None
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")
@@ -13520,8 +13711,15 @@ class LlamaCppBackend:
             _emit_mtp(chain_ngram = chain_ngram)
             return flags
 
-        # effective_mode == "auto": the promotion path. llama.cpp #22673:
-        # MTP is compatible with mmproj, so there's no vision gate.
+        # effective_mode == "auto": the promotion path. No vision gate on any
+        # drafter kind. MTP's mmproj compatibility is llama.cpp #22673; DFlash
+        # is a different --spec-type and #22105 says nothing either way, so it
+        # was measured rather than assumed. Muse-Glimmer-30B UD-Q4_K_XL with
+        # mmproj-kquant and dflash-kquant, b10342, one B200, n_max=2, greedy,
+        # on a prompt carrying ~545 image tokens: 92.1 -> 114.2 tok/s at 0.646
+        # acceptance, greedy output byte-identical to the drafter-free run. A
+        # vision gate would cost the flagship model 1.24x on the workload it
+        # ships for.
         if dspark_draft_path and caps.get("supports_dspark"):
             # DSpark first: load_model only hands a sidecar down once it has one
             # this binary can launch, and it beats every other Auto outcome for
@@ -13780,6 +13978,8 @@ class LlamaCppBackend:
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
             self._dflash_sidecar_absent = False
+            self._dflash_retry_needed = False
+            self._launch_binary_revision = ()
             self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False

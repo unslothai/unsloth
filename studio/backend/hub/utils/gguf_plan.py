@@ -131,6 +131,42 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
+def preferred_dflash_sibling(
+    siblings: Sequence,
+    weight_name: Optional[str] = None,
+    other_weight_names: Sequence[str] = (),
+) -> Optional[object]:
+    """The DFlash sidecar to fetch alongside ``weight_name``.
+
+    Root level only, like preferred_mtp_sibling above and for the same reason
+    the loader's remote discovery is: the local contract in detect_dflash_file
+    never offers a nested ``quants/dflash-*.gguf``, and a listing cannot read a
+    header, so going by basename would put a whole ordinary weight in the plan
+    before anything could reject it.
+
+    Ordered by dflash_repo_preference_key, the same key the download, the
+    snapshot reuse and the offline cache use, so the file the manifest promises
+    is the file the loader ends up launching.
+    """
+    from utils.models.drafters import dflash_repo_preference_key
+
+    candidates = [
+        s
+        for s in siblings
+        if (name := _gguf_rfilename(s))
+        and "/" not in name
+        and name.lower().startswith("dflash-")
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key = lambda s: dflash_repo_preference_key(
+            getattr(s, "rfilename"), weight_name, other_weight_names
+        ),
+    )
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
@@ -166,13 +202,38 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}
+    # Every weight in the listing, so the DFlash ranking can tell a sidecar that
+    # names a neighbouring family from one that names this variant's.
+    all_weight_names = [
+        name.rsplit("/", 1)[-1]
+        for quant_siblings in main.values()
+        for sibling in quant_siblings
+        if (name := _gguf_rfilename(sibling))
+    ]
     for quant, target_main_siblings in main.items():
         main_expected = tuple(
             file
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        expected_files = (*main_expected, *companions_expected)
+        # The DFlash sidecar is per variant, unlike mmproj and the MTP drafter:
+        # its ranking is relative to the weight being fetched, so a multi-family
+        # repo does not hand variant B the drafter that names variant A.
+        target_weight = _gguf_rfilename(target_main_siblings[0])
+        target_weight_name = target_weight.rsplit("/", 1)[-1] if target_weight else None
+        dflash_sibling = preferred_dflash_sibling(
+            siblings,
+            target_weight_name,
+            [n for n in all_weight_names if n != target_weight_name],
+        )
+        dflash_expected = (
+            expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
+        )
+        expected_files = (
+            *main_expected,
+            *companions_expected,
+            *((dflash_expected,) if dflash_expected is not None else ()),
+        )
         plans[quant] = plan_from_expected_files(
             quant,
             expected_files,

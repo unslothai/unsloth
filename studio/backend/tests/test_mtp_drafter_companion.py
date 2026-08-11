@@ -1959,6 +1959,7 @@ def _dflash_download_probe(
         cancel_event = None,
         near_path = None,
         outcome = None,
+        on_transient_failure = None,
     ):
         reached["hit"] = True
         reached["picked"] = pick(
@@ -2039,6 +2040,7 @@ def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatc
             cancel_event = None,
             near_path = None,
             outcome = None,
+            on_transient_failure = None,
         ):
             if outcome is not None:
                 outcome["listed"] = listed
@@ -2116,6 +2118,7 @@ def _dflash_download_pick(monkeypatch, *, listing, near_path):
         cancel_event = None,
         near_path = None,
         outcome = None,
+        on_transient_failure = None,
     ):
         picked["name"] = pick(listing)
         return None
@@ -2221,7 +2224,7 @@ def test_local_and_remote_dflash_pairing_agree(tmp_path):
     """One rule, three call sites: the local scan, the download picker and the
     cache lookup all go through dflash_repo_preference_key /
     _drafter_names_other_weight."""
-    from utils.models.model_config import dflash_repo_preference_key
+    from utils.models.drafters import dflash_repo_preference_key
 
     others = ["model-A-Q4_K_M.gguf", "model-B-Q4_K_M.gguf"]
     ranked = sorted(
@@ -2411,6 +2414,7 @@ def _dflash_repo_download(
         cancel_event = None,
         near_path = None,
         outcome = None,
+        on_transient_failure = None,
     ):
         target = pick(listing)
         if outcome is not None:
@@ -2519,7 +2523,7 @@ def test_cached_dflash_lookup_skips_a_prefixed_file_of_another_architecture(tmp_
 def test_local_and_remote_dflash_architecture_checks_agree(tmp_path):
     """One rule, one place: detect_dflash_file and the remote paths both ask
     is_dflash_architecture, so neither can start trusting the name alone."""
-    from utils.models.model_config import is_dflash_architecture
+    from utils.models.drafters import is_dflash_architecture
 
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     impostor = _write_gguf(tmp_path / "dflash-model-Q8_0.gguf", "llama")
@@ -2732,7 +2736,10 @@ def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, mo
     reports no DFlash sidecar rather than one the load route would reject."""
     import os
 
-    import utils.models.model_config as mc
+    # Patch the module detect_dflash_file resolves the name in, not the one that
+    # used to re-export it: a patch on the re-exporting module never intercepts,
+    # so `reads == []` below would hold whether or not the boundary works.
+    import utils.models.drafters.dflash as dflash_mod
 
     leased = tmp_path / "leased"
     leased.mkdir()
@@ -2743,13 +2750,13 @@ def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, mo
     os.symlink(target, leased / "dflash-kquant.gguf")
 
     reads: list[str] = []
-    real_check = mc.is_dflash_architecture
+    real_check = dflash_mod.is_dflash_architecture
 
     def _recording_check(path, *args, **kwargs):
         reads.append(str(path))
         return real_check(path, *args, **kwargs)
 
-    monkeypatch.setattr(mc, "is_dflash_architecture", _recording_check)
+    monkeypatch.setattr(dflash_mod, "is_dflash_architecture", _recording_check)
 
     def _inside_the_lease(candidate, gguf_file, kind, search_root):
         return Path(search_root) in Path(candidate).parents
@@ -3026,3 +3033,182 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp
     assert LlamaCppBackend()._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(
         whole
     )
+
+
+# ── A fetch that dropped is worth one more Apply ─────────────────────
+#
+# _dflash_sidecar_absent answers "this repo publishes none", which is permanent and
+# must never be retried. The other None -- the Hub going away mid-fetch -- is invisible
+# under Auto: no promotion happened, so no fallback reason was recorded, and the next
+# Apply reuses a server that has no drafter for a repo that does publish one.
+
+
+def _dflash_hub_download(tmp_path, monkeypatch, *, listing, fetch):
+    """Drive _download_dflash through the real _download_companion_gguf, with only
+    the two Hub calls stubbed out."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
+    monkeypatch.setattr("huggingface_hub.list_repo_files", listing)
+    monkeypatch.setattr(llama_cpp_module, "hf_hub_download_with_xet_fallback", fetch)
+    # The local cache is not part of what is under test, and an unstubbed scan would
+    # answer from whatever this machine happens to have downloaded.
+    monkeypatch.setattr("utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [])
+
+    b = LlamaCppBackend()
+    got = b._download_dflash(hf_repo = "org/repo", binary = "/fake/llama-server")
+    return b, got
+
+
+def _never_fetched(*_args, **_kwargs):
+    raise AssertionError("nothing should be downloaded")
+
+
+def test_download_dflash_asks_again_after_a_listing_that_never_answered(tmp_path, monkeypatch):
+    """An unreachable Hub says nothing about the repo, so recording it as "publishes
+    none" would strand the model without the sidecar it does publish."""
+
+    def _listing(repo, token = None):
+        raise ConnectionError("hub unreachable")
+
+    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing = _listing, fetch = _never_fetched)
+
+    assert got is None
+    assert b._dflash_sidecar_absent is False
+    assert b._dflash_retry_needed is True
+
+
+def test_download_dflash_asks_again_after_a_download_that_dropped(tmp_path, monkeypatch):
+    """The listing named the file, so this repo definitely publishes one: the bytes
+    are all that is missing."""
+
+    def _fetch(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        cache_dir = None,
+    ):
+        raise ConnectionError("connection reset")
+
+    b, got = _dflash_hub_download(
+        tmp_path,
+        monkeypatch,
+        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
+        fetch = _fetch,
+    )
+
+    assert got is None
+    assert b._dflash_sidecar_absent is False
+    assert b._dflash_retry_needed is True
+
+
+def test_download_dflash_does_not_ask_again_after_a_permanent_hub_error(tmp_path, monkeypatch):
+    """A repo that is gone, gated, or being asked about offline is answered for good;
+    retrying it on every Apply would relaunch an identical server forever."""
+
+    class RepositoryNotFoundError(Exception):
+        pass
+
+    def _listing(repo, token = None):
+        raise RepositoryNotFoundError("404")
+
+    b, got = _dflash_hub_download(tmp_path, monkeypatch, listing = _listing, fetch = _never_fetched)
+
+    assert got is None
+    assert b._dflash_retry_needed is False
+
+
+def test_download_dflash_does_not_ask_again_when_this_machine_is_the_problem(tmp_path, monkeypatch):
+    """A full disk or an unwritable cache stays that way, and the retry costs a full
+    unload plus another ~1.5 GiB attempt. Classified on errno, since the Hub client
+    raises OSError subclasses for network trouble too."""
+    import errno
+
+    def _fetch(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        cache_dir = None,
+    ):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    b, got = _dflash_hub_download(
+        tmp_path,
+        monkeypatch,
+        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-kquant.gguf"],
+        fetch = _fetch,
+    )
+
+    assert got is None
+    assert b._dflash_retry_needed is False
+
+
+def test_download_dflash_treats_a_header_rejection_as_settled(tmp_path, monkeypatch):
+    """A candidate whose header does not say dflash is permanently not a sidecar: the
+    search falls through to the next one, and if that was the last one the repo
+    publishes none. Reading it as a dropped fetch would reload on every Apply for a
+    file that can never be launched."""
+
+    def _fetch(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        cache_dir = None,
+    ):
+        # An ordinary weight that merely carries the sidecar's naming.
+        return str(_write_gguf(tmp_path / filename, "llama"))
+
+    b, got = _dflash_hub_download(
+        tmp_path,
+        monkeypatch,
+        listing = lambda repo, token = None: ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
+        fetch = _fetch,
+    )
+
+    assert got is None
+    assert b._dflash_sidecar_absent is True
+    assert b._dflash_retry_needed is False
+
+
+def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, monkeypatch):
+    """The other half of the same rule: the rejection only removes that one name from
+    the pool, so the sidecar ranked behind it is still fetched and nothing is flagged
+    for a retry."""
+
+    def _fetch(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        cache_dir = None,
+    ):
+        arch = "dflash" if filename == "dflash-kquant.gguf" else "llama"
+        return str(_write_gguf(tmp_path / filename, arch))
+
+    b, got = _dflash_hub_download(
+        tmp_path,
+        monkeypatch,
+        listing = lambda repo, token = None: [
+            "model-Q4_K_M.gguf",
+            "dflash-model-Q8_0.gguf",
+            "dflash-kquant.gguf",
+        ],
+        fetch = _fetch,
+    )
+
+    assert got == str(tmp_path / "dflash-kquant.gguf")
+    assert b._dflash_retry_needed is False
