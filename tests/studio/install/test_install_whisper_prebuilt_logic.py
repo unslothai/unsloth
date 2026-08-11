@@ -717,9 +717,7 @@ def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", module):
         (bin_dir / name).write_bytes(b"ggml")
-    monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile)
-    )
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile))
     manifest = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)
 
     artifact, chosen, used_fallback = M.select_artifact_with_fallback(
@@ -738,9 +736,7 @@ def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll"):
         (bin_dir / name).write_bytes(b"ggml")
-    monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile)
-    )
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile))
     artifact = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)["artifacts"][0]
 
     assert M.slim_pairing_for_artifact(artifact, _host("windows", "x64"), "cpu") is None
@@ -776,9 +772,7 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
     # ggml backend module, so their presence must not stand in for it.
     for name in ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll"):
         (bin_dir / name).write_bytes(b"runtime")
-    monkeypatch.setattr(
-        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "")
-    )
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
     artifact = _windows_slim_manifest(
         requires_ggml_sonames = [
             "ggml.dll",
