@@ -3212,3 +3212,74 @@ def test_download_dflash_reaches_the_real_sidecar_behind_an_impostor(tmp_path, m
 
     assert got == str(tmp_path / "dflash-kquant.gguf")
     assert b._dflash_retry_needed is False
+
+
+# ── The DFlash sidecar in the download plan ──────────────────────────
+#
+# The plan has to promise exactly what the loader will open: every shard of it,
+# paired with the weight family the plan keeps, and never a whole model that
+# merely carries the prefix.
+
+
+def test_variant_plans_carry_every_shard_of_a_split_dflash_sidecar():
+    """The loader refuses a companion whose split set is incomplete, so planning
+    shard 1 alone reports the variant complete and then loses DFlash."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("model-Q4_K_M.gguf", 15_000, "main"),
+            _sib("dflash-kquant-00001-of-00002.gguf", 800, "d1"),
+            _sib("dflash-kquant-00002-of-00002.gguf", 800, "d2"),
+        ]
+    )
+    targets = set(plans["q4_k_m"].target_filenames)
+    assert "dflash-kquant-00001-of-00002.gguf" in targets
+    assert "dflash-kquant-00002-of-00002.gguf" in targets
+
+
+def test_variant_plans_pair_dflash_with_the_weight_family_they_keep():
+    """_one_shard_family keeps the lexicographically first family, so ranking the
+    sidecar against the listing's first weight pairs the discarded one."""
+    plans = build_gguf_variant_plans(
+        [
+            # Listing order puts the discarded family first.
+            _sib("QwQ-32B.BF16-00001-of-00002.gguf", 30_000, "b1"),
+            _sib("QwQ-32B.BF16-00002-of-00002.gguf", 30_000, "b2"),
+            _sib("QwQ-32B-BF16-00001-of-00002.gguf", 30_000, "a1"),
+            _sib("QwQ-32B-BF16-00002-of-00002.gguf", 30_000, "a2"),
+            _sib("dflash-QwQ-32B-BF16-Q8_0.gguf", 2_000, "da"),
+            _sib("dflash-QwQ-32B.BF16-Q8_0.gguf", 2_000, "db"),
+        ]
+    )
+    plan = plans["bf16"]
+    assert plan.main_filenames == frozenset(
+        {"QwQ-32B-BF16-00001-of-00002.gguf", "QwQ-32B-BF16-00002-of-00002.gguf"}
+    )
+    assert "dflash-QwQ-32B-BF16-Q8_0.gguf" in plan.target_filenames
+    assert "dflash-QwQ-32B.BF16-Q8_0.gguf" not in plan.target_filenames
+
+
+def test_variant_plans_skip_a_dflash_prefixed_file_too_big_to_be_a_drafter():
+    """dflash- is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a
+    listing cannot read the architecture, so size is the only bound available: a
+    drafter is a few layers of its target and cannot outweigh it."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3.6-27B-Q4_K_M.gguf", 15_000, "main"),
+            _sib("dflash-Qwen3.6-27B-BF16.gguf", 54_000, "impostor"),
+        ]
+    )
+    plan = plans["q4_k_m"]
+    assert "dflash-Qwen3.6-27B-BF16.gguf" not in plan.target_filenames
+    assert plan.download_size_bytes == 15_000
+
+
+def test_variant_plans_still_carry_the_published_dflash_sidecar():
+    """The Muse-Glimmer shape the feature ships for stays planned."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", 15_878, "main"),
+            _sib("mmproj-kquant.gguf", 1_400, "mmproj"),
+            _sib("dflash-kquant.gguf", 1_631, "dflash"),
+        ]
+    )
+    assert "dflash-kquant.gguf" in plans["ud-q4_k_xl"].target_filenames

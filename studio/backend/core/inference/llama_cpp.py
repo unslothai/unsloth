@@ -10286,6 +10286,10 @@ class LlamaCppBackend:
                 # drafter it was never going to carry.
                 self._spec_fallback_reason = None
                 self._spec_drafter_kind = None
+                # DFlash discovery runs before the metadata read that classifies this as
+                # diffusion, so a transient sidecar failure can have set the retry flag
+                # for a server that carries no drafter at all.
+                self._dflash_retry_needed = False
                 with self._lock:
                     if self._cancel_event.is_set():
                         logger.info("Load cancelled before diffusion server start")

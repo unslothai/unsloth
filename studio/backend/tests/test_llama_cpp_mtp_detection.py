@@ -2762,6 +2762,10 @@ def test_diffusion_load_clears_the_previous_models_spec_fallback():
     assert start != -1
     assert "self._spec_fallback_reason = None" in src[diffusion:start]
     assert "self._spec_drafter_kind = None" in src[diffusion:start]
+    # And the DFlash retry flag: discovery runs before the metadata read that
+    # classifies this as diffusion, so a transient sidecar failure can set it for a
+    # server that will never carry a drafter, and the dedupe reads it too.
+    assert "self._dflash_retry_needed = False" in src[diffusion:start]
 
 
 def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():

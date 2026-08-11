@@ -1689,6 +1689,46 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # 1 GiB candidate that merely goes first.
         self.assertAlmostEqual(gb, 14.0, places = 6)
 
+    def test_auto_does_not_charge_dflash_when_extra_args_own_speculation(self):
+        """Extra args setting --spec-type stop the loader's Auto promotion, so the
+        sidecar is never opened. Charging it anyway refused a chat load with 409 for
+        ~1.5 GiB nothing would load. Extra args asking for draft-dflash still pay."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+        )
+        siblings = [SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 2 * 1024**3)]
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ),
+            self._dflash_capable(),
+        ):
+            owned = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec-type", "ngram-mod"],
+            )
+            asked = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec-type", "draft-dflash"],
+            )
+        self.assertAlmostEqual(owned, 10.0, places = 6)
+        self.assertAlmostEqual(asked, 12.0, places = 6)
+
     # ── Auto charges ONE drafter, the one the promotion leaves resident ──
 
     def _auto_companion_bytes(self, siblings):

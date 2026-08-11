@@ -5694,6 +5694,7 @@ def _estimate_gguf_required_gb(
             _extra_args_mtp_draft_path,
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
+            _extra_args_set_spec_type,
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
@@ -5729,7 +5730,10 @@ def _estimate_gguf_required_gb(
         _forced_dflash = bool(
             _spec_mode == "dflash" or _extra_args_requests_dflash(llama_extra_args, env = {})
         )
-        _auto_dflash = _spec_mode == "auto"
+        # Extra args owning --spec-type stop the loader's Auto promotion, so charging
+        # the sidecar here would refuse a load for ~1.5 GiB nothing will open. Extra
+        # args asking for draft-dflash are _forced_dflash above and keep the charge.
+        _auto_dflash = _spec_mode == "auto" and not _extra_args_set_spec_type(llama_extra_args)
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
