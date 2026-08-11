@@ -6404,7 +6404,9 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
                 text = detail
             elif isinstance(detail, list):
                 msgs = [
-                    d["msg"] for d in detail if isinstance(d, dict) and isinstance(d.get("msg"), str)
+                    d["msg"]
+                    for d in detail
+                    if isinstance(d, dict) and isinstance(d.get("msg"), str)
                 ]
                 text = "; ".join(msgs) or None
 

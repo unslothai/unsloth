@@ -297,4 +297,6 @@ def test_replayed_image_edit_body_has_no_status_field(monkeypatch):
     assert reasoning, items
     assert "status" not in reasoning[0], reasoning[0]
     # The paired call must survive, else the edit loses its reference.
-    assert any(i.get("type") == "image_generation_call" for i in items if isinstance(i, dict)), items
+    assert any(
+        i.get("type") == "image_generation_call" for i in items if isinstance(i, dict)
+    ), items
