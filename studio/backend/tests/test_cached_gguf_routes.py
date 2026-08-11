@@ -4568,9 +4568,9 @@ def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_p
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (task == "text-to-image") == loader_accepts, (
-            f"{name}: picker task={task} but loader accepts={loader_accepts}"
-        )
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{name}: picker task={task} but loader accepts={loader_accepts}"
     # And a checkpoint whose NAME says it is a variant the matched family cannot run stays refused
     # on both sides: reading the index adds a model whose name said nothing, it never overrules a
     # name that said no.
