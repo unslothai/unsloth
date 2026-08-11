@@ -21,9 +21,11 @@ a "yes" through four independent checks, in this order:
 4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, and that
    cap is per ACCOUNT, not per workflow. If anything of this account's is
    already QUEUED or RUNNING, this invocation stands down rather than
-   queueing behind it or failing on a push rejection. The search for such a
-   kernel is bounded by how long a session is allowed to last rather than by
-   a kernel count, which is what makes it exhaustive; see LOOKBACK_HOURS.
+   queueing behind it or failing on a push rejection. That is stricter than
+   the cap requires and the tradeoff is spelled out on
+   ALLOWED_IN_FLIGHT_KERNELS, which is the knob for it. The search for such
+   a kernel is bounded by how long a session is allowed to last rather than
+   by a kernel count, which is what makes it exhaustive; see LOOKBACK_HOURS.
 
 Every negative answer is a SKIP, and a skip exits 0. Not spending quota is
 the designed behaviour, not a fault, and must never colour a pull request
@@ -48,6 +50,30 @@ from datetime import datetime, timedelta, timezone
 # Measured, not documented: exceeding it fails the push with
 # "Maximum batch GPU session count of 2 reached."
 MAX_CONCURRENT_GPU_KERNELS = 2
+
+# How many kernels of this account may already be in flight and this job
+# still launch. ZERO IS DELIBERATE, and it is a policy choice rather than a
+# technical limit, so it is named here instead of being implied by the code.
+#
+# The tension, stated plainly. Kaggle would allow 2 concurrent batch GPU
+# kernels, each with 2 T4s, so the theoretical ceiling is 4 payloads at once
+# and this gate uses a quarter of it. Raising this to 1 would let CI launch
+# alongside one other session and roughly double the throughput of the
+# workflow on a busy day.
+#
+# It stays at 0 because the second slot is not ours to take. The cap is per
+# ACCOUNT and the account is shared with human use; a person who starts a
+# notebook and finds the push rejected has no way to tell that CI took the
+# slot, and CI has no way to give it back. The cost of standing down is a
+# few minutes until the next commit draws again -- the sampling gate means
+# this job has no deadline of its own -- and the cost of being wrong is
+# somebody else's session. Yielding is cheap here and expensive there.
+#
+# Raise it only with a specific reason to believe the account is otherwise
+# idle, and never to or above MAX_CONCURRENT_GPU_KERNELS: this survey is a
+# snapshot, and leaving no headroom means racing anything that starts
+# between the survey and the push.
+ALLOWED_IN_FLIGHT_KERNELS = 0
 
 # Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
@@ -221,8 +247,15 @@ def survey_kernels(api, now: datetime | None = None,
             "window_hours": lookback_hours}
 
 
-def concurrency_verdict(survey: dict) -> tuple[bool, str]:
-    """Is the account demonstrably idle? Returns (clear_to_launch, why not).
+def concurrency_verdict(survey: dict,
+                        allowed_in_flight: int = ALLOWED_IN_FLIGHT_KERNELS
+                        ) -> tuple[bool, str]:
+    """Is the account idle enough? Returns (clear_to_launch, why not).
+
+    ``allowed_in_flight`` is how many kernels of this account may already be
+    running and this job still launch. The default is 0 -- stand down if
+    anything at all is in flight -- and the reasoning for that being well
+    below Kaggle's cap of 2 is on ALLOWED_IN_FLIGHT_KERNELS.
 
     "No busy kernel was found" is only worth acting on if the search could
     actually have found one. An unanswerable question is a skip here, never
@@ -230,12 +263,20 @@ def concurrency_verdict(survey: dict) -> tuple[bool, str]:
     commit draws again, and the cost of guessing wrong is a push rejected at
     the capacity cap.
     """
+    # Never hand out the last slot, whatever the caller asked for.
+    ceiling = MAX_CONCURRENT_GPU_KERNELS - 1
+    if allowed_in_flight > ceiling:
+        print(f"[gate] --allow-in-flight {allowed_in_flight} exceeds the "
+              f"{MAX_CONCURRENT_GPU_KERNELS}-kernel account cap; clamped to "
+              f"{ceiling}", flush=True)
+        allowed_in_flight = ceiling
     busy = survey["busy"]
-    if busy:
+    if len(busy) > allowed_in_flight:
         return False, (
-            f"the Kaggle account already has {len(busy)} kernel(s) in flight "
-            f"and the cap is {MAX_CONCURRENT_GPU_KERNELS}: "
-            f"{', '.join(busy)}. Standing down rather than queueing.")
+            f"the Kaggle account already has {len(busy)} kernel(s) in flight, "
+            f"this job tolerates {allowed_in_flight} and the account cap is "
+            f"{MAX_CONCURRENT_GPU_KERNELS}: {', '.join(busy)}. Standing down "
+            f"rather than queueing.")
     if not survey["complete"]:
         return False, (
             "the in-flight survey did not reach the end of its "
@@ -266,6 +307,12 @@ def main() -> int:
                     help="worst-case GPU hours this invocation can spend")
     ap.add_argument("--reserve-hours", type=float, default=6.0,
                     help="quota CI refuses to dip into, left for humans")
+    ap.add_argument("--allow-in-flight", type=int,
+                    default=ALLOWED_IN_FLIGHT_KERNELS,
+                    help="kernels of this account that may already be running "
+                         "and this job still launch. Default 0: stand down if "
+                         "the account is doing anything at all. See "
+                         "ALLOWED_IN_FLIGHT_KERNELS before raising it")
     ap.add_argument("--soft-fail", action="store_true", default=True,
                     help="treat a gate error as a skip rather than a failure")
     ap.add_argument("--no-soft-fail", dest="soft_fail", action="store_false")
@@ -339,7 +386,7 @@ def main() -> int:
         {k: v for k, v in survey.items() if k != "busy"}
         | {"busy": len(survey["busy"])}), flush=True)
 
-    clear, why_not = concurrency_verdict(survey)
+    clear, why_not = concurrency_verdict(survey, args.allow_in_flight)
     if not clear:
         return _decide(False, why_not)
 
