@@ -808,6 +808,7 @@ def test_download_status_idle_shape():
     status = ggml_module.download_status()
     assert set(status) >= {"downloading", "model", "error"}
 
+
 import asyncio
 
 from fastapi import HTTPException

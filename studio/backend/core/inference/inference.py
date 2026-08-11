@@ -457,6 +457,7 @@ class InferenceBackend:
                             )
                         elif base_repo:
                             from huggingface_hub import snapshot_download
+
                             # Registry alias ("Spark-TTS-0.5B/LLM") names a load
                             # subdirectory, not a repo, so snapshot_download rejects it.
                             # Same resolver the capability probe and the trainer preflight
