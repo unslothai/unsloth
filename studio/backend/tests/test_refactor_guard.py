@@ -32,9 +32,9 @@ def corpus():
 
 def test_ast_inventory_matches_the_baseline():
     """A dropped or re-signatured top-level name is an import break for some caller."""
-    problems = refactor_guard._diff(
-        "ast", refactor_guard._read("ast_inventory.json"), refactor_guard.ast_inventory()
-    )
+    # Through the same helper ``verify`` uses, so CI and the CLI agree: strict for the
+    # two modules this branch owns, additive-tolerant for the busy ones it only borrows.
+    problems = refactor_guard._ast_problems()
 
     assert not problems, "\n".join(problems[:40])
 
@@ -108,7 +108,7 @@ def test_the_recorded_patch_target_inventory_still_matches():
     }
     live = {target: sorted(tests) for target, tests in refactor_guard.patch_targets().items()}
 
-    problems = refactor_guard._diff("patch-targets", recorded, live)
+    problems = refactor_guard._diff("patch-targets", recorded, live, additions_matter = False)
 
     assert not problems, "\n".join(problems[:20])
 

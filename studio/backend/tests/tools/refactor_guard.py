@@ -312,6 +312,9 @@ _ARG_FIXTURES = {
 # the entire corpus, and it is one of the functions this refactor rewrites.
 _SWEEP_PARAMS = frozenset({"pos"})
 
+# Marks a driver result that holds one entry per boolean variant.
+_VARIANTS_KEY = "@variants"
+
 # Boolean parameters driven at both values rather than at one.
 _BOTH_WAYS = ("final", "seg_final", "with_spans", "allow_incomplete", "gemma_quotes")
 
@@ -424,7 +427,9 @@ def _drive(func, text: str):
         return _jsonable(outcome)
 
     if len(combos) > 1:
-        return {json.dumps(combo, sort_keys = True): _call(combo) for combo in combos}
+        # Tagged, because plenty of guarded functions return a dict of their own and the
+        # two must not be confused.
+        return {_VARIANTS_KEY: {json.dumps(c, sort_keys = True): _call(c) for c in combos}}
     return _call(combos[0])
 
 
@@ -500,6 +505,18 @@ def first_divergence(corpus, mod_name, func_name):
     return [{"input": text, "output": _drive(func, text)} for text in corpus]
 
 
+def _variants(result):
+    """``(label, value)`` per boolean variant the driver produced, or one unlabelled pair.
+
+    Keyed off the tag rather than off "is it a dict": a parser returning ``{}`` is a
+    result, not a set of variants, and reading it as one drives the parser's own output
+    back into it and reports a meaningless failure.
+    """
+    if isinstance(result, dict) and set(result) == {_VARIANTS_KEY}:
+        return sorted(result[_VARIANTS_KEY].items())
+    return [("", result)]
+
+
 def idempotence_failures(corpus) -> list:
     """``f(f(x)) != f(x)`` for the str -> str functions.
 
@@ -511,23 +528,31 @@ def idempotence_failures(corpus) -> list:
         for name, func in _guarded_functions(mod_name):
             # Only the strip family is meant to be a text -> text projection. Feeding a
             # parser's output (a tool name, a JSON blob) back into it proves nothing.
-            if "strip" not in name:
+            if "strip" not in name or "parse" in name:
                 continue
+            witnessed = False
             for text in corpus:
-                once = _drive(func, text)
-                if not isinstance(once, str) or once.startswith("<raised "):
-                    continue
-                twice = _drive(func, once)
-                if twice != once:
-                    failures.append(
-                        {
-                            "module": mod_name,
-                            "function": name,
-                            "input": text,
-                            "once": once,
-                            "twice": twice,
-                        }
-                    )
+                # A stripper with a boolean contract is driven at both values, so the
+                # driver hands back one result per variant. Skipping non-strings here
+                # would skip exactly the centralized strippers this check is for.
+                for variant, once in _variants(_drive(func, text)):
+                    if not isinstance(once, str) or once.startswith("<raised "):
+                        continue
+                    twice = dict(_variants(_drive(func, once))).get(variant)
+                    if twice != once:
+                        failures.append(
+                            {
+                                "module": mod_name,
+                                "function": name,
+                                "variant": variant,
+                                "input": text,
+                                "once": once,
+                                "twice": twice,
+                            }
+                        )
+                        witnessed = True
+                        break
+                if witnessed:
                     break  # one witness per function is enough to fail the check
     return failures
 

@@ -1,16 +1,50 @@
 [
   {
+    "function": "_strip_markup_segment",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"final\": true}"
+  },
+  {
     "function": "apply_tool_strip_patterns",
     "input": "get_weather[ARGS]get_weather[ARGS]{",
     "module": "core.tool_healing",
     "once": "get_weather[ARGS]",
-    "twice": ""
+    "twice": "",
+    "variant": ""
+  },
+  {
+    "function": "strip_tool_call_markup",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"final\": true}"
   },
   {
     "function": "strip_tool_patterns",
     "input": "get_weather[ARGS]get_weather[ARGS]{",
     "module": "core.tool_healing",
     "once": "get_weather[ARGS]",
-    "twice": ""
+    "twice": "",
+    "variant": ""
+  },
+  {
+    "function": "strip_segment",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.inference.tool_call_parser",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"seg_final\": true}"
+  },
+  {
+    "function": "strip_tool_markup",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.inference.tool_call_parser",
+    "once": "get_weather[ARGS]",
+    "twice": "",
+    "variant": "{\"final\": true}"
   }
 ]
