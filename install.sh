@@ -2835,6 +2835,121 @@ EOF
     return 1
 }
 
+# gfx arch named by an HSA_OVERRIDE_GFX_VERSION value ($1), or nothing if it is
+# not a readable major.minor.stepping triple. ROCr builds the target name as
+# gfx<major><minor><stepping in hex>, which is why 9.0.10 is gfx90a and not
+# gfx9010. 11.0.0 -> gfx1100, 11.5.1 -> gfx1151, 10.3.0 -> gfx1030.
+# Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py.
+_hsa_override_gfx_arch() {
+    printf '%s' "${1:-}" | awk '
+        {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+            if ($0 !~ /^[0-9]+\.[0-9]+\.[0-9]+$/) exit
+            split($0, p, ".")
+            maj = p[1] + 0; min = p[2] + 0; step = p[3] + 0
+            # Steppings are a single hex nibble; anything wider is not a real target.
+            if (maj <= 0 || min > 9 || step > 15) exit
+            printf "gfx%d%d%x", maj, min, step
+        }'
+}
+
+# gfx arches the KERNEL sees, one line per AMD GPU node, from KFD topology sysfs.
+# amdkfd writes gfx_target_version from its own IP-version table, so it is immune
+# to HSA_OVERRIDE_GFX_VERSION (which ROCr applies in userland) -- the ground truth
+# for unslothai#7331. Encoding is major*10000 + minor*100 + stepping, the stepping
+# rendered in hex: 110000 -> gfx1100, 110501 -> gfx1151, 90010 -> gfx90a. CPU nodes
+# carry no gfx_target_version and drop out; vendor_id 4098 (0x1002) keeps NVIDIA's
+# open-driver KFD nodes out, mirroring _has_amd_rocm_gpu.
+# Kept in sync with _kfd_gfx_targets in studio/install_python_stack.py.
+_kfd_gfx_targets() {
+    [ -d /sys/class/kfd/kfd/topology/nodes ] || return 0
+    for _kfd_node in /sys/class/kfd/kfd/topology/nodes/*/properties; do
+        [ -r "$_kfd_node" ] || continue
+        awk '
+            /^[[:space:]]*vendor_id[[:space:]]/     { vendor = $2 }
+            /^[[:space:]]*gfx_target_version[[:space:]]/ { gtv = $2 + 0 }
+            END {
+                if (vendor != 4098 || gtv <= 0) exit
+                maj = int(gtv / 10000) % 100
+                min = int(gtv / 100) % 100
+                step = gtv % 100
+                if (maj <= 0 || min > 9 || step > 15) exit
+                printf "gfx%d%d%x\n", maj, min, step
+            }' "$_kfd_node" 2>/dev/null || true
+    done
+    return 0
+}
+
+# Physical gfx arch when the ISA probe is an HSA_OVERRIDE_GFX_VERSION spoof
+# (unslothai#7331): $1 = the arch inferred from the product name, $2 = the probed
+# gfx token list. Prints the physical arch, or nothing to mean "believe the probe",
+# which is the unchanged default.
+#
+# Prints nothing unless ALL of these hold, which is what keeps a mixed Strix APU +
+# discrete AMD GPU host (the reason the probe outranks the product name at all)
+# out of reach of the correction:
+#   * HSA_OVERRIDE_GFX_VERSION is set -- with no override there is nothing to doubt;
+#   * the product name inferred a spoofable RDNA 3.5 APU arch and the probe reported
+#     a DIFFERENT one;
+#   * the probe saw exactly ONE device;
+#   * a source the override cannot reach agrees with the product name: KFD sysfs
+#     first (the kernel), then rocminfo re-run with the variable unset, and only
+#     if neither can answer, the variable statically naming the reported arch.
+# Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
+_hsa_spoofed_physical_gfx() {
+    _hsp_inferred="${1:-}"
+    _hsp_probed_all="${2:-}"
+    [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] || return 0
+    case "$_hsp_inferred" in
+        gfx1151|gfx1150|gfx1152) : ;;
+        *) return 0 ;;
+    esac
+    # Exactly one device, or the single-device premise fails and today's
+    # visible-mask selection must decide instead.
+    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF' | wc -l | tr -d '[:space:]')
+    [ "${_hsp_n:-0}" -ne 1 ] && return 0
+    _hsp_probed=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF { print; exit }')
+    [ -n "$_hsp_probed" ] || return 0
+    [ "$_hsp_probed" = "$_hsp_inferred" ] && return 0
+
+    echo "  [WARN] HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION is set; ROCm reports" >&2
+    echo "  [WARN] $_hsp_probed but this host's product name is $_hsp_inferred. Checking for a spoof." >&2
+
+    # 1. The kernel, which the override cannot reach.
+    _hsp_kfd=$(_kfd_gfx_targets | awk 'NF')
+    if [ -n "$_hsp_kfd" ]; then
+        if [ "$_hsp_kfd" = "$_hsp_inferred" ]; then
+            echo "  [WARN] KFD topology sysfs reports $_hsp_inferred -- $_hsp_probed is a spoof." >&2
+            printf '%s\n' "$_hsp_inferred"
+        fi
+        # Several GPU nodes: the single-device premise was wrong (the spoof
+        # collapsed a mixed host into one apparent arch). Decline.
+        return 0
+    fi
+
+    # 2. The runtime, asked again without the override. libhsakmt getenv()s the
+    # variable while parsing topology, so stripping it retracts the spoofed name.
+    if command -v rocminfo >/dev/null 2>&1; then
+        _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                    rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
+        if [ -n "$_hsp_re" ] && [ "$_hsp_re" != "$_hsp_probed" ]; then
+            if [ "$_hsp_re" = "$_hsp_inferred" ]; then
+                echo "  [WARN] rocminfo reports $_hsp_inferred with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
+                printf '%s\n' "$_hsp_inferred"
+            fi
+            return 0
+        fi
+    fi
+
+    # 3. Fallback: the variable names exactly the arch that was reported, which
+    # is what a spoof looks like from the outside.
+    if [ "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION")" = "$_hsp_probed" ]; then
+        echo "  [WARN] HSA_OVERRIDE_GFX_VERSION names $_hsp_probed exactly -- treating it as a spoof of $_hsp_inferred." >&2
+        printf '%s\n' "$_hsp_inferred"
+    fi
+    return 0
+}
+
 # Reads the AMD gfx arch for wheel-index decisions: a user-set
 # UNSLOTH_ROCM_GFX_ARCH is authoritative (lowercased), else rocminfo, then
 # amd-smi. rocminfo/amd-smi honor ROCR/HIP_VISIBLE_DEVICES, so a container mask
@@ -3900,6 +4015,16 @@ case "$_torch_index_leaf" in
                 [ -z "$_gfx_all" ] && \
                     _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
+        fi
+        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes
+        # ROCr hand the SPOOFED ISA to rocminfo, so a gfx1151 host reports gfx1100
+        # and the Strix case below never matches (unslothai#7331). Correct the
+        # reading back to the physical arch first, and only in the narrow shape
+        # that cannot be a real mixed host -- see _hsa_spoofed_physical_gfx.
+        if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ -n "$_gfx_all" ]; then
+            _spoof_inferred=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            _spoof_physical=$(_hsa_spoofed_physical_gfx "$_spoof_inferred" "$_gfx_all")
+            [ -n "$_spoof_physical" ] && _gfx_all="$_spoof_physical"
         fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
