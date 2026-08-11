@@ -18,7 +18,6 @@ export const fr = {
     modelSourceAriaLabel: "Source du modèle",
     hubSectionAriaLabel: "Section du Hub",
     pickModelFile: "Choisir un fichier de modèle sur le disque",
-    ejectLoadedModel: "Éjecter le modèle chargé",
     multipleMatches:
       "Plusieurs {noun} correspondent. Choisissez-en un dans la liste.",
     rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
@@ -436,11 +435,6 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
-      gettingStarted: "Prise en main",
-      startOnboarding: "Démarrer la prise en main",
-      startOnboardingDescription:
-        "Rouvrir l'assistant de configuration sans modifier votre compte.",
-      startOnboardingAction: "Démarrer la prise en main",
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",
@@ -1244,25 +1238,8 @@ export const fr = {
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
-      hfTokenLabel: "Jeton Hugging Face",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
-      hfTokenGet: "Obtenir un jeton",
-      hfTokenChecking: "Vérification du jeton…",
-      modelPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un modèle entraînable déjà présent sur cet appareil.",
-      trainingMethod: "Méthode d'entraînement",
-      trainingMethodDescription: "Choisissez comment affiner {model}",
-      trainingMethodTooltip:
-        "QLoRA utilise une quantification 4 bits pour réduire au minimum l'utilisation de la VRAM. LoRA utilise des poids 16 bits, tandis que l'affinage complet met à jour tous les poids.",
-      datasetPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un jeu de données déjà présent sur cet appareil.",
-      uploadDataset: "Téléverser un jeu de données",
-      uploadDatasetDescription:
-        "Prend en charge CSV, JSONL, JSON et Parquet.",
-      chooseFile: "Choisir un fichier",
-      format: "Format",
-      autoDetect: "Détection automatique",
       uploadLocalLabel: "Ou téléverser un fichier local",
       sourceBrowse: "Parcourir",
       releaseToUpload: "Relâchez pour téléverser",

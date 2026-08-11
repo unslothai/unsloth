@@ -410,11 +410,6 @@ export const it = {
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
-      gettingStarted: "Per iniziare",
-      startOnboarding: "Avvia la configurazione guidata",
-      startOnboardingDescription:
-        "Riapri la procedura di configurazione senza modificare il tuo account.",
-      startOnboardingAction: "Avvia la configurazione guidata",
       uploads: {
         sectionTitle: "Caricamenti",
         maxUploadSize: "Limite di caricamento del dataset di addestramento",
@@ -1205,7 +1200,6 @@ export const it = {
     modelSourceAriaLabel: "Origine del modello",
     hubSectionAriaLabel: "Sezione Hub",
     pickModelFile: "Scegli un file del modello dal disco",
-    ejectLoadedModel: "Espelli il modello caricato",
     multipleMatches:
       "Sono stati trovati più {noun} corrispondenti. Scegline uno dall'elenco.",
     rateLimitedTitle: "Limite di richieste di Hugging Face raggiunto",
@@ -1243,25 +1237,8 @@ export const it = {
       datasetLabel: "Dataset",
       datasetTooltip:
         "I dati di addestramento usati per il fine-tuning del modello.",
-      hfTokenLabel: "Token Hugging Face",
       hfTokenDescription:
         "Necessario per modelli e dataset privati o con accesso limitato.",
-      hfTokenGet: "Ottieni un token",
-      hfTokenChecking: "Verifica del token…",
-      modelPickerDescription:
-        "Cerca su Hugging Face o scegli un modello addestrabile già presente su questo dispositivo.",
-      trainingMethod: "Metodo di addestramento",
-      trainingMethodDescription:
-        "Scegli come eseguire il fine-tuning di {model}",
-      trainingMethodTooltip:
-        "QLoRA usa la quantizzazione a 4 bit per ridurre al minimo l'uso della VRAM. LoRA usa pesi a 16 bit, mentre il fine-tuning completo aggiorna tutti i pesi.",
-      datasetPickerDescription:
-        "Cerca su Hugging Face o scegli un dataset già presente su questo dispositivo.",
-      uploadDataset: "Carica un dataset",
-      uploadDatasetDescription: "Supporta CSV, JSONL, JSON e Parquet.",
-      chooseFile: "Scegli un file",
-      format: "Formato",
-      autoDetect: "Rilevamento automatico",
       uploadLocalLabel: "Oppure carica un file locale",
       sourceBrowse: "Sfoglia",
       releaseToUpload: "Rilascia per caricare",

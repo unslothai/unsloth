@@ -14,7 +14,6 @@ export const en = {
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
     pickModelFile: "Pick a model file from disk",
-    ejectLoadedModel: "Eject loaded model",
     multipleMatches: "Multiple matching {noun}. Choose one from the list.",
     rateLimitedTitle: "Hugging Face rate limit reached",
     rateLimitedBody: "Wait a moment, then retry searching {noun}.",
@@ -419,11 +418,6 @@ export const en = {
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
-      gettingStarted: "Getting started",
-      startOnboarding: "Start onboarding",
-      startOnboardingDescription:
-        "Reopen the setup wizard without changing your account.",
-      startOnboardingAction: "Start onboarding",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
@@ -1192,23 +1186,7 @@ export const en = {
         "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
       datasetLabel: "Dataset",
       datasetTooltip: "The training data used to fine-tune the model.",
-      hfTokenLabel: "Hugging Face token",
       hfTokenDescription: "Required for gated or private models and datasets.",
-      hfTokenGet: "Get token",
-      hfTokenChecking: "Checking token…",
-      modelPickerDescription:
-        "Search Hugging Face or choose a trainable model already on this device.",
-      trainingMethod: "Training method",
-      trainingMethodDescription: "Choose how to fine-tune {model}",
-      trainingMethodTooltip:
-        "QLoRA uses 4-bit quantization for the lowest VRAM use. LoRA uses 16-bit weights, while full fine-tuning updates every weight.",
-      datasetPickerDescription:
-        "Search Hugging Face or choose a dataset already on this device.",
-      uploadDataset: "Upload a dataset",
-      uploadDatasetDescription: "Supports CSV, JSONL, JSON, and Parquet.",
-      chooseFile: "Choose a file",
-      format: "Format",
-      autoDetect: "Auto Detect",
       uploadLocalLabel: "Or upload a local file",
       sourceBrowse: "Browse",
       releaseToUpload: "Release to upload",

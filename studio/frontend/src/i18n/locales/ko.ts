@@ -17,7 +17,6 @@ export const ko = {
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
     pickModelFile: "디스크에서 모델 파일 선택",
-    ejectLoadedModel: "로드된 모델 꺼내기",
     multipleMatches:
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
@@ -416,11 +415,6 @@ export const ko = {
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
-      gettingStarted: "시작하기",
-      startOnboarding: "온보딩 시작",
-      startOnboardingDescription:
-        "계정을 변경하지 않고 설정 마법사를 다시 엽니다.",
-      startOnboardingAction: "온보딩 시작",
       uploads: {
         sectionTitle: "업로드",
         maxUploadSize: "학습 데이터셋 업로드 상한",
@@ -1199,25 +1193,8 @@ export const ko = {
       modelTooltip: "파인튜닝할 기본 모델입니다.",
       methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
       datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
-      hfTokenLabel: "Hugging Face 토큰",
       hfTokenDescription:
         "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
-      hfTokenGet: "토큰 받기",
-      hfTokenChecking: "토큰 확인 중…",
-      modelPickerDescription:
-        "Hugging Face를 검색하거나 이 기기에 이미 있는 학습 가능한 모델을 선택하세요.",
-      trainingMethod: "학습 방법",
-      trainingMethodDescription: "{model}을 미세 조정할 방법을 선택하세요",
-      trainingMethodTooltip:
-        "QLoRA는 VRAM 사용량을 최소화하기 위해 4비트 양자화를 사용합니다. LoRA는 16비트 가중치를 사용하며, 전체 미세 조정은 모든 가중치를 업데이트합니다.",
-      datasetPickerDescription:
-        "Hugging Face를 검색하거나 이 기기에 이미 있는 데이터셋을 선택하세요.",
-      uploadDataset: "데이터셋 업로드",
-      uploadDatasetDescription:
-        "CSV, JSONL, JSON 및 Parquet를 지원합니다.",
-      chooseFile: "파일 선택",
-      format: "형식",
-      autoDetect: "자동 감지",
       uploadLocalLabel: "또는 로컬 파일 업로드",
       sourceBrowse: "찾아보기",
       releaseToUpload: "놓으면 업로드됩니다",

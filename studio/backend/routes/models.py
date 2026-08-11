@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import threading
@@ -18,7 +17,6 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
-import structlog
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
@@ -135,11 +133,9 @@ try:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
@@ -169,11 +165,9 @@ except ImportError:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,

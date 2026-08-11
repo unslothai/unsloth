@@ -229,7 +229,6 @@ def main() -> None:
         )
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
-            "localStorage.setItem('unsloth_onboarding_done', 'true');"
         )
 
         def route_request(route: Route) -> None:

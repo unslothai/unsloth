@@ -18,7 +18,6 @@ export const hi = {
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
     pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
-    ejectLoadedModel: "लोड किया गया मॉडल इजेक्ट करें",
     multipleMatches:
       "एक से अधिक मेल खाते {noun} मिले। सूची में से एक चुनें।",
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
@@ -422,11 +421,6 @@ export const hi = {
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
-      gettingStarted: "शुरुआत करें",
-      startOnboarding: "ऑनबोर्डिंग शुरू करें",
-      startOnboardingDescription:
-        "अपना खाता बदले बिना सेटअप विज़ार्ड फिर से खोलें।",
-      startOnboardingAction: "ऑनबोर्डिंग शुरू करें",
       uploads: {
         sectionTitle: "अपलोड",
         maxUploadSize: "ट्रेनिंग डेटासेट अपलोड सीमा",
@@ -1208,24 +1202,8 @@ export const hi = {
       modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
       methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
       datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
-      hfTokenLabel: "Hugging Face टोकन",
       hfTokenDescription:
         "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
-      hfTokenGet: "टोकन प्राप्त करें",
-      hfTokenChecking: "टोकन की जाँच हो रही है…",
-      modelPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
-      trainingMethod: "ट्रेनिंग विधि",
-      trainingMethodDescription: "{model} को फ़ाइन-ट्यून करने का तरीका चुनें",
-      trainingMethodTooltip:
-        "QLoRA न्यूनतम VRAM उपयोग के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट वेट का उपयोग करता है, जबकि पूर्ण फ़ाइन-ट्यूनिंग हर वेट को अपडेट करती है।",
-      datasetPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद डेटासेट चुनें।",
-      uploadDataset: "डेटासेट अपलोड करें",
-      uploadDatasetDescription: "CSV, JSONL, JSON और Parquet समर्थित हैं।",
-      chooseFile: "फ़ाइल चुनें",
-      format: "फ़ॉर्मैट",
-      autoDetect: "स्वतः पहचान",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",
       releaseToUpload: "अपलोड करने के लिए छोड़ें",

@@ -11,7 +11,6 @@ version-switching. Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
-import structlog
 from loggers import get_logger
 import math
 import os

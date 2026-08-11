@@ -18,7 +18,6 @@ export const ar = {
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
     pickModelFile: "اختيار ملف نموذج من القرص",
-    ejectLoadedModel: "إخراج النموذج المحمّل",
     multipleMatches:
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
@@ -419,11 +418,6 @@ export const ar = {
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
-      gettingStarted: "البدء",
-      startOnboarding: "بدء الإعداد التمهيدي",
-      startOnboardingDescription:
-        "إعادة فتح معالج الإعداد دون تغيير حسابك.",
-      startOnboardingAction: "بدء الإعداد التمهيدي",
       uploads: {
         sectionTitle: "عمليات الرفع",
         maxUploadSize: "الحد الأقصى لحجم رفع مجموعة بيانات التدريب",
@@ -1200,24 +1194,8 @@ export const ar = {
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
       datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
-      hfTokenLabel: "رمز Hugging Face",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
-      hfTokenGet: "الحصول على رمز",
-      hfTokenChecking: "جارٍ التحقق من الرمز…",
-      modelPickerDescription:
-        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
-      trainingMethod: "طريقة التدريب",
-      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
-      trainingMethodTooltip:
-        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
-      datasetPickerDescription:
-        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
-      uploadDataset: "تحميل مجموعة بيانات",
-      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
-      chooseFile: "اختيار ملف",
-      format: "التنسيق",
-      autoDetect: "اكتشاف تلقائي",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",

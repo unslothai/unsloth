@@ -50,8 +50,6 @@ import {
   partializeTrainingConfig,
 } from "./training-config-persistence";
 import {
-  canProceedForTrainingStep,
-  clampTrainingStep,
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
   datasetSelectionStreamingPatch,
@@ -815,11 +813,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
       return {
         ...initialTrainingConfigState,
-        setStep: (step) => set({ currentStep: step }),
-        nextStep: () =>
-          set({ currentStep: clampTrainingStep(get().currentStep + 1) }),
-        prevStep: () =>
-          set({ currentStep: clampTrainingStep(get().currentStep - 1) }),
         setModelType: (modelType) => {
           _modelConfigController?.abort();
           _modelConfigController = null;
@@ -1348,7 +1341,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ finetuneMLPModules }),
         setTargetModules: (targetModules) => setUserEdit({ targetModules }),
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
-        canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

@@ -18,7 +18,6 @@ export const ptBR = {
     modelSourceAriaLabel: "Origem do modelo",
     hubSectionAriaLabel: "Seção do Hub",
     pickModelFile: "Escolher um arquivo de modelo no disco",
-    ejectLoadedModel: "Ejetar o modelo carregado",
     multipleMatches:
       "Há vários {noun} correspondentes. Escolha uma opção na lista.",
     rateLimitedTitle: "Limite de requisições do Hugging Face atingido",
@@ -425,11 +424,6 @@ export const ptBR = {
         saveError:
           "Não foi possível atualizar a configuração de inicialização no login.",
       },
-      gettingStarted: "Primeiros passos",
-      startOnboarding: "Iniciar configuração",
-      startOnboardingDescription:
-        "Reabre o assistente de configuração sem alterar sua conta.",
-      startOnboardingAction: "Iniciar configuração",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
@@ -1217,24 +1211,8 @@ export const ptBR = {
       modelTooltip: "O modelo base que você quer ajustar.",
       methodTooltip: "Como o modelo é treinado. LoRA e QLoRA atualizam adaptadores pequenos em vez de todos os pesos.",
       datasetTooltip: "Os dados de treinamento usados para ajustar o modelo.",
-      hfTokenLabel: "Token do Hugging Face",
       hfTokenDescription:
         "Necessário para modelos e conjuntos de dados restritos ou privados.",
-      hfTokenGet: "Obter token",
-      hfTokenChecking: "Verificando token…",
-      modelPickerDescription:
-        "Pesquise no Hugging Face ou escolha um modelo treinável já disponível neste dispositivo.",
-      trainingMethod: "Método de treinamento",
-      trainingMethodDescription: "Escolha como fazer o fine-tuning de {model}",
-      trainingMethodTooltip:
-        "O QLoRA usa quantização de 4 bits para reduzir ao mínimo o uso de VRAM. O LoRA usa pesos de 16 bits, enquanto o fine-tuning completo atualiza todos os pesos.",
-      datasetPickerDescription:
-        "Pesquise no Hugging Face ou escolha um dataset já disponível neste dispositivo.",
-      uploadDataset: "Enviar um dataset",
-      uploadDatasetDescription: "Compatível com CSV, JSONL, JSON e Parquet.",
-      chooseFile: "Escolher um arquivo",
-      format: "Formato",
-      autoDetect: "Detecção automática",
       uploadLocalLabel: "Ou envie um arquivo local",
       sourceBrowse: "Procurar",
       releaseToUpload: "Solte para enviar",

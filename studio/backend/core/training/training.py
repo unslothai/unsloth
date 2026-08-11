@@ -21,7 +21,6 @@ import shutil
 import threading
 import time
 import traceback
-import structlog
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger

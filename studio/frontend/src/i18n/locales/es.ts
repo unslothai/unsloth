@@ -18,7 +18,6 @@ export const es = {
     modelSourceAriaLabel: "Origen del modelo",
     hubSectionAriaLabel: "Sección del Hub",
     pickModelFile: "Elegir un archivo de modelo del disco",
-    ejectLoadedModel: "Expulsar el modelo cargado",
     multipleMatches:
       "Hay varios {noun} coincidentes. Elige uno de la lista.",
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
@@ -432,11 +431,6 @@ export const es = {
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
-      gettingStarted: "Primeros pasos",
-      startOnboarding: "Iniciar la configuración inicial",
-      startOnboardingDescription:
-        "Reabre el asistente de configuración sin cambiar tu cuenta.",
-      startOnboardingAction: "Iniciar la configuración inicial",
       uploads: {
         sectionTitle: "Subidas",
         maxUploadSize: "Límite de subida del conjunto de datos de entrenamiento",
@@ -1234,25 +1228,8 @@ export const es = {
       modelTooltip: "El modelo base que quieres ajustar.",
       methodTooltip: "Cómo se entrena el modelo. LoRA y QLoRA actualizan adaptadores pequeños en lugar de todos los pesos.",
       datasetTooltip: "Los datos de entrenamiento usados para ajustar el modelo.",
-      hfTokenLabel: "Token de Hugging Face",
       hfTokenDescription:
         "Necesario para modelos y conjuntos de datos restringidos o privados.",
-      hfTokenGet: "Obtener token",
-      hfTokenChecking: "Comprobando token…",
-      modelPickerDescription:
-        "Busca en Hugging Face o elige un modelo entrenable que ya esté en este dispositivo.",
-      trainingMethod: "Método de entrenamiento",
-      trainingMethodDescription: "Elige cómo ajustar {model}",
-      trainingMethodTooltip:
-        "QLoRA utiliza cuantización de 4 bits para minimizar el uso de VRAM. LoRA utiliza pesos de 16 bits, mientras que el ajuste completo actualiza todos los pesos.",
-      datasetPickerDescription:
-        "Busca en Hugging Face o elige un conjunto de datos que ya esté en este dispositivo.",
-      uploadDataset: "Subir un conjunto de datos",
-      uploadDatasetDescription:
-        "Compatible con CSV, JSONL, JSON y Parquet.",
-      chooseFile: "Elegir un archivo",
-      format: "Formato",
-      autoDetect: "Detección automática",
       uploadLocalLabel: "O sube un archivo local",
       sourceBrowse: "Explorar",
       releaseToUpload: "Suelta para subir",

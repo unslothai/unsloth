@@ -3,15 +3,15 @@
 
 "use client";
 
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat";
+
+import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -22,7 +22,6 @@ import {
   Download01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
-  Search01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -35,7 +34,6 @@ import {
   useRef,
   useState,
 } from "react";
-import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   isOllamaLinkPath,
   modelDisplayName,
@@ -45,14 +43,11 @@ import {
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
-import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
-import {
-  buildSourceTabs,
-  isFineTunedSource,
-} from "./model-selector/source-tabs";
+import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -295,7 +290,7 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "custom" | "connected";
+type HubSection = "downloaded" | "recommended" | "connected";
 
 // The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
@@ -394,28 +389,13 @@ function ModelSelectorContent({
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
   // The Fine-tuned tab is for fine-tuned models only; local models (LM Studio, Ollama, custom folders) live in Hub.
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
-  );
-  const chatOnlyTabsDefault = useMemo(
-    () =>
-      value && externalModels.some((model) => model.id === value)
-        ? "external"
-        : "hub",
-    [externalModels, value],
-  );
-  const studioTabsDefault = useMemo((): "hub" | "external" => {
-    if (value && externalModels.some((model) => model.id === value)) {
-      return "external";
-    }
-    return "hub";
-  }, [externalModels, value]);
 
-  const tabs = useMemo(() => buildSourceTabs(), []);
+  );
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -432,18 +412,11 @@ function ModelSelectorContent({
           ]
         : HUB_SECTION_TABS,
     [hasExternal],
-  );
 
-  const [activeTab, setActiveTab] = useState<string>(() =>
-    chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
   );
-  // Fall back to the first tab if the active one disappears.
-  const effectiveTab = tabs.some((tab) => tab.value === activeTab)
-    ? activeTab
-    : tabs[0].value;
-  // Open on Connected when the active model comes from a connected provider.
-  const wantsConnectedDefault =
-    (chatOnly ? chatOnlyTabsDefault : studioTabsDefault) === "external";
+  const wantsConnectedDefault = Boolean(
+    value && externalModels.some((model) => model.id === value),
+  );
   const hasAdditionalOnDeviceModels =
     (additionalOnDeviceModels?.length ?? 0) > 0;
   const [hubSection, setHubSection] = useState<HubSection>(() =>
@@ -459,13 +432,11 @@ function ModelSelectorContent({
     null,
   );
 
-  // The picker remounts on each open but this tab state does not, so re-derive the default tab
-  // on the open edge, else a lora/external selection reopens on Hub.
+  // The picker remounts on each open but this section state does not, so
+  // re-derive the default section on the open edge.
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
-      setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
-      // Connected when an external model is active, else On Device with downloads, else their last section.
       setHubSection(
         wantsConnectedDefault
           ? "connected"
@@ -476,14 +447,7 @@ function ModelSelectorContent({
       setConfigTarget(null);
     }
     wasOpen.current = open;
-  }, [
-    open,
-    chatOnly,
-    chatOnlyTabsDefault,
-    studioTabsDefault,
-    wantsConnectedDefault,
-    hasAdditionalOnDeviceModels,
-  ]);
+  }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -619,60 +583,39 @@ function ModelSelectorContent({
           />
         ) : (
           <>
-            {tabs.length > 1 ? (
-              <PillTabs
-                ariaLabel={t("picker.modelSourceAriaLabel")}
-                tabs={tabs}
-                value={effectiveTab}
-                onValueChange={setActiveTab}
-                fit={true}
-                className="mb-2"
-              />
-            ) : null}
-
-            {effectiveTab === "hub" ? (
-              <HubModelPicker
-                models={models}
-                additionalOnDeviceModels={additionalOnDeviceModels}
-                loadedModelIdOverride={loadedModelIdOverride}
-                loraModels={fineTunedModels}
-                externalModels={externalModels}
-                value={value}
-                onSelect={handlePick}
-                resolveDownloadFootprint={resolveDownloadFootprint}
-                onFoldersChange={onFoldersChange}
-                onBrowseHub={onBrowseHub}
-                onModelsChange={onModelsChange}
-                onConfigure={openConfigPage}
-                deleteDisabled={deleteDisabled}
-                onEject={hasSelection && onEject ? onEject : undefined}
-                task={task}
-                catalog={catalog}
-                communityModelPolicy={communityModelPolicy}
-                section={effectiveHubSection}
-                sectionToggle={
-                  <PillTabs
-                    ariaLabel={t("picker.hubSectionAriaLabel")}
-                    tabs={hubSectionTabs}
-                    value={effectiveHubSection}
-                    onValueChange={(next) => {
-                      const section = next as HubSection;
-                      setHubSection(section);
-                      saveLastHubSection(section);
-                    }}
-                    fit={true}
-                  />
-                }
-              />
-            ) : null}
-
-            {effectiveTab === "external" ? (
-              <ExternalModelPicker
-                externalModels={externalModels}
-                value={value}
-                onSelect={onSelect}
-              />
-            ) : null}
+            <HubModelPicker
+              models={models}
+              additionalOnDeviceModels={additionalOnDeviceModels}
+              loadedModelIdOverride={loadedModelIdOverride}
+              loraModels={fineTunedModels}
+              externalModels={externalModels}
+              value={value}
+              onSelect={handlePick}
+              resolveDownloadFootprint={resolveDownloadFootprint}
+              onFoldersChange={onFoldersChange}
+              onBrowseHub={onBrowseHub}
+              onModelsChange={onModelsChange}
+              onConfigure={openConfigPage}
+              deleteDisabled={deleteDisabled}
+              onEject={hasSelection && onEject ? onEject : undefined}
+              task={task}
+              catalog={catalog}
+              communityModelPolicy={communityModelPolicy}
+              section={effectiveHubSection}
+              sectionToggle={
+                <PillTabs
+                  ariaLabel={t("picker.hubSectionAriaLabel")}
+                  tabs={hubSectionTabs}
+                  value={effectiveHubSection}
+                  onValueChange={(next) => {
+                    const section = next as HubSection;
+                    setHubSection(section);
+                    saveLastHubSection(section);
+                  }}
+                  fit={true}
+                />
+              }
+            />
 
             {onPickLocalModel ? (
               <div className="mt-1.5 border-t border-border/70 pt-1.5">
@@ -684,19 +627,6 @@ function ModelSelectorContent({
                 >
                   <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
                   {t("picker.pickModelFile")}
-                </button>
-              </div>
-            ) : null}
-            {effectiveTab !== "hub" && hasSelection && onEject ? (
-              <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
-                <button
-                  type="button"
-                  onClick={onEject}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-                  title={t("picker.ejectLoadedModel")}
-                >
-                  <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-                  {t("picker.ejectLoadedModel")}
                 </button>
               </div>
             ) : null}
@@ -892,112 +822,3 @@ export function ModelSelector({
 
 ModelSelector.Trigger = ModelSelectorTrigger;
 ModelSelector.Content = ModelSelectorContent;
-
-function normalizeForSearch(value: string): string {
-  return value.toLowerCase().replace(/[\s_.-]/g, "");
-}
-
-function ExternalModelPicker({
-  externalModels,
-  value,
-  onSelect,
-}: {
-  externalModels: ExternalModelOption[];
-  value?: string;
-  onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const grouped = useMemo(() => {
-    const needle = normalizeForSearch(query.trim());
-    const byProvider = new Map<
-      string,
-      { providerName: string; models: ExternalModelOption[] }
-    >();
-    for (const model of externalModels) {
-      const searchText = normalizeForSearch(
-        `${model.name} ${model.providerName} ${model.id}`,
-      );
-      if (needle && !searchText.includes(needle)) continue;
-      const prev = byProvider.get(model.providerId);
-      if (prev) {
-        prev.models.push(model);
-      } else {
-        byProvider.set(model.providerId, {
-          providerName: model.providerName,
-          models: [model],
-        });
-      }
-    }
-    return [...byProvider.entries()]
-      .map(([providerId, group]) => ({
-        providerId,
-        providerName: group.providerName,
-        models: group.models.sort((a, b) => a.name.localeCompare(b.name)),
-      }))
-      .sort((a, b) => a.providerName.localeCompare(b.providerName));
-  }, [externalModels, query]);
-
-  return (
-    <div className="space-y-2">
-      <div className="relative">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search models"
-          className="h-(--picker-control-h) pl-8"
-        />
-      </div>
-      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">
-        <div className="space-y-2 p-1">
-          {grouped.length === 0 ? (
-            <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
-              {externalModels.length === 0 ? (
-                <>
-                  No models from your connections. Set up in Settings →
-                  Connections.
-                </>
-              ) : (
-                "No models match your search."
-              )}
-            </div>
-          ) : (
-            grouped.map((group) => (
-              <div key={group.providerId}>
-                <div className="flex items-center gap-2 px-2.5 py-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-                  <ExternalProviderLogo
-                    providerType={group.models[0]?.providerType}
-                    className="size-3.5"
-                    title={group.providerName}
-                  />
-                  <span className="min-w-0 truncate">{group.providerName}</span>
-                </div>
-                {group.models.map((model) => (
-                  <button
-                    key={model.id}
-                    type="button"
-                    onClick={() =>
-                      onSelect(model.id, {
-                        source: "external",
-                        isLora: false,
-                      })
-                    }
-                    className={cn(
-                      "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                      value === model.id && "bg-accent/60",
-                    )}
-                  >
-                    <span className="min-w-0 truncate">{model.name}</span>
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}

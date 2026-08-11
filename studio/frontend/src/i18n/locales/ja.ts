@@ -19,7 +19,6 @@ export const ja = {
     modelSourceAriaLabel: "モデルのソース",
     hubSectionAriaLabel: "Hub セクション",
     pickModelFile: "ディスクからモデルファイルを選択",
-    ejectLoadedModel: "読み込み済みモデルをアンロード",
     multipleMatches:
       "一致する{noun}が複数あります。リストから1つ選択してください。",
     rateLimitedTitle: "Hugging Face のレート制限に達しました",
@@ -409,10 +408,6 @@ export const ja = {
         loadError: "ログイン時起動の設定を読み込めませんでした。",
         saveError: "ログイン時起動の設定を更新できませんでした。",
       },
-      gettingStarted: "はじめに",
-      startOnboarding: "オンボーディングを開始",
-      startOnboardingDescription: "アカウントを変更せずにセットアップウィザードを再開します。",
-      startOnboardingAction: "オンボーディングを開始",
       uploads: {
         sectionTitle: "アップロード",
         maxUploadSize: "トレーニングデータセットのアップロード容量制限",
@@ -1172,25 +1167,8 @@ export const ja = {
       modelTooltip: "ファインチューニングするベースモデルです。",
       methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
       datasetTooltip: "モデルのファインチューニングに使う学習データです。",
-      hfTokenLabel: "Hugging Face トークン",
       hfTokenDescription:
         "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
-      hfTokenGet: "トークンを取得",
-      hfTokenChecking: "トークンを確認中…",
-      modelPickerDescription:
-        "Hugging Face を検索するか、このデバイス上のトレーニング可能なモデルを選択します。",
-      trainingMethod: "トレーニング方法",
-      trainingMethodDescription: "{model} のファインチューニング方法を選択",
-      trainingMethodTooltip:
-        "QLoRA は 4 ビット量子化により VRAM 使用量を最小限に抑えます。LoRA は 16 ビットの重みを使用し、フルファインチューニングはすべての重みを更新します。",
-      datasetPickerDescription:
-        "Hugging Face を検索するか、このデバイス上のデータセットを選択します。",
-      uploadDataset: "データセットをアップロード",
-      uploadDatasetDescription:
-        "CSV、JSONL、JSON、Parquet に対応しています。",
-      chooseFile: "ファイルを選択",
-      format: "形式",
-      autoDetect: "自動検出",
       uploadLocalLabel: "またはローカルファイルをアップロード",
       sourceBrowse: "参照",
       releaseToUpload: "ドロップしてアップロード",

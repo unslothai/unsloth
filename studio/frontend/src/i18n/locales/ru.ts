@@ -18,7 +18,6 @@ export const ru = {
     modelSourceAriaLabel: "Источник модели",
     hubSectionAriaLabel: "Раздел Hub",
     pickModelFile: "Выбрать файл модели на диске",
-    ejectLoadedModel: "Выгрузить загруженную модель",
     multipleMatches:
       "В категории «{noun}» найдено несколько совпадений. Выберите одно из списка.",
     rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
@@ -421,11 +420,6 @@ export const ru = {
         loadError: "Не удалось загрузить настройку автозапуска.",
         saveError: "Не удалось обновить настройку автозапуска.",
       },
-      gettingStarted: "Начало работы",
-      startOnboarding: "Запустить онбординг",
-      startOnboardingDescription:
-        "Снова открыть мастер настройки, не изменяя ваш аккаунт.",
-      startOnboardingAction: "Запустить онбординг",
       uploads: {
         sectionTitle: "Загрузки",
         maxUploadSize: "Лимит загрузки датасета для обучения",
@@ -1216,25 +1210,8 @@ export const ru = {
       modelTooltip: "Базовая модель, которую вы хотите дообучить.",
       methodTooltip: "Как обучается модель. LoRA и QLoRA обновляют небольшие адаптеры вместо всех весов.",
       datasetTooltip: "Обучающие данные для дообучения модели.",
-      hfTokenLabel: "Токен Hugging Face",
       hfTokenDescription:
         "Необходим для моделей и наборов данных с ограниченным или закрытым доступом.",
-      hfTokenGet: "Получить токен",
-      hfTokenChecking: "Проверка токена…",
-      modelPickerDescription:
-        "Найдите модель на Hugging Face или выберите доступную для обучения модель на этом устройстве.",
-      trainingMethod: "Метод обучения",
-      trainingMethodDescription: "Выберите способ дообучения {model}",
-      trainingMethodTooltip:
-        "QLoRA использует 4-битное квантование для минимального расхода VRAM. LoRA использует 16-битные веса, а полное дообучение обновляет все веса.",
-      datasetPickerDescription:
-        "Найдите датасет на Hugging Face или выберите датасет на этом устройстве.",
-      uploadDataset: "Загрузить датасет",
-      uploadDatasetDescription:
-        "Поддерживаются CSV, JSONL, JSON и Parquet.",
-      chooseFile: "Выбрать файл",
-      format: "Формат",
-      autoDetect: "Автоопределение",
       uploadLocalLabel: "Или загрузите локальный файл",
       sourceBrowse: "Обзор",
       releaseToUpload: "Отпустите для загрузки",

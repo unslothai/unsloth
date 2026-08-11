@@ -18,7 +18,6 @@ export const de = {
     modelSourceAriaLabel: "Modellquelle",
     hubSectionAriaLabel: "Hub-Bereich",
     pickModelFile: "Modelldatei vom Datenträger auswählen",
-    ejectLoadedModel: "Geladenes Modell auswerfen",
     multipleMatches:
       "Mehrere passende {noun} gefunden. Wählen Sie einen Eintrag aus der Liste aus.",
     rateLimitedTitle: "Hugging Face-Ratenlimit erreicht",
@@ -437,11 +436,6 @@ export const de = {
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
-      gettingStarted: "Erste Schritte",
-      startOnboarding: "Einrichtung starten",
-      startOnboardingDescription:
-        "Öffnet den Einrichtungsassistenten erneut, ohne Ihr Konto zu ändern.",
-      startOnboardingAction: "Einrichtung starten",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Upload-Limit für Trainingsdatensätze",
@@ -1242,25 +1236,8 @@ export const de = {
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
       datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
-      hfTokenLabel: "Hugging Face-Token",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",
-      hfTokenGet: "Token abrufen",
-      hfTokenChecking: "Token wird überprüft…",
-      modelPickerDescription:
-        "Durchsuche Hugging Face oder wähle ein trainierbares Modell aus, das bereits auf diesem Gerät vorhanden ist.",
-      trainingMethod: "Trainingsmethode",
-      trainingMethodDescription: "Wähle aus, wie {model} feinabgestimmt wird",
-      trainingMethodTooltip:
-        "QLoRA verwendet 4-Bit-Quantisierung für den niedrigsten VRAM-Verbrauch. LoRA verwendet 16-Bit-Gewichte, während beim vollständigen Fine-Tuning alle Gewichte aktualisiert werden.",
-      datasetPickerDescription:
-        "Durchsuche Hugging Face oder wähle einen Datensatz aus, der bereits auf diesem Gerät vorhanden ist.",
-      uploadDataset: "Datensatz hochladen",
-      uploadDatasetDescription:
-        "Unterstützt CSV, JSONL, JSON und Parquet.",
-      chooseFile: "Datei auswählen",
-      format: "Format",
-      autoDetect: "Automatisch erkennen",
       uploadLocalLabel: "Oder eine lokale Datei hochladen",
       sourceBrowse: "Durchsuchen",
       releaseToUpload: "Zum Hochladen loslassen",
