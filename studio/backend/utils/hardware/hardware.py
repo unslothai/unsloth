@@ -1601,10 +1601,14 @@ def _rocm_windows_aggregate_used_bytes(
     small model report unknown (#7452). The SUM does not need the pairing -- over a
     bijection it is the same whichever way round the usages go -- so the System tab
     keeps a real figure where per-device honestly cannot. Emitted only when the
-    counter list IS the visible set, established by cardinality alone:
-    ``Get-Counter`` returns an instance for every WDDM adapter, so a visible card is
-    always in the list and a list exactly as long as the visible set therefore holds
-    those cards and nothing else.
+    counter list IS the visible set, established by cardinality alone. That rests on
+    one ASSUMPTION, stated as such because it is not confirmed against Microsoft's
+    counter documentation: that ``Get-Counter`` emits exactly one instance per WDDM
+    adapter, so a visible card is always in the list and a list exactly as long as
+    the visible set therefore holds those cards and nothing else. It fails closed if
+    that is wrong: a second instance for one adapter makes the list longer than the
+    visible set, which returns None rather than a total. Verify it before widening
+    this, not before trusting it.
 
     Deliberately NOT the noise filter _match_adapter_used_to_devices uses. Dropping
     sub-threshold counters and summing the rest is safe for per-device attribution,
