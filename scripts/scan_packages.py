@@ -316,7 +316,10 @@ def _string_body(literal: str) -> "str | None":
 
 
 def _collect_import_bindings(
-    stmt: list, modules: set, funcs: set, loaders: "_Loaders | None" = None
+    stmt: list,
+    modules: set,
+    funcs: set,
+    loaders: "_Loaders | None" = None,
 ) -> bool:
     """Record `builtins` aliases bound by `stmt`. True if `stmt` is an import.
 
@@ -1082,7 +1085,11 @@ class _ExecEvalMatcher:
         self._whole: "tuple[str, list] | None" = None
         self._lines: "tuple[str, set] | None" = None
 
-    def _spans(self, text: str, positional: bool = True) -> list:
+    def _spans(
+        self,
+        text: str,
+        positional: bool = True,
+    ) -> list:
         cached = self._whole
         if cached is not None and cached[0] is text:
             return cached[1]
@@ -1091,7 +1098,11 @@ class _ExecEvalMatcher:
             self._whole = (text, spans)
         return spans
 
-    def _scan(self, text: str, positional: bool = True) -> list:
+    def _scan(
+        self,
+        text: str,
+        positional: bool = True,
+    ) -> list:
         # Neither route to the builtin can appear without one of these words,
         # and this test is a memchr - it keeps whole-archive scanning off the
         # tokenizer for the files that have nothing to adjudicate. A function
