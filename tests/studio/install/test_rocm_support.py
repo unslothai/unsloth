@@ -3809,7 +3809,10 @@ class TestSetupPs1ShadowingParity:
         assert "ConfigManagerErrorCode" in block
         # ... but when the filter would leave nothing, keep the parked card rather than
         # reporting no AMD GPU (matches the Python WMI path).
-        assert "if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }" in block
+        # @() around the WHOLE if, not each branch: an if-expression unrolls a one-element
+        # array, and a scalar's .Count is $null under Windows PowerShell 5.1, so a host with
+        # exactly one Radeon reported no AMD GPU at all (#8335).
+        assert "@(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
         # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every site

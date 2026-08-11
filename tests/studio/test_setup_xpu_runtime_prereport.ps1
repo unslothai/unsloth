@@ -245,8 +245,13 @@ $_keep = if ($setupText -match '(?s)(\$script:PinChangedForceReinstall = \$true.
 Check "the rebuild decision was found"  ($_keep -ne "")
 Check "an xpu venv is spared the wipe"  ($_keep -match '\$installedTorchTag -eq "xpu"')
 Check "the escape clears shouldRebuild" ($_keep -match '(?s)\$installedTorchTag -eq "xpu"\) \{.*?\$shouldRebuild = \$false')
-# install.ps1 keeps a rollback copy, so that path must still be free to rebuild.
-Check "installer-managed runs still rebuild" ($_keep -match '-not \$InstallerManagedSetup')
+# An installer-managed run must NOT take this escape. It is not that install.ps1 is free to
+# wipe the venv -- it never was, it invokes setup through that venv's own unsloth.exe -- it is
+# that the in-place repair below already covers every flavour, xpu included, and reaching it is
+# what stops the run from aborting into the reinstall loop (#8335). This check was previously
+# named "installer-managed runs still rebuild", which described neither the old code (it exited)
+# nor the new one.
+Check "installer-managed runs skip the xpu-only escape" ($_keep -match '-not \$InstallerManagedSetup')
 # Silently keeping a venv the host does not want is its own trap; say how to change it.
 Check "the escape says how to replace it" ($_keep -match 'substep "[^"]*install\.ps1')
 # Keeping the venv is only half the job: the CUDA arm leaves the +xpu wheel satisfied while

@@ -3438,11 +3438,13 @@ exit 0
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
     # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false. Defined above the Intel scan, since
-    # PowerShell binds a function only when its definition runs.
+    # (timeout, crash, exception) reads as .Ok = $false, and .Error carries WHICH failure it
+    # was: stderr used to be drained and thrown away, so a driver-level DLL load error and a
+    # missing torch were indistinguishable at every call site. Defined above the Intel scan,
+    # since PowerShell binds a function only when its definition runs.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = "" }
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
         if (-not $PythonExe -or -not $Code) { return $result }
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -3457,13 +3459,22 @@ exit 0
             $errTask = $proc.StandardError.ReadToEndAsync()
             if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
                 try { $proc.Kill() } catch {}
+                # Synthesised, not read back: the reader tasks are the thing that may never
+                # complete on a wedged child, so waiting on them here would reintroduce the
+                # hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
                 return $result
             }
             $result.Output = $outTask.GetAwaiter().GetResult()
-            [void]$errTask.GetAwaiter().GetResult()
+            # Kept, not discarded: on a failed probe this is the only place the real OSError /
+            # WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
             $result.Ok = ($proc.ExitCode -eq 0)
             return $result
-        } catch { return $result }
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
     }
 
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
