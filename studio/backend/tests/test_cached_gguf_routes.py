@@ -4825,9 +4825,7 @@ def test_a_pipelines_component_dirs_do_not_inherit_the_repo_id(tmp_path):
     ``hf_cache_repo_id`` answers for just as readily as the snapshot itself. Letting them inherit
     it makes each one detect the family, satisfy ``_local_is_diffusers``, and enter the Images
     picker as a checkpoint that cannot load: three dead rows per cached pipeline."""
-    snapshot = (
-        tmp_path / "hub" / "models--black-forest-labs--FLUX.1-dev" / "snapshots" / ("a" * 40)
-    )
+    snapshot = tmp_path / "hub" / "models--black-forest-labs--FLUX.1-dev" / "snapshots" / ("a" * 40)
     _saved_pipeline(snapshot, "FluxPipeline")
 
     def _row(directory):
@@ -4862,6 +4860,8 @@ def _hf_cache_snapshot_repo_id_ok(snapshot) -> bool:
         and decode(None) is None
         and decode("/plain/folder/model") is None
     )
+
+
 def test_a_pipeline_index_outranks_a_family_keyword_in_an_ancestor_directory(tmp_path):
     """A local pipeline whose path contains another family's keyword must still load as the family
     its own ``model_index.json`` declares.

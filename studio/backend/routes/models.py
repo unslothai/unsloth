@@ -4268,7 +4268,6 @@ def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
     parts = str(path).replace("\\", "/").rstrip("/").split("/")
     if len(parts) >= 3 and parts[-2] == "snapshots" and parts[-3].startswith("models--"):
         from core.inference.model_ids import hf_cache_repo_id
-
         return hf_cache_repo_id(path)
     return None
 
@@ -4293,7 +4292,9 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
     basenames still win."""
     needles = [model.model_id, model.display_name, Path(model.id).name]
     try:
-        needles.append(_hf_cache_snapshot_repo_id(model.path) or _hf_cache_snapshot_repo_id(model.id))
+        needles.append(
+            _hf_cache_snapshot_repo_id(model.path) or _hf_cache_snapshot_repo_id(model.id)
+        )
     except Exception:
         pass
     try:
