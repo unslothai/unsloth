@@ -336,6 +336,24 @@ def _fake_on_path(directory, name, script):
     return target
 
 
+def _real_exe_on_path(directory, source):
+    """Put a genuinely runnable executable at the verified name.
+
+    A shebang script cannot stand in here: PATHEXT only resolves a bare name to
+    a real `.exe`, and the verify step compares what it resolved against a path
+    ending in `.exe`. So the fixture has to be an actual Windows binary, and the
+    branch under test decides which one is borrowed.
+    """
+    directory.mkdir(parents = True, exist_ok = True)
+    target = directory / "trusted-signing-cli.exe"
+    shutil.copy2(source, target)
+    return target
+
+
+def _path_with(*directories):
+    return os.pathsep.join([*(str(d) for d in directories), os.environ["PATH"]])
+
+
 def test_verify_rejects_a_binary_that_was_never_digest_checked(sandbox, tmp_path):
     # The rust-cache scenario: an identically named copy earlier on PATH that no
     # digest gate ever saw. It even spoofs the version string, which is exactly
@@ -349,7 +367,7 @@ def test_verify_rejects_a_binary_that_was_never_digest_checked(sandbox, tmp_path
         sandbox["verify"],
         {
             **sandbox["env"],
-            "PATH": f"{decoy_dir}:{os.environ['PATH']}",
+            "PATH": _path_with(decoy_dir),
         },
     )
 
@@ -363,61 +381,44 @@ def test_verify_fails_when_nothing_is_on_path(sandbox):
     assert "not on PATH" in out
 
 
-def test_verify_fails_when_the_binary_cannot_start(sandbox, tmp_path):
-    # A file that is not executable at all. On Windows this is the "Exec format
-    # error" path the catch block exists for.
+@needs_pathext
+def test_verify_fails_when_the_binary_cannot_start(sandbox):
+    # A truncated download: the right name and place, but not a loadable image.
+    # It has to sit at the verified path under the verified name, or the earlier
+    # identity check rejects it first and the catch block is never reached.
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
     directory.mkdir(parents = True)
-    broken = directory / "trusted-signing-cli"
-    broken.write_bytes(b"\x00\x01not an executable")
-    broken.chmod(0o755)
+    (directory / "trusted-signing-cli.exe").write_bytes(b"\x00\x01not an executable")
 
-    code, out = run_step(
-        sandbox["verify"],
-        {
-            **sandbox["env"],
-            "PATH": f"{directory}:{os.environ['PATH']}",
-        },
-    )
+    code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
 
     assert code != 0
-    assert "::error::" in out
+    assert "could not be started" in out, out
 
 
 @needs_pathext
 def test_verify_fails_when_the_binary_exits_non_zero(sandbox):
+    # Starts fine, exits non-zero: where.exe given an option it does not take.
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
-    _fake_on_path(directory, "trusted-signing-cli", "#!/bin/sh\nexit 3\n")
+    _real_exe_on_path(directory, pathlib.Path(os.environ["SystemRoot"], "System32", "where.exe"))
 
-    code, out = run_step(
-        sandbox["verify"],
-        {
-            **sandbox["env"],
-            "PATH": f"{directory}:{os.environ['PATH']}",
-        },
-    )
+    code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
 
     assert code != 0
-    assert "exited 3" in out
+    assert "is on PATH but exited" in out, out
 
 
 @needs_pathext
 def test_verify_accepts_the_binary_it_installed(sandbox):
+    # Borrow the running interpreter: a real executable that answers --version
+    # and exits 0, which is all the verify step asks of the tool.
     directory = sandbox["runner_temp"] / "trusted-signing-cli"
-    _fake_on_path(
-        directory, "trusted-signing-cli", '#!/bin/sh\necho "trusted-signing-cli 0.10.0"\n'
-    )
+    verified = _real_exe_on_path(directory, sys.executable)
 
-    code, out = run_step(
-        sandbox["verify"],
-        {
-            **sandbox["env"],
-            "PATH": f"{directory}:{os.environ['PATH']}",
-        },
-    )
+    code, out = run_step(sandbox["verify"], {**sandbox["env"], "PATH": _path_with(directory)})
 
     assert code == 0, out
-    assert "trusted-signing-cli 0.10.0" in out
+    assert str(verified) in out, out
 
 
 def test_an_unverified_copy_ahead_on_path_is_rejected(sandbox, tmp_path):
@@ -437,7 +438,7 @@ def test_an_unverified_copy_ahead_on_path_is_rejected(sandbox, tmp_path):
         sandbox["verify"],
         {
             **sandbox["env"],
-            "PATH": f"{decoy_dir}:{verified_dir}:{os.environ['PATH']}",
+            "PATH": _path_with(decoy_dir, verified_dir),
         },
     )
 
@@ -496,8 +497,10 @@ def test_the_real_asset_declares_the_arguments_the_signing_script_passes(sandbox
         assert token in blob, token
 
 
-@needs_network
 def test_the_signing_script_still_calls_the_tool_by_bare_name():
+    # No network needed: this only reads a file in the tree. It is the contract
+    # that makes the PATH resolution checked above matter, so it has to run in
+    # the default job rather than behind an opt in.
     script = REPO / "studio" / "src-tauri" / "windows" / "sign-with-trusted-signing.ps1"
     text = script.read_text(encoding = "utf-8")
     assert "& trusted-signing-cli @trustedSigningArgs" in text
