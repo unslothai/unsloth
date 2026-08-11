@@ -1286,19 +1286,25 @@ html[data-chat-font] .aui-root {
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 	}
 
-	/* Crossfade Images settings into its in-flow action footer. The content eases out
-	   over 24px while the lighter footer tint continues building behind the button. */
+	/* Crossfade Images settings into its in-flow action footer. Multiple alpha stops
+	   approximate a smooth 48px ease without painting a separate footer overlay. */
 	.panel-scroll-fade-action.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
 			#000 0,
-			#000 calc(100% - 24px),
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
 			transparent 100%
 		);
 		mask-image: linear-gradient(
 			to bottom,
 			#000 0,
-			#000 calc(100% - 24px),
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
 			transparent 100%
 		);
 	}
@@ -1311,14 +1317,20 @@ html[data-chat-font] .aui-root {
 			to bottom,
 			transparent 0,
 			#000 16px,
-			#000 calc(100% - 24px),
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
 			transparent 100%
 		);
 		mask-image: linear-gradient(
 			to bottom,
 			transparent 0,
 			#000 16px,
-			#000 calc(100% - 24px),
+			#000 calc(100% - 48px),
+			rgba(0, 0, 0, 0.92) calc(100% - 36px),
+			rgba(0, 0, 0, 0.7) calc(100% - 24px),
+			rgba(0, 0, 0, 0.35) calc(100% - 12px),
 			transparent 100%
 		);
 	}

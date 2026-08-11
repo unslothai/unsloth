@@ -3765,8 +3765,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </AdvancedDisclosure>
 
           </div>
-          {/* Let the lighter footer tint build behind the button, keeping its strongest edge lower. */}
-          <div className="relative z-10 flex shrink-0 justify-center px-10 pb-4 before:pointer-events-none before:absolute before:inset-x-0 before:-top-2 before:bottom-0 before:bg-background/20 before:[mask-image:linear-gradient(to_bottom,transparent_0,#000_2rem)] before:content-['']">
+          {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
+          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
                  (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
