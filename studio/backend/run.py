@@ -1038,50 +1038,107 @@ def write_startup_marker() -> None:
     atexit.register(_remove_startup_marker)
 
 
+# Enough attempts to outlast the usual Windows holder (an indexer or a scanner
+# with the file open), short enough that shutdown is not visibly delayed.
+_MARKER_REMOVAL_ATTEMPTS = 5
+_MARKER_REMOVAL_BACKOFF_SECONDS = 0.2
+
+
 def _remove_startup_marker() -> None:
-    # A path is dropped from the list only once it is actually gone. A transient
-    # unlink failure would otherwise lose the only reference to it, leaving a
-    # marker on disk that no later cleanup can retry: its recorded start time
-    # still matches this process, so an embedded host that keeps running would
-    # go on answering as a live backend and pin the compiled cache.
+    """Delete this process's startup markers, retrying a failure a few times.
+
+    A path is dropped from the list only once it is actually gone. A transient
+    unlink failure would otherwise lose the only reference to it, leaving a
+    marker on disk that no later cleanup can retry: its recorded start time
+    still matches this process, so an embedded host that keeps running would go
+    on answering as a live backend and pin the compiled cache.
+
+    Retrying here rather than only keeping the path is what makes that recovery
+    real. The one guaranteed later call is the atexit hook, which an embedded
+    host that outlives its backend does not reach for a long time, if ever.
+    """
+    import time
+
     remaining = []
     while _OWN_STARTUP_MARKERS:
         path = _OWN_STARTUP_MARKERS.pop()
-        try:
-            path.unlink(missing_ok = True)
-        except OSError:
-            remaining.append(path)
+        for attempt in range(_MARKER_REMOVAL_ATTEMPTS):
+            try:
+                path.unlink(missing_ok = True)
+                break
+            except OSError:
+                if attempt + 1 == _MARKER_REMOVAL_ATTEMPTS:
+                    # Still tracked, so the atexit hook and any later call try
+                    # again; this is the floor, not the only chance.
+                    remaining.append(path)
+                    break
+                time.sleep(_MARKER_REMOVAL_BACKOFF_SECONDS)
     _OWN_STARTUP_MARKERS.extend(remaining)
 
 
-def _startup_marker_records() -> "list[tuple[int, float | None, str | None] | None]":
+def _record_written_at(path: Path) -> float:
+    """When *path* was last written, or 0.0 when the filesystem will not say.
+
+    0.0 makes an unreadable time the oldest possible, so it never wins the
+    "which statement about this PID came last" comparison below.
+    """
     try:
-        return [_read_pid_record(p) for p in _studio_root().glob(STARTUP_MARKER_GLOB)]
+        return path.stat().st_mtime
     except OSError:
-        return []
+        return 0.0
 
 
-def _legacy_record() -> "tuple[int, float | None, str | None] | None":
+def _timed_records() -> "list[tuple[tuple[int, float | None, str | None], float]]":
+    """Every startup marker and per-port record, each with its write time."""
+    paths: "list[Path]" = []
+    for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
+        try:
+            paths.extend(_studio_root().glob(pattern))
+        except OSError:
+            continue
+    found = []
+    for path in paths:
+        record = _read_pid_record(path)
+        if record is not None:
+            found.append((record, _record_written_at(path)))
+    return found
+
+
+def _legacy_record() -> "tuple[tuple[int, float | None, str | None], float] | None":
     try:
-        return _read_pid_record(_PID_FILE) if _PID_FILE.is_file() else None
+        if not _PID_FILE.is_file():
+            return None
     except OSError:
         return None
+    record = _read_pid_record(_PID_FILE)
+    return None if record is None else (record, _record_written_at(_PID_FILE))
 
 
 def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
-    for record in records:
-        if record is None:
+    for entry in records:
+        if entry is None:
             continue
+        record, written_at = entry
         pid, created, _address = record
         if pid == me or not _pid_alive(pid):
             continue
-        # Corroborate against every other record for this PID, the way
+        # Corroborate against other records for this PID, the way
         # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
         # time, and an untimed record is trusted unconditionally, so on its own
         # it would resurrect a server that died and had its PID reused -- and
         # keep the compiled cache forever on the strength of it. A timestamped
-        # record for the same PID that fails the check is the proof it is gone.
-        if _pid_is_studio_backend(pid, [created] + [r[1] for r in timed if r[0] == pid]):
+        # record for the same PID that fails the check is evidence it is gone.
+        #
+        # Only a record written no earlier than this one counts as that
+        # evidence. A pre-upgrade backend writes a bare studio.pid and nothing
+        # else, so if it starts on a PID a crashed current-version backend left
+        # a timestamped record for, the older timestamp is a statement about a
+        # process that is gone, not about this one. Letting it veto would clear
+        # the compiled cache under a serving legacy backend.
+        corroborating = [
+            other[1] for other, other_written in timed if other[0] == pid and other_written >= written_at
+        ]
+        if _pid_is_studio_backend(pid, [created] + corroborating):
             return pid
     return None
 
@@ -1103,7 +1160,7 @@ def live_sibling_backend() -> "int | None":
     explicit pid check keeps it correct for the marker, which is.
     """
     me = os.getpid()
-    timed = [r for r in _startup_marker_records() + _per_port_records() if r is not None]
+    timed = _timed_records()
     return _live_sibling(timed + [_legacy_record()], me, timed)
 
 

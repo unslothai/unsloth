@@ -684,14 +684,35 @@ def test_the_marker_outlives_the_early_record_drop(tmp_path):
 
 def test_a_bare_legacy_record_cannot_resurrect_a_reused_pid(tmp_path, monkeypatch):
     # studio.pid holds a PID and no start time, and an untimed record is trusted
-    # unconditionally. A timestamped record for that same PID that fails the
-    # check is proof the server is gone, so the bare one must not override it.
+    # unconditionally. A timestamped record for that same PID, written after it,
+    # is proof the server is gone, so the bare one must not override it.
     monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
     monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
-    (tmp_path / "studio-8888-8550.pid").write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
-    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+    legacy = tmp_path / "studio.pid"
+    timed = tmp_path / "studio-8888-8550.pid"
+    legacy.write_text("8550", encoding = "utf-8")
+    timed.write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    os.utime(legacy, (100.0, 100.0))
+    os.utime(timed, (200.0, 200.0))
 
     assert run.live_sibling_backend() is None
+
+
+def test_an_older_timed_record_does_not_veto_a_newer_legacy_one(tmp_path, monkeypatch):
+    # The other order is a pre-upgrade backend starting on a PID a crashed
+    # current-version backend left a record for: it writes studio.pid and
+    # nothing else. The older timestamp describes the process that is gone, so
+    # letting it veto would clear the compiled cache under a serving backend.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    legacy = tmp_path / "studio.pid"
+    timed = tmp_path / "studio-8888-8550.pid"
+    timed.write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    legacy.write_text("8550", encoding = "utf-8")
+    os.utime(timed, (100.0, 100.0))
+    os.utime(legacy, (200.0, 200.0))
+
+    assert run.live_sibling_backend() == 8550
 
 
 def test_a_timed_record_for_another_pid_leaves_the_legacy_one_alone(tmp_path, monkeypatch):
@@ -926,10 +947,10 @@ def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, m
     assert events == ["clear"]
 
 
-def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
-    # Dropping the path before the unlink succeeds loses the only reference to
-    # it. The marker would stay on disk, keep matching this live process, and
-    # pin the compiled cache with no later cleanup able to retry.
+def test_a_transient_unlink_failure_is_retried_on_the_spot(tmp_path, monkeypatch):
+    # A holder that lets go a moment later (an indexer on Windows) must not cost
+    # the marker its removal: waiting for the atexit hook leaves it on disk, and
+    # an embedded host that outlives the backend may not reach that for hours.
     run.write_startup_marker()
     marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
     assert run._OWN_STARTUP_MARKERS == [marker]
@@ -944,11 +965,41 @@ def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
         return real_unlink(self, missing_ok = missing_ok)
 
     monkeypatch.setattr(Path, "unlink", refuse_once)
+    monkeypatch.setattr(run, "_MARKER_REMOVAL_BACKOFF_SECONDS", 0.0)
     run._remove_startup_marker()
 
+    assert refused, "the first attempt did not run"
+    assert run._OWN_STARTUP_MARKERS == []
+    assert not marker.exists()
+
+
+def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
+    # Once the retries run out, dropping the path loses the only reference to
+    # it. The marker would stay on disk, keep matching this live process, and
+    # pin the compiled cache with no later cleanup able to retry.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    assert run._OWN_STARTUP_MARKERS == [marker]
+
+    real_unlink = Path.unlink
+    attempts = []
+
+    def refuse_while_locked(self, missing_ok = False):
+        attempts.append(self)
+        if locked:
+            raise OSError("busy")
+        return real_unlink(self, missing_ok = missing_ok)
+
+    locked = True
+    monkeypatch.setattr(Path, "unlink", refuse_while_locked)
+    monkeypatch.setattr(run, "_MARKER_REMOVAL_BACKOFF_SECONDS", 0.0)
+    run._remove_startup_marker()
+
+    assert len(attempts) == run._MARKER_REMOVAL_ATTEMPTS, "the retries did not run"
     assert run._OWN_STARTUP_MARKERS == [marker], "still tracked for a retry"
     assert marker.exists()
 
+    locked = False
     run._remove_startup_marker()
 
     assert run._OWN_STARTUP_MARKERS == []
