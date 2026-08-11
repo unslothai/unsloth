@@ -610,8 +610,7 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     assert required <= listed, sorted(required - listed)
     # Nothing outside torch/torchao, so the allowlist cannot grow a general-purpose callable.
     assert all(
-        module.split(".")[0] in ("torch", "torchao")
-        for module, _ in pq._PREQUANT_SAFE_GLOBALS
+        module.split(".")[0] in ("torch", "torchao") for module, _ in pq._PREQUANT_SAFE_GLOBALS
     )
     # A name a given torchao release does not ship is skipped, not raised.
     monkeypatch.setattr(
