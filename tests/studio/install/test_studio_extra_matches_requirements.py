@@ -87,6 +87,48 @@ def test_studio_extra_matches_requirements_file():
     )
 
 
+def _specs(entries: list[str]) -> set[tuple[str, str, str]]:
+    """(name, specifier, marker) per entry, quote style and ordering normalised."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    out = set()
+    for entry in entries:
+        requirement = Requirement(entry)
+        specifier = ",".join(sorted(str(s) for s in requirement.specifier))
+        out.add((
+            canonicalize_name(requirement.name),
+            specifier,
+            str(requirement.marker) if requirement.marker else "",
+        ))
+    return out
+
+
+def test_studio_extra_matches_requirement_versions():
+    """Names matching is not enough: the versions and markers have to match too.
+
+    Comparing normalised names alone let the extra keep bare requirements while
+    studio.txt carried exact pins, so `pip install "unsloth[studio]"` resolved a
+    different stack than the managed installer produced (pandas 3.x against the
+    installer's 2.3.3, which is a copy-on-write and str-dtype migration apart).
+    """
+    extras = _load_pyproject()["project"]["optional-dependencies"]
+    extra = _specs(extras["studio"])
+    required = _specs(_requirement_lines(STUDIO_TXT))
+
+    missing = sorted(required - extra)
+    surplus = sorted(extra - required)
+    assert not missing, (
+        f"studio.txt specifies {missing} but the `studio` extra does not. "
+        '`pip install "unsloth[studio]"` would resolve a different stack than '
+        "install.sh builds. Mirror the specifier and marker, not just the name."
+    )
+    assert not surplus, (
+        f"The `studio` extra specifies {surplus} but studio.txt does not. "
+        "Mirror studio.txt exactly, or update studio.txt if the installer needs it."
+    )
+
+
 @pytest.mark.parametrize("package", CORE_RUNTIME_PACKAGES)
 def test_cli_runtime_packages_are_core_dependencies(package):
     core = [_normalise(entry) for entry in _load_pyproject()["project"]["dependencies"]]

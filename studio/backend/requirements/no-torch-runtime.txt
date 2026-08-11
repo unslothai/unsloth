@@ -98,4 +98,7 @@ pymupdf==1.27.2.3
 pymupdf4llm==0.3.4
 python-docx==1.2.0
 
-lxml==6.0.2
+# 6.0.2 is affected by PYSEC-2026-87, fixed in 6.1.0. Pinning the file made the
+# advisory visible to the nightly pip-audit in security-audit.yml, where a bare
+# entry had always resolved to whatever was current and so never reported.
+lxml==6.1.1
