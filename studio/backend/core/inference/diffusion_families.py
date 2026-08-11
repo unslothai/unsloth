@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -535,17 +536,74 @@ def detect_family_by_pipeline_class(class_name: Optional[str]) -> Optional[Diffu
     return None
 
 
+def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
+    """The ``_class_name`` the diffusers pipeline saved at ``path`` declares, or None.
+
+    Read with a size cap and no schema assumptions: an index is a small JSON manifest, and neither
+    a listing nor a load may be held up (or brought down) by whatever a scan folder happens to
+    contain. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio cannot
+    load anyway, so only a plain string answers."""
+    root = Path(path or "")
+    if not str(root):
+        return None
+    for name in ("model_index.json", "modular_model_index.json"):
+        try:
+            index = root / name
+            if not index.is_file() or index.stat().st_size > 1_000_000:
+                continue
+            payload = json.loads(index.read_text(encoding = "utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            continue
+        if isinstance(payload, dict):
+            value = payload.get("_class_name")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def detect_family_by_pipeline_index(path: Optional[str]) -> Optional[DiffusionFamily]:
+    """The family the pipeline saved at ``path`` declares in its ``model_index.json``, or None.
+
+    The path-shaped counterpart of ``detect_family_by_pipeline_class``, and the one both the
+    listing and the loader use, so a model the picker shows on this evidence is a model
+    ``validate_load_request`` accepts on the same evidence (#8407).
+
+    Carries over ``detect_family``'s variant guard: a directory NAMED for a checkpoint the matched
+    family cannot run (``...-layered``) is still refused, so reading the index only ever adds
+    models whose name said nothing, never overrides a name that said no."""
+    fam = detect_family_by_pipeline_class(pipeline_class_from_index(path))
+    if fam is None:
+        return None
+    basename = re.split(r"[/\\]+", str(path).lower())[-1]
+    matched_tokens = (fam.name, *fam.aliases)
+    if any(
+        _token_in_needle(kw, basename) and not any(kw in tok for tok in matched_tokens)
+        for kw in _EDIT_KEYWORDS
+    ):
+        return None
+    return fam
+
+
 def detect_family_for_pick(
     repo_id: str,
     gguf_filename: Optional[str] = None,
     override: Optional[str] = None,
 ) -> Optional[DiffusionFamily]:
     """``detect_family``, falling back to the combined path/filename for a local ``.gguf`` pick
-    where the family keyword lives only in the filename. Only a fallback, so remote picks and
-    overrides behave exactly as ``detect_family``. Shared by both engines."""
+    where the family keyword lives only in the filename, and then to the saved pipeline class of a
+    local diffusers pipeline directory. Only fallbacks, so remote picks and overrides behave
+    exactly as ``detect_family``. Shared by both engines.
+
+    The index fallback is what keeps the listing and the loader on one answer. The listing
+    classifies a moved pipeline from its ``model_index.json`` because its directory name is a
+    commit hash; the pick the picker then sends is that same opaque path with no family_override,
+    so without this the model is shown as text-to-image and refused as an unsupported family
+    (#8407)."""
     fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
+    if fam is None and not override:
+        fam = detect_family_by_pipeline_index(repo_id)
     return fam
 
 

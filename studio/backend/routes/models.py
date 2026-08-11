@@ -312,26 +312,6 @@ def _local_pipeline_index(d: Path) -> bool:
         return False
 
 
-def _local_pipeline_class_name(d: Path) -> Optional[str]:
-    """The ``_class_name`` a diffusers pipeline root declares, or None.
-
-    Read with a size cap and no schema assumptions: an index is a small JSON manifest, and a
-    listing must never be held up (or brought down) by whatever a scan folder happens to contain."""
-    for name in ("model_index.json", "modular_model_index.json"):
-        try:
-            index = d / name
-            if not index.is_file() or index.stat().st_size > 1_000_000:
-                continue
-            payload = json.loads(index.read_text(encoding = "utf-8"))
-        except (OSError, ValueError, UnicodeError):
-            continue
-        if isinstance(payload, dict):
-            value = payload.get("_class_name")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return None
-
-
 def _is_gguf_companion_only_dir(path: Path) -> bool:
     """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
     MTP drafter, or both -- with nothing servable beside them.
@@ -4274,14 +4254,15 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             from core.inference.diffusion_engine_router import family_buildable_here
             from core.inference.diffusion_families import (
                 detect_family,
-                detect_family_by_pipeline_class,
+                detect_family_by_pipeline_index,
             )
 
             # The saved pipeline class first: it is evidence out of the checkpoint, where every
             # needle below is a name, and a moved model's name is the one thing that does not
-            # survive (#8407).
+            # survive (#8407). The loader reads the index through the same helper, so a model
+            # shown on this evidence is one validate_load_request accepts on it.
             for fam in (
-                detect_family_by_pipeline_class(_local_pipeline_class_name(Path(path))),
+                detect_family_by_pipeline_index(path),
                 *(detect_family(needle) for needle in _local_family_needles(model)),
             ):
                 if fam is not None:

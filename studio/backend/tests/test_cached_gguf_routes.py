@@ -4530,6 +4530,63 @@ def test_a_moved_pipeline_that_names_no_known_family_is_still_not_tagged(tmp_pat
     assert models_route._local_model_task(model) is None
 
 
+def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_path):
+    """The other half of #8407, and the invariant the two tests above do not state on their own:
+    the picker and the loader have to read the SAME evidence.
+
+    The Images page sends the row's id as ``model_path`` and no ``family_override`` (see
+    ``images-page.tsx`` handleLoad, and the whole frontend has no family_override for images), so
+    the loader gets nothing but the opaque path back. Classifying from ``model_index.json`` in the
+    listing alone therefore turns a hidden model into a visible one that
+    ``validate_load_request`` -> ``detect_family_for_pick`` refuses as an unsupported family: the
+    user finds the moved model, picks it, and the load 400s.
+    """
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    cases = {
+        # A snapshot copied out of the HF cache: the leaf is a commit hash and nothing in the path
+        # names a family. Exactly the directory the hash-named test above made visible.
+        "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b": "FluxPipeline",
+        # The same loss with a hand-chosen folder name, which is the ordinary way to keep a model.
+        "my-image-model": "QwenImagePipeline",
+        # A pipeline class the registry does not know stays hidden AND refused.
+        "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d": "SomeOtherPipeline",
+    }
+    for name, class_name in cases.items():
+        snapshot = _saved_pipeline(tmp_path / "N-AI-Models" / name, class_name)
+        model = SimpleNamespace(
+            path = str(snapshot),
+            id = str(snapshot),
+            model_id = None,
+            display_name = snapshot.name,
+            model_format = None,
+        )
+        task = models_route._local_model_task(model)
+        try:
+            backend.validate_load_request(model.id)
+            loader_accepts = True
+        except (ValueError, FileNotFoundError, RuntimeError):
+            loader_accepts = False
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{name}: picker task={task} but loader accepts={loader_accepts}"
+        )
+    # And a checkpoint whose NAME says it is a variant the matched family cannot run stays refused
+    # on both sides: reading the index adds a model whose name said nothing, it never overrules a
+    # name that said no.
+    layered = _saved_pipeline(tmp_path / "N-AI-Models" / "qwen-image-layered", "QwenImagePipeline")
+    layered_model = SimpleNamespace(
+        path = str(layered),
+        id = str(layered),
+        model_id = None,
+        display_name = layered.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(layered_model) is None
+    with pytest.raises(ValueError):
+        backend.validate_load_request(layered_model.id)
+
+
 def test_family_needles_recover_the_repo_id_from_the_hf_cache_directory(tmp_path):
     """#8407, the second half of the same loss. A folder still in cache layout carries its repo id
     in the ``models--org--name`` directory, and a scan folder registered at or inside such a repo
