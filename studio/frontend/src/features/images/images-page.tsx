@@ -3418,7 +3418,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Keep the tabs centered over the preview region at every width. The model rail
           holds at 408px when space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(18rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div
           className={cn(
             "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
@@ -3477,7 +3477,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_1fr]">
+        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
           <div className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             <PillTabs
               ariaLabel="Page mode"

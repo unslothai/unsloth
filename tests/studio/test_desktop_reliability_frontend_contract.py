@@ -798,7 +798,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     header = header_opening + after.split("Below 50rem", 1)[0]
     layout = source.split("Below 50rem", 1)[1]
 
-    assert "grid-cols-[minmax(0,408px)_minmax(18rem,1fr)]" in header_opening
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
@@ -810,7 +810,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
     assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
     assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pr-2" in header
+    assert "col-start-2 justify-self-end pr-3" in header
     assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
@@ -882,7 +882,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,408px)_minmax(18rem,1fr)]" in opening
+    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -892,7 +892,8 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto_1fr]" in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0" in header
     assert "col-start-2" in header
     assert "col-start-3" in header
     assert 'labelClassName="hidden @[50rem]:inline"' in header

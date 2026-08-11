@@ -1834,7 +1834,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Keep the tabs centered over the preview region at every width. The model rail
           holds at 408px when space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(18rem,1fr)]">
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]">
         <div className="pointer-events-none flex h-full min-w-0 items-start overflow-hidden pl-[var(--studio-media-header-left-inset,1.5rem)] @[50rem]:border-r @[50rem]:border-border/60">
           {/* A long resident model name must yield to the mode pill instead of painting over it. */}
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
@@ -1867,7 +1867,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
         <div className="grid h-full min-w-0 grid-cols-[1fr_auto] @[50rem]:grid-cols-[1fr_auto_1fr]">
-          <div className="pointer-events-auto col-start-2 justify-self-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
+          <div className="pointer-events-auto col-start-2 justify-self-end pr-3 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center @[50rem]:pr-0">
             <PillTabs
               ariaLabel="Page mode"
               // Always "create": Train navigates away, so the pill never latches.
