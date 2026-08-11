@@ -214,6 +214,38 @@ _mk_wk "$_TMP/wk-short" "/l/webkit2gtk-4.1" "/l/webkit2gtk-4.1/injected-bundle"
 assert_eq "over-long replacement rejected" "failed" \
     "$(_patch "$_TMP/wk-short" /l/webkit2gtk-4.1 /l/webkit2gtk-4.1/injected-bundle)"
 
+echo "=== behavioural: the WebKit RUNPATH sweep reaches non-executable .so files ==="
+# What shipped: the sweep matched `-perm -u+x` only. A shared object needs no execute
+# bit -- Debian installs libwebkit2gtkinjectedbundle.so as 0644 -- so patchelf never ran
+# on it and it kept an EMPTY RUNPATH. Nix marks its .so files executable, so this was
+# invisible on the build host and only failed on Ubuntu. The injected bundle also sits
+# one directory deeper than the helpers, so a fixed '../../' points one level short.
+_wk="$_TMP/rpath/AppDir/usr/libexec/unsloth-webkit"
+_ld="$_TMP/rpath/AppDir/usr/lib/unsloth"
+mkdir -p "$_wk/injected-bundle" "$_ld"
+: > "$_wk/WebKitNetworkProcess"; chmod 755 "$_wk/WebKitNetworkProcess"
+: > "$_wk/injected-bundle/libwebkit2gtkinjectedbundle.so"
+chmod 644 "$_wk/injected-bundle/libwebkit2gtkinjectedbundle.so"
+
+# Lift the real find expression out of the script so this cannot drift from it.
+_sweep=$(grep -A1 "find \"\$webkit_exec\" -type f" "$BUILD_SH" | head -1)
+assert_eq "sweep matches .so by name, not just by mode" "yes" \
+    "$(printf '%s' "$_sweep" | grep -q "name '\*\.so\*'" && echo yes || echo no)"
+
+_matched=$(find "$_wk" -type f \( -perm -u+x -o -name '*.so*' \) | wc -l | tr -d ' ')
+assert_eq "both helper and injected bundle are swept" "2" "$_matched"
+
+# Each object must get its OWN way back to libdir, not a fixed depth.
+_ok=yes
+while IFS= read -r _obj; do
+    _rel=$(realpath --relative-to="$(dirname "$_obj")" "$_ld")
+    _resolved=$(cd "$(dirname "$_obj")" && cd "$_rel" && pwd)
+    [ "$_resolved" = "$(cd "$_ld" && pwd)" ] || _ok=no
+done < <(find "$_wk" -type f \( -perm -u+x -o -name '*.so*' \))
+assert_eq "every swept object's RUNPATH resolves to libdir" "yes" "$_ok"
+assert_eq "depth is computed, not hardcoded" "yes" \
+    "$(grep -q 'realpath --relative-to' "$BUILD_SH" && echo yes || echo no)"
+
 echo "=== structural: the tauri bundle-type stamp ==="
 assert_eq "tauri bundle-type stamped" "yes" \
     "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"
