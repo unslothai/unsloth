@@ -41,10 +41,10 @@ def intent():
     # Lists on the way in: __post_init__ must freeze them into tuples so the intent stays
     # hashable and comparable across a retry.
     return GgufLoadIntent(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF",
-        gpu_ids=[0, 1],
-        extra_args=["--flash-attn"],
-        tensor_split=[0.5, 0.5],
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF",
+        gpu_ids = [0, 1],
+        extra_args = ["--flash-attn"],
+        tensor_split = [0.5, 0.5],
     )
 
 
@@ -66,12 +66,12 @@ def test_post_init_freezes_sequences(intent):
 
 
 def test_empty_gpu_ids_normalizes_to_none():
-    assert GgufLoadIntent(model_identifier="m", gpu_ids=[]).gpu_ids is None
+    assert GgufLoadIntent(model_identifier = "m", gpu_ids = []).gpu_ids is None
 
 
 def test_replace_preserves_the_rest(intent):
     """Retries rebuild the intent with one field changed."""
-    replaced = dataclasses.replace(intent, n_ctx=8192)
+    replaced = dataclasses.replace(intent, n_ctx = 8192)
 
     assert replaced.n_ctx == 8192
     assert replaced.model_identifier == intent.model_identifier
@@ -80,10 +80,10 @@ def test_replace_preserves_the_rest(intent):
 
 def test_equality_ignores_whether_sequences_arrived_as_lists(intent):
     assert intent == GgufLoadIntent(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF",
-        gpu_ids=(0, 1),
-        extra_args=("--flash-attn",),
-        tensor_split=(0.5, 0.5),
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF",
+        gpu_ids = (0, 1),
+        extra_args = ("--flash-attn",),
+        tensor_split = (0.5, 0.5),
     )
 
 
@@ -112,7 +112,7 @@ def test_signal_exceptions_carry_empty_slots(exception):
     """These only ever signal; the empty ``__slots__`` keeps them from growing a dict."""
     assert exception.__slots__ == ()
 
-    with pytest.raises(exception, match="boom"):
+    with pytest.raises(exception, match = "boom"):
         raise exception("boom")
 
 

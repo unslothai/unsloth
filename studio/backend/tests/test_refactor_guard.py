@@ -25,7 +25,7 @@ sys.path.insert(0, str(BACKEND_ROOT / "tests" / "tools"))
 import refactor_guard  # noqa: E402
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def corpus():
     return refactor_guard.build_corpus()
 

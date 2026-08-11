@@ -164,11 +164,11 @@ _FRAGMENTS = (
     '<|python_tag|>{"name": "get_weather", "parameters": {"city": "Paris"}}',
     '<|python_tag|>get_weather.call(city="Paris")',
     '{"name": "get_weather", "parameters": {"city": "Paris"}}',
-    '<|message_model|>get_weather<|content_invoke_tool_json|>'
+    "<|message_model|>get_weather<|content_invoke_tool_json|>"
     '{"name": "get_weather", "args": {"city": "Paris"}}<|end_message|>',
     "<think>I should call get_weather[ARGS]{} but not really</think>",
     "<think>unclosed reasoning",
-    "```\nget_weather[ARGS]{\"city\": \"Paris\"}\n```",
+    '```\nget_weather[ARGS]{"city": "Paris"}\n```',
     "`get_weather[ARGS]{}`",
     "Sure, let me look that up for you.",
     "The weather in Paris is 18 degrees.",
@@ -298,7 +298,7 @@ def golden_outputs(corpus) -> dict:
 
 
 def _digest(value) -> str:
-    payload = json.dumps(value, sort_keys=True, ensure_ascii=False, default=repr)
+    payload = json.dumps(value, sort_keys = True, ensure_ascii = False, default = repr)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -352,18 +352,18 @@ _PATCH_TARGET_RE = re.compile(
 )
 
 
-def patch_targets(tests_dir=None) -> dict:
+def patch_targets(tests_dir = None) -> dict:
     """String patch targets found in the test suite, grouped by module."""
     tests_dir = tests_dir or (BACKEND_ROOT / "tests")
     targets = {}
     for path in sorted(tests_dir.rglob("test_*.py")):
-        for match in _PATCH_TARGET_RE.finditer(path.read_text(errors="ignore")):
+        for match in _PATCH_TARGET_RE.finditer(path.read_text(errors = "ignore")):
             dotted = match.group(1)
             targets.setdefault(dotted, []).append(str(path.relative_to(BACKEND_ROOT)))
     return targets
 
 
-def unresolvable_patch_targets(targets=None) -> list:
+def unresolvable_patch_targets(targets = None) -> list:
     """Targets that no longer resolve to an attribute of an importable module.
 
     Splits ``a.b.c`` at every dot: the longest importable prefix is the module, the
@@ -382,7 +382,9 @@ def unresolvable_patch_targets(targets=None) -> list:
             rest = parts[split:]
             break
         else:
-            broken.append({"target": dotted, "reason": "no importable module prefix", "tests": users})
+            broken.append(
+                {"target": dotted, "reason": "no importable module prefix", "tests": users}
+            )
             continue
         for attr in rest:
             # ``core.inference`` resolves attributes through a PEP 562 ``__getattr__``
@@ -476,9 +478,9 @@ def twin_divergence(corpus) -> dict:
 
 
 def _write(name, payload):
-    BASELINE_DIR.mkdir(parents=True, exist_ok=True)
+    BASELINE_DIR.mkdir(parents = True, exist_ok = True)
     path = BASELINE_DIR / name
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+    path.write_text(json.dumps(payload, indent = 2, sort_keys = True, ensure_ascii = False) + "\n")
     return path
 
 
@@ -540,7 +542,9 @@ def verify() -> int:
     problems += _diff("runtime", _read("runtime_inventory.json"), runtime_inventory())
     problems += _diff("golden", _read("golden_outputs.json"), golden_outputs(corpus))
 
-    baseline_idempotence = {(f["module"], f["function"]) for f in _read("idempotence_baseline.json")}
+    baseline_idempotence = {
+        (f["module"], f["function"]) for f in _read("idempotence_baseline.json")
+    }
     for failure in idempotence_failures(corpus):
         if (failure["module"], failure["function"]) not in baseline_idempotence:
             problems.append(
@@ -549,7 +553,9 @@ def verify() -> int:
             )
 
     for broken in unresolvable_patch_targets():
-        problems.append(f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})")
+        problems.append(
+            f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"
+        )
 
     if problems:
         print(f"FAIL: {len(problems)} difference(s)")
@@ -564,7 +570,7 @@ def verify() -> int:
 
 def twins():
     report = twin_divergence(build_corpus())
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(json.dumps(report, indent = 2, ensure_ascii = False))
 
 
 def main() -> int:

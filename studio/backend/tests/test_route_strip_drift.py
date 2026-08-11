@@ -32,7 +32,7 @@ from core.inference.tool_call_parser import strip_tool_markup  # noqa: E402
 ENABLED = {"get_weather", "search"}
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def route_strip():
     routes_inference = pytest.importorskip("routes.inference")
     return routes_inference._strip_tool_xml_for_display
@@ -42,21 +42,21 @@ def test_route_strip_deletes_a_fenced_rehearsal_canonical_keeps_it(route_strip):
     """The concrete user-visible symptom of the drift."""
     text = '```\nget_weather[ARGS]{"city": "Paris"}\n```'
 
-    assert route_strip(text, auto_heal_tool_calls=True, enabled_tool_names=ENABLED) == "```\n\n```"
-    assert strip_tool_markup(text, final=True, enabled_tool_names=ENABLED) == text
+    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == "```\n\n```"
+    assert strip_tool_markup(text, final = True, enabled_tool_names = ENABLED) == text
 
 
 def test_route_strip_deletes_an_inline_code_rehearsal(route_strip):
     text = "`get_weather[ARGS]{}`"
 
-    assert route_strip(text, auto_heal_tool_calls=True, enabled_tool_names=ENABLED) == "``"
-    assert strip_tool_markup(text, final=True, enabled_tool_names=ENABLED) == text
+    assert route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED) == "``"
+    assert strip_tool_markup(text, final = True, enabled_tool_names = ENABLED) == text
 
 
 def test_route_strip_still_removes_a_real_call(route_strip):
     """Whatever else differs, the route strip must keep doing its actual job."""
     text = 'Here you go. <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>'
-    stripped = route_strip(text, auto_heal_tool_calls=True, enabled_tool_names=ENABLED)
+    stripped = route_strip(text, auto_heal_tool_calls = True, enabled_tool_names = ENABLED)
 
     assert "<tool_call>" not in stripped
     assert "Here you go." in stripped
@@ -65,4 +65,4 @@ def test_route_strip_still_removes_a_real_call(route_strip):
 def test_route_strip_is_disabled_when_healing_is_off(route_strip):
     text = '<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>'
 
-    assert route_strip(text, auto_heal_tool_calls=False, enabled_tool_names=ENABLED) == text
+    assert route_strip(text, auto_heal_tool_calls = False, enabled_tool_names = ENABLED) == text
