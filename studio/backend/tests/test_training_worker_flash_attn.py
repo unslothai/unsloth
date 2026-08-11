@@ -299,9 +299,7 @@ def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(
     monkeypatch.setattr(
         worker._sp,
         "run",
-        lambda cmd, **kw: subprocess.CompletedProcess(
-            cmd, 1 if "uninstall" in cmd else 0, ""
-        ),
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1 if "uninstall" in cmd else 0, ""),
     )
 
     installed = worker._install_package_wheel_first(

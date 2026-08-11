@@ -1277,7 +1277,9 @@ def _install_package_wheel_first(
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
     # installing anything, so a rejected wheel would otherwise be reported as a success.
     if not _is_importable_isolated(import_name):
-        _reject_install(event_queue, pypi_name, display_name, "installed from PyPI but will not import")
+        _reject_install(
+            event_queue, pypi_name, display_name, "installed from PyPI but will not import"
+        )
         return False
 
     if is_hip:
