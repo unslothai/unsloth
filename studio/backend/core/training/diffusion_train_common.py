@@ -542,6 +542,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
@@ -553,6 +554,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 768,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },

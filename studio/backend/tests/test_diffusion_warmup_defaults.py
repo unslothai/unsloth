@@ -19,8 +19,16 @@ from core.training.diffusion_train_common import (
     train_defaults,
 )
 
-WARMUP_FAMILIES = ["flux.1", "qwen-image", "flux.2-klein", "flux.2-dev"]
-NO_WARMUP_FAMILIES = ["sdxl", "z-image", "krea-2"]
+# Derived from the table, not listed by hand: a family added with lr_warmup_steps and no
+# scheduler must fail this, which a hand-written list would silently skip.
+WARMUP_FAMILIES = [
+    family
+    for family, defaults in FAMILY_TRAIN_DEFAULTS.items()
+    if int(defaults.get("lr_warmup_steps", 0) or 0) > 0
+]
+NO_WARMUP_FAMILIES = [
+    family for family in FAMILY_TRAIN_DEFAULTS if family not in WARMUP_FAMILIES
+]
 
 
 def _cfg(family, **overrides):
@@ -37,9 +45,9 @@ def _cfg(family, **overrides):
 
 
 def test_warmup_families_advertise_a_warmup_capable_scheduler():
+    assert WARMUP_FAMILIES, "no family advertises lr_warmup_steps; the invariant tests nothing"
     for family in WARMUP_FAMILIES:
         d = FAMILY_TRAIN_DEFAULTS[family]
-        assert d.get("lr_warmup_steps", 0) > 0
         assert (
             d.get("lr_scheduler") == "constant_with_warmup"
         ), f"{family} advertises lr_warmup_steps but not a scheduler that realizes it"
