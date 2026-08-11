@@ -302,7 +302,11 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
     snapshot = next((repo_root / "snapshots").iterdir())
     (snapshot / "alias").symlink_to(snapshot / "data", target_is_directory = True)
 
-    def _walk_alias_first(top, followlinks = False, onerror = None):
+    def _walk_alias_first(
+        top,
+        followlinks = False,
+        onerror = None,
+    ):
         stack = [Path(top)]
         while stack:
             base = stack.pop()
@@ -311,9 +315,7 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
             filenames = [name for name in names if name not in dirnames]
             yield str(base), dirnames, filenames
             # POSIX: a symlinked directory is listed but not descended.
-            stack.extend(
-                base / name for name in dirnames if not (base / name).is_symlink()
-            )
+            stack.extend(base / name for name in dirnames if not (base / name).is_symlink())
 
     monkeypatch.setattr(cache_inventory.os, "walk", _walk_alias_first)
 
