@@ -1486,15 +1486,13 @@ class ChatCompletionRequest(BaseModel):
         unconsumed tool_call; synth a random id only if none exists. A user
         turn breaks the lookup.
         """
-        # Both passes below used to walk the history backwards from every tool result and
-        # rescan each assistant's tool_calls, so one assistant with n calls followed by n
-        # results was O(n^2). Both now run in one forward pass with an index, which is the
-        # same search because the backward walk only ever looked inside the current
-        # user-delimited segment: a "user" message ends it.
+        # Both passes below were a backwards rescan per tool result, O(n^2) for one
+        # assistant with n calls. Each is now a single forward pass with an index, the
+        # same search because the backward walk never left the current user-delimited
+        # segment: a "user" message ends it.
         messages = self.messages
-        # Nothing below writes anything unless some tool result is missing its id: the
-        # first pass only feeds the second. Well-behaved OpenAI clients always send
-        # tool_call_id, so this returns immediately for most requests.
+        # The first pass only feeds the second, so with every tool_call_id present there
+        # is nothing to do, which is the common case for well-behaved clients.
         for msg in messages:
             if msg.role == "tool" and not msg.tool_call_id:
                 break
@@ -1504,10 +1502,9 @@ class ChatCompletionRequest(BaseModel):
         # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
-        # Newest assistant call per explicit id in this segment; the first index wins
-        # inside one assistant, matching the old first-match-nearest-assistant walk.
-        # Only exact ``str`` ids are indexed: ``tool_call_id`` is a ``str``, so a JSON
-        # id of any other type could never compare equal to it anyway.
+        # Newest assistant call per explicit id in this segment; within one assistant the
+        # first index wins, matching the old first-match-nearest-assistant walk. Only
+        # ``str`` ids are indexed: ``tool_call_id`` is a ``str``, so nothing else matches.
         latest_by_id: dict = {}
         for asst_idx, msg in enumerate(messages):
             role = msg.role
@@ -1529,13 +1526,11 @@ class ChatCompletionRequest(BaseModel):
                 if claimed is not None:
                     consumed.add(claimed)
 
-        # Stack of the assistants in the current segment that still have an unclaimed
-        # call, oldest first, so the nearest one is on top. A drained assistant can never
-        # refill, so popping it is permanent and the walk past it happens once overall
-        # rather than once per tool result. Each frame holds its remaining call indexes
-        # in order plus the same indexes bucketed by function name; an index consumed out
-        # of turn is dropped when it reaches the front of a queue, so every index leaves
-        # each queue at most once.
+        # Assistants in this segment with an unclaimed call, oldest first, so the nearest
+        # is on top. A drained assistant never refills, so popping it is permanent and the
+        # walk past it happens once overall rather than once per tool result. Each frame
+        # keeps its remaining call indexes in order plus the same indexes bucketed by
+        # function name; one consumed out of turn is dropped when it reaches a queue front.
         stack: list = []
         for asst_idx, msg in enumerate(messages):
             role = msg.role
@@ -1571,8 +1566,8 @@ class ChatCompletionRequest(BaseModel):
                 if not in_order:
                     stack.pop()
                     continue
-                # Prefer a name match anywhere in this assistant, else its first
-                # remaining call, exactly as the old in-order scan did.
+                # Name match anywhere in this assistant, else its first remaining call,
+                # exactly as the old in-order scan did.
                 chosen = None
                 if msg.name:
                     named = by_name.get(msg.name)

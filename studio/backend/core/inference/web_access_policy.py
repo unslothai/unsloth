@@ -89,9 +89,8 @@ def normalize_website_policy(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"{key} must be a list")
         if len(raw_domains) > _MAX_DOMAINS_PER_LIST:
             raise ValueError(f"{key} supports at most {_MAX_DOMAINS_PER_LIST} domains")
-        # Exact ``str`` entries only: anything else is unhashable or reaches
-        # ``normalize_domain`` through ``str(value or "")``, and its error message
-        # carries the original repr, so those stay on the uncached path.
+        # Exact ``str`` only: anything else can be unhashable, and its error message
+        # carries the original repr, so non-str entries stay on the uncached path.
         if all(type(raw_domain) is str for raw_domain in raw_domains):
             normalized[key] = list(_normalized_domain_tuple(tuple(raw_domains)))
             continue

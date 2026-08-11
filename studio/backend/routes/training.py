@@ -3419,12 +3419,10 @@ async def upload_diffusion_dataset(
         allowed = _DIFFUSION_DATASET_MEDIA_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
         # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires; the upload is all-or-nothing.
         names: list[str] = []
-        # Indexes over `names`, rebuilt per request, so each of the three batch-local
-        # duplicate checks below is a hash lookup instead of a scan over every earlier
-        # filename: a batch at the 1000-file multipart cap was O(N^2). `names` still
-        # drives staging order, and the per-casefold / per-stem entries keep insertion
-        # order so the earlier filename named in each error message is the same one the
-        # linear scans picked.
+        # Indexes over `names` so the three batch-local duplicate checks below are hash
+        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap).
+        # They keep first / insertion order, so each error message still names the same
+        # earlier filename the linear scans picked.
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
@@ -3477,8 +3475,7 @@ async def upload_diffusion_dataset(
                     None,
                 )
                 if clash is None:
-                    # Only a media name whose stem casefolds to this one can share the
-                    # sidecar, which is exactly what the per-stem index holds.
+                    # Only a media name with this casefolded stem can share the sidecar.
                     clash = next(
                         (n for n in media_names_by_stem_cf.get(stem_cf, ()) if _shares_sidecar(n)),
                         None,

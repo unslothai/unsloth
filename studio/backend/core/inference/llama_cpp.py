@@ -7068,11 +7068,9 @@ class LlamaCppBackend:
                 n = struct.unpack("<Q", f.read(8))[0]
                 if not n:
                     continue
-                # delimiter_shaped_tokens keeps only "<...>" / "[...]" entries, so a token
-                # whose first byte is neither can be seeked past instead of read, decoded
-                # and retained. UTF-8 is self-synchronising, so no multi-byte character
-                # begins with either byte. A six-figure vocabulary is the bulk of a header
-                # parse and only a few hundred entries survive the filter.
+                # Only "<...>" / "[...]" entries survive delimiter_shaped_tokens, so seek
+                # past the rest instead of reading and decoding them. UTF-8 is
+                # self-synchronising, so no multi-byte character starts with either byte.
                 first = f.read(1)
                 if first != b"<" and first != b"[":
                     f.seek(n - 1, 1)

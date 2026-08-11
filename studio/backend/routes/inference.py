@@ -719,9 +719,8 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
 
     current_est = total_est
     dropped = 0
-    # Drop oldest-first until the estimate fits the target. A cursor over ``middle``
-    # rather than repeated ``pop(0)`` on a copy: popping the front of a list shifts
-    # every remaining element, so evicting k groups costs O(len(middle) * k).
+    # Drop oldest-first until the estimate fits the target. A cursor over ``middle``, not
+    # ``pop(0)`` on a copy: popping the front of a list shifts every remaining element.
     first_kept = 0
     while first_kept < len(middle) and current_est > target_est:
         victim = middle[first_kept]
