@@ -69,9 +69,9 @@ ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 # own ``__module__``: ``torchao.quantization.Float8Tensor`` really lives in
 # ``...quantize_.workflows.float8.float8_tensor``, and registering only the canonical name leaves
 # the artifact unloadable. Names that a given torchao release does not have are skipped rather
-# than raised: the set spans several releases (0.14 through 0.18 ship both the AffineQuantized and
-# the newer Float8Tensor spellings), and a scheme whose class is absent could not have produced a
-# loadable checkpoint here anyway.
+# than raised: the set spans every release ``install_python_stack`` pins (0.14, 0.16 and 0.17,
+# which all ship both the AffineQuantized and the newer Float8Tensor spellings), and a scheme
+# whose class is absent could not have produced a loadable checkpoint here anyway.
 #
 # Adding a scheme means adding its constructors here. The failure mode if that is forgotten is the
 # safe one -- the load warns and falls back to dense-quantise -- never a silent unpickle.
