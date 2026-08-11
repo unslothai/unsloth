@@ -26,9 +26,6 @@ export interface ModelArtifact {
   offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
-  /** Restrict a bundled GGUF repo's variant menu to filenames for this artifact.
-   * Used when one repo publishes several independently loadable model partitions. */
-  ggufFilenamePrefix?: string;
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
    * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
    * reports one. Rows the listing never returns (a repo it does not index, a
@@ -365,21 +362,19 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
       gguf("unsloth/MiniMax-H3-GGUF", {
-        label: "GGUF - Text and frames",
-        keywords: ["gguf", "quantized", "fl2va", "keyframes"],
+        label: "GGUF",
+        keywords: [
+          "gguf",
+          "quantized",
+          "fl2va",
+          "ref2va",
+          "keyframes",
+          "references",
+        ],
         totalParams: 20_111_438_744,
-        ggufFilenamePrefix: "minimax_h3_fl2va",
-      }),
-      // The community bundle currently publishing the Ref2VA quants. Its repo also contains
-      // FL2VA files and Qwen companions, so the filename prefix keeps this artifact's menu on
-      // the reference partition while the backend's bundle filter keeps companions out.
-      gguf("leejet/MiniMax-H3-GGUF", {
-        label: "GGUF - References",
-        keywords: ["gguf", "quantized", "ref2va", "references"],
-        totalParams: 20_111_438_744,
-        ggufFilenamePrefix: "minimax_h3_ref2va",
       }),
     ],
   },
