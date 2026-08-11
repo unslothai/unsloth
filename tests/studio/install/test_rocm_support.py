@@ -78,6 +78,50 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
+# A dpkg-query -W stand-in faithful enough to test how install.sh ASKS for the
+# version, not only how it parses the answer: it renders whichever showformat
+# string it is handed, and it answers for a package in ANY state, because the
+# real tool does too (man dpkg-query, --list: packages are listed "regardless of
+# their status", and only purged ones are left out). A rocm-core removed with
+# `apt remove` and never purged therefore keeps reporting the version it had.
+_DPKG_QUERY_STUB = r"""#!/bin/sh
+_status='__STATUS__'
+_ver='__VERSION__'
+# dpkg's Status field is "<want> <error-flag> <status>".
+case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+_fmt=''
+_found=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f=*)            _fmt=${1#-f=} ;;
+        --showformat=*)  _fmt=${1#--showformat=} ;;
+        -f|--showformat) shift; _fmt=$1 ;;
+        -*)              : ;;
+        rocm-core)       _found=1 ;;
+    esac
+    shift
+done
+[ -n "$_found" ] || exit 1
+[ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
+# Unrecognised fields render empty, like the real dpkg-query.
+_out=$(printf '%s' "$_fmt" | sed \
+    -e "s|\${Package}|rocm-core|g" \
+    -e "s|\${Status}|$_want ok $_status|g" \
+    -e "s|\${db:Status-Status}|$_status|g" \
+    -e "s|\${db:Status-Want}|$_want|g" \
+    -e "s|\${db:Status-Eflag}|ok|g" \
+    -e "s|\${Version}|$_ver|g" \
+    -e "s|\${[^}]*}||g")
+printf "$_out"
+"""
+
+
+def _write_dpkg_query_stub(path: str, version: str, status: str = "installed") -> None:
+    with open(path, "w", encoding = "utf-8") as f:
+        f.write(_DPKG_QUERY_STUB.replace("__STATUS__", status).replace("__VERSION__", version))
+    os.chmod(path, 0o755)
+
+
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
 
@@ -2113,6 +2157,9 @@ class TestInstallShStructure:
                         ) as f:
                             f.write(line + "\n")
                         continue
+                    if name == "dpkg-query":
+                        _write_dpkg_query_stub(os.path.join(d, name), line, "installed")
+                        continue
                     p = os.path.join(d, name)
                     with open(p, "w", encoding = "utf-8") as f:
                         f.write(f"#!/bin/sh\necho '{line}'\n")
@@ -2124,6 +2171,49 @@ class TestInstallShStructure:
                 assert r.stdout.strip() == "TAG:rocm6.4", (
                     f"{winner} reported 6.4 while every other source reported 5.7, "
                     f"but detection resolved {r.stdout.strip()}"
+                )
+
+    def test_removed_dpkg_rocm_core_cannot_pick_the_wheels(self):
+        """Highest-wins fixed the undershoot in #8402 and opened the symmetric
+        hole: a source reading HIGHER than the runtime now wins outright.
+        Undershoot lands on CPU wheels, which work; overshoot installs wheels the
+        runtime cannot load. `dpkg-query -W` reports packages left in "deinstall
+        ok config-files" by `apt remove` without `apt purge`, still carrying the
+        version they had, so a host that ran ROCm 7.0 and went back to 6.1 hands
+        dpkg a 7.0 that beats every live source. Only "installed" counts.
+        Executed, not text, and paired with the installed case so the assertion
+        cannot pass on the version alone."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        for status, expected in (("config-files", "TAG:rocm6.1"), ("installed", "TAG:rocm7.0")):
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                # The live runtime, via the version file: ROCm 6.1.
+                os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                with open(
+                    os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                ) as f:
+                    f.write("6.1.2-98\n")
+                _write_dpkg_query_stub(os.path.join(d, "dpkg-query"), "1:7.0.0-1", status)
+                # Silence the other sources so a real ROCm on the test host
+                # cannot answer and make this machine-dependent.
+                for name in ("amd-smi", "hipconfig", "rpm"):
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write("#!/bin/sh\nexit 1\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run(
+                    [shell, "-c", script], env = env, capture_output = True, text = True
+                )
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == expected, (
+                    f"dpkg rocm-core 7.0 in state {status!r} next to a 6.1 version file "
+                    f"resolved {r.stdout.strip()}, expected {expected}"
                 )
 
     def test_cuda_precedence(self):

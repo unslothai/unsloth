@@ -2936,7 +2936,21 @@ _rocm_tag_from_hipconfig() {
 
 _rocm_tag_from_dpkg() {
     command -v dpkg-query >/dev/null 2>&1 || return 0
-    _rt_ver=$(dpkg-query -W -f='${Version}\n' rocm-core 2>/dev/null) || return 0
+    # ${Status}, not ${Version} alone. dpkg-query -W lists every package in the
+    # status database except purged ones (man dpkg-query, --list: "regardless of
+    # their status ... excluding the ones marked as not-installed"), so a
+    # rocm-core taken out with `apt remove` and not purged stays queryable in
+    # state "deinstall ok config-files" and still reports the version it had.
+    # Under highest-wins that dead entry would outrank every live source: a host
+    # that ran ROCm 7.0, downgraded to 6.1 and never purged would resolve rocm7.0
+    # off a package that is not there. Every other source at least describes a
+    # tree that exists, so this one has to require the status word "installed".
+    # ${Status} is a documented showformat field with no dpkg
+    # version floor, and dpkg-query renders an unrecognised field as empty rather
+    # than failing, so on any dpkg that somehow lacks it this source goes silent
+    # instead of over-reporting.
+    _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' rocm-core 2>/dev/null \
+        | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
     [ -n "$_rt_ver" ] || return 0
     printf '%s\n' "$_rt_ver" | sed 's/^[0-9]*://' \
         | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
@@ -2972,14 +2986,39 @@ _highest_rocm_tag() {
 # and the 6.0+ gate below sent it to CPU-only wheels (issue #8402). A source
 # reporting lower than another on the same host is stale packaging, not a
 # downgrade, so the highest reading is the one that describes the runtime.
+#
+# The symmetric risk of highest-wins is overshoot: a source reading HIGHER than
+# the host now picks the wheel family instead of being shadowed by its position.
+# Two things bound it. PyTorch's ROCm wheels vendor their own ROCm userspace
+# into torch/lib, so what they need from the host is the amdgpu/KFD driver, and
+# AMD documents that as compatible +/- 2 releases (a year's span from 6.4), not
+# pinned to the userspace these sources report. And the normalisation below can
+# only emit a leaf PyTorch publishes. What is NOT bounded is a reading taken off
+# something that is not installed at all, so the one source that can produce one
+# -- a removed-but-not-purged dpkg rocm-core -- is filtered above. Past that,
+# disagreement is named on stderr: when overshoot does bite it surfaces as an
+# HSA error at the first HIP call, or a GPU that is simply absent from torch,
+# and neither points back here without the readings in the log.
 _detect_rocm_version_tag() {
-    {
+    _rt_readings=$({
         _rocm_tag_from_amd_smi
         _rocm_tag_from_version_file
         _rocm_tag_from_hipconfig
         _rocm_tag_from_dpkg
         _rocm_tag_from_rpm
-    } 2>/dev/null | _highest_rocm_tag
+    } 2>/dev/null) || _rt_readings=""
+    _rt_best=$(printf '%s\n' "$_rt_readings" | _highest_rocm_tag) || _rt_best=""
+    if [ -n "$_rt_best" ]; then
+        # Same shape gate as _highest_rocm_tag, so a garbage or major-0 reading
+        # is not named as a dissenting opinion when it never was a candidate.
+        _rt_seen=$(printf '%s\n' "$_rt_readings" \
+            | grep '^rocm[1-9][0-9]*\.[0-9][0-9]*$' | sort -u | tr '\n' ' ') || _rt_seen=""
+        case "$_rt_seen" in
+            ""|"$_rt_best ") : ;;  # one reading, or every source agreeing
+            *) echo "[WARN] ROCm version sources disagree (${_rt_seen% }) -- using the highest, $_rt_best." >&2 ;;
+        esac
+    fi
+    printf '%s\n' "$_rt_best"
 }
 
 # ── Detect GPU and choose PyTorch index URL ──
@@ -3060,13 +3099,16 @@ get_torch_index_url() {
         fi
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
-        _rocm_tag=$(_detect_rocm_version_tag 2>/dev/null) || _rocm_tag=""
+        _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # ^ || guard: when EVERY version source is missing (e.g. rocminfo present
         # but rocm-core not installed, so dpkg-query/rpm exit 1), detection must
         # still return empty-and-successful rather than let set -e kill the
         # installer BEFORE the actionable no-version WARN below -- exactly the
         # fresh-install case it exists for. _detect_rocm_version_tag holds that
-        # contract internally; the guard here is belt and braces.
+        # contract internally; the guard here is belt and braces. stderr is NOT
+        # redirected: every source's own noise is already suppressed inside the
+        # resolver, so the only thing left on stderr is its deliberate
+        # sources-disagree breadcrumb, which belongs in the install log.
         # Validate _rocm_tag: must match "rocmX.Y" with major >= 1.
         # _highest_rocm_tag already enforces this shape; kept as a second gate so
         # a future source added to _detect_rocm_version_tag cannot leak garbage
