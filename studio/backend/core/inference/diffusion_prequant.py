@@ -161,7 +161,6 @@ def _register_prequant_safe_globals() -> bool:
         ok = False
         try:
             import torch
-
             add = getattr(torch.serialization, "add_safe_globals", None)
             if add is not None:
                 add(_prequant_safe_globals())
