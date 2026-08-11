@@ -494,3 +494,22 @@ test("the refresh passes the page's completeness into the merge", () => {
     /mergeGalleryPage\(\s*page\.audio,\s*galleryCache\.clips,\s*removedId,\s*page\.has_more,/,
   );
 });
+
+test("generating waits for the transcribe release the mode switch started", () => {
+  // Switching straight from Transcribe to Speak with a speech model already resident needs
+  // no load, so the load path's gate never runs and Generate could allocate beside the
+  // dictation model, which OOMs a device that fits either one alone.
+  assert.match(
+    audioPageSource,
+    /const handleGenerate = useCallback\(async \(\) => \{[\s\S]{0,900}?const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]{0,200}?if \(releaseInFlight && !\(await releaseInFlight\)\) \{[\s\S]{0,80}?setMode\("transcribe"\);/,
+  );
+});
+
+test("a failed transcribe release puts the page back in Transcribe", () => {
+  // Otherwise the pill reads Speak while the sidecar still holds its model, and nothing
+  // on screen offers the Eject that would retry the unload.
+  assert.match(
+    audioPageSource,
+    /void release\.then\(\(released\) => \{[\s\S]{0,600}?if \(!released && modeRef\.current === "speak"\) setMode\("transcribe"\);/,
+  );
+});

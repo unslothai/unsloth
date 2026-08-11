@@ -821,10 +821,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         // Recorded so a TTS load can wait for the teardown: allocating while the sidecar
         // still holds its model is what OOMs a device that fits either one alone.
         pendingTranscribeRelease.current = release;
-        void release.finally(() => {
-          if (pendingTranscribeRelease.current === release) {
-            pendingTranscribeRelease.current = null;
-          }
+        void release.then((released) => {
+          if (pendingTranscribeRelease.current !== release) return;
+          pendingTranscribeRelease.current = null;
+          // The sidecar is still holding its model, so the page must not sit in Speak
+          // claiming otherwise: back to Transcribe, where Eject can retry the unload.
+          // Only if nothing has moved on since, so a user who switched again wins.
+          if (!released && modeRef.current === "speak") setMode("transcribe");
         });
       }
       return true;
@@ -1356,6 +1359,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
     if (!text) return;
+    // Same gate the TTS load path uses. Switching straight from Transcribe with a speech
+    // model already resident needs no load, so nothing else waits for the sidecar
+    // teardown, and generating beside a dictation model OOMs a device that fits either
+    // one alone. A release that failed leaves it resident, so go back to Transcribe,
+    // where Eject can retry the unload.
+    const releaseInFlight = pendingTranscribeRelease.current;
+    if (releaseInFlight && !(await releaseInFlight)) {
+      setMode("transcribe");
+      return;
+    }
     setBusy("generating");
     const controller = new AbortController();
     generateAbort.current = controller;
