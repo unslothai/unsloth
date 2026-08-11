@@ -63,9 +63,7 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
     """0.22 + 0.14 GiB across a 45/7.98 GiB pair: neither usage is capacity-forced,
     so per device it stays Unknown, but the visible set's total is exactly 0.36 GiB
     either way round. Before the fix the whole tile read Unknown (#7452)."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
     )
@@ -83,9 +81,7 @@ def test_system_tab_reports_aggregate_when_pairing_is_ambiguous(win_rocm, monkey
 def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
     """The floating monitor reads get_gpu_utilization(), so the same figure has to
     reach that payload and not only the System tab's."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IDLE_ADAPTERS))
     )
@@ -101,9 +97,7 @@ def test_loaded_card_keeps_both_the_forced_device_value_and_the_aggregate(win_ro
     """#7072's own case: a model resident on the W7900. The 40 GiB is capacity-forced
     onto the 45 GiB card and stays per device, and the aggregate adds the idle card's
     0.5 GiB, so the tile shows the real total rather than only the attributed part."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),
         ("luid_0x00000000_0x0000e34a_phys_0", 0.5 * GB),
@@ -123,9 +117,7 @@ def test_loaded_card_keeps_both_the_forced_device_value_and_the_aggregate(win_ro
 def test_no_aggregate_when_the_counter_is_unavailable(win_rocm, monkeypatch):
     """A localized or missing counter set must stay Unknown rather than become 0:
     that fabricated zero is the #7072 symptom this pair started from."""
-    monkeypatch.setitem(
-        sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True)
-    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     monkeypatch.setattr(hw.subprocess, "run", _subprocess_run(adapter_output = "__NONE__\n"))
 
     result = hw.get_visible_gpu_utilization()
