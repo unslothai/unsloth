@@ -1589,8 +1589,11 @@ def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
     note = UNWIRED["grpo"]
     assert "illegal memory access" in note
     # The evidence, so re-wiring means answering it rather than deleting it.
-    for kernel_id in ("53efcc4e", "70a2f4eb", "c98f14be"):
+    for kernel_id in ("53efcc4e", "70a2f4eb", "c98f14be", "b1f23e34"):
         assert kernel_id in note, f"the note drops session {kernel_id}"
+    # The launch-blocking run is done and answered something, so the note must
+    # not still read as though it were the next thing to try.
+    assert "STILL UNKNOWN" in note and "--cuda-launch-blocking run is done" in note
 
 
 def test_control_and_canary_still_share_a_session():
