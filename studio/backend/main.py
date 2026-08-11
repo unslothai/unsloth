@@ -359,13 +359,17 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except (OSError, UnicodeDecodeError):
-        pass
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
+    root = _Path(__file__).resolve().parents[2] / "unsloth"
+    for version_file in (root / "_version.py", root / "models" / "_utils.py"):
+        try:
+            for line in version_file.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("__version__ = "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except (OSError, UnicodeDecodeError):
+            continue
     return "dev"
 
 
