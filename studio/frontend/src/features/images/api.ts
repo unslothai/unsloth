@@ -432,14 +432,19 @@ export async function clearGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
+/** Fetch an auth-protected gallery image as its original blob. */
+export async function fetchGalleryBlob(url: string): Promise<Blob> {
+  const res = await authFetch(url);
+  if (!res.ok) throw new Error(await readFastApiError(res));
+  return res.blob();
+}
+
 /** Fetch a gallery PNG (auth-protected, so it cannot be a plain <img src>) and wrap it in an object URL. Callers must revoke it. */
 export async function fetchGalleryObjectUrl(
   url: string,
 ): Promise<{ url: string; bytes: number }> {
-  const res = await authFetch(url);
-  if (!res.ok) throw new Error(await readFastApiError(res));
   // The blob size travels with the URL: the gallery cache is budgeted in bytes, which the caller cannot work out from the URL.
-  const blob = await res.blob();
+  const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
 
