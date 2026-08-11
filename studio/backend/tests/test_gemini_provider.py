@@ -5380,6 +5380,8 @@ def test_gemini_2_5_still_uses_thinking_budget(monkeypatch, model):
 def test_gemini_3_pro_floor_is_low_not_minimal(monkeypatch):
     """Pro has no `minimal` level, so thinking off floors at `low`."""
     body = _capture_body(
-        monkeypatch, model = "gemini-3.1-pro-preview", enable_thinking = False,
+        monkeypatch,
+        model = "gemini-3.1-pro-preview",
+        enable_thinking = False,
     )["body"]
     assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}

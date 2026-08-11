@@ -15,7 +15,6 @@ if str(_BACKEND) not in sys.path:
 from core.inference.providers import PROVIDER_REGISTRY  # noqa: E402
 
 
-
 def test_current_generation_model_ids_reach_the_picker():
     """Live ids from each provider's list endpoint must survive the
     allow/deny filters, otherwise the newest models are invisible."""
