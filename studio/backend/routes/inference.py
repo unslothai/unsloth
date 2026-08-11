@@ -4756,19 +4756,23 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     Unlike :func:`_loaded_satisfies`, this excludes a public id derived from a
     filesystem path, so a request naming that alias still passes through the
     resolver and the serving backend records it for responses and ``/v1/models``.
-    A request naming the load path itself matches here and skips that recording,
-    leaving the public id path-derived until an alias request arrives.
+    A request naming the load path itself is held back until that recording has
+    happened, for the same reason.
     """
     from core.inference.openai_auto_download import split_model_ref
 
     base, _ = split_model_ref(requested)
     llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
-        direct = (
-            getattr(llama_backend, "model_identifier", None),
-            getattr(llama_backend, "_openai_advertised_id", None),
-        )
-        return _matches_any(base, direct) and _loaded_satisfies(requested)
+        identifier = getattr(llama_backend, "model_identifier", None)
+        advertised = getattr(llama_backend, "_openai_advertised_id", None)
+        # A manual load of a local path advertises nothing, so only the path could match
+        # and answering from it would skip the recording: /v1/models and every response
+        # would report the filename. One request pays the resolver, the rest match the
+        # alias it recorded and land here.
+        if advertised is None and identifier and _looks_like_local_path(identifier):
+            return False
+        return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
     active = getattr(get_inference_backend(), "active_model_name", None)
     return bool(active and _matches_any(base, [active]) and _loaded_satisfies(requested))
 

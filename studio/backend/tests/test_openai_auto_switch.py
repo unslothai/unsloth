@@ -1764,6 +1764,32 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     assert backend._openai_advertised_id == "org/Repo-GGUF"  # alias now recorded
 
 
+def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch):
+    # The resident short circuit matches on model_identifier, which is the load path
+    # for a manual local load. Answering from it skips the alias recording above, so a
+    # loose .gguf whose scanner alias is not its filename would be advertised, and
+    # reported in every response, as the filename instead.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)  # loaded by path, no advertised id
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "Qwen3-4B-Instruct-GGUF"
+    # Recorded, so the path now short circuits without the resolver.
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda _m, **_kw: pytest.fail("resolver re-entered")
+    )
+    _run_hook(path)
+
+
 def test_streaming_responses_uses_advertised_id_helper():
     # Codex P2: streamed /v1/responses envelopes must derive the model id from
     # _llama_public_model_id (which prefers _openai_advertised_id), not the raw
