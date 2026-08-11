@@ -476,3 +476,109 @@ def test_an_embedded_mtp_head_is_dropped_too(tmp_path):
     assert cmd[cmd.index("--spec-type") + 1] == "ngram-mod"
     assert cmd[cmd.index("-c") + 1] == "8192"
     assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_the_vram_drop_does_not_emit_ngram_mod_on_a_build_without_it(tmp_path):
+    """`ngram-mod` is a value in llama.cpp's --spec-type enum, so a build that
+    predates it aborts on the flag instead of ignoring it. The MLA and sub-3B
+    fallbacks gate on the capability for exactly that reason; this one has to too,
+    or the drop turns a slower load into a load that never starts."""
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": False,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(backend, gguf, speculative_type = "auto", n_ctx = 8192)
+
+    cmd = result["cmd"]
+    assert "ngram-mod" not in cmd
+    assert "--spec-type" not in cmd
+    assert "draft-mtp" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_standalone_model_draft_in_extras_is_not_auto_dropped(tmp_path):
+    """--model-draft alone sets no --spec-type, so neither extras probe fires, but
+    llama-server loads whatever it names regardless of the spec type (load_model
+    gates the draft model on has_dft(), i.e. "a draft path was given"). Dropping it
+    releases the reserve for a drafter the child still loads, and it is an explicit
+    user choice besides."""
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    user_draft = tmp_path / "my-drafter.gguf"
+    user_draft.write_bytes(b"draft")
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+        extra_args = ["--model-draft", str(user_draft)],
+    )
+
+    cmd = result["cmd"]
+    assert "ngram-mod" not in cmd
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_path):
+    """A whole-pool figure is not the ceiling it looks like.
+
+    A card with almost nothing free adds ~0 to the pooled budget, but a two-GPU
+    layer split still charges its 1 GiB pipeline overhead, so pricing the drafter
+    over the whole pool can reject one the single healthy GPU holds comfortably.
+    The probe walks the same ranked subsets the placement loop does, so the 1-GPU
+    placement it would actually pick is the one that decides.
+    """
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 5.0)
+    # GPU1 is in use by something else: 800 MiB free of 24 GiB.
+    backend._get_gpu_memory = lambda _binary = None: [
+        (0, 24_576, 24_576),
+        (1, 800, 24_576),
+    ]
+    backend._get_gpu_free_memory = lambda _binary = None: [(0, 24_576), (1, 800)]
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
+    """_plan_tensor_parallel reserves a per-device tensor buffer on geometry this
+    layer-split probe does not model, so under tensor mode the probe stands down
+    rather than decide the drafter's fate on numbers that are not that load's."""
+    # Two cards that only hold the 16 GB target together, so the layer-split
+    # probe would condemn the drafter if it were allowed to answer here.
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._get_gpu_memory = lambda _binary = None: [
+        (0, 12_288, 12_288),
+        (1, 12_288, 12_288),
+    ]
+    backend._get_gpu_free_memory = lambda _binary = None: [(0, 12_288), (1, 12_288)]
+    backend._tensor_split_aborts = lambda *args, **kwargs: False
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        tensor_parallel = True,
+        n_ctx = 8192,
+    )
+
+    assert backend.spec_fallback_reason != "drafter_no_vram"
+    assert "--model-draft" in result["cmd"]

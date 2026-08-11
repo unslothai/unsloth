@@ -1588,9 +1588,17 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gguf_variant = "Q4_K_M",
         )
         variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        import tempfile
+
+        _tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(_tmp.cleanup)
+        # A real file: the suppression is only sound for a drafter _extras_bytes
+        # can actually charge, and that charge is gated on Path(...).is_file().
+        _draft = Path(_tmp.name) / "d.gguf"
+        _draft.write_bytes(b"x" * 512)
         for extras in (
-            ["--spec-type", "draft-dflash", "--model-draft", "/tmp/d.gguf"],
-            ["--spec-type", "draft-dspark", "--model-draft", "/tmp/d.gguf"],
+            ["--spec-type", "draft-dflash", "--model-draft", str(_draft)],
+            ["--spec-type", "draft-dspark", "--model-draft", str(_draft)],
         ):
             with (
                 patch.object(
@@ -1605,6 +1613,50 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.assertFalse(comp.call_args.kwargs["include_dflash"], extras)
                 self.assertFalse(comp.call_args.kwargs["include_dspark"], extras)
                 self.assertFalse(comp.call_args.kwargs["include_mtp"], extras)
+
+    def test_a_remote_extras_drafter_still_pays_the_conservative_charge(self):
+        """--spec-draft-hf names an HF repo, not a file, so _extras_bytes charges
+        nothing for it while llama-server still downloads and loads it (its
+        has_dft() only asks whether a draft path was given). Suppressing the
+        repository sidecar on top would leave the resident drafter charged
+        nowhere and admit a load that evicts the training job this guard protects."""
+        import utils.models.model_config as mc
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        for extras, kind in (
+            (["--spec-type", "draft-dspark", "--spec-draft-hf", "org/drafter"], "include_dspark"),
+            (["--spec-type", "draft-dflash", "-hfd", "org/drafter"], "include_dflash"),
+        ):
+            with (
+                patch.object(
+                    mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
+                ),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0) as comp,
+                patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {
+                            "supports_dspark": True,
+                            "supports_dflash": True,
+                        }
+                    ),
+                ),
+            ):
+                self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto", llama_extra_args = extras
+                )
+                self.assertTrue(comp.call_args.kwargs[kind], extras)
 
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a

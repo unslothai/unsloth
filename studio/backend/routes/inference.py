@@ -5871,8 +5871,18 @@ def _estimate_gguf_required_gb(
         # fits. Both halves matter. Owning the spec type alone keeps the conservative
         # charge, since the guard protects a running training job and a drafter can
         # still arrive by a route this cannot see. Applies to every kind, hence one flag.
+        # Only a LOCAL file, because the suppression's whole premise is that the
+        # drafter is "already charged below as _extras_bytes" and that charge is
+        # itself gated on Path(...).is_file(). --spec-draft-hf / -hfd names an HF
+        # repo id, which llama-server downloads and loads all the same (its
+        # has_dft() only asks whether a draft path was given), so suppressing on
+        # one would leave a multi-GB resident drafter charged nowhere and let the
+        # guard admit a load that evicts the training job it protects.
+        _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
         _extras_own_drafter = bool(
-            _extra_args_own_spec and _extra_args_mtp_draft_path(llama_extra_args, env = {})
+            _extra_args_own_spec
+            and _extras_own_draft_path
+            and Path(_extras_own_draft_path).is_file()
         )
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
