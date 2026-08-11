@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyPin,
   hasUnknownRecord,
+  newRecordProbeBaseline,
   nextSelectedId,
   removeGalleryItem,
   sortGalleryItems,
@@ -102,6 +103,9 @@ test("with nothing pinned a merged generation still leads", () => {
 
 // --- lost-generation probe ---------------------------------------------------------------------
 
+/** A baseline whose loaded window is a sound basis for judging an unpinned row. */
+const judging = (knownIds: ReadonlySet<string>) => ({ knownIds, canJudgeUnpinned: true });
+
 /** A fake gallery listing, already in server order, served in pages. */
 const pager =
   (all: ReturnType<typeof item>[], pageSize: number) => async (offset: number) => ({
@@ -114,13 +118,13 @@ test("a pinned first row does not mask a newly saved record", async () => {
   // and reported a finished generation as never submitted.
   const listing = [item("pin", 5, true), item("fresh", 9), item("old", 1)];
   const known = new Set(["pin", "old"]);
-  assert.equal(await hasUnknownRecord(known, pager(listing, 50), 50), true);
+  assert.equal(await hasUnknownRecord(judging(known), pager(listing, 50), 50), true);
 });
 
 test("no new record is reported when the first unpinned row is already known", async () => {
   const listing = [item("pin", 5, true), item("known", 9), item("old", 1)];
   assert.equal(
-    await hasUnknownRecord(new Set(["pin", "known", "old"]), pager(listing, 50), 50),
+    await hasUnknownRecord(judging(new Set(["pin", "known", "old"])), pager(listing, 50), 50),
     false,
   );
 });
@@ -134,7 +138,7 @@ test("the probe walks past a pinned group that spans more than one page", async 
   ];
   const known = new Set(["p1", "p2", "p3"]);
   // Page size 2, so the first unpinned row only appears on the second page.
-  assert.equal(await hasUnknownRecord(known, pager(listing, 2), 2), true);
+  assert.equal(await hasUnknownRecord(judging(known), pager(listing, 2), 2), true);
 });
 
 test("the probe stops at its page cap instead of scanning the whole gallery", async () => {
@@ -144,12 +148,12 @@ test("the probe stops at its page cap instead of scanning the whole gallery", as
     pages += 1;
     return pager(listing, 10)(offset);
   };
-  assert.equal(await hasUnknownRecord(new Set(listing.map((i) => i.id)), counted, 10, 3), false);
+  assert.equal(await hasUnknownRecord(judging(new Set(listing.map((i) => i.id))), counted, 10, 3), false);
   assert.equal(pages, 3);
 });
 
 test("an empty gallery reports no new record", async () => {
-  assert.equal(await hasUnknownRecord(new Set(), pager([], 50), 50), false);
+  assert.equal(await hasUnknownRecord(judging(new Set()), pager([], 50), 50), false);
 });
 
 test("an unknown pinned row is not proof that a generation landed", async () => {
@@ -157,10 +161,58 @@ test("an unknown pinned row is not proof that a generation landed", async () => 
   // as evidence reported a lost submission as a finished run that produced no image.
   const listing = [item("loadedPin", 5, true), item("unloadedPin", 4, true), item("old", 1)];
   const known = new Set(["loadedPin", "old"]);
-  assert.equal(await hasUnknownRecord(known, pager(listing, 50), 50), false);
+  assert.equal(await hasUnknownRecord(judging(known), pager(listing, 50), 50), false);
 });
 
 test("a new record is still found past an unknown pinned row", async () => {
   const listing = [item("unloadedPin", 4, true), item("fresh", 9), item("old", 1)];
-  assert.equal(await hasUnknownRecord(new Set(["old"]), pager(listing, 50), 50), true);
+  assert.equal(await hasUnknownRecord(judging(new Set(["old"])), pager(listing, 50), 50), true);
+});
+
+// --- what the loaded window is allowed to conclude -----------------------------------------------
+
+test("an all-pinned partial window cannot judge an unpinned row", () => {
+  // 50 pins loaded, more pages behind them: every unpinned row is unfamiliar just for being
+  // unloaded, so unknown stops meaning new.
+  const loaded = Array.from({ length: 50 }, (_, i) => item(`p${i}`, 100 - i, true));
+  const known = new Set(loaded.map((i) => i.id));
+  assert.equal(newRecordProbeBaseline(loaded, true, known).canJudgeUnpinned, false);
+});
+
+test("a window holding any unpinned record can judge", () => {
+  const loaded = [item("pin", 5, true), item("plain", 4)];
+  assert.equal(newRecordProbeBaseline(loaded, true, new Set()).canJudgeUnpinned, true);
+});
+
+test("a complete window can judge even with nothing unpinned in it", () => {
+  // hasMore false means the client has the whole gallery, so there is nothing it has not seen.
+  const loaded = [item("pin", 5, true)];
+  assert.equal(newRecordProbeBaseline(loaded, false, new Set()).canJudgeUnpinned, true);
+  // The empty gallery of a first-ever generation is the same case.
+  assert.equal(newRecordProbeBaseline([], false, new Set()).canJudgeUnpinned, true);
+});
+
+test("a window that cannot judge refuses to claim proof", async () => {
+  // The regression: with 50+ pins loaded, the first historical unpinned row is necessarily
+  // unknown, and treating it as proof suppressed a real submission failure.
+  const listing = [
+    item("p0", 9, true),
+    item("p1", 8, true),
+    item("historical", 1),
+  ];
+  const loaded = [item("p0", 9, true), item("p1", 8, true)];
+  const baseline = newRecordProbeBaseline(loaded, true, new Set(["p0", "p1"]));
+  assert.equal(await hasUnknownRecord(baseline, pager(listing, 50), 50), false);
+});
+
+test("a judging window still proves a genuinely new record", async () => {
+  const listing = [item("pin", 9, true), item("fresh", 10), item("older", 1)];
+  const loaded = [item("pin", 9, true), item("older", 1)];
+  const baseline = newRecordProbeBaseline(loaded, true, new Set(["pin", "older"]));
+  assert.equal(await hasUnknownRecord(baseline, pager(listing, 50), 50), true);
+});
+
+test("an empty gallery still proves its first generation", async () => {
+  const baseline = newRecordProbeBaseline([], false, new Set());
+  assert.equal(await hasUnknownRecord(baseline, pager([item("first", 1)], 50), 50), true);
 });

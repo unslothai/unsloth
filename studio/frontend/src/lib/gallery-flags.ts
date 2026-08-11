@@ -98,12 +98,37 @@ export const NEW_RECORD_PROBE_MAX_PAGES = 5;
  * ahead of everything, so with any pin present row 0 is a record we already knew, and the probe
  * would report a finished generation as never submitted.
  */
-export async function hasUnknownRecord<T extends FlaggableItem>(
+export interface NewRecordProbeBaseline {
+  /** Every gallery id the client had loaded when the POST went out. */
+  knownIds: ReadonlySet<string>;
+  /**
+   * Whether that loaded window is a sound basis for calling an unpinned row new.
+   *
+   * It is when the window already held an unpinned record, or when it was the entire gallery.
+   * It is NOT when the window was all pinned with more pages behind it: every unpinned row is
+   * then unfamiliar simply because it was never loaded, so "unknown" stops meaning "new".
+   */
+  canJudgeUnpinned: boolean;
+}
+
+/** Build the baseline from what the client currently has loaded. */
+export function newRecordProbeBaseline<T extends FlaggableItem>(
+  loaded: T[],
+  hasMore: boolean,
   knownIds: ReadonlySet<string>,
+): NewRecordProbeBaseline {
+  return { knownIds, canJudgeUnpinned: loaded.some((i) => !i.pinned) || !hasMore };
+}
+
+export async function hasUnknownRecord<T extends FlaggableItem>(
+  baseline: NewRecordProbeBaseline,
   fetchPage: (offset: number) => Promise<{ items: T[]; hasMore: boolean }>,
   pageSize: number,
   maxPages: number = NEW_RECORD_PROBE_MAX_PAGES,
 ): Promise<boolean> {
+  // Nothing the listing can show would be conclusive, so refuse to claim proof. The caller then
+  // reports the submission error, which is the loud failure rather than a silent false success.
+  if (!baseline.canJudgeUnpinned) return false;
   for (let page = 0; page < maxPages; page += 1) {
     const { items, hasMore } = await fetchPage(page * pageSize);
     for (const record of items) {
@@ -112,7 +137,7 @@ export async function hasUnknownRecord<T extends FlaggableItem>(
       // would report a generation that never reached the server as finished.
       if (record.pinned) continue;
       // The first unpinned row is where a new record would be, so it alone decides.
-      return !knownIds.has(record.id);
+      return !baseline.knownIds.has(record.id);
     }
     if (!hasMore || items.length === 0) return false;
   }

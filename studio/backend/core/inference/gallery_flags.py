@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import threading
 from pathlib import Path
@@ -182,16 +183,39 @@ def read_trusted(directory: Path) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in items.items() if isinstance(v, dict)}
 
 
+def _pinned_at(entry: dict[str, Any]) -> Optional[float]:
+    """The entry's pin time as a usable float, or None when it is absent or unusable.
+
+    JSON integers are unbounded, so a hand-edited ``pinned_at`` of a few hundred digits overflows
+    ``float()``. That is read at listing time, from a store whose whole contract is to degrade to
+    "no flags" rather than raise, so an unconvertible value must read as unpinned instead of
+    turning every gallery request into a 500. NaN / infinity are refused for the same reason: they
+    would poison the sort rather than fail it."""
+    value = entry.get("pinned_at")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        pinned_at = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return pinned_at if math.isfinite(pinned_at) else None
+
+
 def flags_for(items: dict[str, dict[str, Any]], item_id: str) -> dict[str, Any]:
     """The public record fields for one id, from an already-read ``items`` map."""
     entry = _entry(items, item_id)
-    return {"pinned": entry.get("pinned_at") is not None, "archived": bool(entry.get("archived"))}
+    return {
+        # Reported through the same conversion the sort uses, so a value the ordering cannot use
+        # never shows as a pin the user then cannot explain.
+        "pinned": _pinned_at(entry) is not None,
+        "archived": bool(entry.get("archived")),
+    }
 
 
 def pin_rank(items: dict[str, dict[str, Any]], item_id: str) -> float:
     """Sort key for the pinned group: most recently pinned first. Unpinned sorts last."""
-    pinned_at = _entry(items, item_id).get("pinned_at")
-    return float(pinned_at) if isinstance(pinned_at, (int, float)) else float("-inf")
+    pinned_at = _pinned_at(_entry(items, item_id))
+    return pinned_at if pinned_at is not None else float("-inf")
 
 
 def is_archived(items: dict[str, dict[str, Any]], item_id: str) -> bool:

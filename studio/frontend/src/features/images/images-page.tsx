@@ -68,8 +68,10 @@ import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
+  type NewRecordProbeBaseline,
   applyPin,
   hasUnknownRecord,
+  newRecordProbeBaseline,
   nextSelectedId,
   removeGalleryItem,
   sortGalleryItems,
@@ -402,7 +404,7 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 /** Wait out a generation that outlived its POST. Idle progress alone is ambiguous, so success needs evidence (progress seen active, or a gallery record that was not there when the POST went out); otherwise report a failed submission. Throws past SETTLE_MAX_MS, or if the backend stays unreachable, so a wedged generation surfaces. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
-  knownIds: ReadonlySet<string>,
+  baseline: NewRecordProbeBaseline,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -425,7 +427,7 @@ async function settleLostGeneration(
     // Idle on the very first look: the run may already have finished or never started. A gallery record we had not seen is the proof.
     try {
       const sawNew = await hasUnknownRecord(
-        knownIds,
+        baseline,
         async (offset) => {
           const p = await getGallery(offset, PAGE_SIZE);
           return { items: p.images, hasMore: p.has_more };
@@ -3014,7 +3016,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // Retrying would duplicate the work, so wait the run out and read its images off the gallery.
           if (!(err instanceof GenerateResponseLostError)) throw err;
           // The ids known before the POST went out: a record outside them proves the request reached the backend.
-          await settleLostGeneration(() => isMounted.current, knownIds);
+          // Rebuilt per attempt so it reflects what the client could see when THIS post went out.
+          await settleLostGeneration(
+            () => isMounted.current,
+            newRecordProbeBaseline(galleryCache.images, galleryCache.hasMore, knownIds),
+          );
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
