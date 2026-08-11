@@ -979,6 +979,49 @@ def _is_importable(import_name: str) -> bool:
         return False
 
 
+def _is_importable_isolated(import_name: str) -> bool:
+    """Probe the import in a child process.
+
+    A wheel built for the wrong arch can abort or segfault inside the extension's own
+    initialiser instead of raising, and that would kill this worker outright rather than
+    fall back. A child turns it into a return code (negative = fatal signal).
+    """
+    try:
+        result = _sp.run(
+            [sys.executable, "-c", "import importlib, sys; importlib.import_module(sys.argv[1])",
+             import_name],
+            stdout = _sp.DEVNULL,
+            stderr = _sp.DEVNULL,
+            timeout = 300,
+            # No env override: the probe should see exactly what the real in-process import
+            # will see a moment later, and nothing here decodes child output.
+        )
+    except (OSError, _sp.TimeoutExpired) as exc:
+        logger.debug("%s import probe did not complete (%s)", import_name, exc)
+        return False
+    if result.returncode != 0:
+        logger.debug("%s import probe exited %s", import_name, result.returncode)
+    return result.returncode == 0
+
+
+def _uninstall_package(pypi_name: str, display_name: str) -> None:
+    if shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", pypi_name]
+    result = _sp.run(
+        cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        env = utf8_child_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("Could not remove the rejected %s install:\n%s", display_name, result.stdout)
+
+
 def _install_package_wheel_first(
     *,
     event_queue: Any,
@@ -1029,8 +1072,9 @@ def _install_package_wheel_first(
         ):
             if result.returncode == 0:
                 # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
-                # verify rather than trust the exit code.
-                if _is_importable(import_name):
+                # verify rather than trust the exit code. Out of process: this wheel is
+                # unvalidated native code and a bad one can take the worker down with it.
+                if _is_importable_isolated(import_name):
                     logger.info("Installed prebuilt %s wheel successfully", display_name)
                     return True
                 logger.warning(
@@ -1072,6 +1116,14 @@ def _install_package_wheel_first(
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
+    if wheel_rejected:
+        # Remove it rather than installing over it. pip/uv would report the broken
+        # distribution as satisfying the spec and do nothing, and --force-reinstall is not
+        # the answer: both scope it to the whole resolved transaction ("Reinstall all
+        # packages"), which for flash-attn pulls in torch and could swap the running CUDA
+        # stack underneath this worker.
+        _uninstall_package(pypi_name, display_name)
+
     _send_status(event_queue, pypi_status_message)
 
     plain_pypi_install = pypi_version is None
@@ -1083,15 +1135,10 @@ def _install_package_wheel_first(
                 "install",
                 "--python",
                 sys.executable,
+                pypi_spec,
             ]
-            if wheel_rejected:
-                pypi_cmd.append("--reinstall")
-            pypi_cmd.append(pypi_spec)
         else:
-            pypi_cmd = [sys.executable, "-m", "pip", "install"]
-            if wheel_rejected:
-                pypi_cmd.append("--force-reinstall")
-            pypi_cmd.append(pypi_spec)
+            pypi_cmd = [sys.executable, "-m", "pip", "install", pypi_spec]
     else:
         if shutil.which("uv"):
             pypi_cmd = [
@@ -1106,8 +1153,6 @@ def _install_package_wheel_first(
             # Avoid stale cache artifacts from partial HIP source builds
             if is_hip:
                 pypi_cmd.append("--no-cache")
-            if wheel_rejected:
-                pypi_cmd.append("--reinstall")
             pypi_cmd.append(pypi_spec)
         else:
             pypi_cmd = [
@@ -1118,10 +1163,8 @@ def _install_package_wheel_first(
                 "--no-build-isolation",
                 "--no-deps",
                 "--no-cache-dir",
+                pypi_spec,
             ]
-            if wheel_rejected:
-                pypi_cmd.append("--force-reinstall")
-            pypi_cmd.append(pypi_spec)
 
     # ROCm source compilation can take 10-30 min; use a generous timeout. Non-HIP installs
     # keep the pre-existing "no timeout" behaviour so unrelated slow builds (causal-conv1d
@@ -1203,7 +1246,7 @@ def _install_package_wheel_first(
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
     # installing anything, so a rejected wheel would otherwise be reported as a success.
-    if not _is_importable(import_name):
+    if not _is_importable_isolated(import_name):
         logger.warning("%s installed from PyPI but is not importable", display_name)
         _send_status(event_queue, f"{display_name} is installed but not usable on this GPU")
         return False

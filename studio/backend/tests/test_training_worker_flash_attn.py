@@ -99,6 +99,50 @@ def _missing_module_import(missing: str):
     return fake_import
 
 
+class TestIsImportableIsolated:
+    """The probe runs in a child so a bad native extension cannot take the worker with it."""
+
+    def test_clean_exit_is_importable(self, monkeypatch):
+        monkeypatch.setattr(
+            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 0)
+        )
+        assert worker._is_importable_isolated("flash_attn") is True
+
+    def test_import_error_exit_is_not_importable(self, monkeypatch):
+        monkeypatch.setattr(
+            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], 1)
+        )
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_fatal_signal_is_not_importable(self, monkeypatch):
+        # SIGSEGV in the extension's initialiser: rc -11, and no Python exception to catch.
+        monkeypatch.setattr(
+            worker._sp, "run", lambda *a, **k: subprocess.CompletedProcess(a[0], -11)
+        )
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_timeout_is_not_importable(self, monkeypatch):
+        def _hang(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(cmd = "python", timeout = 300)
+
+        monkeypatch.setattr(worker._sp, "run", _hang)
+        assert worker._is_importable_isolated("flash_attn") is False
+
+    def test_the_module_name_is_passed_as_an_argument(self, monkeypatch):
+        captured: list[list[str]] = []
+
+        def _record(cmd, **_kwargs):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(worker._sp, "run", _record)
+        worker._is_importable_isolated("flash_attn")
+
+        # argv, not string-formatted into the -c body.
+        assert captured[0][-1] == "flash_attn"
+        assert "import flash_attn" not in " ".join(captured[0])
+
+
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
@@ -119,6 +163,8 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _flash_attn_import_until_installed(state))
+    # The post-install probe runs in a child; model it off the same flag.
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -150,6 +196,7 @@ def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     # Never becomes importable, however the install exits.
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -179,9 +226,10 @@ def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
     assert "Installing flash-attn from PyPI for long-context training..." in statuses
     installs = [cmd for cmd in pypi_calls if "install" in cmd]
     assert installs, "expected a PyPI install attempt after the wheel failed to import"
-    # and that fallback must replace the rejected wheel, not install over it: pip reports
-    # the broken distribution as already satisfied and exits 0 without doing anything.
-    assert all("--force-reinstall" in cmd for cmd in installs), installs
+    # The rejected wheel is removed first. Installing over it is a no-op (pip reports it as
+    # already satisfied), and --force-reinstall would widen the transaction to torch.
+    assert any("uninstall" in cmd for cmd in pypi_calls), pypi_calls
+    assert not any("--force-reinstall" in cmd for cmd in installs), installs
 
 
 @linux_only
@@ -195,6 +243,7 @@ def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch
 
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -259,6 +308,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: state["installed"])
     monkeypatch.setattr(
         worker,
         "_send_status",
