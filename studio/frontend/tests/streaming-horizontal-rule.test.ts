@@ -203,3 +203,35 @@ test("does not reinterpret adjacent Markdown constructs", () => {
     assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
   }
 });
+
+test("buffers dash and underscore runs, not only asterisks", () => {
+  // A dash item whose content starts with dashes is the same ambiguity: CLI
+  // flag lists ("- --verbose: ...") stream through a thematic-break frame.
+  for (const markdown of [
+    "- --",
+    "- ---",
+    "+ ---",
+    "* ---",
+    "- ___",
+    "* ___",
+  ]) {
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), "");
+  }
+
+  const markdown = "- --verbose";
+  const stabilized = stabilizeStreamingMarkdown(markdown, true);
+  const html = render(stabilized);
+  assert.equal(stabilized, markdown);
+  assert.ok(html.includes(UNORDERED_LIST));
+  assert.ok(!html.includes(HORIZONTAL_RULE));
+});
+
+test("keeps runs that do not currently render a rule", () => {
+  // Two characters never make a break, so nothing is flashing and nothing may
+  // be hidden. Mixed runs are not breaks either.
+  for (const markdown of ["- **", "+ **", "* --", "- *-*", "* -_-", "+ ++"]) {
+    assert.ok(!render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  }
+});
