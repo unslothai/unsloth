@@ -14657,9 +14657,8 @@ class LlamaCppBackend:
             my_pid = os.getpid()
 
             # -- Enumerate candidate processes ---------------------------------
-            # (pid, resolved binary, kill callable) per llama-server-looking process.
-            # Ownership, orphan and kill handling is shared below so all three
-            # enumeration paths agree.
+            # (pid, resolved binary, kill callable) per llama-server-looking process;
+            # ownership, orphan and kill handling is shared below so the paths agree.
             candidates = []
 
             def _looks_like_server(name):
@@ -14686,10 +14685,9 @@ class LlamaCppBackend:
 
             def _make_signal_killer(proc_dir, pid, start_time):
                 def _kill():
-                    # psutil.Process.kill() refuses to signal a reused PID, so
-                    # re-check identity here too. starttime never changes for a
-                    # process and a reused PID gets a later one, so a mismatch
-                    # means this is no longer the process we selected.
+                    # psutil.Process.kill() refuses to signal a reused PID, so re-check
+                    # identity here too: starttime never changes for a process and a reused
+                    # PID gets a later one, so a mismatch means this is not our process.
                     if start_time is None or _proc_start_time(proc_dir) != start_time:
                         return False
                     try:
@@ -14700,16 +14698,14 @@ class LlamaCppBackend:
 
                 return _kill
 
-            # /proc is Linux only, and a missing one falls back to psutil rather
-            # than finding nothing. Tests point _PROC_ROOT elsewhere to drive
-            # either path deterministically.
+            # /proc is Linux only; a missing one falls back to psutil rather than finding
+            # nothing. Tests point _PROC_ROOT elsewhere to drive either path.
             proc_root = _PROC_ROOT
             if sys.platform == "linux" and os.path.isdir(proc_root):
-                # psutil.process_iter(["pid", "name", "exe"]) reads /proc/<pid>/stat
-                # several times per process and resolves exe for every one, before
-                # the name rejects almost all of them. This sweep runs on every
-                # backend start and every temporary LlamaCppBackend(), so read comm
-                # once and resolve exe only for the names that match.
+                # psutil.process_iter(["pid", "name", "exe"]) reads /proc/<pid>/stat several
+                # times per process and resolves exe for every one before the name rejects
+                # almost all. This sweep runs on every backend start and every temporary
+                # LlamaCppBackend(), so read comm once and resolve exe only on a name match.
                 def _proc_exe(proc_dir):
                     try:
                         target = os.readlink(f"{proc_dir}/exe")
@@ -14717,10 +14713,9 @@ class LlamaCppBackend:
                         return None
                     if not target:
                         return None
-                    # The kernel appends " (deleted)" once the binary is replaced or
-                    # removed, which is what an upgrade's orphan looks like. psutil
-                    # strips the marker, so strip it here too or that orphan stops
-                    # being recognised as ours.
+                    # The kernel appends " (deleted)" once the binary is replaced or removed,
+                    # which is what an upgrade's orphan looks like. psutil strips the marker,
+                    # so strip it here too or that orphan stops being recognised as ours.
                     if target.endswith(" (deleted)") and not os.path.exists(target):
                         target = target[: -len(" (deleted)")]
                     try:
@@ -14747,9 +14742,8 @@ class LlamaCppBackend:
                         right = stat_line.rfind(b")")
                         if left < 0 or right <= left:
                             continue
-                        # comm is truncated to 15 bytes, which still leaves the
-                        # 12-byte "llama-server" prefix intact, so this selects the
-                        # same names psutil reports.
+                        # comm is truncated to 15 bytes, which still leaves the 12-byte
+                        # "llama-server" prefix intact, so this selects the names psutil does.
                         name = stat_line[left + 1 : right].decode("utf-8", "replace")
                         if not _looks_like_server(name):
                             continue
@@ -14805,8 +14799,8 @@ class LlamaCppBackend:
                         ):
                             pass
                 else:
-                    # Fallback: unreachable while the Linux branch above exists;
-                    # kept so the psutil-less path stays correct if that changes.
+                    # Unreachable while the Linux branch above exists; kept so the
+                    # psutil-less path stays correct if that changes.
                     return killed
 
             # -- Ownership check, orphan check, kill ---------------------------
@@ -14818,8 +14812,7 @@ class LlamaCppBackend:
                 if not is_ours:
                     continue
 
-                # A live parent means a running Unsloth (or the user's shell) still
-                # owns it, so it is not an orphan.
+                # A live parent means a running Unsloth (or the user's shell) still owns it.
                 if LlamaCppBackend._pid_parent_is_alive(pid):
                     continue
 
