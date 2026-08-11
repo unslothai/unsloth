@@ -211,8 +211,14 @@ function ResourceRow({
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
   const etaSuffix =
     etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
+  // An unsettled transfer keeps its byte line under the preparation title: a stall and an
+  // orphaned `.incomplete` blob look identical from byte counts alone, so a genuinely stalled
+  // download must not lose "963.2 MB / 1.51 GB" just because the worker's message took over.
   const sizeLabel = preparing
-    ? preparing.detail
+    ? (preparing.detail ??
+      (state.settled || state.totalBytes <= 0
+        ? null
+        : `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}`))
     : state.totalBytes > 0
       ? `${formatBytes(state.downloadedBytes)} / ${formatBytes(state.totalBytes)}${rateSuffix}${etaSuffix}`
       : state.downloadedBytes > 0
