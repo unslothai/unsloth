@@ -2348,7 +2348,10 @@ if (-not $HasNvidiaSmi) {
             # inference forwards nothing: code 45 ("not connected") is routine on a muxless
             # laptop with a parked dGPU, and with no healthy peer there is nothing to
             # depose. Mirrors the same fallback in install_python_stack.py's WMI path.
-            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
+            # @() wraps the WHOLE if: an unwrapped one-element branch unrolls to a bare
+            # WMI object, whose .Count is $null in PS 5.1 (unlike a string or hashtable),
+            # so the guard below failed and a single-AMD-GPU host reported no GPU at all.
+            $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
                 $ROCmGpuLabel = $script:ROCmGpuLabels[0]

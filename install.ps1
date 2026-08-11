@@ -4642,6 +4642,11 @@ exit 0
     } else {
         Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
     }
+    # Forward the arch this run resolved instead of letting setup.ps1 re-derive it. Both
+    # scripts scan WMI, so a scan that answers here but not there leaves setup expecting cpu
+    # torch against the ROCm wheels just installed: it reports "needs repair", the installer
+    # rolls back, and the desktop app retries the same failure forever.
+    if ($ROCmGfxArch) { $env:UNSLOTH_ROCM_GFX_ARCH = $ROCmGfxArch }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     if ($WithLlamaCppDir) {
