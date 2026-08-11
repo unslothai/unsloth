@@ -1829,6 +1829,20 @@ def test_high_risk_dispatcher_non_terminal():
         ("import yaml\nld = yaml.unsafe_load if allow else yaml.safe_load\nld(s)", True),
         ("import yaml\nld = yaml.safe_load if ok else yaml.unsafe_load\nld(s)", True),
         ("p = 'a.yml' if flag else 'b.yml'\nprint(open(p).read())", False),
+        ("import yaml\nyl = yaml.loader\nyl.Loader(s).get_data()", True),  # submodule captured
+        ("import yaml\nyl = yaml.loader\nprint(yaml.safe_load(open('c.yml')))", False),
+        # The callee itself can be the expression that picks the loader.
+        ("import yaml\n(yaml.unsafe_load if use else yaml.safe_load)(s)", True),
+        ("import yaml\n(ld := yaml.unsafe_load)(s)", True),
+        ("print((str if flag else repr)(3))", False),
+        ("import yaml\np = ((yaml.unsafe_load, s),)\nrun(*p)", True),  # nested container
+        ("p = ((1, 2),)\nprint(*p)", False),
+        # A match capture rebinds the name it matches into.
+        (
+            "from yaml import SafeLoader\nimport yaml\nmatch yaml.Loader:\n"
+            "    case SafeLoader: pass\nyaml.load(s, Loader=SafeLoader)",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

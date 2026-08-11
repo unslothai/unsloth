@@ -3870,6 +3870,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             _rebound = [i.optional_vars for i in node.items if i.optional_vars is not None]
         elif isinstance(node, ast.NamedExpr):
             _rebound = [node.target]
+        elif isinstance(node, ast.MatchAs) or isinstance(node, ast.MatchStar):
+            # case SafeLoader: binds the subject to that name (3.10+).
+            if node.name:
+                rebindable_names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            rebindable_names.add(node.rest)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             rebindable_names.add(node.name)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -4021,6 +4027,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 attr_load_module_aliases.update(attr_targets)  # box.mod = yaml
                 if value.id in yaml_module_aliases:
                     yaml_module_aliases.update(targets)
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr not in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                and value.attr not in _AUTO_SAFE_PY_LOAD_CLASSES
+                and value.attr not in _AUTO_SAFE_PY_LOAD_FUNCS
+                and _is_load_module(value)
+            ):
+                # yl = yaml.loader: a submodule of a tracked package is a
+                # receiver in its own right, unlike the loaders it carries.
+                load_module_aliases.update(targets)
+                attr_load_module_aliases.update(attr_targets)
+                if _is_yaml_module(value):
+                    yaml_module_aliases.update(targets)
             elif _is_loader_attr(value):
                 # ld = yaml.load / L = yaml.Loader, on a name or an attribute
                 # (holder.ld = yaml.unsafe_load), which is called like the module
@@ -4122,8 +4141,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             if isinstance(value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
                 # packed = (yaml.load, s); run(*packed) forwards the loader just
                 # like the inline literal does, so remember the container name.
-                _held = value.values if isinstance(value, ast.Dict) else value.elts
-                if any(_passed_write_callable(e) for e in _held):
+                if _holds_write_callable(value):
                     packed_callable_names.update(targets)
             elif isinstance(value, ast.Name) and value.id in packed_callable_names:
                 packed_callable_names.update(targets)  # q = p; run(*q)
@@ -4355,6 +4373,21 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # instead of looking like a harmless ".__call__" attribute call.
                 if isinstance(func, ast.Attribute) and func.attr == "__call__":
                     func = func.value
+                # The callee can be an expression rather than a name:
+                # (yaml.unsafe_load if flag else yaml.safe_load)(s) and
+                # (ld := yaml.unsafe_load)(s) both call a loader. Unwrap to the
+                # loader branch so the checks below see it.
+                if isinstance(func, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+                    if isinstance(func, ast.NamedExpr):
+                        _cands = [func.value]
+                    elif isinstance(func, ast.IfExp):
+                        _cands = [func.body, func.orelse]
+                    else:
+                        _cands = list(func.values)
+                    for _c in _cands:
+                        if _passed_write_callable(_c):
+                            func = _c
+                            break
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
                 # A concrete write callable (open/writer/archive-ctor alias, or a
