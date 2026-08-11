@@ -1838,6 +1838,12 @@ jobs:
               f'{base_name}-ARM64.app.tar.gz.sig',
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
+              # The portable bundle ships beside the thin one (see the packaging
+              # step). This comparison is exact set equality, so staging an asset
+              # without listing it here reports it as "unexpected" and aborts the
+              # release before a single file is uploaded.
+              # No .sig entry: it is deliberately unsigned and not an updater target.
+              f'{base_name}-Linux-portable.AppImage',
               f'{base_name}-Ubuntu.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',

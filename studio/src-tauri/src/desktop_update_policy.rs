@@ -150,6 +150,19 @@ fn validate_channel_metadata(
 fn desktop_update_mode() -> DesktopUpdateMode {
     #[cfg(target_os = "linux")]
     {
+        // The portable AppImage must not take an in-app update.
+        //
+        // APPIMAGE is set by the AppImage runtime for BOTH Linux bundles and both
+        // carry the same Tauri bundle-type marker, so this function cannot tell
+        // them apart on its own -- and latest.json points at the signed THIN
+        // AppImage. Without this check, a user running the portable bundle
+        // because their host has no WebKitGTK (SteamOS, any immutable distro)
+        // would be updated into the one build that cannot start there. Its AppRun
+        // exports this so the release page is offered instead, the same
+        // treatment a deb install already gets.
+        if std::env::var_os("UNSLOTH_PORTABLE_APPIMAGE").is_some() {
+            return DesktopUpdateMode::ManualLinuxPackage;
+        }
         if std::env::var_os("APPIMAGE").is_some() {
             DesktopUpdateMode::InApp
         } else {

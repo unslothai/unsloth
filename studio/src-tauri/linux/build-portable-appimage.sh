@@ -774,11 +774,31 @@ export PATH="$appdir/usr/bin${PATH:+:$PATH}"
 #   libGLX_mesa.so.0    -> libstdc++.so.6: version `GLIBCXX_3.4.32' not found
 #       (required by libLLVM.so.20.1)
 export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+# Tell the app which AppImage it is.
+#
+# The updater cannot otherwise tell: the AppImage runtime sets APPIMAGE for both
+# bundles and both stamp the same Tauri bundle-type marker, so the portable build
+# is classified InApp exactly like the thin one. latest.json points at the SIGNED
+# THIN AppImage, so accepting an in-app update replaces this bundle with the one
+# build that cannot start on the hosts this bundle exists for -- a Steam Deck user
+# would be updated straight into a broken install. Keeping the portable artifact
+# out of the updater FEED does not prevent that; being unsigned stops it being an
+# update payload, not an update consumer.
+#
+# desktop_update_policy.rs reads this and falls back to ManualLinuxPackage, which
+# opens the release page instead of swapping the binary underneath the user.
+export UNSLOTH_PORTABLE_APPIMAGE=1
 # The loader cache carries @APPDIR@ tokens: gdk-pixbuf needs absolute module paths
 # (it resolves relative ones against the CWD, which is wherever the user launched
 # from), and the mount point is different every run. Expand into a private copy --
 # mktemp rather than a fixed name, since this lands in a world-writable directory.
-_pixbuf_cache="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/unsloth-pixbuf.XXXXXX" 2>/dev/null)"
+# `|| true` is load-bearing under set -e. XDG_RUNTIME_DIR is often set to a
+# directory that does not exist (a stale session, a container, su to another
+# user), mktemp then fails, and the assignment's non-zero status kills AppRun
+# outright -- silently, since stderr is discarded here. Measured: with
+# XDG_RUNTIME_DIR pointing at a missing directory the app exited 1 with no
+# output at all, and the fallback below was never reached.
+_pixbuf_cache="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/unsloth-pixbuf.XXXXXX" 2>/dev/null || true)"
 if [ -n "$_pixbuf_cache" ] \
    && sed "s|@APPDIR@|$appdir|g" "$libdir/gdk-pixbuf/loaders.cache" > "$_pixbuf_cache" 2>/dev/null; then
   export GDK_PIXBUF_MODULE_FILE="$_pixbuf_cache"
