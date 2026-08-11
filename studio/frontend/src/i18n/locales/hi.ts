@@ -86,6 +86,7 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      audio: "ऑडियो",
       trainChecking: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
       videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",

@@ -28,6 +28,8 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  /** Codec of the checkpoint's base model when it fine-tunes an audio model, else null. */
+  audio_type?: string | null;
 }
 
 export interface ListLorasResponse {
@@ -37,6 +39,8 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /** Opaque client attempt ID used to cancel only this in-flight load. */
+  load_request_id?: string | null;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.
@@ -258,6 +262,8 @@ export interface LoadModelResponse {
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Cancel this exact in-flight load; never unload an already-resident model. */
+  cancel_load_request_id?: string | null;
   /** Stop any chats still generating instead of getting a 409: the unload takes down the
    * llama-server they all decode on. */
   force_cancel_active?: boolean;

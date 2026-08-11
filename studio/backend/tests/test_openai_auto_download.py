@@ -270,6 +270,32 @@ def test_downloadable(raw):
     assert auto_dl.is_downloadable_ref(raw) is True
 
 
+@pytest.mark.parametrize(
+    "repo_id,expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("org/nope-GGUF", True),
+        ("unsloth/typo-vision", True),
+        ("openai/gpt-4o", False),
+        ("anthropic/claude-3.5-sonnet", False),
+        ("meta-llama/llama-3-70b-instruct", False),
+        ("org/Unlisted", False),
+        ("gpt-4", False),
+    ],
+)
+def test_looks_like_gguf_hub_repo_id(repo_id, expected):
+    assert auto_dl.looks_like_gguf_hub_repo_id(repo_id) is expected
+
+
+def test_a_mistyped_gguf_repo_is_refused_while_another_model_is_loaded(monkeypatch):
+    # #8376: a mistyped GGUF catalog id must 404, not be answered by the resident model.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject("unsloth/typo-vision-GGUF", loaded, monkeypatch)
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail["error"]["code"] == "model_not_found"
+
+
 def test_gguf_variants_skips_companions():
     variants = auto_dl._gguf_variants(_gguf_repo_info().siblings)
     # Companions are not quants of their own...
@@ -1057,6 +1083,40 @@ def test_diagnosis_failure_never_breaks_a_servable_request(monkeypatch):
         lambda: type("B", (), {"active_model_name": None})(),
     )
     assert asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF", _Req())) is None
+
+
+def _reject_with_active(model, active, monkeypatch):
+    """Refusal check with a non-GGUF backend resident under *active*."""
+    idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": active})(),
+    )
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf", lambda _n, **_kw: None
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    return asyncio.run(inference_route._reject_unservable_model(model, _Req()))
+
+
+def test_a_directory_loaded_model_is_not_refused_under_its_own_hub_id(monkeypatch):
+    # ModelConfig.identifier is the path for a local load, so the model is advertised
+    # under a bare name that no org/name request can be told apart from. Refusing one
+    # 404s the weights serving right now.
+    local = "/srv/models/gemma-3-4b-it"
+    assert _reject_with_active("unsloth/gemma-3-4b-it", local, monkeypatch) is None
+    assert _reject_with_active("unsloth/gemma-3-4b-it:latest", local, monkeypatch) is None
+
+
+def test_an_hf_cache_load_keeps_its_namespace_and_still_refuses_a_typo(monkeypatch):
+    # A cache path maps back to org/name, so the resident id stays comparable there.
+    cache = "/h/.cache/huggingface/hub/models--unsloth--gemma-3-4b-it/snapshots/abc"
+    assert _reject_with_active("unsloth/gemma-3-4b-it", cache, monkeypatch) is None
+    with pytest.raises(HTTPException) as excinfo:
+        _reject_with_active("unsloth/typo-vision-GGUF", cache, monkeypatch)
+    assert excinfo.value.status_code == 404
 
 
 def test_anthropic_surface_gets_its_own_envelope(monkeypatch):
