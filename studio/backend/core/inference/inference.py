@@ -39,6 +39,8 @@ from core.inference.chat_template_helpers import (
     detect_think_prefill,
     neutralize_control_markup_in_messages,
     neutralize_tts_prompt_text,
+    prompt_opens_reasoning_channel,
+    trailing_assistant_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -206,11 +208,12 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
+        in_reasoning: bool = False,
         **decode_kwargs,
     ):
         decode_kwargs["skip_special_tokens"] = False
         super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
-        self._normalizer = ReasoningChannelNormalizer(*markers)
+        self._normalizer = ReasoningChannelNormalizer(*markers, in_reasoning = in_reasoning)
         self._cancel_event = cancel_event
         self._aborted = False
 
@@ -1260,6 +1263,7 @@ class InferenceBackend:
             presence_penalty = presence_penalty,
             reasoning_channel_markers = reasoning_channel_markers,
             reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
+            continued = bool(continue_final_message and trailing_assistant_text(template_messages)),
         )
 
     def _generate_vision_response(
@@ -1393,6 +1397,8 @@ class InferenceBackend:
                 if image
                 else None,
                 reasoning_channel_markers_resolved = True,
+                prompt = prompt_text,
+                continued = bool(continue_partial),
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,
@@ -1741,6 +1747,8 @@ class InferenceBackend:
         protocol_source = None,
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
+        prompt: Optional[str] = None,
+        continued: bool = False,
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -1776,6 +1784,7 @@ class InferenceBackend:
                 skip_prompt = skip_prompt,
                 timeout = timeout,
                 cancel_event = cancel_event,
+                in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
         return TextIteratorStreamer(
             tokenizer,
@@ -1828,6 +1837,7 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         reasoning_channel_markers = None,
         reasoning_channel_markers_resolved: bool = False,
+        continued: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1868,6 +1878,8 @@ class InferenceBackend:
                 protocol_source = model_info.get("tokenizer"),
                 reasoning_channel_markers = reasoning_channel_markers,
                 reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
+                prompt = prompt,
+                continued = continued,
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,

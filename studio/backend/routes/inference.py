@@ -1286,6 +1286,7 @@ try:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dflash_file,
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
@@ -1338,6 +1339,7 @@ except ImportError:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dflash_file,
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
@@ -4001,6 +4003,10 @@ def _loaded_is_local_model(
 _DRAFTER_NATIVE_RULES = {
     "mtp": ("MTP drafter", "mtp"),
     "dspark": ("DSpark drafter", "dspark"),
+    # No companion subdirectory: dflash/ is a family name a user picks for real
+    # weights, so detect_dflash_file only ever offers a root-level sidecar and
+    # nothing outside the model's own directory is in bounds.
+    "dflash": ("DFlash drafter", None),
 }
 
 
@@ -4030,7 +4036,7 @@ def _validate_native_mtp_drafter(
             str(shard),
             gguf_path,
             label,
-            allowed_subdirs = (subdir,),
+            allowed_subdirs = (subdir,) if subdir else (),
             mtp_search_root = mtp_search_root,
         )
 
@@ -4223,7 +4229,7 @@ def _drafter_for_path(
     """
     if not gguf_path:
         return None
-    detect = detect_dspark_file if kind == "dspark" else detect_mtp_file
+    detect = {"dspark": detect_dspark_file, "dflash": detect_dflash_file}.get(kind, detect_mtp_file)
     root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     rejected = False
     accept = None
@@ -4251,6 +4257,26 @@ def _drafter_for_path(
     return detected
 
 
+def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_root: str) -> bool:
+    """The native lease rule, in the shape ModelConfig.from_identifier takes.
+
+    Discovery inside from_identifier runs before this route ever sees a path, and
+    the DFlash scan opens a candidate's header to confirm the architecture. A
+    native grant covers one directory, so handing the boundary down is what keeps
+    a sidecar symlinked out of the lease from being read at all -- rejecting it
+    afterwards, which _resolve_gguf_load_intent still does, cannot undo a read.
+    Same predicate the rescan uses, so the two passes cannot disagree about what
+    is in bounds.
+    """
+    return _native_gguf_companion_usable(
+        candidate,
+        gguf_path,
+        kind = kind,
+        mtp_search_root = search_root,
+        log_rejection = True,
+    )
+
+
 def _mtp_draft_for_path(
     gguf_path: Optional[str],
     native_grant_backed: bool,
@@ -4272,6 +4298,20 @@ def _dspark_draft_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dspark",
+        log_native_fallback = log_native_fallback,
+    )
+
+
+def _dflash_draft_for_path(
+    gguf_path: Optional[str],
+    native_grant_backed: bool,
+    *,
+    log_native_fallback: bool = False,
+) -> Optional[str]:
+    return _drafter_for_path(
+        gguf_path,
+        native_grant_backed,
+        kind = "dflash",
         log_native_fallback = log_native_fallback,
     )
 
@@ -4336,6 +4376,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
@@ -5536,33 +5577,98 @@ def _remote_gguf_companion_bytes(
     include_mmproj: bool,
     include_mtp: bool = True,
     include_dspark: bool = False,
+    include_dflash: bool = False,
+    dspark_first: bool = False,
+    weight_bytes: int = 0,
 ) -> int:
-    """Bytes of companion GGUFs the requested launch downloads. 0 on error."""
+    """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
+
+    ``dspark_first`` says this is an Auto load, which is the only caller that can
+    ask for several drafter kinds at once, so the loader's promotion order gets
+    to say which single one is charged: DSpark, else DFlash, else the MTP
+    drafter. The loader replaces mtp_draft_path with whichever kind wins the
+    promotion, so at most one drafter is ever launched; a sidecar that is fetched
+    and then not opened costs disk, not VRAM, and this guard sizes VRAM. Off, the
+    caller has already narrowed the request to one kind and the sum is that kind.
+    """
     try:
-        from core.inference.llama_cpp import _is_dspark_drafter_path
+        from core.inference.llama_cpp import (
+            _gguf_extra_shards,
+            _is_dspark_drafter_path,
+            _is_root_dflash_drafter_path,
+        )
         from huggingface_hub import model_info
+        from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
         from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
+        mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
+        dflash_sizes: dict[str, int] = {}
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
                 continue
+            size = getattr(sibling, "size", 0) or 0
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if (include_mtp and is_root_mtp) or (include_mmproj and "mmproj" in base):
-                total += getattr(sibling, "size", 0) or 0
+            if include_mtp and is_root_mtp:
+                mtp_bytes += size
+            elif include_mmproj and "mmproj" in base:
+                total += size
             if include_dspark and _is_dspark_drafter_path(name):
-                dspark_candidates.append((name, getattr(sibling, "size", 0) or 0))
-        if dspark_candidates:
-            # Same preference order the download uses, so the budget sizes the
-            # file the launch will actually fetch.
-            total += min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
-        return total
+                dspark_candidates.append((name, size))
+            # Root level only, exactly as _download_dflash's picker is: a nested
+            # dflash-*.gguf is an ordinary weight there and never a candidate, so
+            # counting it here would price a file the load cannot fetch.
+            if include_dflash and _is_root_dflash_drafter_path(name):
+                dflash_sizes[name] = size
+        # The download's preference order, by whole shard SET: llama-server maps every
+        # shard, so pricing the picked one halved a two-shard sidecar and let the guard
+        # admit a load that evicts the training run. Incomplete sets are dropped, not
+        # priced, since the fetch refuses them.
+        _dspark_sizes = dict(dspark_candidates)
+        dspark_families = [
+            (
+                name,
+                size
+                + sum(_dspark_sizes.get(s, 0) for s in _gguf_extra_shards(_dspark_sizes, name)),
+            )
+            for name, size in dspark_candidates
+            if split_listing_is_complete(_dspark_sizes, name)
+        ]
+        dspark_bytes = (
+            min(dspark_families, key = lambda c: dspark_preference_key(c[0]))[1]
+            if dspark_families
+            else 0
+        )
+        # Bounded rather than picked: see dflash_budget_bytes for why the max
+        # over whole shard sets is the answer a listing can give. Bounded by the
+        # target too, so the guard stops charging for the oversized candidates the
+        # fetch itself now refuses.
+        dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
+        if not dspark_first:
+            return total + mtp_bytes + dspark_bytes + dflash_bytes
+        if dspark_families:
+            # DSpark takes first refusal in the Auto promotion, so a listed
+            # sidecar settles the load: the DFlash fetch stands down and
+            # mtp_draft_path is replaced by the DSpark one. Charging the other
+            # two is not the safe over-estimate it is for a repo whose listing
+            # has not answered yet, it is a 409 for a load that fits. Only a
+            # COMPLETE set settles it, since the fetch falls through to DFlash on
+            # one it has to reject, and that one can be the larger of the two.
+            return total + dspark_bytes
+        if dflash_sizes:
+            # DFlash is the other Auto promotion and replaces mtp_draft_path the
+            # same way, so the two are never resident together. Which of them it
+            # is stays genuinely unknown here: every DFlash candidate can still be
+            # turned away on its header, and the load then keeps the MTP drafter
+            # it has already fetched. The larger of the two covers both outcomes.
+            return total + max(dflash_bytes, mtp_bytes)
+        return total + mtp_bytes
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
         return 0
@@ -5750,7 +5856,10 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_mtp_draft_path,
+            _extra_args_requests_dflash,
             _extra_args_requests_dspark,
+            _extra_args_set_spec_type,
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
@@ -5780,21 +5889,83 @@ def _estimate_gguf_required_gb(
             _dspark_capable
             and (_forced_dspark or (_auto_dspark and getattr(config, "gguf_dspark_file", None)))
         )
+        # DFlash: same shape as DSpark above, and Auto sizes it for the same
+        # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
+        # protects a running training job still has to charge for it.
+        # Extra args owning --spec-type end _build_speculative_flags before any mode
+        # branch, so neither forced nor Auto reaches the sidecar and charging it refuses
+        # a load for nothing. Extras asking for draft-dflash themselves still pay.
+        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
+        _forced_dflash = bool(
+            _extra_args_requests_dflash(llama_extra_args, env = {})
+            or (_spec_mode == "dflash" and not _extra_args_own_spec)
+        )
+        _auto_dflash = _spec_mode == "auto" and not _extra_args_own_spec
+        _dflash_capable = True
+        if _forced_dflash or _auto_dflash:
+            try:
+                _dflash_capable = bool(
+                    LlamaCppBackend.probe_server_capabilities().get("supports_dflash")
+                )
+            except Exception:
+                pass
+        # DSpark keeps first refusal under Auto, mirroring the loader.
+        dflash_requested = bool(
+            _dflash_capable
+            and not dspark_requested
+            and (_forced_dflash or (_auto_dflash and getattr(config, "gguf_dflash_file", None)))
+        )
         # Forced DSpark on a binary that cannot run it falls back to --spec-default,
         # which loads no drafter at all, so charging the MTP one would refuse a load
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
-        _charge_no_drafter = _forced_dspark and not _dspark_capable
+        _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
+            _forced_dflash and not _dflash_capable
+        )
+
+        def _same_file_key(p: str) -> str:
+            # Identity by resolved path, so a symlinked or differently spelled
+            # copy of one file is still one file.
+            try:
+                return os.path.realpath(p)
+            except OSError:
+                return str(p)
+
         total_bytes = 0
+        # Only the files already charged above, so the extras drafter below can
+        # tell "another sidecar" from "the one discovery already found".
+        _sized_keys: set[str] = set()
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
+            _sized_keys.add(_same_file_key(str(main)))
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
         _sized_attrs = ["gguf_mmproj_file"]
         if not _charge_no_drafter:
-            _sized_attrs.append("gguf_dspark_file" if dspark_requested else "gguf_mtp_file")
+            if dspark_requested:
+                _sized_attrs.append("gguf_dspark_file")
+            elif dflash_requested:
+                # Only when extras own --spec-type: _build_speculative_flags then
+                # returns before discovery's sidecar is emitted, so llama-server opens
+                # theirs alone. Without it Studio emits its own too and which lands is
+                # unknown, so both stay charged.
+                _manual_draft = (
+                    _extra_args_mtp_draft_path(llama_extra_args, env = {})
+                    if _extra_args_own_spec
+                    else None
+                )
+                _configured = getattr(config, "gguf_dflash_file", None)
+                if not (
+                    _manual_draft
+                    and _configured
+                    and _same_file_key(str(_manual_draft)) != _same_file_key(str(_configured))
+                ):
+                    _sized_attrs.append("gguf_dflash_file")
+            else:
+                _sized_attrs.append("gguf_mtp_file")
+
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
@@ -5802,8 +5973,31 @@ def _estimate_gguf_required_gb(
                 # so stat() alone would size a split drafter at one shard and let the
                 # guard admit a load that evicts the training run it protects.
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
+                _sized_keys.add(_same_file_key(str(f)))
+
+        # A caller that owns speculation through llama_extra_args names the
+        # drafter with --model-draft. load_model hands that path to llama-server,
+        # so it has to be charged, but it is charged exactly once: the same file
+        # is often the local sidecar discovery already put in gguf_dflash_file /
+        # gguf_dspark_file / gguf_mtp_file, and adding it twice billed a 1.5 GiB
+        # drafter as 3 GiB and refused loads that fit. When the drafter really is
+        # outside the model directory nothing above named it and the charge lands
+        # here. It is a companion either way, never evidence of a local main
+        # weight, so it does not decide which branch below produces the estimate:
+        # a remote repo with a local --model-draft still has to price its weights
+        # through the listing, and returning the drafter alone under-estimated a
+        # load by the whole target model.
+        _extras_bytes = 0
+        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        if (
+            _extras_draft
+            and Path(_extras_draft).is_file()
+            and _same_file_key(str(_extras_draft)) not in _sized_keys
+        ):
+            _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
+
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+            return (total_bytes + _extras_bytes) / (1024**3) + _estimate_gguf_kv_gb(
                 main,
                 max_seq_length,
                 llama_extra_args,
@@ -5822,9 +6016,8 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
-            )
+            selected = next((v for v in variants if v.quant.lower() == variant.lower()), None)
+            main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
@@ -5835,10 +6028,24 @@ def _estimate_gguf_required_gb(
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
-                include_mtp = (not _charge_no_drafter and (_auto_dspark or not dspark_requested)),
+                include_mtp = (
+                    not _charge_no_drafter
+                    and (_auto_dspark or not (dspark_requested or dflash_requested))
+                ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
+                include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
+                # What the DFlash bound measures candidates against, so the guard stops
+                # charging for weights the fetch refuses as too big to be a drafter.
+                weight_bytes = int(main_bytes or 0),
+                # ... except where the listing settles it. Auto launches exactly
+                # one drafter, in a fixed order, so once the listing says which
+                # kinds the repo has, charging the losers is not caution, it is a
+                # refusal for bytes that never become resident.
+                dspark_first = _auto_dspark,
             )
-            total_gb = (main_bytes + companions) / (1024**3)
+            # Plus the local --model-draft, if the caller named one: the repo
+            # listing cannot see it, and it is resident next to these weights.
+            total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
             # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
             from core.inference.llama_server_args import parse_ctx_override
 
@@ -6258,12 +6465,19 @@ def _resolve_gguf_load_intent(
                     True,
                     log_native_fallback = True,
                 )
+            if config.gguf_dflash_file:
+                config.gguf_dflash_file = _dflash_draft_for_path(
+                    config.gguf_file,
+                    True,
+                    log_native_fallback = True,
+                )
         source = GgufLoadIntent(
             model_identifier = config.identifier,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
             dspark_draft_path = config.gguf_dspark_file,
+            dflash_draft_path = config.gguf_dflash_file,
             hf_variant = config.gguf_variant,
         )
 
@@ -7397,6 +7611,10 @@ async def _load_model_impl(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    # A native grant covers one directory, and this is the first
+                    # pass that touches a drafter candidate, so the boundary has
+                    # to travel with it rather than being applied afterwards.
+                    drafter_accept = _native_drafter_accept if native_grant_backed else None,
                 )
 
         # Guard and call go to the worker together: from_identifier can import transformers
@@ -7438,6 +7656,7 @@ async def _load_model_impl(
                     gguf_intent,
                     mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
                     dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
+                    dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, False),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(
@@ -8113,6 +8332,10 @@ async def validate_model(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    # A native grant covers one directory, and this is the first
+                    # pass that touches a drafter candidate, so the boundary has
+                    # to travel with it rather than being applied afterwards.
+                    drafter_accept = _native_drafter_accept if native_grant_backed else None,
                 )
 
         config = await asyncio.to_thread(_resolve_config)
