@@ -1862,6 +1862,21 @@ def test_high_risk_dispatcher_non_terminal():
             "    g = yaml.unsafe_load\nsetg()\nrun()",
             True,
         ),
+        # A name the snippet binds itself is not the package we seeded.
+        (
+            "from yaml import load, Loader\nclass yaml:\n    SafeLoader = Loader\n"
+            "load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),
+        ("import yaml\n(ld := yaml.unsafe_load)\nld(s)", True),  # walrus binds a loader
+        ("if (n := len([1, 2])) > 1: print(n)", False),
+        ("import yaml\n[[ld]] = [[yaml.unsafe_load]]\nld(s)", True),  # nested destructuring
+        ("a, b = (1, 2)\nprint(a + b)", False),
+        (
+            "import yaml\nreg = yaml.SafeLoader.__dict__\n"
+            "reg['yaml_' + 'constructors']['!e'] = cb\nyaml.safe_load(s)",
+            True,
+        ),  # the registry reached at runtime
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

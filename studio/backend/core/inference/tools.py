@@ -3741,6 +3741,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             return False
         return any(kw.arg == "Loader" and _is_safe_loader(kw.value) for kw in call.keywords or [])
 
+    def _flat_binds(target, value):
+        # Pair a destructuring target with its value through any nesting:
+        # [[loader]] = [[yaml.unsafe_load]] binds loader like a flat one does.
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+            value, (ast.Tuple, ast.List)
+        ):
+            if len(target.elts) != len(value.elts):
+                return
+            for t_el, v_el in zip(target.elts, value.elts):
+                yield from _flat_binds(t_el, v_el)
+        elif isinstance(target, ast.Name):
+            yield target, value
+
     def _holds_write_callable(arg) -> bool:
         # A callable handed over directly, or packed into a literal container the
         # helper unpacks itself: run((yaml.unsafe_load, payload)).
@@ -3849,6 +3862,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         "YAMLObject",
         "yaml_loader",
         "from_yaml",
+        # SafeLoader.__dict__["yaml_constructors"] is the same registration with
+        # the name spelled at runtime.
+        "__dict__",
     }
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
@@ -3897,6 +3913,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for sub in ast.walk(target):
                 if isinstance(sub, ast.Name):
                     rebindable_names.add(sub.id)
+    # A seeded module name the snippet itself binds (class yaml: ...) is not the
+    # package we assumed, so it stops being a trusted receiver.
+    for _shadowed in _AUTO_UNSAFE_PY_LOAD_MODULES & rebindable_names:
+        load_module_aliases.discard(_shadowed)
+        yaml_module_aliases.discard(_shadowed)
     # Alias discovery is order-sensitive: f = g is only recognized once g is
     # known, and ast.walk visits a function body after a later def that binds
     # the source. Repeat the pass until nothing new is learned (the sets only
@@ -3931,7 +3952,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         fileinput_aliases,
         invoker_aliases,
     )
-    for _alias_pass in range(4):
+    # 25 is far past any real chain (each pass resolves one more link); a
+    # snippet that still has not settled is too tangled to classify, so it asks.
+    _alias_converged = False
+    for _alias_pass in range(25):
         _sizes = [len(s) for s in _alias_sets] + [len(literal_str_vars)]
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -4021,10 +4045,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # reduce as r: an aliased higher-order invoker.
                     if alias.name in _HIGHER_ORDER_INVOKERS:
                         invoker_aliases.add(alias.asname or alias.name)
-            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            elif (
+                isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                and node.value is not None
+            ):
                 value = node.value
-                # AnnAssign (f: object = open) has a single target, no destructuring.
-                if isinstance(node, ast.AnnAssign):
+                # AnnAssign (f: object = open) and a walrus have a single
+                # target, no destructuring.
+                if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
                     assign_targets = [node.target]
                 else:
                     assign_targets = node.targets
@@ -4213,9 +4241,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
                             value.elts
                         ):
-                            for tgt_el, val_el in zip(target.elts, value.elts):
-                                if not isinstance(tgt_el, ast.Name):
-                                    continue
+                            for tgt_el, val_el in _flat_binds(target, value):
                                 tid = tgt_el.id
                                 if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                     open_aliases.add(tid)
@@ -4367,7 +4393,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     ):
                         dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
         if _sizes == [len(s) for s in _alias_sets] + [len(literal_str_vars)]:
+            _alias_converged = True
             break
+    if not _alias_converged:
+        return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
