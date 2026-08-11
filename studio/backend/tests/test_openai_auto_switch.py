@@ -1790,6 +1790,27 @@ def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch)
     _run_hook(path)
 
 
+def test_a_load_path_no_scan_root_indexes_is_only_resolved_once(monkeypatch):
+    # The deferral above costs a rebuild, and is only worth it while there is an alias
+    # to record. A model loaded from outside every scan root has none, so it must not
+    # pay for the attempt on every message.
+    path = "/elsewhere/unscanned-model.gguf"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_alias_probed_load_paths", set())
+    scans = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+    for _ in range(4):
+        resolver.invalidate_index()  # the TTL lapses between chat messages
+        _run_hook(path)
+    assert rec.calls == []
+    assert len(scans) == 1, f"resolved {len(scans)} times, expected one probe"
+
+
 def test_streaming_responses_uses_advertised_id_helper():
     # Codex P2: streamed /v1/responses envelopes must derive the model id from
     # _llama_public_model_id (which prefers _openai_advertised_id), not the raw

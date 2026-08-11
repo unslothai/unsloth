@@ -4750,6 +4750,11 @@ def _loaded_satisfies(requested: str) -> bool:
     return _matches_any(base, [active, public_model_id(active)])
 
 
+# Load paths already sent through the resolver so it could record their advertised
+# alias. Bounded by the distinct local models a process loads.
+_alias_probed_load_paths: set[str] = set()
+
+
 def _loaded_identity_satisfies(requested: str) -> bool:
     """Whether an explicit resident identity answers to *requested*.
 
@@ -4766,12 +4771,14 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     if getattr(llama_backend, "is_loaded", False):
         identifier = getattr(llama_backend, "model_identifier", None)
         advertised = getattr(llama_backend, "_openai_advertised_id", None)
-        # A manual load of a local path advertises nothing, so only the path could match
-        # and answering from it would skip the recording: /v1/models and every response
-        # would report the filename. One request pays the resolver, the rest match the
-        # alias it recorded and land here.
+        # A manual load of a local path advertises nothing, so answering here would skip
+        # the recording and /v1/models and every response would report the filename. Send
+        # the first such request to the resolver instead. Once per path: one that no scan
+        # root indexes has no alias to record, and must not pay for the attempt again.
         if advertised is None and identifier and _looks_like_local_path(identifier):
-            return False
+            if identifier not in _alias_probed_load_paths:
+                _alias_probed_load_paths.add(identifier)
+                return False
         return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
     active = getattr(get_inference_backend(), "active_model_name", None)
     return bool(active and _matches_any(base, [active]) and _loaded_satisfies(requested))
