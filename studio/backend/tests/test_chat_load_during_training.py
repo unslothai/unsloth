@@ -1596,23 +1596,179 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # can actually charge, and that charge is gated on Path(...).is_file().
         _draft = Path(_tmp.name) / "d.gguf"
         _draft.write_bytes(b"x" * 512)
-        for extras in (
-            ["--spec-type", "draft-dflash", "--model-draft", str(_draft)],
-            ["--spec-type", "draft-dspark", "--model-draft", str(_draft)],
-        ):
+        # A repo that DOES ship a sidecar, so the assertion is about the resulting
+        # number and not about which flags were passed: a stub returning 0 whatever
+        # it is asked would pass even if the suppression stopped working.
+        _sidecar = 7 * 1024**3
+
+        def _companions(repo, **kw):
+            return (
+                _sidecar
+                if (kw["include_mtp"] or kw["include_dspark"] or kw["include_dflash"])
+                else 0
+            )
+
+        def _estimate(extras):
             with (
                 patch.object(
                     mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
                 ),
-                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0) as comp,
+                patch.object(self.route, "_remote_gguf_companion_bytes", _companions),
                 self._dflash_capable(),
             ):
-                self.route._estimate_gguf_required_gb(
+                return self.route._estimate_gguf_required_gb(
                     cfg, speculative_type = "auto", llama_extra_args = extras
                 )
-                self.assertFalse(comp.call_args.kwargs["include_dflash"], extras)
-                self.assertFalse(comp.call_args.kwargs["include_dspark"], extras)
-                self.assertFalse(comp.call_args.kwargs["include_mtp"], extras)
+
+        # Same load, minus the private drafter: Auto fetches the repo's sidecar and
+        # pays for it, which is the charge the suppression has to remove.
+        baseline = _estimate([])
+        self.assertGreater(baseline, _sidecar / (1024**3))
+        for extras in (
+            ["--spec-type", "draft-dflash", "--model-draft", str(_draft)],
+            ["--spec-type", "draft-dspark", "--model-draft", str(_draft)],
+        ):
+            # The repo sidecar gone, their own 512-byte drafter charged in its place.
+            self.assertAlmostEqual(
+                _estimate(extras),
+                baseline - _sidecar / (1024**3) + 512 / (1024**3),
+                places = 9,
+                msg = extras,
+            )
+
+    def test_a_remote_extras_drafter_is_sized_from_its_own_repository(self):
+        """--spec-draft-hf/-hfd names a SEPARATE repo, which llama-server downloads
+        and loads. The target repository's companion scan cannot see it, so a target
+        that ships no sidecar of its own left the drafter charged nowhere and let the
+        guard admit a multi-GB overcommit beside a running training job. Bounded by
+        the largest whole shard set, the only answer a listing can give: which file
+        the fetch lands on is not knowable, and a split set is resident in full."""
+        import utils.models.model_config as mc
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        siblings = [
+            SimpleNamespace(rfilename = "drafter-Q4_K_M-00001-of-00002.gguf", size = 3 * 1024**3 // 2),
+            SimpleNamespace(rfilename = "drafter-Q4_K_M-00002-of-00002.gguf", size = 3 * 1024**3 // 2),
+            SimpleNamespace(rfilename = "drafter-Q8_0.gguf", size = 2 * 1024**3),
+            # Mid-upload: the fetch refuses a short set, so it must not set the bound.
+            SimpleNamespace(rfilename = "drafter-F16-00001-of-00002.gguf", size = 5 * 1024**3),
+            SimpleNamespace(rfilename = "notes.md", size = 9 * 1024**3),
+        ]
+
+        def _estimate(extras):
+            with (
+                patch.object(
+                    mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
+                ),
+                # The exact hole: the target repo has no sidecar to be charged for.
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+                patch(
+                    "huggingface_hub.model_info",
+                    return_value = SimpleNamespace(siblings = siblings),
+                ),
+                patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {
+                            "supports_dspark": True,
+                            "supports_dflash": True,
+                        }
+                    ),
+                ),
+            ):
+                return self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto", llama_extra_args = extras
+                )
+
+        for own, remote in (
+            (["--spec-type", "draft-dspark"], ["--spec-draft-hf", "org/drafter"]),
+            (["--spec-type", "draft-dflash"], ["-hfd", "org/drafter"]),
+        ):
+            # Everything else identical, so the difference IS the drafter charge.
+            self.assertAlmostEqual(
+                _estimate(own + remote),
+                _estimate(own) + 3 * 1024**3 / (1024**3),
+                places = 9,
+                msg = remote,
+            )
+        # The :quant tag is llama.cpp's own narrowing, so the bound follows it down
+        # rather than charging the repo's largest family for a small drafter.
+        self.assertAlmostEqual(
+            _estimate(["--spec-type", "draft-dflash", "-hfd", "org/drafter:Q8_0"]),
+            _estimate(["--spec-type", "draft-dflash"]) + 2 * 1024**3 / (1024**3),
+            places = 9,
+        )
+
+    def test_an_unreadable_remote_drafter_repo_still_pays_a_flat_reserve(self):
+        """No network, a gated repo or a malformed id leaves the drafter unsized,
+        and this guard protects a running training job: charging zero for a
+        download the launch is certainly going to make is the one answer that
+        admits the overcommit."""
+        import utils.models.model_config as mc
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        reserve = self.route._REMOTE_DRAFTER_RESERVE_BYTES
+        self.assertGreater(reserve, 0)
+
+        def _estimate(extras, listing):
+            with (
+                patch.object(
+                    mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
+                ),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+                patch("huggingface_hub.model_info", **listing),
+                patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {
+                            "supports_dspark": True,
+                            "supports_dflash": True,
+                        }
+                    ),
+                ),
+            ):
+                return self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto", llama_extra_args = extras
+                )
+
+        _raises = {"side_effect": OSError("gated repo")}
+        _empty = {"return_value": SimpleNamespace(siblings = [])}
+        base = _estimate(["--spec-type", "draft-dflash"], _raises)
+        for extras, listing in (
+            # Unreadable listing, a repo that lists no GGUF, and an id no listing
+            # could ever answer for: all of them mean "unsized", not "free".
+            (["--spec-type", "draft-dflash", "-hfd", "org/drafter"], _raises),
+            (["--spec-type", "draft-dflash", "-hfd", "org/drafter"], _empty),
+            (["--spec-type", "draft-dflash", "-hfd", "not-a-repo-id"], _empty),
+        ):
+            self.assertAlmostEqual(
+                _estimate(extras, listing),
+                base + reserve / (1024**3),
+                places = 9,
+                msg = extras,
+            )
 
     def test_a_remote_extras_drafter_still_pays_the_conservative_charge(self):
         """--spec-draft-hf names an HF repo, not a file, so _extras_bytes charges

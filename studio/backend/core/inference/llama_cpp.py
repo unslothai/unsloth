@@ -11332,11 +11332,28 @@ class LlamaCppBackend:
                             key = lambda g: _gpu_usable(g, _probe_frac(False)),
                             reverse = True,
                         )
+                        # Same floor as the placement loop's _auto_min_gpus: a tensor
+                        # downgrade raises _layer_min_gpus to keep the request
+                        # multi-GPU, and a one-GPU placement the loop is forbidden to
+                        # choose must not be the one that saves the drafter.
+                        _probe_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
+                        _probe_min_gpus = max(
+                            1,
+                            min(
+                                _layer_min_gpus,
+                                sum(
+                                    1
+                                    for g in _probe_ranked
+                                    if _gpu_usable(g, _probe_frac(False)) > _probe_overhead_mib
+                                )
+                                or 1,
+                            ),
+                        )
                         _target_fits_somewhere = False
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
-                        for _n in range(1, len(_probe_ranked) + 1):
+                        for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
                             _subset = _probe_ranked[:_n]
                             _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
                             _base_wo = _probe_base(False, _n)
@@ -11418,6 +11435,16 @@ class LlamaCppBackend:
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
+                            # Clearing the flag alone leaves the reserve in place: the
+                            # eight _mtp_bytes call sites below are unconditional, and
+                            # _fit_context_to_vram invokes any non-None mtp_overhead_fn
+                            # whatever mtp_engaged says. The fit would then still shrink
+                            # the context (or take --fit) for a drafter that no longer
+                            # launches, which is the whole thing this drop prevents.
+                            # _mtp_kv_unsized goes with it, or _flat_mtp_engages below
+                            # would swap the flat fraction in as its replacement.
+                            mtp_overhead_fn = None
+                            _mtp_kv_unsized = False
                             logger.warning(
                                 "Speculative decoding disabled for this load: the model "
                                 "fits in VRAM at context %d but its drafter does not "

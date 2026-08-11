@@ -670,3 +670,50 @@ def test_the_probe_prices_the_drafter_at_a_context_the_weakest_card_can_hold(tmp
     assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
     assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
     assert backend.spec_fallback_reason is None
+
+
+def test_the_drop_actually_releases_the_reserve_the_fit_charges(tmp_path):
+    """The drop has to reach the fit, not just the launch.
+
+    Every _mtp_bytes site in the fit is unconditional and _fit_context_to_vram
+    calls any non-None mtp_overhead_fn whatever mtp_engaged says, so clearing
+    _mtp_will_engage alone still let the planner shrink the context for a drafter
+    it no longer launches. Deliberately does NOT stub _fit_context_to_vram or the
+    GPU selectors: the point is the context the real fit arrives at.
+    """
+    gb = 1024**3
+    mib = 1024**2
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (6 * gb if str(path) == str(sidecar) else 16 * gb)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
+    backend._can_estimate_kv = lambda: True
+    # Context-linear, so an unreleased drafter reserve is paid for in context.
+    backend._estimate_kv_cache_bytes = lambda ctx, *args, **kwargs: int(ctx * 0.5 * mib)
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = lambda *args, **kwargs: 6 * gb
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 0,
+    )
+
+    cmd = result["cmd"]
+    # 16 GB + a 4 GB KV at 8192 clears the 23.3 GB pin budget; + 6 GB does not.
+    assert "--model-draft" not in cmd
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    # The whole point: native context survives, rather than being cut to pay for
+    # a drafter that is not launching.
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert cmd[cmd.index("--fit") + 1] == "off"
