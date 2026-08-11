@@ -2529,23 +2529,18 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # the payload is data. yaml.safe_load stays auto-approved: it cannot do this and
 # is the common way to read a config file.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
-# Loader entry points on those modules. `load`/`load_all` cover PyYAML's
-# Loader= form, the `unsafe_*` names its explicit unsafe helpers. The loader
-# classes are the same deserialize one level down (yaml.Loader(s).get_data()
-# constructs the tagged objects without going through yaml.load); SafeLoader and
-# FullLoader are absent because neither can construct arbitrary callables.
-_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset(
-    {
-        "load",
-        "load_all",
-        "unsafe_load",
-        "unsafe_load_all",
-        "Loader",
-        "UnsafeLoader",
-        "CLoader",
-        "CUnsafeLoader",
-    }
-)
+# Loader functions on those modules: `load`/`load_all` carry PyYAML's Loader=
+# form, the `unsafe_*` names are its explicit unsafe helpers.
+_AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset({"load", "load_all", "unsafe_load", "unsafe_load_all"})
+# The same deserialize one level down: yaml.Loader(s).get_data() constructs the
+# tagged objects without going through yaml.load, and subclassing one of these
+# (the documented way to extend PyYAML) inherits that.
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "UnsafeLoader", "CLoader", "CUnsafeLoader"})
+_AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
+# Loader classes that cannot construct arbitrary callables in any PyYAML
+# version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
+# absent on purpose: it was an RCE before PyYAML 5.4 (CVE-2020-14343).
+_AUTO_SAFE_PY_LOAD_CLASSES = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader"})
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3554,6 +3549,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Names bound to such a loader directly (from yaml import unsafe_load [as u];
     # ld = yaml.load), so calling the bare name is gated like the attribute call.
     load_func_aliases: "set[str]" = set()
+    # Names bound to a loader class that cannot execute code (from yaml import
+    # SafeLoader), so yaml.load(s, Loader=SafeLoader) is recognized as a safe read.
+    safe_loader_aliases: "set[str]" = set()
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup
     # aliased through it (rm = g(os, "remove"); rm("f")) still fails closed.
     getattr_aliases = {"getattr"}
@@ -3645,6 +3643,52 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             )
         return False
 
+    def _is_loader_attr(node) -> bool:
+        # yaml.unsafe_load / yl.CLoader / torch.load: a loader reached through a
+        # tracked module, so json.load and a same-named local method are not it.
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
+            and isinstance(node.value, ast.Name)
+            and node.value.id in load_module_aliases
+        )
+
+    def _is_safe_loader(node) -> bool:
+        # The Loader= value is statically one of the loaders that cannot build
+        # arbitrary callables. Anything else (absent, dynamic, rebound) is not.
+        if isinstance(node, ast.Attribute):
+            return (
+                node.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                and node.attr not in assigned_attr_names
+                and isinstance(node.value, ast.Name)
+                and node.value.id in load_module_aliases
+            )
+        if isinstance(node, ast.Name):
+            return node.id in safe_loader_aliases and node.id not in multi_assigned_names
+        return False
+
+    def _loads_safely(call) -> bool:
+        # yaml.load(s, Loader=SafeLoader) reads data only. Fails closed on a
+        # missing/positional/dynamic loader and on a **kwargs splat.
+        if _has_kwarg_splat(call):
+            return False
+        return any(kw.arg == "Loader" and _is_safe_loader(kw.value) for kw in call.keywords or [])
+
+    def _escaping_args(call):
+        # Every callable a call can forward to a helper, including the ones an
+        # unpacking hides: run(*(yaml.load, s)) and run(**{"fn": yaml.load}).
+        for arg in call.args:
+            if isinstance(arg, ast.Starred):
+                if isinstance(arg.value, (ast.Tuple, ast.List, ast.Set)):
+                    yield from arg.value.elts
+            else:
+                yield arg
+        for kw in call.keywords:
+            if kw.arg is None and isinstance(kw.value, ast.Dict):
+                yield from kw.value.values
+            else:
+                yield kw.value
+
     def _passed_write_callable(arg) -> bool:
         # A concrete write callable handed as an argument to another call: a
         # name bound to open / a writer / an archive constructor, or an
@@ -3663,11 +3707,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         if isinstance(arg, ast.Attribute):
             # A loader is receiver-matched (yaml.load, torch.load) so a helper
             # handed the harmless json.load is unaffected.
-            if (
-                arg.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                and isinstance(arg.value, ast.Name)
-                and arg.value.id in load_module_aliases
-            ):
+            if _is_loader_attr(arg):
                 return True
             return (
                 arg.attr == "open"
@@ -3684,6 +3724,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # binding target up front and poison multiply-bound names to the escape
     # sentinel so any path folded from them fails closed (asks) instead.
     assign_counts: "dict[str, int]" = {}
+    # Attribute names assigned anywhere, so a rebound loader class
+    # (yaml.SafeLoader = yaml.Loader) cannot buy the safe-loader exemption below.
+    assigned_attr_names: "set[str]" = set()
     for node in ast.walk(tree):
         binding_targets = []
         if isinstance(node, ast.Assign):
@@ -3694,6 +3737,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for sub in ast.walk(target):
                 if isinstance(sub, ast.Name):
                     assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
+                elif isinstance(sub, ast.Attribute):
+                    assigned_attr_names.add(sub.attr)
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -3702,8 +3747,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     builtins_aliases.add(alias.asname or "builtins")
                 elif alias.name in ("os", "posix"):
                     os_aliases.add(alias.asname or alias.name)
-                elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                    load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    # import yaml.loader as yl binds the submodule, which carries
+                    # the loader classes too (yl.Loader); a dotted import without
+                    # an asname binds the root package.
+                    load_module_aliases.add(alias.asname or alias.name.split(".")[0])
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
@@ -3750,6 +3798,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
                         load_func_aliases.add(alias.asname or alias.name)
+                    # from yaml.loader import SafeLoader is the documented safe
+                    # spelling; record it so Loader=SafeLoader stays auto-approved.
+                    elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES:
+                        safe_loader_aliases.add(alias.asname or alias.name)
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
@@ -3899,6 +3951,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                 writer_aliases.add(tid)  # s, _ = (save, 1)
                             elif isinstance(val_el, ast.Name) and val_el.id in archive_ctor_aliases:
                                 archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
+                            elif isinstance(val_el, ast.Name) and val_el.id in load_func_aliases:
+                                load_func_aliases.add(tid)  # ld, _ = (unsafe_load, 1)
+                            elif _is_loader_attr(val_el):
+                                load_func_aliases.add(tid)  # ld, _ = (yaml.load, 1)
                             elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
                                 literal_str_vars[tid] = (
                                     "\x02" if tid in multi_assigned_names else val_el.value
@@ -3915,6 +3971,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                     literal_str_vars[tid] = (
                                         "\x02" if tid in multi_assigned_names else folded
                                     )
+        elif isinstance(node, ast.ClassDef):
+            # Subclassing a loader is the documented way to extend PyYAML, and the
+            # subclass keeps the base's ability to construct Python objects, so
+            # class L(yaml.Loader) makes L a loader too.
+            for base in node.bases:
+                if _is_loader_attr(base) or (
+                    isinstance(base, ast.Name) and base.id in load_func_aliases
+                ):
+                    load_func_aliases.add(node.name)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # A callable captured as a parameter default (def f(o=open): o('x','w'))
             # binds that parameter to the same alias set, so a later call through
@@ -3946,6 +4011,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         code_exec_aliases.add(_param.arg)
                     elif _did in dynamic_aliases:
                         dynamic_aliases.add(_param.arg)
+                    elif _did in load_func_aliases:
+                        load_func_aliases.add(_param.arg)
+                elif _is_loader_attr(_default):
+                    # def run(loader=yaml.unsafe_load): loader(payload)
+                    load_func_aliases.add(_param.arg)
                 elif isinstance(_default, ast.Attribute):
                     # An attribute writer / archive ctor / captured .open used as
                     # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
@@ -4050,9 +4120,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # branches below gate, but through a user-defined helper
                 # (def run(fn): fn('o','w').write('x'); run(open)). A benign
                 # callable argument (run(len)) is unaffected.
-                if any(_passed_write_callable(a) for a in node.args) or any(
-                    _passed_write_callable(kw.value) for kw in node.keywords
-                ):
+                if any(_passed_write_callable(a) for a in _escaping_args(node)):
                     return True
                 if isinstance(func, ast.Name):
                     if func.id in dynamic_aliases:
@@ -4064,7 +4132,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # A code-executing loader bound to a bare name
                     # (from yaml import unsafe_load; ld = yaml.load).
-                    if func.id in load_func_aliases:
+                    if func.id in load_func_aliases and not _loads_safely(node):
                         return True
                     # A bare archive constructor (from zipfile import ZipFile)
                     # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
@@ -4124,11 +4192,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # A code-executing loader (torch.load, joblib.load,
                     # yaml.load/unsafe_load) runs code embedded in the data it
-                    # deserializes.
-                    if (
-                        func.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                        and isinstance(func.value, ast.Name)
-                        and func.value.id in load_module_aliases
+                    # deserializes, unless an explicit safe Loader= rules it out.
+                    if _is_loader_attr(func) and not (
+                        func.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS and _loads_safely(node)
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):

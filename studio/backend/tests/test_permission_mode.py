@@ -1689,6 +1689,23 @@ def test_high_risk_dispatcher_non_terminal():
         ("from yaml import Loader\nprint(Loader(s).get_data())", True),
         ("import yaml\ndef g(fn): fn(s, Loader=yaml.Loader)\ng(yaml.load)", True),  # via helper
         ("import json\ndef g(fn): return fn(open('a.json'))\nprint(g(json.load))", False),
+        ("import yaml\ndef run(l=yaml.unsafe_load): l(s)\nrun()", True),  # parameter default
+        ("import yaml\nld, _ = (yaml.unsafe_load, None)\nld(s)", True),  # destructured
+        ("import yaml.loader as yl\nyl.Loader(s).get_data()", True),  # submodule import
+        ("import yaml\nclass L(yaml.Loader): pass\nL(s).get_data()", True),  # loader subclass
+        ("import yaml\ndef run(fn, s): fn(s)\nrun(*(yaml.unsafe_load, s))", True),  # star args
+        ("def run(fn, p, m): fn(p, m)\nrun(*(open, 'o', 'w'))", True),  # star args, writer
+        # Loader= is the documented safe spelling, so it stays auto-approved, but
+        # only when the loader is statically one of the safe classes.
+        ("import yaml\nprint(yaml.load(open('c.yml'), Loader=yaml.SafeLoader))", False),
+        (
+            "from yaml.loader import SafeLoader\nimport yaml\nyaml.load(f, Loader=SafeLoader)",
+            False,
+        ),
+        ("import yaml\nyaml.SafeLoader = yaml.Loader\nyaml.load(s, Loader=yaml.SafeLoader)", True),
+        ("import yaml\nyaml.load(s, Loader=pick())", True),  # dynamic loader
+        ("import yaml\nyaml.load(s, **kw)", True),  # loader hidden in a splat
+        ("import yaml\nyaml.load(s, Loader=yaml.FullLoader)", True),  # RCE before PyYAML 5.4
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
