@@ -3050,3 +3050,63 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
         f"unguarded probe calls above the diffusion return: {unconditional}; a diffusion "
         "load must not pay for a capability it never consumes"
     )
+
+
+def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
+    """The marker must describe the probe that BUILT the command, not one taken after the
+    server is up.
+
+    _wait_for_health allows up to 600s, and the retry window is 30s, so a large model's
+    startup expires the inconclusive entry many times over. Re-probing at the commit point
+    would then record False for a server that was launched without speculative decoding or
+    unified KV slots, and every identical Apply would dedupe against that degraded runtime
+    for good -- the original bug, reintroduced. Checked structurally because load_model is
+    not unit-callable.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+
+    commit = next(
+        node
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Attribute) and t.attr == "_capability_probe_inconclusive"
+            for t in node.targets
+        )
+    )
+    # The committed value must be a plain name pinned earlier, never a live probe call.
+    assert isinstance(commit.value, ast.Name), (
+        "the marker is computed at the commit point; it must be pinned from the snapshot "
+        "that built the launch command instead"
+    )
+
+    health_waits = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_wait_for_health"
+    ]
+    pins = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == commit.value.id for t in node.targets
+        )
+    ]
+    assert pins, "the pinned local vanished; re-pin this test"
+    assert health_waits, "the startup health wait moved; re-pin this test"
+    assert min(pins) < min(health_waits), (
+        "the capability snapshot is pinned after the startup wait, so a slow load can "
+        "still record a probe that is not the one the server was launched with"
+    )

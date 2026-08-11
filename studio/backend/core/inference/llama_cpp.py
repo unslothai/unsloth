@@ -11100,6 +11100,12 @@ class LlamaCppBackend:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = self.probe_server_capabilities(binary)
+                # Pin whether THIS launch's capabilities were guessed rather than read.
+                # Taken from the snapshot that built the command, because the retry window
+                # can expire many times over during the startup health wait below (up to
+                # 600s), and a fresh probe at commit time would describe a server that is
+                # not the one now running.
+                _launch_probe_inconclusive = bool(server_caps.get("mtp_probe_inconclusive"))
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -12653,16 +12659,13 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
-                # Whether the probe behind this launch's capability gates actually
-                # answered. Read here rather than beside the gates so that only a launch
-                # which got this far records it: a rejected preflight leaves the old
-                # marker intact for a runtime that is still degraded, and the diffusion
-                # runner returns long before this without consuming -- or paying for --
-                # any llama-server capability. The result is already cached from the
-                # gates themselves, so this costs nothing on the path that reaches it.
-                self._capability_probe_inconclusive = bool(
-                    binary and self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
-                )
+                # Commit the launch's own capability snapshot with the rest of the
+                # known-good state. Only a launch that got this far replaced the runtime,
+                # so a rejected preflight leaves the old marker intact for a runtime that
+                # is still degraded, and the diffusion runner returns long before the
+                # snapshot is taken without consuming -- or paying for -- any
+                # llama-server capability.
+                self._capability_probe_inconclusive = _launch_probe_inconclusive
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
