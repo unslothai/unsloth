@@ -13,9 +13,11 @@ heavy is reached only inside ``generate`` / ``version``, so import is free and t
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -23,7 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -31,8 +33,10 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
+    SdCppVideoGenParams,
     build_sd_cpp_command,
     build_sd_cpp_upscale_command,
+    build_sd_cpp_video_command,
     native_speed_flags,
 )
 
@@ -50,6 +54,91 @@ OWNER_MARKER = ".unsloth-studio-owned"
 # Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still progressing.
 # It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding the lock forever; cancel_event is the user-facing abort.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
+
+
+# sd-cli redraws its progress bar IN PLACE. Each redraw is one printf + fflush shaped
+# "\r<bar> <step>/<steps> - <speed>\033[K", with a trailing newline only on the final step of a
+# phase. So the carriage return LEADS the record and the erase-to-end-of-line CLOSES it.
+_ANSI_ERASE = "\x1b[K"
+# Any CSI escape (the erase above, plus colour runs some builds emit), stripped before a record
+# reaches on_log / the error tail: an escape in the middle of a line corrupts both.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# One read1() per redraw in practice; large enough that a burst of finished lines costs one read.
+_READ_CHUNK = 4096
+
+
+def strip_ansi(text: str) -> str:
+    """Drop CSI escape sequences (notably the ``\\033[K`` that closes every progress redraw)."""
+    return _ANSI_CSI_RE.sub("", text)
+
+
+def split_progress_records(buf: str) -> tuple[list[str], str]:
+    """Split raw sd-cli stdout into complete records plus the still-unterminated remainder.
+
+    A record ends at a carriage return, a newline, OR a trailing erase-to-end-of-line. That last
+    terminator is the point: an in-place redraw carries no newline, and its carriage return is at
+    the FRONT of the *next* redraw, so keying only on CR/LF delivers every sampling step one step
+    late (and the final one only once sampling is over). ``\\033[K`` closes the record sd-cli has
+    already flushed, so the step is delivered when it happens.
+
+    Returns records in order (still containing their escapes; call ``strip_ansi``) and whatever
+    trailing text is not yet terminated, which the caller carries into the next chunk.
+    """
+    records: list[str] = []
+    start = 0
+    i = 0
+    n = len(buf)
+    while i < n:
+        ch = buf[i]
+        if ch == "\r" or ch == "\n":
+            records.append(buf[start:i])
+            # CRLF is one terminator, not two (Windows sd-cli builds).
+            if ch == "\r" and i + 1 < n and buf[i + 1] == "\n":
+                i += 1
+            i += 1
+            start = i
+            continue
+        if buf.startswith(_ANSI_ERASE, i):
+            i += len(_ANSI_ERASE)
+            records.append(buf[start:i])
+            start = i
+            continue
+        i += 1
+    return records, buf[start:]
+
+
+def iter_sd_cpp_records(stream) -> Iterator[str]:
+    """Yield cleaned sd-cli output records from ``stream`` as soon as each is flushed.
+
+    Reads the undecoded pipe via ``buffer.read1`` so a redraw that never sends a newline is not
+    stuck behind a blocking readline, decoding incrementally so a multi-byte character split
+    across two reads survives. Streams without a raw ``.buffer`` (test doubles, non-pipes) fall
+    back to line iteration, which still splits on CR under universal newlines and so still
+    reports progress, just one redraw behind.
+    """
+    raw = getattr(stream, "buffer", None)
+    if raw is None or not hasattr(raw, "read1"):
+        for line in stream:
+            records, rest = split_progress_records(line)
+            for rec in records:
+                yield strip_ansi(rec)
+            if rest:
+                yield strip_ansi(rest)
+        return
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending = ""
+    while True:
+        chunk = raw.read1(_READ_CHUNK)
+        if not chunk:
+            pending += decoder.decode(b"", final = True)
+            break
+        pending += decoder.decode(chunk)
+        records, pending = split_progress_records(pending)
+        for rec in records:
+            yield strip_ansi(rec)
+    # EOF: hand over any final line the child left unterminated.
+    if pending:
+        yield strip_ansi(pending)
 
 
 class SdCppCancelled(RuntimeError):
@@ -146,11 +235,79 @@ def managed_install_root() -> Path:
 
     Only a copy under this root may be reinstalled over: replacing anything else would delete
     a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
-    side-by-side Studios stay isolated."""
-    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    if studio_home:
-        return Path(studio_home).parent / "stable-diffusion.cpp"
-    return Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    side-by-side Studios stay isolated.
+
+    ``<studio home>/stable-diffusion.cpp``, which is where every other managed component lives
+    (``default_managed_llama_dir``, ``managed_whisper_dir``, ``managed_node_dir`` all place their
+    tree *under* the Studio home). The legacy default home ``~/.unsloth/studio`` keeps mapping to
+    ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found."""
+    return _studio_component_root("stable-diffusion.cpp")
+
+
+def _studio_component_root(name: str) -> Path:
+    """``<studio home>/<name>``, or the legacy ``~/.unsloth/<name>`` when no custom home is set
+    (or the home *is* the legacy ``~/.unsloth/studio``). The home is expanded and made absolute
+    first: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the root relative, because the
+    process' working directory can change and would silently move the managed tree."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    legacy = Path.home() / ".unsloth" / name
+    if not home:
+        return legacy
+    root = Path(home).expanduser()
+    legacy_studio = Path.home() / ".unsloth" / "studio"
+    try:
+        root = root.resolve()
+        is_legacy = root == legacy_studio.resolve()
+    except (OSError, ValueError):
+        root = root.absolute()
+        is_legacy = root == legacy_studio
+    return legacy if is_legacy else root / name
+
+
+def legacy_sibling_install_root() -> Optional[Path]:
+    """The pre-fix managed root, ``<studio home>/../stable-diffusion.cpp``, or None.
+
+    Older builds derived the sd.cpp root from the *parent* of the Studio home, which put the tree
+    outside the Studio home entirely. Two problems: a relative ``UNSLOTH_STUDIO_HOME`` collapsed
+    that parent to the working directory, so an unrelated ``stable-diffusion.cpp`` checkout sitting
+    there became "the managed install" and the installer refused to run; and it disagreed with
+    every other component, which install under the home.
+
+    Kept only so a tree an older build really did install still resolves. Returned solely when it
+    carries the ownership marker, so a checkout that merely happens to sit next to the Studio home
+    is never adopted.
+
+    The LEXICAL parent first, because that is the one the old code took: ``Path(home).parent`` does
+    not resolve symlinks, so for a home under a symlinked directory the tree an older build really
+    created sits next to the link, not next to its target. Resolving first looked in the wrong
+    place, re-downloaded the bundle and left the old install orphaned from uninstall as well. The
+    resolved parent is still tried after it, for a home reached through a link the other way
+    around."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if not home:
+        return None
+    current = managed_install_root()
+    for base in _legacy_sibling_bases(home):
+        root = base / "stable-diffusion.cpp"
+        try:
+            if root != current and (root / OWNER_MARKER).is_file():
+                return root
+        except OSError:
+            continue
+    return None
+
+
+def _legacy_sibling_bases(home: str) -> list[Path]:
+    """The directories an older build could have taken as ``<studio home>/..``, lexical first."""
+    bases: list[Path] = []
+    for candidate in (lambda p: p.absolute(), lambda p: p.resolve()):
+        try:
+            base = candidate(Path(home).expanduser()).parent
+        except (OSError, ValueError):
+            continue
+        if base not in bases:
+            bases.append(base)
+    return bases
 
 
 def in_tree_install_root() -> Optional[Path]:
@@ -176,14 +333,34 @@ def is_managed_binary(binary: Optional[str]) -> bool:
     Deleting out of an unmarked root would take a file we are then refused permission to reinstall:
     the repair unlinks sd-server, install() rejects the now still-non-empty unmarked directory, and
     the user is left with no binary at all and no way back."""
+    return owning_managed_root(binary) is not None
+
+
+def owning_managed_root(binary: Optional[str]) -> Optional[Path]:
+    """The installer-owned root ``binary`` lives under, or None when it is not ours.
+
+    Both locations are checked, current first, because a tree an older build installed beside the
+    Studio home is still discovered by the finder. Callers that read per-install state (the
+    accelerator record) must read it from the root the binary is actually in: reading the current
+    root while the binary came from the legacy one reports "unrecorded", which a GPU target treats
+    as a mismatch and answers by re-downloading a bundle that is already installed."""
     if not binary:
-        return False
-    root = managed_install_root()
-    try:
-        Path(binary).resolve().relative_to(root.resolve())
-        return (root / OWNER_MARKER).is_file()
-    except (OSError, ValueError):
-        return False
+        return None
+    roots = [managed_install_root()]
+    legacy = legacy_sibling_install_root()
+    if legacy is not None:
+        roots.append(legacy)
+    for root in roots:
+        try:
+            Path(binary).resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        try:
+            if (root / OWNER_MARKER).is_file():
+                return root
+        except OSError:
+            continue
+    return None
 
 
 def _find_binary(
@@ -207,11 +384,18 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer so side-by-side Studios stay isolated; else ~/.unsloth/....
+    # 3. Default install root: <studio home>/stable-diffusion.cpp (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer so side-by-side Studios stay isolated), else ~/.unsloth/....
     default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
+
+    # 3b. A tree an older build installed beside the Studio home. Marker-gated (see legacy_sibling_install_root), so only a real previous install is picked up here.
+    legacy_root = legacy_sibling_install_root()
+    if legacy_root is not None:
+        hit = _first_file(_layout_candidates(legacy_root, layout_stem))
+        if hit:
+            return hit
 
     # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
     in_tree = in_tree_install_root()
@@ -361,6 +545,39 @@ class SdCppEngine:
             cancel_event = cancel_event,
         )
 
+    def generate_video(
+        self,
+        files: SdCppModelFiles,
+        params: SdCppVideoGenParams,
+        *,
+        output_path: str,
+        offload: Optional[list[str]] = None,
+        verbose: bool = False,
+        extra_args: Optional[list[str]] = None,
+        timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
+        env: Optional[dict[str, str]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Path:
+        """Run one ``vid_gen`` generation and return its video container."""
+        cmd = build_sd_cpp_video_command(
+            self._require_binary(),
+            files,
+            params,
+            output_path = str(self._prepare_out(output_path)),
+            offload = offload,
+            verbose = verbose,
+            extra_args = extra_args,
+        )
+        return self._run(
+            cmd,
+            output_path,
+            timeout = timeout,
+            env = env,
+            on_log = on_log,
+            cancel_event = cancel_event,
+        )
+
     # ── internals ─────────────────────────────────────────────────────────────
 
     def _require_binary(self) -> str:
@@ -417,14 +634,15 @@ class SdCppEngine:
         # would otherwise leave sd-cli holding VRAM with nothing able to find it.
         adopt_pid(proc.pid)
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against a wall-clock deadline.
+        # iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no newline of their own, so sampling progress reaches on_log while sampling is still running.
         tail: list[str] = []
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
         def _drain() -> None:
             try:
                 assert proc.stdout is not None
-                for raw in proc.stdout:
-                    line_q.put(raw.rstrip("\n"))
+                for rec in iter_sd_cpp_records(proc.stdout):
+                    line_q.put(rec)
             finally:
                 line_q.put(None)
 

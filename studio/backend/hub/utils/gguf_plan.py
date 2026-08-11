@@ -8,7 +8,10 @@ from typing import Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
+    bare_quant_alias,
     extract_quant_label,
+    gguf_variant_family,
+    gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
@@ -68,12 +71,21 @@ def is_companion_gguf_path(path: str) -> bool:
 
 
 def is_main_gguf_variant_path(path: str, variant: str) -> bool:
+    """Whether *path* is one of *variant*'s own weight files.
+
+    Keyed on :func:`gguf_variant_key`, in lockstep with the listers: a row built under
+    one identity and matched under another produces a variant that can be shown but
+    not downloaded.
+    """
     return (
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
-        and not is_big_endian_gguf_path(path, variant)
-        and extract_quant_label(path).lower() == variant.lower()
+        # The endian predicate reads a quant TOKEN, so it gets the label: handed the qualified key
+        # it cannot see a parent-only quant and drops the file, leaving the plan with no main
+        # files at all and an interrupted download with no hashes to resume against.
+        and not is_big_endian_gguf_path(path, extract_quant_label(path))
+        and gguf_variant_key(path).lower() == variant.lower()
     )
 
 
@@ -145,8 +157,11 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         # (the root mtp-*.gguf carries a quant label, e.g. Q8_0).
         if is_mmproj_filename(name) or is_mtp_drafter_path(name):
             continue
-        quant = extract_quant_label(name).lower()
-        if is_big_endian_gguf_path(name, quant):
+        quant = gguf_variant_key(name).lower()
+        # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
+        # parent directory only -- so a qualified key would make it misread the path and drop the
+        # file from every plan.
+        if is_big_endian_gguf_path(name, extract_quant_label(name)):
             continue
         main.setdefault(quant, []).append(sibling)
 
@@ -167,6 +182,54 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     return plans
 
 
+def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
+    """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
+
+    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``)
+    qualifies every key, because the key is a pure function of the path and cannot know that the
+    directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then
+    missed the plan map and the worker exited with "No GGUF shards matching variant".
+
+    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the
+    path -- the remote listing and a partial cache scan have to agree on it -- and the advertised
+    rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does
+    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
+    does not name one of them.
+    """
+    wanted = (variant or "").strip().lower()
+    if not wanted:
+        return None
+    exact = plans.get(wanted)
+    if exact is not None:
+        return exact
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, and picking either would load a different task.
+    matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
+    return plans[matches[0]] if len(matches) == 1 else None
+
+
+def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
+    """Narrow a variant's weight files to the single shard family a load would read.
+
+    A repo can ship one quant twice under names that share a variant key -- the same
+    BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/``
+    and ``<model>-Q6_K/``. Fetching both doubles the download and leaves the variant
+    permanently short of its expected bytes, because the loader only ever opens one.
+    Keep the family holding the lexicographically first file, the shard the lister
+    advertises and the loader opens. A genuinely split GGUF is one family, so all of
+    its shards survive this untouched.
+    """
+    if len(main_files) < 2:
+        return tuple(main_files)
+    families: dict[str, list[ExpectedFile]] = {}
+    for file in main_files:
+        families.setdefault(gguf_variant_family(file.path), []).append(file)
+    if len(families) < 2:
+        return tuple(main_files)
+    chosen = min(families.values(), key = lambda group: min(file.path for file in group))
+    return tuple(chosen)
+
+
 def plan_from_expected_files(
     variant: str,
     expected_files: Sequence[ExpectedFile],
@@ -175,7 +238,14 @@ def plan_from_expected_files(
     all_mmproj_hashes: frozenset[str] | None = None,
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
-    main_files = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    main_files = _one_shard_family(all_main)
+    # A discarded family has to leave the plan ENTIRELY, not just its main files. It is
+    # target_filenames, required_hashes and download_size_bytes that the worker fetches and the
+    # manifest checks against; leaving the copy there downloaded it, then reclaim deleted it as
+    # not-ours (it is absent from main_hashes) and the job reported partial and fetched it again.
+    kept = {file.path for file in main_files}
+    expected = tuple(file for file in expected if file not in all_main or file.path in kept)
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
     # Manifest-resume fallback for the mmproj fields below: companion_files
     # also holds the MTP drafter, so keep an mmproj-only view.

@@ -19,6 +19,7 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  curatedDisplayNameFor,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -216,9 +217,28 @@ for (const id of [
   assert.ok(imageOptionIds.has(id), `image option missing: ${id}`);
 }
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
-for (const id of ["unsloth/LTX-2.3-GGUF", ...OLD_PIPELINE_MODELS]) {
+for (const id of [
+  "unsloth/LTX-2.3-GGUF",
+  "unsloth/MiniMax-H3-GGUF",
+  ...OLD_PIPELINE_MODELS,
+]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
+
+// H3 publishes both denoiser partitions in its official bundle. One artifact lets the lister's
+// partition-aware labels expose both in Recommended and On Device without a community mirror.
+const h3Group = groupForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG);
+assert.ok(h3Group);
+assert.deepEqual(
+  h3Group.artifacts
+    .filter((artifact) => artifact.format === "gguf")
+    .map((artifact) => artifact.repoId),
+  ["unsloth/MiniMax-H3-GGUF"],
+);
+assert.equal(
+  curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
+  "MiniMax H3 (GGUF)",
+);
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 
@@ -423,6 +443,44 @@ assert.equal(
   pickDefaultArtifact(hunyuan, { gpuGb: 60, systemRamGb: 128, isDownloaded: notDownloaded })
     .label,
   "BF16 - 480p",
+);
+
+// MiniMax-H3 uses measured component-offload tiers instead of the resident 70% rule.
+const h3 = groupForRepoId("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG);
+assert.ok(h3);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 48, systemRamGb: 256, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 192, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 122, systemRamGb: 96, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 123, systemRamGb: 96, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+// The upper tier, in the units the picker is actually handed: 132 GiB of VRAM is 141.7 decimal
+// GB, past the 132 GB at which the backend estimator drops its host-RAM floor to 85 GB, and
+// 85 GiB of RAM is 91.3 GB. So this host fits, and a tier table written in decimal GB would
+// wrongly send it to GGUF.
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
 );
 
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────

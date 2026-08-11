@@ -54,6 +54,7 @@ import {
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
+import { ggufVariantDisplayLabel } from "@/features/hub";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
@@ -1480,7 +1481,14 @@ export function AgentsTab() {
                         : t("settings.agents.noQuantizations")
                     }
                   >
-                    {selectedVariant}
+                    {/* The closed trigger is where the choice is READ, so it shows the label
+                        too; SelectValue renders this instead of the raw item text. The value
+                        bound to the Select is still the key. */}
+                    {ggufVariantDisplayLabel(
+                      variants.find((v) => v.quant === selectedVariant) ?? {
+                        quant: selectedVariant ?? "",
+                      },
+                    )}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start" className="min-w-[16rem]">
@@ -1499,7 +1507,9 @@ export function AgentsTab() {
                         className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
                       >
                         <span className="font-mono text-xs whitespace-nowrap">
-                          {variant.quant}
+                          {/* The key is the selection identity and can be path-qualified; the
+                              label is what it reads as. The SelectItem value stays the key. */}
+                          {ggufVariantDisplayLabel(variant)}
                         </span>
                         {size ? (
                           <span className="text-ui-10 whitespace-nowrap text-muted-foreground">

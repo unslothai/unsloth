@@ -985,45 +985,45 @@ class TestWorkflowOrdering:
             assert "virustotal" not in (step.get("name") or "").lower()
             assert "virustotal_scan.py" not in (step.get("run") or "")
 
-    def test_release_creation_stays_immediately_before_the_upload(self):
-        # `gh release create` without `--draft` publishes at once, so the window
-        # between reserving the tag and uploading the assets is when a release is
-        # publicly empty. Nothing slow may be inserted between the two; the scan
+    def test_nothing_slow_sits_between_validation_and_the_upload(self):
+        # The v{version} release already exists and is published, so the window
+        # worth minimising is now between validating its state and the assets
+        # landing on it. Nothing slow may be inserted between the two; the scan
         # used to sit there and is why the window existed at all.
         names = self._publish_steps()
-        create = names.index("Create versioned release")
-        assert names.index("Validate versioned release state") < create
-        assert names[create + 1] == "Publish versioned release assets"
+        validate = names.index("Validate versioned release state")
+        assert names[validate + 1] == "Generate versioned updater metadata"
+        assert names[validate + 2] == "Publish versioned release assets"
 
     def test_release_notes_are_written_unconditionally(self):
-        # Validation writes the notes; metadata and provenance consume that same
-        # file before the release is created.
+        # Validation writes the notes; the metadata step consumes that same file
+        # before the assets land on the release.
         steps = self._publish_step_map()
         assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
-        metadata = steps["Generate versioned updater metadata and provenance"]["run"]
+        metadata = steps["Generate versioned updater metadata"]["run"]
         assert "desktop-release-notes.md" in metadata
 
-    def test_a_failed_lookup_is_not_treated_as_a_missing_release(self):
-        # A transient GraphQL/auth failure must stop rather than let the workflow
-        # conclude the version is unused and overwrite an existing release.
+    def test_a_missing_release_stops_the_publish(self):
+        # Nothing is created here any more, so an absent release is a dispatch
+        # mistake: say how to fix it instead of publishing into thin air.
         run = self._publish_step_map()["Validate versioned release state"]["run"]
-        assert "if ! gh release list" in run
-        failed_lookup = run.split("if ! gh release list", 1)[1].split("release_state=", 1)[0]
-        assert "Could not list releases, including drafts" in failed_lookup
-        assert "exit 1" in failed_lookup
-        assert "create=true" not in failed_lookup
+        assert "gh release create" not in run
+        missing = run.split("does not exist.", 1)[1]
+        assert "Tag main and publish it first" in missing
+        assert "exit 1" in missing
 
-    def test_release_creation_is_gated_on_the_validation_step(self):
+    def test_every_public_mutation_is_gated_on_a_real_release(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
         data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
         steps = data["jobs"]["publish-release"]["steps"]
         by_name = {step.get("name"): step for step in steps}
         assert by_name["Validate versioned release state"]["id"] == "versioned_release_state"
-        assert (
-            by_name["Create versioned release"]["if"]
-            == "steps.versioned_release_state.outputs.create == 'true'"
-        )
+        assert "Create versioned release" not in by_name
+
+        # Validation runs on every dispatch; only a non-draft run touches the release.
+        for name in ("Publish versioned release assets", "Publish versioned updater metadata"):
+            assert by_name[name]["if"] == "${{ !inputs.draft }}"
 
     def test_the_scan_step_does_not_swallow_its_own_failure(self):
         # The advisory posture is a property of the job, not of the step. The job
@@ -1108,19 +1108,17 @@ class TestWorkflowOrdering:
         summary = self._scan_step_map()["Publish VirusTotal summary"]
         assert vt.SUMMARY_HEADING in summary["run"], summary["run"]
 
-    def test_the_summary_heading_holds_for_a_draft_release_too(self):
-        # `inputs.draft` defaults to true and "Create versioned release" only
-        # adds --draft when it is set, so the ordinary dispatch leaves a draft
-        # behind and nothing is published. A heading calling this a post-publish
-        # scan would tell a release operator the opposite of what happened, so
-        # the wording has to cover an upload to a draft as well as a publication.
+    def test_the_summary_heading_holds_for_a_validation_only_run_too(self):
+        # `inputs.draft` defaults to true, and every uploading step is gated on
+        # it, so the ordinary dispatch validates and publishes nothing. A heading
+        # calling this a post-publish scan would tell a release operator the
+        # opposite of what happened, so the wording has to cover both.
         workflow = self._workflow()
         draft = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["draft"]
         assert draft["default"] is True
 
-        create = self._publish_step_map()["Create versioned release"]["run"]
-        assert "release_flags+=(--draft)" in create
-        assert '"$RELEASE_DRAFT" = "true"' in create
+        upload = self._publish_step_map()["Publish versioned release assets"]
+        assert upload["if"] == "${{ !inputs.draft }}"
 
         heading = vt.SUMMARY_HEADING.lower()
         for claim in ("post-publish", "published", "pre-flight"):

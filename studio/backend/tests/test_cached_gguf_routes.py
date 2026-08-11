@@ -2620,6 +2620,22 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
+    # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
+    # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
+    # On Device list and offered to chat instead. Both bundle repo ids must resolve to Video.
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    for repo in (H3_GGUF_REPO, "leejet/MiniMax-H3-GGUF"):
+        assert (
+            models_route._arch_to_task(None, (repo, "minimax_h3_fl2va-Q4_K_M.gguf"))
+            == models_route._VIDEO_GEN_TASK
+        )
+    # No hint is still unknown, and an unrelated repo is untouched.
+    assert models_route._arch_to_task(None) is None
+    assert models_route._arch_to_task(None, ("unsloth/Qwen3-GGUF", "q.gguf")) is None
+
+
 def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
     # Z-Image's DiT is a Lumina2 derivative, so both Z-Image GGUF repos declare general.architecture = "lumina2". Reading
     # the arch alone tagged the whole line unsupported and hid it, even though validate_load_request loads it happily.
@@ -2829,7 +2845,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None: {
+        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },
@@ -4351,3 +4367,21 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         )
     )
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
+
+
+def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
+    """H3's GGUFs carry no metadata keys at all (kv_count 0), so ``general.architecture`` is
+    absent and the NAME is the only evidence there is. Keying only on the two bundle repo ids
+    meant a denoiser copied into a custom local directory returned a null task and was dropped
+    from the Video On Device picker, even though the loader validates exactly these prefixes.
+    """
+    for name in (
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "minimax_h3_ref2va-Q8_0.gguf",
+        "/home/me/models/h3/minimax_h3_fl2va-Q4_K_M.gguf",
+    ):
+        assert models_route._arch_to_task(None, (name,)) == models_route._VIDEO_GEN_TASK, name
+
+    # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
+    for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
+        assert models_route._arch_to_task(None, (name,)) is None, name

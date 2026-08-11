@@ -112,6 +112,69 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
+@pytest.mark.parametrize(
+    "repo", ["leejet/MiniMax-H3-GGUF", "unsloth/MiniMax-H3-GGUF", "UNSLOTH/minimax-h3-gguf"]
+)
+def test_minimax_h3_variant_filter_keeps_both_denoiser_partitions(repo):
+    """Both H3 bundle repos need the filter, and the match is case-insensitive.
+
+    The Unsloth mirror is the one the family and catalog now advertise, and it carries the
+    Qwen3-VL encoder quants beside the denoisers, so leaving it off the list would aggregate a
+    12 GB text encoder as if it were a selectable transformer quant.
+
+    Both denoiser partitions stay: which one is picked IS the task, the loader's
+    ``validate_h3_transformer_filename`` accepts either, and the community bundle repo publishes
+    Ref2VA quants today. Filtering them out hid the whole reference-video path from the picker."""
+    selectable = gguf._is_selectable_repo_gguf
+    assert selectable(repo, "minimax_h3_fl2va-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va_pruned-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va-Q2_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf")
+    assert selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_ref2va_pruned-Q2_K_M.gguf")
+    # The companions are still never picks.
+    assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
+    assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q2_K_M.gguf")
+
+
+def test_the_h3_native_repo_is_a_recognised_bundle_repo():
+    """The repo the native loader downloads from must be one the filter knows about.
+
+    These are set in different files, so a future repo move that updates only the loader would
+    silently reintroduce the encoder-as-transformer aggregation this filter exists to prevent."""
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    assert gguf.is_h3_bundle_repo(H3_GGUF_REPO)
+
+
+def test_minimax_h3_variant_labels_name_the_partition_and_build():
+    variants = [
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+            quant = "minimax_h3_fl2va_pruned-Q4_K_M",
+            size_bytes = 1,
+        ),
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_ref2va-Q4_K_M.gguf",
+            quant = "minimax_h3_ref2va-Q4_K_M",
+            size_bytes = 1,
+        ),
+    ]
+
+    gguf._apply_gguf_display_labels(variants)
+
+    assert [variant.display_label for variant in variants] == [
+        "Text & frames · Q4_K_M · Pruned",
+        "References · Q4_K_M · Full",
+    ]
+
+
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")
@@ -4786,6 +4849,10 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
+    """Only a hub that can still append to the partial earns the same-transport reprieve."""
+    # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
+    # be a no-op here.
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -4797,7 +4864,11 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
         only_blob_hashes = frozenset({"q4-main"}),
         companion_blob_hashes = companion,
     )
-    (blobs / "shared-mmproj.incomplete").write_bytes(b"resumable")
+    partial = blobs / "shared-mmproj.incomplete"
+    partial.write_bytes(b"resumable")
+    # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
+    old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
+    os.utime(partial, (old, old))
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4809,7 +4880,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     )
 
     assert purged == 0
-    assert (blobs / "shared-mmproj.incomplete").exists()
+    assert partial.exists()
 
 
 def test_prepare_cache_for_transport_protects_peer_companion(monkeypatch, tmp_path):
@@ -6312,6 +6383,153 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
         promoted = local_inventory._promote_to_custom_source(row)
         assert promoted.source == "custom"
         assert promoted.capabilities.can_chat is expected
+
+
+# ── local diffusers pipelines reach the Images / Video pickers ───────────────
+
+
+def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_encoder")) -> Path:
+    """A diffusers PIPELINE directory: a root model_index.json, no root config.json, and the
+    weights inside component subdirs. Every image and video model downloaded as a pipeline
+    (MiniMax-H3, HunyuanVideo, Qwen-Image, HiDream) has exactly this shape."""
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "model_index.json").write_text(
+        json.dumps({"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.39.0"}),
+        encoding = "utf-8",
+    )
+    for name in components:
+        part = root / name
+        part.mkdir(parents = True, exist_ok = True)
+        (part / "config.json").write_text(json.dumps({"model_type": name}), encoding = "utf-8")
+        (part / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 1024)
+    return root
+
+
+def test_models_dir_scan_surfaces_a_local_diffusers_pipeline(tmp_path):
+    """A pipeline the user already has on disk must be listed. It carries no root config.json
+    and no loose weight file, which is the only shape the scan used to accept, so the Video and
+    Images pickers showed nothing for a model that was sitting right there."""
+    models = tmp_path / "models"
+    _write_pipeline(models / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_models_dir(models)
+
+    assert {Path(row.path).name for row in rows} == {"MiniMax-H3-local"}
+
+
+def test_a_scan_folder_pointed_straight_at_a_pipeline_is_that_model(tmp_path):
+    pipeline = _write_pipeline(tmp_path / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_models_dir(pipeline, entry_limit = 64)
+
+    assert [Path(row.path) for row in rows] == [pipeline]
+
+
+def test_the_lmstudio_walk_does_not_descend_into_a_pipeline(tmp_path):
+    """LM Studio stores models as publisher/model, so an unrecognised directory is walked one
+    level down. A pipeline root looked like a publisher, and its components (vae, transformer,
+    text_encoder) were published as separate models -- none of which any loader can start."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+
+    names = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(root)}
+
+    assert names == {"MiniMax-H3-local"}
+    assert not names & {"vae", "transformer", "text_encoder"}
+
+
+def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):
+    """The same walk, entered AT the pipeline. A user adding the model folder itself as a scan
+    folder is the obvious thing to do, and it published vae / transformer / text_encoder as three
+    models instead of the one that is there."""
+    pipeline = _write_pipeline(tmp_path / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_lmstudio_dir(pipeline)
+
+    assert [Path(row.path) for row in rows] == [pipeline]
+
+
+def test_a_custom_folder_offers_the_pipeline_and_not_its_components(tmp_path):
+    """End to end over the path the Custom Folders control uses. The format filter keeps only
+    gguf / safetensors / adapter rows, and a pipeline root has no loose weight to classify, so
+    it reports "unknown" by construction -- judged on its shape instead."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_custom_folder(root)
+    names = {Path(row.path).name for row in rows}
+
+    assert names == {"MiniMax-H3-local"}
+
+
+def test_a_directory_that_is_not_a_pipeline_is_still_rejected(tmp_path):
+    """The new signal is a ROOT model_index.json. A folder that only holds one in a subdir is
+    not loadable from its root, and a bare folder is not a model at all."""
+    root = tmp_path / "scan"
+    (root / "not-a-model").mkdir(parents = True)
+    (root / "not-a-model" / "notes.txt").write_text("hello", encoding = "utf-8")
+    (root / "nested" / "inner").mkdir(parents = True)
+    (root / "nested" / "inner" / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    assert local_inventory._scan_models_dir(root) == []
+
+
+def test_the_custom_folder_filter_still_drops_a_row_it_cannot_classify(tmp_path):
+    """The pipeline exemption widens the custom-folder format filter, so pin what it must NOT let
+    through. A folder holding a config.json and no weights (an aborted download) also reports
+    "unknown", and nothing can load it: it has to stay filtered out while the pipeline beside it
+    is offered."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+    aborted = root / "half-downloaded"
+    aborted.mkdir(parents = True)
+    (aborted / "config.json").write_text(json.dumps({"model_type": "llama"}), encoding = "utf-8")
+
+    # The scan does see it, so the filter is what decides -- otherwise this proves nothing.
+    assert "half-downloaded" in {
+        Path(row.path).name for row in local_inventory._scan_models_dir(root)
+    }
+    assert {Path(row.path).name for row in local_inventory._scan_custom_folder(root)} == {
+        "MiniMax-H3-local",
+    }
+
+
+def test_the_pipeline_test_is_safe_on_a_path_that_is_not_a_readable_directory(tmp_path):
+    """``_scan_custom_folder`` applies this to every row it did not already accept, and a row's
+    path can be a GGUF FILE, not a directory. A missing path, a file, and a directory whose
+    ``model_index.json`` is itself a directory must all answer False rather than raise: an
+    exception here fails the whole scan and empties the picker."""
+    assert local_inventory._is_diffusers_pipeline_dir(tmp_path / "does-not-exist") is False
+
+    loose = tmp_path / "model.gguf"
+    loose.write_bytes(b"GGUF")
+    assert local_inventory._is_diffusers_pipeline_dir(loose) is False
+    assert local_inventory._is_diffusers_pipeline_dir(loose / "model_index.json") is False
+
+    odd = tmp_path / "odd"
+    (odd / "model_index.json").mkdir(parents = True)
+    assert local_inventory._is_diffusers_pipeline_dir(odd) is False
+
+
+def test_a_modular_pipeline_root_is_recognised(tmp_path):
+    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json``, which is exactly the pair the video loader accepts. Recognising only
+    the conventional index hid such a root from the Images/Video picker and let the publisher
+    walk descend into it and offer ``transformer`` / ``vae`` as separate, unusable models."""
+    root = tmp_path / "modular"
+    root.mkdir()
+    (root / "modular_model_index.json").write_text("{}")
+    (root / "transformer").mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(root) is True
+
+    conventional = tmp_path / "conventional"
+    conventional.mkdir()
+    (conventional / "model_index.json").write_text("{}")
+    assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
+
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(neither) is False
 
 
 def test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent(monkeypatch, tmp_path):

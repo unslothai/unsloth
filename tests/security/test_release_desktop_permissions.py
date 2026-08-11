@@ -128,7 +128,9 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
-    assert names.index("Wait for the build matrix") < names.index("Create versioned release")
+    assert names.index("Wait for the build matrix") < names.index(
+        "Publish versioned release assets"
+    )
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
     download = next(
@@ -138,19 +140,18 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert names.index("Wait for the build matrix") < download, names
 
-    # Creating a missing release is a separate step gated on validation, so a
-    # non-draft release is never reserved before its assets are ready to upload.
+    # The guard refuses a release that already carries desktop assets, so a
+    # version is never published twice.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
-    assert "gh release list" in release_step["run"]
-    assert "resource_exists" in release_step["run"]
+    assert 'gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}"' in release_step["run"]
+    assert "already carries desktop assets" in release_step["run"]
 
-    create_step = next(
-        step for step in publish["steps"] if step.get("name") == "Create versioned release"
-    )
-    assert "gh release create" in create_step["run"]
-    assert create_step["if"] == "steps.versioned_release_state.outputs.create == 'true'"
+    # The release is the maintainer's: assets are uploaded onto it, but the
+    # release itself is never created and its notes are never rewritten.
+    assert not any("gh release create" in step.get("run", "") for step in publish["steps"])
+    assert not any("gh release edit" in step.get("run", "") for step in publish["steps"])
 
 
 def test_post_publish_scan_job_holds_no_release_credentials():
@@ -194,28 +195,123 @@ def test_versioned_release_hides_updater_signature_assets():
     assert "--clobber" not in publish["run"]
 
 
-def test_publishing_draft_advances_updater_without_rebuilding():
+def test_publishing_draft_validates_normal_release_without_rebuilding():
     workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
-    assert workflow.get("on", workflow.get(True)) == {"release": {"types": ["published"]}}
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["queue"] == "max"
 
     job = workflow["jobs"]["publish-updater"]
     assert "build" not in workflow["jobs"]
     assert job["permissions"] == {"contents": "write"}
-    assert "startsWith(github.event.release.tag_name, 'desktop-v')" in job["if"]
+    assert "startsWith(inputs.release_tag, 'v')" in job["if"]
+    # The job runs for a mistakenly flagged prerelease so validation fails visibly.
+    assert "prerelease" not in job["if"]
     assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
-    assert any("desktop-latest" in step.get("run", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
-
-    download = next(
-        step for step in job["steps"] if step.get("name") == "Download updater metadata"
-    )
-    assert "HTTP 404" in download["run"]
-    assert "desktop-current" not in download["run"] or "|| true" not in download["run"]
 
     validate = next(
         step for step in job["steps"] if step.get("name") == "Validate updater metadata"
     )
     assert "source-release.json" in validate["run"]
     assert "bundle_name not in release_assets" in validate["run"]
+    assert "source.get('prerelease')" in validate["run"]
+    assert "'/releases/latest/'" in validate["run"]
+
+    downgrade = next(
+        step for step in job["steps"] if step.get("name") == "Prevent GitHub latest downgrade"
+    )
+    assert "Refusing to replace GitHub latest" in downgrade["run"]
+    assert "releases/latest" in downgrade["run"]
+
+    promote = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Mark published release as GitHub latest"
+    )
+    # The API documents make_latest as a string, so -f, not -F.
+    assert "-f make_latest=true" in promote["run"]
+    assert "releases/latest" in promote["run"]
+
+    bridge = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Bridge legacy desktop-latest clients once"
+    )
+    assert "inputs.bridge_legacy_channel" in bridge["if"]
+    # Without it the bridge reads a manifest that the gated download step never fetched.
+    assert "steps.gate.outputs.proceed == 'true'" in bridge["if"]
+    assert "gh release create desktop-latest" not in bridge["run"]
+    assert "gh release upload desktop-latest" in bridge["run"]
+    assert "--clobber" in bridge["run"]
+
+    assert "Refusing to move desktop-latest" in bridge["run"]
+    assert 'releases/latest" --jq .tag_name' in bridge["run"]
+
+    ordinary_steps = [
+        step
+        for step in job["steps"]
+        if step.get("name") != "Bridge legacy desktop-latest clients once"
+    ]
+    assert not any(
+        "gh release upload desktop-latest" in step.get("run", "") for step in ordinary_steps
+    )
+
+
+def test_the_updater_workflow_skips_releases_without_desktop_bundles():
+    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["publish-updater"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    gate = steps["Check for desktop bundles"]
+    assert gate["id"] == "gate"
+    # An unreadable release must not look like one that simply has no bundles.
+    assert "refusing to advance the channel" in gate["run"]
+
+    for name in (
+        "Download updater metadata",
+        "Validate updater metadata",
+        "Remove standalone signature assets",
+        "Prevent GitHub latest downgrade",
+        "Mark published release as GitHub latest",
+    ):
+        assert "steps.gate.outputs.proceed == 'true'" in steps[name]["if"], name
+
+    # The v... release is shared, so the sweep must not reach past desktop assets.
+    assert 'startswith("Unsloth-Desktop-")' in steps["Remove standalone signature assets"]["run"]
+
+
+def test_the_updater_workflow_validates_the_target_before_deleting_its_assets():
+    """The tag is typed by hand, so a mistyped or mis-flagged one names a real
+    older release. Deleting release assets cannot be undone, so every check that
+    rejects the target has to run before the sweep, or the rejected release is
+    already missing its signatures by the time the run fails."""
+    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["publish-updater"]
+    order = [step.get("name") for step in job["steps"]]
+
+    remove = order.index("Remove standalone signature assets")
+    for name in ("Validate updater metadata", "Prevent GitHub latest downgrade"):
+        assert order.index(name) < remove, name
+    # Still ahead of the promotion, which points clients here and reads the JSON it refreshes.
+    assert remove < order.index("Mark published release as GitHub latest")
+
+
+def test_the_updater_workflow_is_manual_dispatch_only():
+    """It shares a concurrency group with release-desktop.yml, so an auto-fired
+    run queues ahead of the desktop build dispatched right after it and stalls
+    the release. Nothing may start this workflow except a maintainer."""
+    workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"workflow_dispatch"}, triggers
+
+    job = workflow["jobs"]["publish-updater"]
+    # A leftover github.event.release ref is null under dispatch: silently false, not an error.
+    conditions = [job["if"]] + [step["if"] for step in job["steps"] if "if" in step]
+    for condition in conditions:
+        assert "github.event" not in condition, condition
+
+    # Dropping the release trigger is only safe while the pointer repair stays reachable.
+    carry = next(
+        step for step in job["steps"] if step.get("name") == "Carry desktop metadata forward"
+    )
+    assert "inputs.repair_pointer" in carry["if"]
+    assert triggers["workflow_dispatch"]["inputs"]["repair_pointer"]["default"] is False

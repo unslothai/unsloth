@@ -299,10 +299,15 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 
 def _local_pipeline_index(d: Path) -> bool:
-    """True when *d* is a diffusers PIPELINE root (top-level ``model_index.json``, weights in
-    component subdirs), which ``_is_model_directory`` (root config + loose weights) rejects."""
+    """True when *d* is a diffusers PIPELINE root (a top-level index, weights in component
+    subdirs), which ``_is_model_directory`` (root config + loose weights) rejects.
+
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, and the video loader accepts exactly that pair, so recognising only the
+    conventional one hid a valid local root from the picker and let the publisher walk descend
+    into it and offer its components as separate, unusable models."""
     try:
-        return (d / "model_index.json").is_file()
+        return (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
     except OSError:
         return False
 
@@ -1208,16 +1213,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1228,8 +1237,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
@@ -2752,13 +2766,48 @@ def _prune_empty_parents(start: Path, stop_at: Path) -> None:
         parent = parent.parent
 
 
+def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two variant spellings can name the SAME checkpoint, for the load-state guard.
+
+    Deletion accepts an unambiguous bare quant for a path-qualified key (the shared-container
+    layout, ``weights/model-Q4_K_M.gguf``), so a guard comparing the two spellings literally lets
+    a model loaded through a legacy bare pin be deleted through its advertised qualified row --
+    unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
+    refuses a delete, a false miss loses weights.
+    """
+    from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
+
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    for key, bare in ((left, right), (right, left)):
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
+            return True
+    return False
+
+
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_count = 0
     deleted_bytes = 0
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        if _extract_quant_label(path.name).lower() != variant.lower():
+        # Keyed on the path, not the basename: a repo holding several checkpoints at
+        # one quant would otherwise delete every one of them for a single row.
+        from utils.models.model_config import _gguf_variant_key
+
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = path.name
+        if _gguf_variant_key(relative).lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
@@ -2892,7 +2941,9 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
+                # literal comparison here would wave through the very spelling it then deletes.
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
@@ -2909,7 +2960,7 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
@@ -3319,25 +3370,34 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 if snaps.is_dir():
                     roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
-        want = _normalized_quant_label(quant)
+        want = (quant or "").strip()
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
-            matches: list[tuple[str, Path]] = []
-            total = 0
+            ranked: dict[int, list[tuple[str, Path, int]]] = {0: [], 1: []}
             for f in _iter_gguf_paths(root):
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                q = _main_variant_gguf_label(rel)
-                if q is None or _normalized_quant_label(q) != want:
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 try:
-                    total += f.stat().st_size
+                    size = f.stat().st_size
                 except OSError:
                     continue
-                matches.append((rel, f))
+                ranked[rank].append((rel, f, size))
+            # Exact keys alone when any exist: summing them with the label matches counts other
+            # checkpoints' bytes into this row's estimate and can reveal one of their files.
+            # ... and within those, ONE shard family, the same rule group_gguf_variant_files
+            # applies: a snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets)
+            # would otherwise report double the weights the loader opens, which /kv-cache-estimate
+            # turns into a false exceeds-memory warning and which can make a snapshot look
+            # "more complete" purely for holding a redundant copy.
+            chosen = _one_shard_family_of(ranked[0] or ranked[1])
+            matches = [(rel, f) for rel, f, _size in chosen]
+            total = sum(size for _rel, _f, size in chosen)
             # Prefer the most complete snapshot so a partial older revision can't underestimate bytes.
             if matches and total > best_total:
                 matches.sort(key = lambda m: m[0])
@@ -3453,6 +3513,9 @@ async def get_gguf_variants(
                 GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
+                    # A path-qualified key is not a label a picker can show; without this
+                    # the row reads as its whole relative path.
+                    display_label = getattr(v, "display_label", None),
                     size_bytes = v.size_bytes,
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
@@ -3640,6 +3703,67 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     return label
 
 
+def _one_shard_family_of(entries: list) -> list:
+    """*entries* narrowed to the single shard family the loader would open.
+
+    ``(rel, path, size)`` triples. Same rule as ``hub.utils.gguf.group_gguf_variant_files``:
+    every shard of one split GGUF shares a family, two files that do not are two checkpoints, and
+    the family kept is the one holding the lexicographically first file. A genuinely split GGUF is
+    one family and survives whole.
+    """
+    if len(entries) < 2:
+        return list(entries)
+    from hub.utils.gguf import gguf_variant_family
+
+    families: dict[str, list] = {}
+    for entry in entries:
+        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+    if len(families) < 2:
+        return list(entries)
+    return min(families.values(), key = lambda group: min(e[0] for e in group))
+
+
+def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
+    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
+    quant-label spelling, None for neither.
+
+    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
+    doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
+    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
+    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    first file would load a different task. Exact keys are used alone whenever any exist, and the
+    label is the fallback for rows with no root-stem identity.
+    """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+    from utils.models.model_config import _gguf_variant_key
+
+    label = _main_variant_gguf_label(rel_path)
+    if label is None:
+        return None
+    key = _gguf_variant_key(rel_path)
+    if _variant_keys_match(key, want):
+        return 0
+    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+        return None
+    return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
+
+
+def _variant_keys_match(key: str, want: str) -> bool:
+    """Whether *want* is *key*, for the exact-key test.
+
+    ``_normalized_quant_label`` strips hyphens and underscores, which is right for a bare quant
+    (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong for a path: it folds ``exp-a/`` and
+    ``expa/`` into one, so two advertised checkpoints both answered to the other's key. A qualified
+    key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
+    bare aliases it was written for.
+    """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+
+    if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
+        return key.strip().lower() == want.strip().lower()
+    return _normalized_quant_label(key) == _normalized_quant_label(want)
+
+
 def _normalized_quant_label(label: str) -> str:
     return label.lower().replace("-", "").replace("_", "")
 
@@ -3796,6 +3920,31 @@ _VIDEO_GEN_TASK = "text-to-video"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
+# The two denoiser partitions, by the filename prefix the loader itself validates against
+# (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
+# evidence there is, and it is the same evidence the load path acts on.
+_H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
+def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
+    """True when a name hint names MiniMax-H3 GGUF weights (video, never chat).
+
+    Either a known bundle repo id, or a validated denoiser FILENAME. The filename half matters
+    for a GGUF the user copied into a custom local directory rather than leaving under one of the
+    bundle ids: with no architecture metadata to fall back on, ``_local_model_task`` returned null
+    and an otherwise loadable checkpoint was dropped from the Video On Device picker."""
+    if not hint:
+        return False
+    name = str(hint).strip().lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name.endswith(".gguf") and name.startswith(_H3_DENOISER_GGUF_PREFIXES):
+        return True
+    try:
+        from hub.utils.gguf import is_h3_bundle_repo
+        return is_h3_bundle_repo(hint)
+    except Exception:  # noqa: BLE001 -- never misclassify a model over a probe failure
+        return False
+
+
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
@@ -3845,6 +3994,13 @@ def _video_family_buildable(fam) -> bool:
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
+    # MiniMax-H3's GGUFs carry NO metadata keys at all -- every file in the bundle, denoisers and
+    # the Qwen conditioner alike, has kv_count 0, so general.architecture is absent where LTX-2 and
+    # Wan GGUFs declare "ltxv"/"wan". The arch read therefore classifies the whole repo as unknown,
+    # and an unknown task is dropped from the Video picker's On Device list while the chat picker
+    # still offers the video DiT. Key the bundle repos by id instead, before the arch is consulted.
+    if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
+        return _VIDEO_GEN_TASK
     if arch is None:
         return None
     a = arch.lower()
@@ -4403,7 +4559,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
-        want = _normalized_quant_label(variant)
+        want = (variant or "").strip()
         candidate_revisions = sorted(
             (rev for repo_info in matching_repos for rev in repo_info.revisions),
             key = lambda rev: getattr(rev, "last_modified", 0) or 0,
@@ -4411,7 +4567,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         )
         for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
-            matches = []
+            ranked: dict[int, list[tuple[str, Path]]] = {0: [], 1: []}
             for f in rev.files:
                 p = Path(f.file_path)
                 rel = f.file_name
@@ -4420,11 +4576,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         rel = p.relative_to(snapshot).as_posix()
                     except ValueError:
                         pass
-                label = _main_variant_gguf_label(rel)
-                if label is None or _normalized_quant_label(label) != want:
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 if p.exists() or p.is_symlink():
-                    matches.append((rel, p))
+                    ranked[rank].append((rel, p))
+            # Exact keys alone when any exist, else the legacy label spelling.
+            matches = ranked[0] or ranked[1]
             if matches:
                 # Path-sorted so a sharded quant deterministically yields its first split.
                 return sorted(matches, key = lambda m: m[0].lower())[0][1]

@@ -257,9 +257,12 @@ def test_looks_like_quant_separates_quants_from_foreign_tags():
     assert auto_dl.looks_like_quant("UD-Q6_K_XL")
     assert auto_dl.looks_like_quant("q4_k_m")
     assert auto_dl.looks_like_quant("F16")
+    assert auto_dl.looks_like_quant("minimax_h3_ref2va_pruned-Q6_K")
     # Ollama-style tags are not quants and must not read as a GGUF reference.
     assert not auto_dl.looks_like_quant("latest")
     assert not auto_dl.looks_like_quant("8b")
+    assert not auto_dl.looks_like_quant("8b-instruct-q4_0")
+    assert not auto_dl.looks_like_quant("7b-chat-v1.5-q8_0")
     assert not auto_dl.looks_like_quant(None)
 
 
@@ -1082,7 +1085,7 @@ def test_setter_round_trips_auto_download_in_one_transaction(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
 
     result = settings.set_openai_auto_switch(True, 120, None, True)
-    assert result == (True, 120, True, True)
+    assert result == (True, 120, True, True, False)
     assert len(calls) == 1
     assert calls[0][settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY] is True
 
@@ -1446,6 +1449,65 @@ def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
                 break
             _time.sleep(0.01)
     assert elapsed < 0.5, f"request path blocked on the warm scan for {elapsed:.2f}s"
+
+
+def test_invalidation_during_a_warm_preserves_a_second_scan(monkeypatch):
+    import threading
+    import time as _time
+
+    from core.inference import local_model_resolver as resolver
+
+    first_scan_started = threading.Event()
+    release_first_scan = threading.Event()
+    invalidation_finished = threading.Event()
+    second_scan_finished = threading.Event()
+    scans = []
+
+    def _index():
+        scans.append(1)
+        if len(scans) == 1:
+            # Match the real _index(): keep invalidation blocked until this pass
+            # publishes, then keep the worker alive until invalidation has marked
+            # the just-published snapshot stale.
+            with resolver._lock:
+                first_scan_started.set()
+                assert release_first_scan.wait(5)
+                resolver._scan = (_time.monotonic(), {})
+            assert invalidation_finished.wait(5)
+        else:
+            second_scan_finished.set()
+        return {}
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    monkeypatch.setattr(resolver, "_index", _index)
+
+    _real_warm_index_soon()
+    assert first_scan_started.wait(5)
+
+    def _invalidate_and_warm():
+        resolver.invalidate_index()
+        _real_warm_index_soon()
+        invalidation_finished.set()
+
+    invalidator = threading.Thread(target = _invalidate_and_warm)
+    invalidator.start()
+    release_first_scan.set()
+    invalidator.join(timeout = 5)
+
+    try:
+        assert not invalidator.is_alive()
+        assert second_scan_finished.wait(5)
+        assert scans == [1, 1]
+    finally:
+        release_first_scan.set()
+        invalidation_finished.set()
+        for _ in range(500):
+            if not resolver._warming:
+                break
+            _time.sleep(0.01)
 
 
 def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatch):

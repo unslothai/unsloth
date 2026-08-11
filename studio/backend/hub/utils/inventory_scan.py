@@ -29,7 +29,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 from hub.utils.gguf import (
-    extract_quant_label,
+    gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
     is_mmproj_filename,
@@ -38,9 +38,9 @@ from hub.utils.gguf import (
 from hub.utils.state_dir import RepoType
 
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
     has_incomplete_blobs,
     hf_cache_roots,
+    incomplete_blob_hash,
     iter_repo_cache_dirs,
     latest_snapshot_dir,
     repo_cache_dir_has_incomplete_blobs,
@@ -525,8 +525,11 @@ def _repo_cache_dir_incomplete_hashes(repo_cache_dir: Path) -> set[str]:
         return hashes
     for blob in entries:
         try:
-            if blob.is_file() and blob.name.endswith(INCOMPLETE_SUFFIX):
-                hashes.add(blob.name[: -len(INCOMPLETE_SUFFIX)])
+            if not blob.is_file():
+                continue
+            blob_hash = incomplete_blob_hash(blob.name)
+            if blob_hash is not None:
+                hashes.add(blob_hash)
         except OSError:
             continue
     return hashes
@@ -776,7 +779,7 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         rel = path.relative_to(snapshot_dir).as_posix()
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
-        quant = extract_quant_label(rel)
+        quant = gguf_variant_key(rel)
         # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
         # quant. Judged with the loader's label, since the two extractors disagree on
         # F16-be-checkpoint-Q4_K_M and this file must not mark Q4_K_M complete.

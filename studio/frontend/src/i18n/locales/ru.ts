@@ -85,6 +85,8 @@ export const ru = {
       recipes: "Рецепты",
       images: "Изображения",
       video: "Видео",
+      trainChecking: "Проверка поддержки обучения на этой машине...",
+      videoChecking: "Проверка поддержки видео на этой машине...",
       more: "Ещё",
       customizeSidebar: "Настроить боковую панель",
       newBadge: "Новое",
@@ -378,6 +380,9 @@ export const ru = {
         keepKv: "Сохранять контекст чата при автовыгрузке",
         keepKvDescription:
           "Сохраняет KV-кеш перед автовыгрузкой при простое, чтобы возобновлённые чаты не перечитывали историю. До 10 ГБ на диске.",
+        apiOnly: "Выгружать только модели, загруженные через API",
+        apiOnlyDescription:
+          "Автовыгрузка при простое оставляет в памяти модель, которую вы загрузили в Studio, и освобождает только те, что загрузил запрос через API.",
       },
       previewSharing: {
         sectionTitle: "Публикация предпросмотра",
@@ -900,6 +905,11 @@ export const ru = {
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      thinking: {
+        collapseByDefault: "Сворачивать размышления по умолчанию",
+        collapseByDefaultDescription:
+          "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",
@@ -908,6 +918,9 @@ export const ru = {
         allowNetworkAccess: "Разрешить сетевой доступ Canvas",
         allowNetworkAccessDescription:
           "Позволяет предпросмотрам Canvas загружать скрипты, стили, шрифты, медиа и сетевые ресурсы из CDN. Оставьте выключенным для полностью офлайн-предпросмотров.",
+        blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
+        blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
+        blockedBannerAction: "Разрешить для этого Canvas",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",
@@ -1383,6 +1396,7 @@ export const ru = {
       history: "История",
     },
     loadingRuntime: "Загрузка среды обучения...",
+    checkingSupport: "Проверка поддержки обучения на этой машине...",
     backToHistory: "Назад к истории",
     sections: {
       model: "Модель",

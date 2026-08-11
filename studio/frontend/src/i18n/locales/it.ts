@@ -52,6 +52,8 @@ export const it = {
       recipes: "Ricette",
       images: "Immagini",
       video: "Video",
+      trainChecking: "Verifica del supporto all'addestramento su questa macchina...",
+      videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
       newBadge: "Novità",
@@ -358,6 +360,9 @@ export const it = {
           "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
         keepKvDescription:
           "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+        apiOnly: "Scarica solo i modelli caricati dall'API",
+        apiOnlyDescription:
+          "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Studio e libera solo quelli caricati da una richiesta API.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",
@@ -890,6 +895,11 @@ export const it = {
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      thinking: {
+        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
+        collapseByDefaultDescription:
+          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Comprimi i blocchi HTML",
@@ -898,6 +908,9 @@ export const it = {
         allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
         allowNetworkAccessDescription:
           "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
+        blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
+        blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
+        blockedBannerAction: "Consenti per questo Canvas",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -1411,6 +1424,7 @@ export const it = {
       history: "Cronologia",
     },
     loadingRuntime: "Caricamento del runtime di addestramento...",
+    checkingSupport: "Verifica del supporto all'addestramento su questa macchina...",
     backToHistory: "Torna alla cronologia",
     sections: {
       model: "Modello",

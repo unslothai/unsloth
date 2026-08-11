@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -271,6 +272,87 @@ test("the welcome composer is left alone, and the stack stays in the corner", ()
   assert.equal(stackBottomInset(welcome, CHAT_W, CHAT_H), 16);
 });
 
+// The reported case: a 921x534 window, where the welcome composer leaves 83px
+// under it and the 80px card fits in the corner it was being lifted out of.
+// Asking for a fixed 120 parked it in the middle of the screen instead.
+const SHORT_W = 921;
+const SHORT_H = 534;
+const SHORT_WELCOME = { left: 316, top: 308, right: 877, bottom: 427 };
+
+test("a card that fits under the welcome composer keeps the corner", () => {
+  const geometry = stackGeometry(SHORT_WELCOME, SHORT_W, SHORT_H, 80);
+  assert.equal(geometry.bottom, 16, "the card belongs in the corner");
+  const stackTop = SHORT_H - geometry.bottom - geometry.maxHeight;
+  assert.ok(stackTop >= SHORT_WELCOME.bottom, "and still clears the composer");
+  assert.ok(geometry.maxHeight >= 80, "with room for the card it measured");
+});
+
+test("a stack too tall for that gap is still lifted over", () => {
+  const inset = stackBottomInset(SHORT_WELCOME, SHORT_W, SHORT_H, 200);
+  assert.ok(inset > 16, "200px cannot fit in 83px, so it has to move");
+  assert.ok(SHORT_H - inset <= SHORT_WELCOME.top, "and clears it fully");
+});
+
+test("a docked composer is dodged whatever the stack measures", () => {
+  const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (const height of [40, 80, 120, 260]) {
+    assert.ok(
+      stackBottomInset(docked, CHAT_W, CHAT_H, height) > 16,
+      `a ${height}px stack must still clear Send`,
+    );
+  }
+});
+
+// The measurement feeds the cap, and the cap is on the element measured. The
+// overlays are min-h-0 flex items, so under the cap they shrink to it and
+// scrollHeight reports the cap: a stack taller than the gap would measure as
+// the gap, never ask for a lift, and sit clipped. So read with the cap off.
+test("the height is measured with the hook's own cap lifted", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.ok(measure, "the measure callback moved");
+  assert.match(
+    measure,
+    /node\.style\.maxHeight = "none";[\s\S]*node\.scrollHeight/,
+    "scrollHeight is read while the cap still applies",
+  );
+  assert.match(
+    measure,
+    /node\.scrollHeight;[\s\S]*node\.style\.maxHeight = capped;/,
+    "the cap is not restored after the read",
+  );
+});
+
+// The sweep above, re-run at the heights the stack actually takes.
+test("no measured height leaves the stack overlapping a box", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (const needed of [0, 40, 80, 120, 200, 320]) {
+    for (let bottom = 60; bottom <= CHAT_H - 16; bottom += 4) {
+      const box = { left: 996, top: Math.max(0, bottom - 180), right: 1264, bottom };
+      for (const boxes of [[box], [box, composer]]) {
+        const geometry = stackGeometry(boxes, CHAT_W, CHAT_H, needed);
+        const label = `needed=${needed} bottom=${bottom} n=${boxes.length}`;
+        assert.ok(geometry.maxHeight > 0, `non-positive cap for ${label}`);
+        const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+        for (const each of boxes) {
+          const clearsAbove = CHAT_H - geometry.bottom <= each.top;
+          const clearsBelow = stackTop >= each.bottom;
+          assert.ok(clearsAbove || clearsBelow, `overlap for ${label}`);
+        }
+      }
+    }
+  }
+});
+
 // Same rule, applied to the other publisher: a monitor dragged up the screen
 // leaves the corner free, so the stack belongs in it.
 test("a monitor away from the corner no longer lifts the stack", () => {
@@ -351,4 +433,60 @@ test("no pairing produces an overlap or an unusable cap", () => {
       }
     }
   }
+});
+
+// At its cap the stack's border box does not move when its content grows, so neither a
+// root-only ResizeObserver nor a childList watcher hears an image finish loading inside an
+// expanded release note, and the stack keeps the pre-load height and stays clipped.
+test("every box inside the stack is observed, not just the stack", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wiring = source.slice(source.indexOf("const observer = new ResizeObserver"));
+  assert.ok(
+    !/observer\.observe\(node\)/.test(wiring),
+    "the root alone is observed, so an intrinsic descendant resize is missed",
+  );
+  assert.match(
+    wiring,
+    /querySelectorAll\("\*"\)/,
+    "the descendants are never enumerated, so none of them is observed",
+  );
+  // A changed subtree has to be re-observed, or a banner arriving after mount is missed.
+  const onMutation = wiring.slice(wiring.indexOf("new MutationObserver"));
+  assert.match(onMutation, /syncObserved\(\)/, "the observed set is not resynced");
+  // And unobserved on the way out, or a detached node keeps the observer alive.
+  assert.match(wiring, /observer\.unobserve\(/, "nothing is ever unobserved");
+});
+
+// The llama.cpp update banner animates its progress bar's width every frame, inside this
+// same stack. Observing descendants without filtering therefore remeasures at ~60Hz for a
+// stack whose height never moved, and each remeasure lifts the cap and reads scrollHeight,
+// which forces a synchronous layout.
+test("a width-only animation does not remeasure the stack", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wiring = source.slice(
+    source.indexOf("const observer = new ResizeObserver"),
+    source.indexOf("const observed = new Set<Element>()"),
+  );
+  assert.ok(
+    !/new ResizeObserver\(measure\)/.test(wiring),
+    "every observed resize remeasures, width-only ones included",
+  );
+  assert.match(wiring, /blockSize/, "the entry's height is never read");
+  assert.match(
+    wiring,
+    /if \(moved\) measure\(\)/,
+    "measure runs whether or not a height moved",
+  );
 });

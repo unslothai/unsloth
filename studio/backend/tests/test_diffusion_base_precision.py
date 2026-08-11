@@ -66,6 +66,32 @@ def test_base_precision_validation():
     assert _cfg(base_model = _Z_PREQUANT, base_precision = "auto").normalized().base_precision == "auto"
 
 
+def test_normalized_config_keeps_the_canonical_base_and_pins_its_fetch_mirror(monkeypatch):
+    from core.inference import diffusion_families
+
+    upstream = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    seen = []
+
+    def _prefer(base, token = None):
+        seen.append((base, token))
+        return mirror
+
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", _prefer)
+    norm = _cfg(base_model = upstream, hf_token = " token ").normalized()
+
+    assert norm.base_model == upstream
+    assert norm.fetch_base_model == mirror
+    assert norm.hf_token == "token"
+    assert seen == [(upstream, "token")]
+
+    # SDXL has its own trainer and still loads base_model directly, so its revision source must
+    # not be redirected until that loader opts into the same fetch field.
+    sdxl = _cfg(base_model = "stabilityai/stable-diffusion-xl-base-1.0").normalized()
+    assert sdxl.fetch_base_model == sdxl.base_model
+    assert seen == [(upstream, "token")]
+
+
 def test_base_precision_denies_fp8_for_corrupted_family():
     # fp8 corrupts the Qwen-Image DiT, so a dense Qwen base with base_precision="fp8" is refused up front.
     with pytest.raises(ValueError, match = "fp8"):
@@ -246,6 +272,29 @@ def test_family_train_infos_empties_dit_modes_on_non_bf16(monkeypatch):
     assert dit_seen  # the registry must still expose at least one DiT family to have covered it
 
 
+def test_family_train_infos_drops_base_specs_on_a_dit_block(monkeypatch, dit_train_host):
+    # The per-base overlay wins in resolveDiffusionTrainingFacts, and FamilyFacts renders
+    # vram_note only when there are NO chips. So a blocked host that still published base_specs
+    # would put the 9B / 18 GB chips back the moment Klein base-9B is selected, and swap the
+    # actionable reason (no CUDA, no native bf16) for a size the user cannot act on. Clearing the
+    # family chips is not enough on a family whose bases carry their own.
+    from core.training.diffusion_train_common import _DIT_TRAIN_FAMILIES, family_train_infos
+
+    unblocked = {info["name"]: info for info in family_train_infos()}
+    # At least one DiT family must ship a per-base overlay, or this asserts nothing.
+    assert any(unblocked[n]["base_specs"] for n in _DIT_TRAIN_FAMILIES if n in unblocked)
+
+    monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: "no bfloat16 on this GPU")
+    for name, info in (
+        (n, i)
+        for n, i in ((i["name"], i) for i in family_train_infos())
+        if n in _DIT_TRAIN_FAMILIES
+    ):
+        assert info["base_specs"] == {}, name
+        # The reason survives, which is the whole point of dropping the chips.
+        assert info["vram_note"] == "no bfloat16 on this GPU", name
+
+
 def test_base_precision_gates_skip_sdxl():
     # SDXL ignores base_precision, so the dense-mode gates must not fire for it even on a prequant-looking name.
     norm = _cfg(base_model = _SDXL_PREQUANT_NAME, base_precision = "bf16").normalized()
@@ -363,6 +412,38 @@ def test_resolve_auto_int8_band_gates_on_torchao(monkeypatch):
     # With a functional torchao the same band picks int8.
     monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "int8"
+
+
+def test_resolve_auto_uses_klein_variant_size(monkeypatch):
+    import torch
+
+    spec = dit._SPECS["flux.2-klein"]
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(20 * 1e9), int(24 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (10, 0)
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+
+    four_b = _cfg(
+        base_model = "black-forest-labs/FLUX.2-klein-base-4B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+    nine_b = _cfg(
+        base_model = "unsloth/FLUX.2-klein-base-9B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+
+    assert dit._resolve_base_precision(four_b, spec, "cuda") == "bf16"
+    assert dit._resolve_base_precision(nine_b, spec, "cuda") == "nf4"
 
 
 def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):

@@ -4,6 +4,7 @@
 import { bumpInventoryVersion } from "@/features/hub";
 import {
   consumeNativePathToken,
+  nativeDropTargetAt,
   registerNativeDatasetPath,
 } from "@/features/native-intents";
 import {
@@ -316,6 +317,10 @@ export function useDatasetUploads() {
       stopScaleChanged?.();
     };
     const hitsTarget = (position: { x: number; y: number }) => {
+      // A registered drop zone owns this position outright: bounds alone would
+      // also fire this listener for a dialog opened over the upload button, so
+      // the same file would upload here and stage in the dialog.
+      if (nativeDropTargetAt(position) !== null) return false;
       const target = document.getElementById(datasetDropTargetId);
       return (
         target != null &&

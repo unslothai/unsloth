@@ -12,6 +12,7 @@ are all exercised without CUDA, torchao, or a real diffusers model.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import sys
 import types
 
@@ -106,6 +107,23 @@ def test_flux1_variant_prequant_wiring():
             family_prequant_repo(fam, scheme, base_repo = "black-forest-labs/FLUX.1-Krea-dev")
             == "unsloth/FLUX.1-Krea-dev-FP8"
         )
+
+
+def test_resolve_prefers_a_family_declared_filename():
+    # A family may host a SECOND artifact for the same repo and scheme. Naming it makes it the
+    # primary and demotes the derived name to the fallback, so a build that knows the new name
+    # gets it while an older one still resolves the artifact it already understands.
+    fam = _fam(prequant_repos = (("int8", "unsloth/Model-FP8"),))
+    fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
+    src = resolve_prequant_source(fam, "int8")
+    assert src.filename == "Model-INT8-ConvRot.pt"
+    assert src.fallback_filename == "Model-INT8.pt"
+    # Only for the scheme that declares one; everything else keeps today's derived/legacy pair.
+    other = resolve_prequant_source(
+        dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
+    )
+    assert other.filename == "Model-FP8.pt"
+    assert other.fallback_filename == "transformer_fp8.pt"
 
 
 def test_resolve_wrong_scheme_is_none():
@@ -280,6 +298,10 @@ class _FakeTransformer:
         return []
 
     def buffers(self):
+        return []
+
+    def named_modules(self):
+        # Real nn.Modules have this, and the small-M padding pass walks it.
         return []
 
     def to(self, device):
@@ -1364,6 +1386,56 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
 
     assert isinstance(out, _Transformer)  # the prequant loaded instead of being dropped
     assert seen == [None]  # read straight through the root that supplied the checkpoint
+
+
+# ── small-M activation padding on the hosted path ────────────────────────────────
+
+
+def test_load_pads_the_small_m_linears_with_the_recorded_family(monkeypatch, tmp_path):
+    """A checkpoint built under the current exclusion set QUANTISES its family's small-M linears,
+    so the loader must wrap them exactly as the runtime dense-quantise path does. The family comes
+    from the checkpoint's own metadata, not from the caller: it is the same field
+    ``_validate_checkpoint`` derives the expected exclusion set from, so the two cannot disagree
+    about which model this is."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    seen = {}
+
+    def _spy(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
+        seen["args"] = (scheme, family)
+        return ("context_embedder",)
+
+    monkeypatch.setattr("core.inference.diffusion_transformer_quant.apply_small_m_padding", _spy)
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["family"] = "minimax-h3"
+    ckpt["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8", "minimax-h3"))
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
+    assert seen["args"] == ("int8", "minimax-h3")
+
+
+def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path):
+    """Half-padded is the worst outcome: it compiles on the modules that were wrapped and crashes
+    inside ``_int_mm`` on the ones that were not. A raise must drop the prequant so the caller
+    falls back to dense-quantise, rather than returning a transformer that renders once and dies
+    the moment the compiled scope reaches the text stream."""
+
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
+        raise RuntimeError("cannot prove per-row granularity")
+
+    monkeypatch.setattr("core.inference.diffusion_transformer_quant.apply_small_m_padding", _boom)
+    ckpt = _good_ckpt(scheme = "int8")
+    ckpt["metadata"]["family"] = "minimax-h3"
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
 
 
 # ── fp8 activation scale floor ──────────────────────────────────────────────────

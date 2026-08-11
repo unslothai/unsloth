@@ -142,12 +142,19 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     """
     import re
 
+    from hub.utils.gguf import is_h3_denoiser_variant_key
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
     if not variant:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
+    # A qualified key is one of OUR advertised rows: a path (``distilled/model-Q6_K``) or an H3
+    # root stem (``minimax_h3_ref2va_pruned-Q6_K``). Explicit, so it must MISS when absent;
+    # falling through served the caller a different checkpoint under the requested id.
+    normalized = label.replace("\\", "/")
+    if "/" in normalized or is_h3_denoiser_variant_key(normalized):
+        return True
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
 
@@ -226,7 +233,7 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     return False
 
 
-def _gguf_variants(siblings) -> dict[str, int]:
+def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
     Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
@@ -235,6 +242,7 @@ def _gguf_variants(siblings) -> dict[str, int]:
     quant, so the disk reserve is measured against what the worker fetches.
     """
     from hub.utils.gguf import extract_quant_label as canonical_quant_label
+    from hub.utils.gguf import _is_selectable_repo_gguf, gguf_variant_key
     from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
@@ -243,20 +251,29 @@ def _gguf_variants(siblings) -> dict[str, int]:
         _is_mtp_drafter,
     )
 
-    siblings = list(siblings or [])
+    siblings = [
+        sibling
+        for sibling in (siblings or [])
+        if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
+    ]
     plans = build_gguf_variant_plans(siblings)
     sizes: dict[str, int] = {}
     for sibling in siblings:
         name = getattr(sibling, "rfilename", "") or ""
         if not name.lower().endswith(".gguf"):
             continue
-        quant = _extract_quant_label(name)
+        label = _extract_quant_label(name)
+        # The identity the PLAN is keyed on. A repo holding several checkpoints at one quant
+        # advertises a qualified key per checkpoint, and keying this map on the bare label left
+        # every one of those rows a hard miss here: a 404 instead of the download.
+        quant = gguf_variant_key(name)
         if not looks_like_quant(quant):
             # With no recognized quant token the extractors part ways: this one takes
             # the last hyphenated segment ("7b" of llama-7b) while the plan and worker
             # key the whole stem, so advertising ours dispatches an unresolvable variant.
             quant = canonical_quant_label(name) or quant
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, quant):
+        # The endian test reads a quant TOKEN, so it gets the label, not the path-qualified key.
+        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, label):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:
@@ -437,7 +454,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     # The same filter admission uses, not a bare .gguf test: mmproj, MTP drafters and
     # big-endian builds are companions, not quants. Answering otherwise would hold an
     # ordinary foreign label at model_download_busy for an unrelated download.
-    servable = bool(_gguf_variants(getattr(info, "siblings", None)))
+    servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
         _mark_not_servable(repo_id, hf_token)
     return servable
@@ -615,7 +632,7 @@ async def _admit_and_start(
         _release(active)
         return _gated_refusal(repo_id)
 
-    variants = _gguf_variants(getattr(info, "siblings", None))
+    variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
         _mark_not_servable(repo_id, hf_token)
@@ -676,10 +693,10 @@ async def _admit_and_start(
         )
 
     expected_bytes = variants[variant]
-    from hub.utils.gguf_plan import build_gguf_variant_plans
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
 
-    plan = build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])).get(
-        variant.lower()
+    plan = plan_for_variant(
+        build_gguf_variant_plans(list(getattr(info, "siblings", None) or [])), variant
     )
     if require_vision and not (plan and plan.mmproj_filenames):
         _release(active)
@@ -735,6 +752,28 @@ def preferred_quant(labels) -> Optional[str]:
     return synthetic.get(best) if best else None
 
 
+def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
+    """The one qualified variant whose quant token is *wanted*, or None when it names 0 or 2+.
+
+    A key is a pure function of the path, so a repo that files every quant under one shared
+    container qualifies all of them even though the directory disambiguates nothing, and the bare
+    spelling every stored id uses then matches no key at all.
+    """
+    from hub.utils.gguf import bare_quant_alias
+
+    target = (wanted or "").strip().lower()
+    if not target:
+        return None
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must miss rather than serve one of them.
+    matches = [
+        name
+        for key, name in lowered.items()
+        if "/" in key and bare_quant_alias(key).lower() == target
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 
@@ -749,10 +788,23 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         # and defaulting past one would fetch a model nobody asked for.
         lowered = {name.lower(): name for name in variants}
         exact = lowered.get(wanted.strip().lower())
+        if exact is None:
+            # Same bare-quant fallback the plan lookup makes, and it has to be made HERE too:
+            # admission rejects against this map first, so a repo that files every quant under
+            # one shared container answered a legacy org/repo:Q4_K_M with a 404 and the worker's
+            # fallback was never reached. Unambiguous only, for the same reason.
+            exact = _bare_quant_alias(wanted, lowered)
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    return preferred_quant(variants)
+    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked
+    # against it: preferred_quant is order-sensitive, and once the map carried a key per
+    # checkpoint a repo with distilled/model-Q6_K beside model-Q6_K could serve the sibling for
+    # a bare id -- the same id that resolves to the root locally. Same filter
+    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way.
+    # A repo with nothing at the root falls back to the whole set rather than refusing.
+    unqualified = {name: size for name, size in variants.items() if "/" not in name}
+    return preferred_quant(unqualified or variants)
 
 
 async def _dispatch(

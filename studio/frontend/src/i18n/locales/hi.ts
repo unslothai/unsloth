@@ -86,6 +86,8 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      trainChecking: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
+      videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
       newBadge: "नया",
@@ -379,6 +381,9 @@ export const hi = {
         keepKv: "निष्क्रियता पर अनलोड होने के बाद भी चैट का संदर्भ बनाए रखें",
         keepKvDescription:
           "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
+        apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
+        apiOnlyDescription:
+          "निष्क्रियता पर अनलोड करते समय Studio से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -896,6 +901,11 @@ export const hi = {
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      thinking: {
+        collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
+        collapseByDefaultDescription:
+          "मॉडल के सोचते समय रीज़निंग अपने आप खुलने के बजाय संक्षिप्त रहती है। पढ़ने के लिए किसी भी ब्लॉक को विस्तृत करें।",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML ब्लॉक संक्षिप्त करें",
@@ -904,6 +914,9 @@ export const hi = {
         allowNetworkAccess: "canvas नेटवर्क एक्सेस की अनुमति दें",
         allowNetworkAccessDescription:
           "canvas पूर्वावलोकन को CDN से स्क्रिप्ट, स्टाइल, फ़ॉन्ट, मीडिया, और नेटवर्क संसाधन लोड करने दें। पूरी तरह ऑफ़लाइन पूर्वावलोकन के लिए बंद रखें।",
+        blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
+        blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
+        blockedBannerAction: "इस Canvas के लिए अनुमति दें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
@@ -1372,6 +1385,7 @@ export const hi = {
       history: "इतिहास",
     },
     loadingRuntime: "ट्रेनिंग रनटाइम लोड हो रहा है...",
+    checkingSupport: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
     backToHistory: "इतिहास पर वापस जाएं",
     sections: {
       model: "मॉडल",

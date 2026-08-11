@@ -41,6 +41,9 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+
+DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
+MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 VIDEO_API = FRONTEND / "features/video/api.ts"
 RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
@@ -506,15 +509,22 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only.
-    assert source.count("{showSidebarSurface && pinned && (") == 2
+
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
-        in source
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in source
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
     )
 
 
@@ -733,6 +743,41 @@ def test_media_pages_clear_the_custom_titlebar():
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
+def test_image_page_structural_panes_share_the_container_breakpoint():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    assert "@container" in shell
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
+    assert "@[50rem]:w-[408px]" in section
+    assert "md:flex-row" not in section
+    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_image_train_rail_matches_create_and_header():
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "@container hover-scrollbar" in layout
+    assert "@[50rem]:pt-[42px]" in layout
+    assert "md:w-[416px]" not in layout
+
+
+def test_compact_media_link_keeps_accessible_name_and_truncation():
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+
+    assert "aria-label={label}" in button
+    assert 'cn("min-w-0 truncate", labelClassName)' in button
+    assert "arrowClassName" in button
+
+
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
@@ -759,8 +804,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
             assert "pointer-events-auto" in group, (page.name, group)
 
 
-def test_images_header_clears_collapsed_tauri_titlebar_controls():
-    """Images clears collapsed controls without overlapping its narrow-desktop tabs."""
+def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     source = IMAGES_PAGE.read_text(encoding = "utf-8")
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
@@ -768,25 +812,20 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     header = opening + after.split("{/* Train mode", 1)[0]
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    # The tracks carry the insets, so the grid stays unpadded and centres the pill on the header.
     assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
-    assert not re.search(r"\bp[lrx]-", opening), opening
-    assert "isMobile" in header
-    assert "pl-12" in header
+    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in opening
+    assert "@[50rem]:border-r" in header
+    assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
-    assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in header
-    left_controls = header.split("Create | Train page-mode switch", 1)[0]
-    assert '"pointer-events-none flex min-w-0 items-center"' in left_controls
-    assert '"pointer-events-auto flex min-w-0 max-w-full items-center gap-2"' in left_controls
-    assert 'className="!h-[34px] max-w-full overflow-hidden"' in left_controls
-
-    # The pill is a grid item at every width, and its padding keys off the header's own width:
-    # md:/xl: are viewport queries, while the header is the viewport minus a resizable sidebar.
-    mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
-    assert "absolute" not in mode_switch
-    assert "justify-self-center" in mode_switch
-    assert "[&>button]:px-3 @min-[560px]:[&>button]:px-11" in mode_switch
+    assert 'className="!h-[34px] max-w-full overflow-hidden"' in header
+    assert "contents @[50rem]:grid" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:col-start-2" in header
+    assert "@[50rem]:col-start-3" in header
+    assert 'labelClassName="hidden @[50rem]:inline"' in header
+    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

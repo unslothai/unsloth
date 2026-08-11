@@ -47,14 +47,9 @@ version = {attr = "unsloth.models._utils.__version__"}
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.cmdclass]
-# Snapshots CHANGELOG.md into studio/ so every build path ships it.
-build_py = "_changelog_build.build_py"
-
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
-    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",
@@ -103,7 +98,8 @@ studio = [
     "nest_asyncio",
     "datasets==4.3.0",
     "pyjwt",
-    "huggingface-hub==0.36.2",
+    "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
+    "huggingface-hub==0.36.2 ; python_version < '3.10'",
     "urllib3>=2.3.0",
     "structlog>=24.1.0",
     "diceware",
@@ -126,7 +122,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.6",
+    "unsloth_zoo>=2026.8.9",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -144,6 +140,8 @@ huggingfacenotorch = [
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
     # diffusers, so advertised models failed to load until the user upgraded by hand.
+    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
     # diffusers dropped 3.9 in 0.37, and we still support it (requires-python >= 3.9),
     # so the floor is conditional: pinning it outright leaves pip no candidate at all
     # on 3.9 and the whole extra becomes unresolvable.
@@ -171,7 +169,7 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.6",
+    "unsloth_zoo>=2026.8.9",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -695,7 +693,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.6",
+    "unsloth_zoo>=2026.8.9",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",

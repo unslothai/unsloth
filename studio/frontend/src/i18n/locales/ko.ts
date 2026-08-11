@@ -83,6 +83,8 @@ export const ko = {
       recipes: "레시피",
       images: "이미지",
       video: "동영상",
+      trainChecking: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
+      videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
@@ -373,6 +375,9 @@ export const ko = {
         keepKv: "유휴 해제 후에도 채팅 컨텍스트 유지",
         keepKvDescription:
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
+        apiOnly: "API가 불러온 모델만 해제",
+        apiOnlyDescription:
+          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -888,6 +893,11 @@ export const ko = {
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      thinking: {
+        collapseByDefault: "기본적으로 사고 과정 접기",
+        collapseByDefaultDescription:
+          "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
@@ -896,6 +906,9 @@ export const ko = {
         allowNetworkAccess: "Canvas 네트워크 접근 허용",
         allowNetworkAccessDescription:
           "Canvas 미리보기가 CDN에서 스크립트, 스타일, 폰트, 미디어 및 네트워크 리소스를 불러올 수 있게 합니다. 완전한 오프라인 미리보기를 위해서는 꺼 두세요.",
+        blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerAction: "이 Canvas에서 허용",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
@@ -1364,6 +1377,7 @@ export const ko = {
       history: "기록",
     },
     loadingRuntime: "학습 런타임을 로딩하는 중...",
+    checkingSupport: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
     backToHistory: "기록으로 돌아가기",
     sections: {
       model: "모델",
