@@ -40,7 +40,6 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
-  ggufVariantDisplayLabel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
@@ -189,6 +188,12 @@ import type {
   ModelSelectorChangeMeta,
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
+import {
+  ggufVariantPickerLabel,
+  groupGgufVariantsForPicker,
+  h3PickerHasOnlyPrunedBuilds,
+  preferredGgufVariantByGroup,
+} from "./variant-presentation";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -1384,29 +1389,47 @@ function GgufVariantExpander({
     [budgetKnown, gpuBudgetGb, totalBudgetGb],
   );
 
-  // If the recommended variant is OOM, pick the largest fitting one;
-  // if all are OOM, recommend the smallest.
-  const effectiveRecommended = useMemo(() => {
-    if (
-      !variants ||
-      variants.length === 0 ||
-      (totalBudgetGb <= 0 && !budgetKnown)
-    ) {
-      return defaultVariant;
+  const variantGroups = useMemo(
+    () => groupGgufVariantsForPicker(variants ?? []),
+    [variants],
+  );
+  const preferredByGroup = useMemo(
+    () => preferredGgufVariantByGroup(variantGroups, defaultVariant),
+    [variantGroups, defaultVariant],
+  );
+
+  // Each workflow gets its own recommendation. If its preferred variant is
+  // OOM, use the largest one that can run; if all are OOM, use the smallest.
+  const effectiveRecommendedByGroup = useMemo(() => {
+    const recommended = new Map<string, string>();
+    for (const group of variantGroups) {
+      const preferred = preferredByGroup.get(group.key) ?? null;
+      if (totalBudgetGb <= 0 && !budgetKnown) {
+        if (preferred) recommended.set(group.key, preferred.quant);
+        continue;
+      }
+      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
+        recommended.set(group.key, preferred.quant);
+        continue;
+      }
+      const fitting = group.variants
+        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
+        .sort((left, right) => right.size_bytes - left.size_bytes);
+      if (fitting[0]) {
+        recommended.set(group.key, fitting[0].quant);
+        continue;
+      }
+      const smallest = [...group.variants].sort(
+        (left, right) => left.size_bytes - right.size_bytes,
+      )[0];
+      if (smallest) recommended.set(group.key, smallest.quant);
     }
-    const defaultV = variants.find((v) => v.quant === defaultVariant);
-    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
-      return defaultVariant;
-    // Largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
-    if (fitting.length > 0) {
-      fitting.sort((a, b) => b.size_bytes - a.size_bytes);
-      return fitting[0].quant;
-    }
-    // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-    return sorted[0]?.quant ?? defaultVariant;
-  }, [variants, defaultVariant, totalBudgetGb, budgetKnown, getGgufFit]);
+    return recommended;
+  }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  const effectiveRecommended = useMemo(
+    () => new Set(effectiveRecommendedByGroup.values()),
+    [effectiveRecommendedByGroup],
+  );
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1417,24 +1440,27 @@ function GgufVariantExpander({
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
     };
-    return [...variants].sort((a, b) => {
-      const aTier = tierOf(a);
-      const bTier = tierOf(b);
-      if (aTier !== bTier) return aTier - bTier;
+    return variantGroups.flatMap((group) => {
+      const recommended = effectiveRecommendedByGroup.get(group.key);
+      return [...group.variants].sort((a, b) => {
+        const aTier = tierOf(a);
+        const bTier = tierOf(b);
+        if (aTier !== bTier) return aTier - bTier;
 
-      // Within the same tier, recommended goes first
-      const aIsRec = a.quant === effectiveRecommended;
-      const bIsRec = b.quant === effectiveRecommended;
-      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
+        // Within the same tier, the workflow's recommendation goes first.
+        const aIsRec = a.quant === recommended;
+        const bIsRec = b.quant === recommended;
+        if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      // fits: largest first (best quality that fits in GPU)
-      // tight/OOM: smallest first (closest to fitting, fastest to run)
-      const fitsInGpu = aTier === 0 || aTier === 2;
-      return fitsInGpu
-        ? b.size_bytes - a.size_bytes
-        : a.size_bytes - b.size_bytes;
+        // fits: largest first (best quality that fits in GPU)
+        // tight/OOM: smallest first (closest to fitting, fastest to run)
+        const fitsInGpu = aTier === 0 || aTier === 2;
+        return fitsInGpu
+          ? b.size_bytes - a.size_bytes
+          : a.size_bytes - b.size_bytes;
+      });
     });
-  }, [variants, effectiveRecommended, getGgufFit]);
+  }, [variants, variantGroups, effectiveRecommendedByGroup, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
   // disk, torn ones included. Browse lists always show every quant.
@@ -1448,6 +1474,14 @@ function GgufVariantExpander({
       showAll: showAllQuantizations,
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
+  const displayVariantGroups = useMemo(
+    () => groupGgufVariantsForPicker(displayVariants ?? []),
+    [displayVariants],
+  );
+  const hideH3PrunedBuild = useMemo(
+    () => h3PickerHasOnlyPrunedBuilds(displayVariants ?? []),
+    [displayVariants],
+  );
 
   // A diffusion GGUF is not self-contained: the loader also needs a text
   // encoder, VAE, tokenizer and configs. That companion set is NOT
@@ -1473,8 +1507,8 @@ function GgufVariantExpander({
       // The recommended quant is the representative of its own group when it
       // has one; otherwise the group's first row stands.
       if (
-        current.quant !== effectiveRecommended &&
-        variant.quant === effectiveRecommended
+        !effectiveRecommended.has(current.quant) &&
+        effectiveRecommended.has(variant.quant)
       ) {
         byKey.set(key, variant);
       }
@@ -1607,7 +1641,7 @@ function GgufVariantExpander({
     >
       {/* On Device shows the model name above, so the Quantizations heading is
           redundant; its Vision badge is relayed to the name instead. */}
-      {!onDevice && (
+      {!onDevice && !displayVariantGroups.some((group) => group.title) && (
         <div className="px-2 py-1 flex items-center gap-1.5">
           <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
             Quantizations
@@ -1624,7 +1658,26 @@ function GgufVariantExpander({
           )}
         </div>
       )}
+      {!onDevice &&
+        hasVision &&
+        displayVariantGroups.some((group) => group.title) && (
+          <div className="px-2 pt-1">
+            <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
+              <HugeiconsIcon
+                icon={ViewIcon}
+                className="size-3"
+                strokeWidth={1.8}
+              />
+              Vision
+            </span>
+          </div>
+        )}
       {displayVariants.map((v) => {
+        const group = displayVariantGroups.find((candidate) =>
+          candidate.variants.some((variant) => variant.filename === v.filename),
+        );
+        const showGroupHeading =
+          group?.title != null && group.variants[0]?.filename === v.filename;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
@@ -1657,10 +1710,11 @@ function GgufVariantExpander({
             )}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              <span
-                className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
-              >
-                {ggufVariantDisplayLabel(v)}
+              <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>
+                {ggufVariantPickerLabel(v, {
+                  h3Grouped: group?.title != null,
+                  hideH3PrunedBuild,
+                })}
               </span>
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
@@ -1677,7 +1731,7 @@ function GgufVariantExpander({
                     </span>
                   ) : null}
                 </>
-              ) : v.quant === effectiveRecommended ? (
+              ) : effectiveRecommended.has(v.quant) ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
                   recommended
                 </span>
@@ -1707,7 +1761,19 @@ function GgufVariantExpander({
             </span>
           </button>
         );
-        return (
+        return [
+          showGroupHeading && group?.title ? (
+            <div key={`${v.filename}:group`} className="px-2 pb-1 pt-2">
+              <div className="text-xs font-semibold text-foreground">
+                {group.title}
+              </div>
+              {group.description && (
+                <div className="mt-0.5 text-ui-10 leading-snug text-muted-foreground">
+                  {group.description}
+                </div>
+              )}
+            </div>
+          ) : null,
           <div key={v.filename} className="flex items-center">
             {/* The explanation rides the row button; nested button triggers are not accessible. */}
             {companionBytes === null ? (
@@ -1823,8 +1889,8 @@ function GgufVariantExpander({
                   }
                 />
               )}
-          </div>
-        );
+          </div>,
+        ];
       })}
     </div>
   );
