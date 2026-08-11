@@ -90,11 +90,31 @@ def _pattern_literals(tree: ast.Module) -> dict:
 
 
 def ast_inventory() -> dict:
+    """Top-level surface per guarded module, at the detail that module needs.
+
+    The two modules the refactor restructures are pinned in full: signatures, decorators,
+    methods and every ``re.compile`` literal. The rest are pinned by name and kind only.
+    They are here because this refactor must not drop a symbol out of them, and that is
+    all the detail that question needs; pinning their signatures as well would turn this
+    into a tripwire that fails on every later, unrelated change to files as busy as
+    ``llama_cpp.py``, and a baseline that is regenerated reflexively guards nothing.
+    """
     inventory = {}
     for mod_name, path in GUARDED_MODULES.items():
+        detailed = mod_name in BEHAVIOUR_MODULES
         tree = ast.parse(path.read_text(encoding = "utf-8"))
         symbols = {}
         for node in tree.body:
+            if not detailed:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    symbols[node.name] = {
+                        "kind": "class" if isinstance(node, ast.ClassDef) else "def"
+                    }
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            symbols[target.id] = {"kind": "assign"}
+                continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 symbols[node.name] = {
                     "kind": "async def" if isinstance(node, ast.AsyncFunctionDef) else "def",
@@ -119,7 +139,10 @@ def ast_inventory() -> dict:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         symbols[target.id] = {"kind": "assign"}
-        inventory[mod_name] = {"symbols": symbols, "regexes": _pattern_literals(tree)}
+        entry = {"symbols": symbols}
+        if detailed:
+            entry["regexes"] = _pattern_literals(tree)
+        inventory[mod_name] = entry
     return inventory
 
 

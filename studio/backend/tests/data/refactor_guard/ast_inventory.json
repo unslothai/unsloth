@@ -1,286 +1,20 @@
 {
   "core.inference.inference": {
-    "regexes": {},
     "symbols": {
       "HarmonyTextStreamer": {
-        "bases": [],
-        "decorators": [],
-        "kind": "class",
-        "methods": {
-          "__init__": {
-            "decorators": [],
-            "signature": "self, tokenizer, *, skip_prompt: bool=True, timeout: float=0.2"
-          },
-          "__iter__": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "__next__": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_process_incremental": {
-            "decorators": [],
-            "signature": "self, raw: str"
-          },
-          "end": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "put": {
-            "decorators": [],
-            "signature": "self, value"
-          }
-        }
+        "kind": "class"
       },
       "InferenceBackend": {
-        "bases": [],
-        "decorators": [],
-        "kind": "class",
-        "methods": {
-          "__init__": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_append_stream_delta": {
-            "decorators": [],
-            "signature": "self, output: str, new_token: str, stop_token_ids=None"
-          },
-          "_apply_adapter_state": {
-            "decorators": [],
-            "signature": "self, use_adapter: Optional[Union[bool, str]]"
-          },
-          "_apply_chat_template_for_generation": {
-            "decorators": [],
-            "signature": "self, tokenizer, messages: list, *, tools: Optional[list]=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False"
-          },
-          "_cancel_stopping_criteria": {
-            "decorators": [],
-            "signature": "self, cancel_event"
-          },
-          "_clean_generated_text": {
-            "decorators": [],
-            "signature": "self, text: str, *, stop_token_ids=None"
-          },
-          "_drain_streamer_tail": {
-            "decorators": [],
-            "signature": "self, streamer, output: str, stop_token_ids=None"
-          },
-          "_ended_on_stop_token": {
-            "decorators": [],
-            "signature": "self, outputs, stop_token_ids"
-          },
-          "_format_alpaca_template": {
-            "decorators": [],
-            "signature": "self, messages: list, special_tokens: dict"
-          },
-          "_format_chat_manual": {
-            "decorators": [],
-            "signature": "self, messages: list, template_type: str, special_tokens: dict"
-          },
-          "_format_chatml_template": {
-            "decorators": [],
-            "signature": "self, messages: list, special_tokens: dict"
-          },
-          "_format_generic_template": {
-            "decorators": [],
-            "signature": "self, messages: list, special_tokens: dict"
-          },
-          "_format_llama3_template": {
-            "decorators": [],
-            "signature": "self, messages: list, special_tokens: dict"
-          },
-          "_format_mistral_template": {
-            "decorators": [],
-            "signature": "self, messages: list, special_tokens: dict"
-          },
-          "_generate_bicodec": {
-            "decorators": [],
-            "signature": "self, model, tokenizer, text, temperature, top_k, max_new_tokens"
-          },
-          "_generate_chat_response_inner": {
-            "decorators": [],
-            "signature": "self, messages: list, system_prompt: str='', image=None, temperature: float=0.7, top_p: float=0.9, top_k: int=40, min_p: float=0.0, max_new_tokens: int=256, repetition_penalty: float=1.0, cancel_event=None, _adapter_state=None, tools: Optional[list]=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False, presence_penalty: float=0.0"
-          },
-          "_generate_csm": {
-            "decorators": [],
-            "signature": "self, model, processor, text, max_new_tokens"
-          },
-          "_generate_dac": {
-            "decorators": [],
-            "signature": "self, model, tokenizer, text, temperature, top_k, top_p, min_p, max_new_tokens, repetition_penalty"
-          },
-          "_generate_snac": {
-            "decorators": [],
-            "signature": "self, model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty"
-          },
-          "_generate_vision_response": {
-            "decorators": [],
-            "signature": "self, messages, system_prompt, image, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, cancel_event=None, presence_penalty: float=0.0, continue_final_message: bool=False"
-          },
-          "_generated_token_count": {
-            "decorators": [],
-            "signature": "self, model, outputs, prompt_len"
-          },
-          "_generation_stop_token_ids": {
-            "decorators": [],
-            "signature": "self, model, generation_kwargs: dict"
-          },
-          "_is_gpt_oss_model": {
-            "decorators": [],
-            "signature": "self, model_name: str=None"
-          },
-          "_load_chat_template_info": {
-            "decorators": [],
-            "signature": "self, model_name: str"
-          },
-          "_make_text_streamer": {
-            "decorators": [],
-            "signature": "self, tokenizer, *, protocol_source=None, reasoning_channel_markers=None, reasoning_channel_markers_resolved: bool=False, skip_prompt: bool=True, timeout: float=0.2, cancel_event=None, use_harmony: bool=False"
-          },
-          "_normalize_top_k": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "top_k: int"
-          },
-          "_patch_repetition_penalty_processor": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls"
-          },
-          "_record_generation_stats": {
-            "decorators": [],
-            "signature": "self, *, prompt_tokens, completion_tokens, max_new_tokens, ended_on_stop_token: bool=False, cancelled: bool=False"
-          },
-          "_reset_model_generation_state": {
-            "decorators": [],
-            "signature": "self, model_name: str"
-          },
-          "_resolve_chat_eos": {
-            "decorators": [],
-            "signature": "self, model_name: str"
-          },
-          "check_vision_model_compatibility": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "format_chat_prompt": {
-            "decorators": [],
-            "signature": "self, messages: list, system_prompt: str=None, continue_final_message: bool=False"
-          },
-          "generate_audio_input_response": {
-            "decorators": [],
-            "signature": "self, messages, system_prompt, audio_array, temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, use_adapter: Optional[Union[bool, str]]=None, cancel_event=None"
-          },
-          "generate_audio_response": {
-            "decorators": [],
-            "signature": "self, text: str, temperature: float=0.6, top_p: float=0.95, top_k: int=50, min_p: float=0.0, max_new_tokens: int=2048, repetition_penalty: float=1.0, use_adapter: Optional[Union[bool, str]]=None"
-          },
-          "generate_chat_completion_with_tools": {
-            "decorators": [],
-            "signature": "self, messages: list, tools: list, system_prompt: str='', temperature: float=0.7, top_p: float=0.9, top_k: int=40, min_p: float=0.0, max_new_tokens: int=2048, repetition_penalty: float=1.0, cancel_event=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False, max_tool_iterations: int=25, auto_heal_tool_calls: bool=True, nudge_tool_calls: Optional[bool]=None, tool_call_timeout: int=300, session_id: Optional[str]=None, thread_id: Optional[str]=None, rag_scope: Optional[dict]=None, presence_penalty: float=0.0, reasoning_prefilled: bool=False"
-          },
-          "generate_chat_response": {
-            "decorators": [],
-            "signature": "self, messages: list, system_prompt: str, image=None, temperature: float=0.7, top_p: float=0.9, top_k: int=40, min_p: float=0.0, max_new_tokens: int=256, repetition_penalty: float=1.0, cancel_event=None, tools: Optional[list]=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False, presence_penalty: float=0.0"
-          },
-          "generate_stream": {
-            "decorators": [],
-            "signature": "self, prompt: str, temperature: float=0.7, top_p: float=0.9, top_k: int=40, min_p: float=0.0, max_new_tokens: int=256, repetition_penalty: float=1.0, cancel_event=None, _adapter_state=None, presence_penalty: float=0.0, reasoning_channel_markers=None, reasoning_channel_markers_resolved: bool=False"
-          },
-          "generate_whisper_response": {
-            "decorators": [],
-            "signature": "self, audio_array, cancel_event=None"
-          },
-          "generate_with_adapter_control": {
-            "decorators": [],
-            "signature": "self, use_adapter: Optional[Union[bool, str]]=None, cancel_event=None, **gen_kwargs"
-          },
-          "get_current_model": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "get_loading_model": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "is_model_loading": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "load_adapter": {
-            "decorators": [],
-            "signature": "self, base_model_name: str, adapter_path: str, adapter_name: str"
-          },
-          "load_for_eval": {
-            "decorators": [],
-            "signature": "self, lora_path: str, max_seq_length: int=2048, dtype=None, load_in_4bit: bool=True, hf_token: Optional[str]=None, gpu_ids: Optional[list[int]]=None"
-          },
-          "load_model": {
-            "decorators": [],
-            "signature": "self, config: ModelConfig, max_seq_length: int=2048, dtype=None, load_in_4bit: bool=True, hf_token: Optional[str]=None, trust_remote_code: bool=False, gpu_ids: Optional[list[int]]=None"
-          },
-          "load_model_simple": {
-            "decorators": [],
-            "signature": "self, model_path: str, hf_token: Optional[str]=None, max_seq_length: int=2048, load_in_4bit: bool=True"
-          },
-          "reset_generation_state": {
-            "decorators": [],
-            "signature": "self, caller_cancel_event=None"
-          },
-          "resize_image": {
-            "decorators": [],
-            "signature": "self, img, max_size: int=800"
-          },
-          "revert_to_base_model": {
-            "decorators": [],
-            "signature": "self, base_model_name: str"
-          },
-          "set_active_adapter": {
-            "decorators": [],
-            "signature": "self, base_model_name: str, adapter_name: str"
-          },
-          "unload_model": {
-            "decorators": [],
-            "signature": "self, model_name: str"
-          }
-        }
+        "kind": "class"
       },
       "ReasoningTextIteratorStreamer": {
-        "bases": [
-          "TextIteratorStreamer"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {
-          "__init__": {
-            "decorators": [],
-            "signature": "self, tokenizer, *, markers: tuple[str, str], skip_prompt: bool=True, timeout: float=0.2, cancel_event=None, **decode_kwargs"
-          },
-          "abort": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "on_finalized_text": {
-            "decorators": [],
-            "signature": "self, text: str, stream_end: bool=False"
-          }
-        }
+        "kind": "class"
       },
       "_GenerationThreadError": {
-        "bases": [
-          "RuntimeError"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "get_inference_backend": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "inference_backend": {
         "kind": "assign"
@@ -291,1368 +25,24 @@
     }
   },
   "core.inference.llama_cpp": {
-    "regexes": {
-      "re.compile(\"\\\\b(?:final\\\\s+answer|answer\\\\s*:|here\\\\s+is|here's|in\\\\s+summary|result\\\\s*:|(?:the\\\\s+)?answer\\\\s+is(?!\\\\s+(?:not|unavailable|unknown|unclear|missing)\\\\b))\\\\b\", re.I)": 1,
-      "re.compile('\"name\"\\\\s*:\\\\s*\"([\\\\w.\\\\-]+)\"')": 1,
-      "re.compile('(?:^|[.!?]\\\\s+)\\\\s*(?:i\\\\s+(?:(?:need|have|ought)\\\\s+to|should|must)|need\\\\s+to|going\\\\s+to|must|should)\\\\s+(?:\\\\w+\\\\s+){0,2}?(?:call|use|run|search|fetch|render)\\\\b', re.I | re.M)": 1,
-      "re.compile('(?<![a-zA-Z0-9])' + re.escape(variant_key) + '(?![a-zA-Z0-9])')": 1,
-      "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]')": 1,
-      "re.compile('(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)', re.IGNORECASE)": 1,
-      "re.compile('(^|[-_])be(?:[._-]|$)', re.IGNORECASE)": 1,
-      "re.compile('-\\\\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\\\\w*\\\\s*:', re.IGNORECASE)": 1,
-      "re.compile('\\\\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|l40s?|l4|rtx pro 6000|rtx 6000 ada)\\\\b')": 1,
-      "re.compile('\\\\b(?:but|however|although|though|that\\\\s+said|in\\\\s+the\\\\s+meantime|meanwhile)\\\\b[\\\\W_]*(?:\\\\w+[\\\\W_]+){1,}\\\\w', re.I)": 1,
-      "re.compile('\\\\s*([\\\\w.\\\\-]+)\\\\s*\\\\[ARGS\\\\]')": 1,
-      "re.compile('\\\\s*call:([\\\\w.\\\\-]+)')": 1,
-      "re.compile('^' + re.escape(prefix) + '-\\\\d{5}-of-' + re.escape(num_total) + '\\\\.gguf$', re.IGNORECASE)": 1,
-      "re.compile('^' + re.escape(prefix) + '-\\\\d{5}-of-' + re.escape(total) + '\\\\.gguf$', re.IGNORECASE)": 1,
-      "re.compile('^(.*)-(\\\\d{5})-of-(\\\\d{5})\\\\.gguf$', re.IGNORECASE)": 1,
-      "re.compile('^(.*)-\\\\d{5}-of-\\\\d{5}\\\\.gguf$', re.IGNORECASE)": 1,
-      "re.compile('^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)')": 1,
-      "re.compile('gemma[-_]?4[-_]', re.IGNORECASE)": 1,
-      "re.compile('offloaded\\\\s+(\\\\d+)\\\\s*/\\\\s*(\\\\d+)\\\\s+layers?\\\\s+to\\\\s+gpu', re.IGNORECASE)": 1,
-      "re.compile('sliding_window_pattern\\\\s*(?::\\\\s*[\\\\w\\\\[\\\\], ]*)?\\\\s*=\\\\s*(\\\\d+)')": 1
-    },
     "symbols": {
       "CountAborted": {
-        "bases": [
-          "Exception"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "GgufLoadIntent": {
-        "bases": [],
-        "decorators": [
-          "dataclass(frozen=True)"
-        ],
-        "kind": "class",
-        "methods": {
-          "__post_init__": {
-            "decorators": [],
-            "signature": "self"
-          }
-        }
+        "kind": "class"
       },
       "LLAMA_SERVER_NOT_FOUND_DETAIL": {
         "kind": "assign"
       },
       "LlamaCppBackend": {
-        "bases": [],
-        "decorators": [],
-        "kind": "class",
-        "methods": {
-          "__init__": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_amd_apu_wants_unified_memory": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpu_indices=None"
-          },
-          "_apple_metal_memory_budget_bytes": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_apply_cpu_fallback_state": {
-            "decorators": [],
-            "signature": "self, intent: GgufLoadIntent, *, is_vision: bool, mmproj_has_audio: bool"
-          },
-          "_apply_datacenter_env": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "env: dict, gpu_indices=None"
-          },
-          "_apply_detected_audio": {
-            "decorators": [],
-            "signature": "self, detected: Optional[str]"
-          },
-          "_apu_ram_shortfall_message": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "model_size_bytes: int, avail_mib: Optional[int], headroom_mib: int=2048"
-          },
-          "_as_cpu_fallback_intent": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "intent: GgufLoadIntent"
-          },
-          "_auth_headers": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "_auto_vulkan_cpu_fallback_eligible": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, binary: Optional[str], intent: GgufLoadIntent, extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None, *, allow_manual_cpu: bool=False"
-          },
-          "_available_system_memory_mib": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_backend_lacks_gpu_lib": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_binary_stamp": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "path: Path"
-          },
-          "_build_openai_messages": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "messages: list[dict], image_b64: Optional[str]=None"
-          },
-          "_build_speculative_flags": {
-            "decorators": [],
-            "signature": "self, *, speculative_type: Optional[str], spec_draft_n_max: Optional[int], extra_args: Optional[List[str]], model_identifier: str, model_path: Optional[str], gpus: bool, binary: Optional[str], mtp_draft_path: Optional[str]=None, dspark_draft_path: Optional[str]=None, dspark_fit_sized: bool=True, draft_device: Optional[str]=None"
-          },
-          "_build_windows_path_dirs": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary_dir: str, prefix: str, cuda_path: str"
-          },
-          "_cached_repo_dspark_drafter": {
-            "decorators": [],
-            "signature": "self, hf_repo: str, *, cache_dir: Optional[str]=None"
-          },
-          "_cached_repo_mtp_drafter": {
-            "decorators": [],
-            "signature": "self, hf_repo: str, *, cache_dir: Optional[str]=None"
-          },
-          "_can_estimate_kv": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_cap_ctx_to_per_device_reserve": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "ctx: int, usable_mib: Iterable[float], reserve_bytes_fn: Callable[[int], int], min_ctx: int=4096"
-          },
-          "_classify_gpu_offload": {
-            "decorators": [],
-            "signature": "self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]"
-          },
-          "_classify_llama_start_failure": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "output: str, gguf_path: Optional[str], model_identifier: Optional[str], returncode: Optional[int]=None, binary: Optional[str]=None"
-          },
-          "_cleanup": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_cleanup_cpu_fallback_runtime": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_cleanup_failed_cpu_fallback": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_clear_device_placement_env": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, env: dict[str, str]"
-          },
-          "_clear_manual_placement_env": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, env: dict[str, str]"
-          },
-          "_clear_server_pid": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls"
-          },
-          "_cmd_has_gpu_companion": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: list, env: Optional[Mapping[str, str]]=None"
-          },
-          "_cmd_has_gpu_device_pin": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: list, env: Optional[Mapping[str, str]]=None"
-          },
-          "_collect_descendants": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid"
-          },
-          "_commit_effective_parallel_slots": {
-            "decorators": [],
-            "signature": "self, n_parallel: int"
-          },
-          "_compute_buffer_ctx_bytes": {
-            "decorators": [],
-            "signature": "self, n_ctx: int, n_ubatch: Optional[int]=None, cache_type_kv: Optional[str]=None, *, layer_split: bool=False"
-          },
-          "_cpu_fallback_request_eligible": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, intent: GgufLoadIntent, extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None, *, allow_manual_cpu: bool=False"
-          },
-          "_cpu_isolated_binary": {
-            "decorators": [],
-            "signature": "self, binary: Optional[str]"
-          },
-          "_cpu_isolated_replay": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, cmd: Iterable[str], env: dict[str, str], server_caps: Mapping[str, object], *, drop_full_offload_threads: bool=False"
-          },
-          "_ctx_integrity_flags": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "n_parallel: int, use_fit: bool, auto_fit: bool, requested_ctx: int, effective_ctx: int, caps: dict"
-          },
-          "_detect_audio_type_strict": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_diffusion_gpu_arg": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpu_ids: Optional[List[int]], *, cpu_only: bool=False, force_cpu: bool=False"
-          },
-          "_download_companion_gguf": {
-            "decorators": [],
-            "signature": "self, *, hf_repo: str, hf_token: Optional[str], pick: Callable[[list[str]], Optional[str]], label: str, cancel_event: Optional[threading.Event]=None, near_path: Optional[str]=None, outcome: Optional[dict]=None"
-          },
-          "_download_dspark": {
-            "decorators": [],
-            "signature": "self, *, hf_repo: str, hf_token: Optional[str]=None, near_path: Optional[str]=None, binary: Optional[str]=None"
-          },
-          "_download_gguf": {
-            "decorators": [],
-            "signature": "self, *, hf_repo: str, hf_variant: Optional[str]=None, hf_token: Optional[str]=None, force: bool=False, allow_smaller_fallback: bool=True, cancel_event: Optional[threading.Event]=None"
-          },
-          "_download_mmproj": {
-            "decorators": [],
-            "signature": "self, *, hf_repo: str, hf_token: Optional[str]=None, cancel_event: Optional[threading.Event]=None, near_path: Optional[str]=None"
-          },
-          "_download_mtp": {
-            "decorators": [],
-            "signature": "self, *, hf_repo: str, hf_token: Optional[str]=None, near_path: Optional[str]=None"
-          },
-          "_draft_backend_for": {
-            "decorators": [],
-            "signature": "self, drafter_path: str"
-          },
-          "_drain_stdout": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_drop_env_quantized_v_cache": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "env: MutableMapping[str, str]"
-          },
-          "_dspark_release_is_broken": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, release_tag: Optional[str]"
-          },
-          "_effective_gpu_count": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpu_indices=None"
-          },
-          "_emit_child_gpu_visibility": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "env: dict, pinned: str, *, prefer_rocr: bool=False"
-          },
-          "_estimate_compute_buffer_bytes": {
-            "decorators": [],
-            "signature": "self, *, n_ubatch: Optional[int]=None, n_parallel: int=1, per_device_tensor: bool=False"
-          },
-          "_estimate_kv_cache_bytes": {
-            "decorators": [],
-            "signature": "self, n_ctx: int, cache_type_kv: Optional[str]=None, *, swa_full: bool=False, n_parallel: int=1, kv_unified: bool=True, n_ubatch: Optional[int]=None, ctx_checkpoints: int=0, flash_attn: bool=True"
-          },
-          "_estimate_mtp_overhead_bytes": {
-            "decorators": [],
-            "signature": "self, n_ctx: int, *, spec_draft_n_max: int=0, draft_cache_type_k: Optional[str]=None, draft_cache_type_v: Optional[str]=None, drafter_path: Optional[str]=None, draft_weights_bytes: int=0, n_parallel: int=1, mtp_keeps_target_ctx: bool=True, swa_full: bool=False, kv_unified: bool=True, n_ubatch: Optional[int]=None, flash_attn: bool=True"
-          },
-          "_every_gpu_holds_reserve": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "usable_mib: Iterable[float], reserve_bytes: int"
-          },
-          "_find_diffusion_assets": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_find_free_port": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_find_llama_server_binary": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "*, include_denied: bool=False"
-          },
-          "_find_smallest_fitting_variant": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "hf_repo: str, free_bytes: int, hf_token: Optional[str]=None"
-          },
-          "_fit_context_to_vram": {
-            "decorators": [],
-            "signature": "self, requested_ctx: int, available_mib: int, model_size_bytes: int, cache_type_kv: Optional[str]=None, min_ctx: int=4096, *, swa_full: bool=False, n_parallel: int=1, kv_unified: bool=True, n_ubatch: Optional[int]=None, ctx_checkpoints: int=0, flash_attn: bool=True, kv_on_gpu: bool=True, mtp_engaged: bool=False, mtp_overhead_fn: Optional[Callable[[int], int]]=None, compute_ctx_bytes_fn: Optional[Callable[[int], int]]=None, budget_frac: Optional[float]=None, total_mib: Optional[int]=None"
-          },
-          "_fit_off_retry_eligible": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: 'list[str]', use_fit: bool"
-          },
-          "_get_gguf_size_bytes": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "model_path: str"
-          },
-          "_get_gpu_free_memory": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_get_gpu_free_memory_vulkan": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_get_gpu_memory": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_gguf_file_identity": {
-            "decorators": [],
-            "signature": "self, path"
-          },
-          "_gguf_path_is_diffusion": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, gguf_path: str, model_identifier: str"
-          },
-          "_gguf_read_array_value": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "f, atype: int, alen: int"
-          },
-          "_gguf_skip_value": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "f, vtype: int"
-          },
-          "_gpu_init_crash_message": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_install_cancel_aware_read": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "client: 'httpx.Client', cancel_event: threading.Event, response: Optional['httpx.Response']=None, poll_s: float=0.2"
-          },
-          "_installed_ggml_backends": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_is_abort_exit": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "returncode: Optional[int]"
-          },
-          "_is_bundled_llama_library": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "lib: str"
-          },
-          "_is_datacenter_gpu": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpu_indices=None"
-          },
-          "_is_library_path": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "lib: str"
-          },
-          "_is_projector_incompatibility": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "output: str"
-          },
-          "_is_signal_crash": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "returncode: Optional[int]"
-          },
-          "_is_tensor_split_assert": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "output: str"
-          },
-          "_is_unsloth_managed_binary": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]"
-          },
-          "_is_vulkan_backend": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_iter_text_cancellable": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "response: 'httpx.Response', cancel_event: Optional[threading.Event]=None, stall_timeout_s: float=_DEFAULT_STREAM_STALL_TIMEOUT_S, first_token_deadline: Optional[float]=None, post_first_chunk_read_timeout_s: Optional[float]=_DEFAULT_STREAM_STALL_TIMEOUT_S"
-          },
-          "_kill_orphaned_servers": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_kill_process": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_kill_process_group": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pgid"
-          },
-          "_kv_heads_for_layer": {
-            "decorators": [],
-            "signature": "self, layer_idx: int, fallback: int"
-          },
-          "_launch_has_mmproj": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: Iterable[str], env: Mapping[str, str]"
-          },
-          "_leading_process_group": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid"
-          },
-          "_legacy_head_dim": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_llama_server_env_for_binary": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: str"
-          },
-          "_max_kv_value_width": {
-            "decorators": [],
-            "signature": "self, default_len: int, swa_len: Optional[int]=None"
-          },
-          "_maybe_recover_from_mtp_crash": {
-            "decorators": [],
-            "signature": "self, exc: Optional[BaseException]=None"
-          },
-          "_missing_library_message": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "lib: str, binary: Optional[str]=None"
-          },
-          "_mmproj_retry_failure_message": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "*, projector_confirmed: bool, detail: str"
-          },
-          "_mmproj_vram_bytes": {
-            "decorators": [],
-            "signature": "self, launch_mmproj_path: Optional[str]"
-          },
-          "_mtp_draft_kv_bytes": {
-            "decorators": [],
-            "signature": "self, n_ctx: int, *, drafter_path: Optional[str]=None, draft_cache_type_k: Optional[str]=None, draft_cache_type_v: Optional[str]=None, n_parallel: int=1, swa_full: bool=False, kv_unified: bool=True, n_ubatch: Optional[int]=None, flash_attn: bool=True"
-          },
-          "_mtp_token_from_spec_help": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "spec_help: str"
-          },
-          "_offloads_every_layer": {
-            "decorators": [],
-            "signature": "self, *, gpu_memory_mode: Optional[str], gpu_layers: Optional[int], extra_args: Optional[Iterable[str]], fit_active: bool=False"
-          },
-          "_open_chat_stream_with_respawn_retry": {
-            "decorators": [
-              "contextlib.contextmanager"
-            ],
-            "signature": "self, payload: dict, cancel_event"
-          },
-          "_open_stream": {
-            "decorators": [
-              "contextlib.contextmanager"
-            ],
-            "signature": "self, url: str, payload: dict, cancel_event"
-          },
-          "_output_has_nonprojector_diagnostic": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "output: str"
-          },
-          "_parse_tool_calls_from_text": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "content: str, *, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
-          },
-          "_pid_is_llama_server": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid: int"
-          },
-          "_pid_parent_is_alive": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid: int"
-          },
-          "_pid_start_identity": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid: int"
-          },
-          "_pin_visible_gpu_order_for_split": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "env: dict"
-          },
-          "_plan_tensor_parallel": {
-            "decorators": [],
-            "signature": "self, gpus: list[tuple[int, int]], model_size: int, target_ctx: int, cache_type_kv: Optional[str]=None, n_parallel: int=1, mtp_engaged: bool=False, mtp_overhead_fn: Optional[Callable[[int], int]]=None, mtp_flat_reserve_bytes: int=0, max_target_ctx: Optional[int]=None, total_by_idx: Optional[dict[int, int]]=None, n_ubatch: Optional[int]=None, soft_overhead_bytes: int=0, swa_full: bool=False, kv_unified: bool=True, flash_attn: bool=True"
-          },
-          "_prepare_cpu_fallback_launch": {
-            "decorators": [],
-            "signature": "self, binary: Optional[str], cmd: Iterable[str], env: dict[str, str], server_caps: Mapping[str, object], *, drop_full_offload_threads: bool=False"
-          },
-          "_preserve_cpu_fallback_intent": {
-            "decorators": [],
-            "signature": "self, intent: GgufLoadIntent, *, source_matches: bool=False"
-          },
-          "_probe_mtp_decode": {
-            "decorators": [],
-            "signature": "self, timeout: float=60.0"
-          },
-          "_prompt_cache_off": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_query_server_n_ctx": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_read_gguf_metadata": {
-            "decorators": [],
-            "signature": "self, gguf_path: str"
-          },
-          "_read_rss_bytes": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "pid: int"
-          },
-          "_reap_recorded_pid": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls"
-          },
-          "_reasoning_kwargs": {
-            "decorators": [],
-            "signature": "self, enable_thinking: bool"
-          },
-          "_reconcile_effective_ctx_with_server": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_record_matching_gpu_request": {
-            "decorators": [],
-            "signature": "self, gpu_ids: Optional[List[int]]"
-          },
-          "_record_server_pid": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, pid: int"
-          },
-          "_record_tensor_split_abort": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, binary: Optional[str], model: Optional[str]"
-          },
-          "_recurrent_state_bytes": {
-            "decorators": [],
-            "signature": "self, n_parallel: int=1"
-          },
-          "_redacted_cmd_for_log": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: 'list[str]'"
-          },
-          "_reject_vulkan_diffusion_gpu_ids_before_teardown": {
-            "decorators": [],
-            "signature": "self, gguf_path: str, model_identifier: str"
-          },
-          "_request_reasoning_kwargs": {
-            "decorators": [],
-            "signature": "self, enable_thinking: Optional[bool], reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None"
-          },
-          "_reset_effective_parallel_slots": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_resolve_cpu_moe_flag": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "n_cpu_moe: int, n_moe_layers: int, leading_dense: int"
-          },
-          "_resolve_launch_mmproj_path": {
-            "decorators": [],
-            "signature": "self, *, model_path: str, mmproj_path: Optional[str]"
-          },
-          "_resolve_launch_mtp_path": {
-            "decorators": [],
-            "signature": "self, *, mtp_draft_path: Optional[str], drafter_label: str='MTP'"
-          },
-          "_resolve_visible_physical_ids": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_resolved_studio_root_and_is_legacy": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_respawn_if_dead": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_rocm_unified_memory_gpu_ids": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_run_vulkan_probe": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          },
-          "_runtime_matches_intent": {
-            "decorators": [],
-            "signature": "self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]"
-          },
-          "_sanitize_tensor_split": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "tensor_split: Optional[List[float]]"
-          },
-          "_select_gpus": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "model_size_bytes: int, gpus: list[tuple[int, int]], usable_fraction: Optional[float]=None, total_by_idx: Optional[dict[int, int]]=None, per_device_overhead_bytes: int=0, min_gpus: int=1"
-          },
-          "_select_gpus_split_aware": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "model_size_bytes: int, gpus: list[tuple[int, int]], usable_fraction: Optional[float]=None, total_by_idx: Optional[dict[int, int]]=None, per_device_overhead_bytes: int=0, min_gpus: int=1, split_extra_bytes: int=0"
-          },
-          "_server_pidfile_path": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": ""
-          },
-          "_server_socket_is_open": {
-            "decorators": [],
-            "signature": "self, timeout_s: float=0.15"
-          },
-          "_set_stream_read_timeout": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "response: 'httpx.Response', read_timeout_s: float"
-          },
-          "_should_record_tensor_split_abort": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, returncode: Optional[int], output: str"
-          },
-          "_shutdown_active_httpx_sockets": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "client: 'httpx.Client'"
-          },
-          "_sidecar_weight_files": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_slot_launch_fingerprint": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_slots_that_fit_on_gpu": {
-            "decorators": [],
-            "signature": "self, n_parallel: int, effective_ctx: int, gpus: list[tuple[int, int]], total_by_idx: Optional[dict[int, int]], base_footprint_bytes: int, cache_type_kv: Optional[str], pin_fraction: float, per_device_overhead_bytes: int, min_gpus: int, n_ubatch: Optional[int]=None, swa_full: bool=False, kv_unified: bool=True, flash_attn: bool=True, split_extra_bytes: int=0, ubatch_for_slots: Optional[Callable[[int], Optional[int]]]=None, mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]]=None"
-          },
-          "_start_diffusion_server": {
-            "decorators": [],
-            "signature": "self, *, model_path: str, gguf_path: Optional[str], hf_repo: Optional[str], hf_variant: Optional[str], model_identifier: str, n_ctx: int, extra_args: Optional[List[str]], gpu_ids: Optional[List[int]]=None, gpu_memory_mode: Literal['auto', 'manual']='auto', gpu_layers: int=-1"
-          },
-          "_start_llama_process": {
-            "decorators": [],
-            "signature": "self, cmd: list[str], env: dict"
-          },
-          "_start_mtp_crash_watchdog": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_stop_mtp_crash_watchdog": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "_stream_with_retry": {
-            "decorators": [
-              "staticmethod",
-              "contextlib.contextmanager"
-            ],
-            "signature": "client: 'httpx.Client', url: str, payload: dict, cancel_event: Optional[threading.Event]=None, headers: Optional[dict]=None, first_token_deadline: Optional[float]=None"
-          },
-          "_strip_cpu_fallback_main_placement": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "args: Iterable[str]"
-          },
-          "_strip_device_extra_args": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "extra_args"
-          },
-          "_strip_mmproj_args": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: list[str]"
-          },
-          "_tensor_split_aborts": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, binary: Optional[str], model: Optional[str]"
-          },
-          "_tensor_split_cache_key": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, binary: Optional[str], model: Optional[str]"
-          },
-          "_terminate_descendants": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "collected"
-          },
-          "_torch_is_rocm": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "torch"
-          },
-          "_unlink_pidfile": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "path: Path"
-          },
-          "_unloadable_library_message": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "lib: str, reason: str, binary: Optional[str]=None"
-          },
-          "_visible_devices_mask": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "env_name: str"
-          },
-          "_vulkan_auto_gpu_memory": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpus: list[tuple[int, int, int]]"
-          },
-          "_vulkan_pin_args": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "gpu_indices: Optional[Iterable[int]]"
-          },
-          "_vulkan_prebuilt_was_auto_selected": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]"
-          },
-          "_vulkan_targets_are_igpus": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str], gpu_indices=None"
-          },
-          "_wait_for_health": {
-            "decorators": [],
-            "signature": "self, timeout: float=120.0, interval: float=0.5"
-          },
-          "_wait_for_vram_settle": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "max_wait: float=2.0, interval: float=0.25, tolerance_mib: int=256, since_kill: float=0.0"
-          },
-          "_weights_in_host_memory": {
-            "decorators": [],
-            "signature": "self, *, fully_gpu_offloaded: bool, gpu_memory_mode: Optional[str], gpu_layers: Optional[int], extra_args: Optional[Iterable[str]], gpu_indices=None, is_vulkan_backend: bool=False, binary: Optional[str]=None, env: Optional[Mapping[str, str]]=None, probe_vulkan: bool=True, fit_active: bool=False"
-          },
-          "_windows_pip_nvidia_dll_dirs": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "prefix: str"
-          },
-          "_with_flash_attn_off": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: list[str]"
-          },
-          "_zero_offload_gpu_flag": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "spawn_cmd: list, detected_gpus: list, env: Optional[Mapping[str, str]]=None"
-          },
-          "_zero_offload_keeps_gpu_visible": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "cmd: list, env: Optional[Mapping[str, str]]=None"
-          },
-          "adopt_load_intent_if_matched": {
-            "decorators": [],
-            "signature": "self, intent: GgufLoadIntent"
-          },
-          "base_url": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "cache_type_kv": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "chat_template": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "chat_template_override": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "context_length": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "count_chat_tokens": {
-            "decorators": [],
-            "signature": "self, messages, system=None, tools=None, strict: bool=False, chat_template_kwargs=None, should_abort=None"
-          },
-          "detect_audio_type": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "diffusion_requested_ngl": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "diffusion_split_supported": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "effective_parallel_slots": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "extra_args": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "extra_args_source": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "generate_audio_response": {
-            "decorators": [],
-            "signature": "self, text: str, audio_type: str, temperature: float=0.6, top_p: float=0.95, top_k: int=50, min_p: float=0.0, max_new_tokens: int=2048, repetition_penalty: float=1.1, cancel_event: Optional[threading.Event]=None"
-          },
-          "generate_chat_completion": {
-            "decorators": [],
-            "signature": "self, messages: list[dict], image_b64: Optional[str]=None, temperature: float=0.6, top_p: float=0.95, top_k: int=20, min_p: float=0.01, max_tokens: Optional[int]=None, repetition_penalty: float=1.0, presence_penalty: float=0.0, stop: Optional[list[str]]=None, cancel_event: Optional[threading.Event]=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False, seed: Optional[int]=None, promote_reasoning_only: bool=True, _allow_respawn_retry: bool=True"
-          },
-          "generate_chat_completion_with_tools": {
-            "decorators": [],
-            "signature": "self, messages: list[dict], tools: list[dict], temperature: float=0.6, top_p: float=0.95, top_k: int=20, min_p: float=0.01, max_tokens: Optional[int]=None, repetition_penalty: float=1.0, presence_penalty: float=0.0, stop: Optional[list[str]]=None, cancel_event: Optional[threading.Event]=None, enable_thinking: Optional[bool]=None, reasoning_effort: Optional[str]=None, preserve_thinking: Optional[bool]=None, continue_final_message: bool=False, max_tool_iterations: int=25, auto_heal_tool_calls: bool=True, nudge_tool_calls: Optional[bool]=None, tool_call_timeout: int=300, session_id: Optional[str]=None, thread_id: Optional[str]=None, rag_scope: Optional[dict]=None, seed: Optional[int]=None, disable_parallel_tool_use: bool=False, confirm_tool_calls: bool=False, bypass_permissions: bool=False, permission_mode: Optional[str]=None, promote_reasoning_only: bool=True"
-          },
-          "gguf_path": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "gpu_ids": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "gpu_layers": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "gpu_memory_mode": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "hf_repo": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "hf_variant": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "holds_no_vram": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "init_audio_codec": {
-            "decorators": [],
-            "signature": "self, audio_type: str"
-          },
-          "is_active": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "is_diffusion": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "is_loaded": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "is_vision": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "is_vulkan_build": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "last_load_intent": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "layer_preserves_tensor_intent": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "load_cancelled": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "load_model": {
-            "decorators": [
-              "_with_gguf_load_marker"
-            ],
-            "signature": "self, intent: GgufLoadIntent"
-          },
-          "load_progress": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "markup_profile": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "matches_gpu_ids": {
-            "decorators": [],
-            "signature": "self, gpu_ids: Optional[List[int]]"
-          },
-          "matches_load_source": {
-            "decorators": [],
-            "signature": "self, intent: GgufLoadIntent"
-          },
-          "max_context_length": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "model_identifier": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "mtp_draft_path": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "mtp_draft_suppressed_path": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "n_cpu_moe": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "n_layers": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "n_moe_layers": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "native_context_length": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "probe_server_capabilities": {
-            "decorators": [
-              "classmethod"
-            ],
-            "signature": "cls, binary: Optional[str]=None"
-          },
-          "reasoning_always_on": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "reasoning_default": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "reasoning_effort_levels": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "reasoning_style": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_extra_args": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_gpu_ids": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_n_batch": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_n_ctx": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_n_ubatch": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_parallel_slots": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "requested_spec_mode": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "restore_slots_for_resume": {
-            "decorators": [],
-            "signature": "self, manifest: dict"
-          },
-          "save_slots_for_resume": {
-            "decorators": [],
-            "signature": "self, should_abort: Optional[Callable[[], bool]]=None"
-          },
-          "spec_draft_n_max": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "spec_drafter_kind": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "spec_fallback_reason": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "speculative_type": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "supports_preserve_thinking": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "supports_reasoning": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "supports_tool_passthrough": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "supports_tools": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "swa_full": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "tensor_parallel": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "tensor_split": {
-            "decorators": [
-              "property"
-            ],
-            "signature": "self"
-          },
-          "unload_model": {
-            "decorators": [],
-            "signature": "self"
-          },
-          "vulkan_device_inventory": {
-            "decorators": [
-              "staticmethod"
-            ],
-            "signature": "binary: Optional[str]=None"
-          }
-        }
+        "kind": "class"
       },
       "LlamaServerNotFoundError": {
-        "bases": [
-          "RuntimeError"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "ParavirtualPlacement": {
-        "bases": [
-          "NamedTuple"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "_ANSWER_PIVOT": {
         "kind": "assign"
@@ -1688,12 +78,7 @@
         "kind": "assign"
       },
       "_CpuFallbackRuntime": {
-        "bases": [
-          "NamedTuple"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": {
         "kind": "assign"
@@ -1774,12 +159,7 @@
         "kind": "assign"
       },
       "_LlamaStreamCancelled": {
-        "bases": [
-          "Exception"
-        ],
-        "decorators": [],
-        "kind": "class",
-        "methods": {}
+        "kind": "class"
       },
       "_MAX_TOOL_CALLS_PER_TURN": {
         "kind": "assign"
@@ -1839,651 +219,386 @@
         "kind": "assign"
       },
       "_accumulated_spec_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_apply_igpu_host_reserve_mib": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "free_mib: int, is_igpu: bool"
+        "kind": "def"
       },
       "_arch_aliases": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "arch: str"
+        "kind": "def"
       },
       "_args_place_tensors_on_cpu": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]=None"
+        "kind": "def"
       },
       "_auto_mode_drops_mtp": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "req_mode: Optional[str], size_b: Optional[float], *, has_separate_drafter: bool=False"
+        "kind": "def"
       },
       "_backfill_usage_from_timings": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "usage, timings"
+        "kind": "def"
       },
       "_build_ngram_mod_flags": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "caps: Optional[dict], n_match: int=24, n_min: int=48, n_max: int=64"
+        "kind": "def"
       },
       "_bundled_hip_present": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "binary_dir: str"
+        "kind": "def"
       },
       "_cached_candidate_matches_revision_size": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]"
+        "kind": "def"
       },
       "_cached_colocated_split_main": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]"
+        "kind": "def"
       },
       "_cached_complete_candidate": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, gguf_filename: Optional[str], shards: list[str]"
+        "kind": "def"
       },
       "_cached_hf_snapshot_file": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, filename: str, *, expected_size: Optional[int]=None, cache_dir: Optional[str]=None"
+        "kind": "def"
       },
       "_cached_variant_candidates": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, hf_variant: str, *, require_mmproj: bool=False"
+        "kind": "def"
       },
       "_cached_variant_resolution": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str, hf_variant: str"
+        "kind": "def"
       },
       "_canonicalize_spec_mode": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "value"
+        "kind": "def"
       },
       "_child_spec_env": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_coerce_reasoning_effort": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "architecture, kwargs: dict"
+        "kind": "def"
       },
       "_companion_snapshot_sibling": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "near_path: str, pick: Callable[[list[str]], Optional[str]]"
+        "kind": "def"
       },
       "_cpu_runtime_owner_alive": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "staged_dir: Path"
+        "kind": "def"
       },
       "_device_selection_is_cpu": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_diffusion_manual_ngl": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "gpu_memory_mode: str, gpu_layers: int"
+        "kind": "def"
       },
       "_drafter_path_kind": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_effective_main_cache_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_effective_spec_type": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_emitted_n_batch": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "n_batch: Optional[int], n_parallel: int"
+        "kind": "def"
       },
       "_env_main_cache_type_for_budget": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_env_places_tensors_on_cpu": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_device": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], flags: Collection[str]"
+        "kind": "def"
       },
       "_extra_args_draft_cache_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_draft_device": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extra_args_draft_device_pin": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extra_args_draft_offloaded_to_cpu": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_main_cache_type_for_budget": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extra_args_main_device": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extra_args_mtp_draft_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_n_ubatch": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None, n_ctx: Optional[int]=None, *, n_batch: Optional[int]=None, n_ubatch: Optional[int]=None"
+        "kind": "def"
       },
       "_extra_args_requests_dspark": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_requests_mtp": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_requests_separate_draft": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_extra_args_set_any_flag": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], flags: Collection[str]"
+        "kind": "def"
       },
       "_extra_args_set_spec_type": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extra_args_spec_draft_n_max": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_extract_model_size_b": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "model_id: str"
+        "kind": "def"
       },
       "_extract_reasoning_effort_levels": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "chat_template: str"
+        "kind": "def"
       },
       "_fetch_swa_entry_from_hf": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "repo_id: str"
+        "kind": "def"
       },
       "_finalize_reasoning_only_cumulative": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cumulative: str, reasoning_text: str, finish_reason: Optional[str], promote_reasoning_only: bool"
+        "kind": "def"
       },
       "_flash_attn_enabled_from_args": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "args: Optional[Iterable[str]], default: bool=True, env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_gguf_active_tool_names": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "active_tools: list[dict]"
+        "kind": "def"
       },
       "_gguf_extra_shards": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "files: Iterable[str], first_shard: str"
+        "kind": "def"
       },
       "_gguf_files_for_variant": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "files: Iterable[str], variant: str"
+        "kind": "def"
       },
       "_gguf_has_genuine_tool_signal": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, signals, active_tools: list[dict]"
+        "kind": "def"
       },
       "_gguf_rehearsal_signal_pos": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, active_tools: list[dict]"
+        "kind": "def"
       },
       "_gguf_snapshot_files": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "snapshot: Path"
+        "kind": "def"
       },
       "_held_rehearsal_tail_len": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, active_tools: list[dict]"
+        "kind": "def"
       },
       "_hf_endpoint_host": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_hf_env_offline": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_hf_offline_if_unreachable": {
-        "decorators": [
-          "contextlib.contextmanager"
-        ],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_hf_offline_if_unreachable_for": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "model_name"
+        "kind": "def"
       },
       "_hf_repo_from_url": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "url: Optional[str]"
+        "kind": "def"
       },
       "_hf_unreachable": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_hub_cache_dir_for_snapshot_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: Optional[str]"
+        "kind": "def"
       },
       "_hub_download_blocks_gguf_load": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "hf_repo: str, hf_variant: Optional[str], *, require_mmproj: bool=False, hf_token: Optional[str]=None"
+        "kind": "def"
       },
       "_hub_download_in_flight": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "hf_repo: str"
+        "kind": "def"
       },
       "_is_big_endian_gguf_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str, variant_key: str=''"
+        "kind": "def"
       },
       "_is_companion_gguf_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_is_dspark_drafter_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_is_external_link": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: Path"
+        "kind": "def"
       },
       "_is_gemma_mtp_family": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "name: Optional[str]"
+        "kind": "def"
       },
       "_is_gemma_mtp_name": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "model_identifier: Optional[str], gguf_path: Optional[str]=None"
+        "kind": "def"
       },
       "_is_mtp_model_name": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "model_identifier: Optional[str], gguf_path: Optional[str]=None"
+        "kind": "def"
       },
       "_is_mtp_only_drafter_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_is_positive_int": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "value: Optional[str]"
+        "kind": "def"
       },
       "_is_rehearsal_prefix": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "stripped: str, active_tools: list[dict]"
+        "kind": "def"
       },
       "_kv_bytes_per_elem": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cache_type: Optional[str]"
+        "kind": "def"
       },
       "_kv_cache_cell_layout": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "n_ctx: int, n_parallel: int, kv_unified: bool"
+        "kind": "def"
       },
       "_kv_offload_from_args": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_kv_unified_from_args": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], default: bool=False, env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_lib_dir_has_ggml_backend": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "lib_dir: Path, backend: str"
+        "kind": "def"
       },
       "_llama_lib_dir": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "binary: str"
+        "kind": "def"
       },
       "_load_swa_cache": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_metal_device_is_paravirtual": {
-        "decorators": [
-          "functools.lru_cache(maxsize=1)"
-        ],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_mla_mtp_auto_enabled": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_native_linux_system_rocm_lib_dirs": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "binary_dir: str=''"
+        "kind": "def"
       },
       "_pad_kv_cells": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cells: int"
+        "kind": "def"
       },
       "_paravirtual_draft_ngl_flag": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "server_caps: Mapping[str, object]"
+        "kind": "def"
       },
       "_paravirtual_mmproj_pinnable": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "server_caps: Mapping[str, object]"
+        "kind": "def"
       },
       "_paravirtual_probe_answered": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "server_caps: Mapping[str, object]"
+        "kind": "def"
       },
       "_paravirtual_split_mode_pin": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]]"
+        "kind": "def"
       },
       "_paravirtual_strip_gpu_overrides": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], *, log_dropped: bool=True"
+        "kind": "def"
       },
       "_period_from_layer_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "layer_types: list"
+        "kind": "def"
       },
       "_pick_mmproj": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "candidates: list[str]"
+        "kind": "def"
       },
       "_pipeline_parallel_disabled_by_args": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None, n_layers: Optional[int]=None"
+        "kind": "def"
       },
       "_planned_main_cache_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cache_type_kv: Optional[str], extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_probe_dns_dead": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "host: Optional[str]=None, timeout: float=2.0"
+        "kind": "def"
       },
       "_quant_label_for_endian": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_resolve_llama_binary": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "binary: str"
+        "kind": "def"
       },
       "_resolve_repo_id_casing": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "hf_repo: str"
+        "kind": "def"
       },
       "_resolve_swa_entry_from_transformers": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "arch: str"
+        "kind": "def"
       },
       "_resolve_swa_pattern": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "arch: Optional[str], n_layers: Optional[int], source_repo_candidates: tuple=(), *, allow_network: Optional[bool]=None"
+        "kind": "def"
       },
       "_save_swa_cache": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cache: dict"
+        "kind": "def"
       },
       "_scale_diffusion_required_gb": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "required_gb: float, ngl: int, n_layers: Optional[int]"
+        "kind": "def"
       },
       "_shim_supports_ngl": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "shim_cmd: List[str]"
+        "kind": "def"
       },
       "_should_suppress_forced_no_tool_output": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, previous: str=''"
+        "kind": "def"
       },
       "_snapshot_dir_of": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "path: str"
+        "kind": "def"
       },
       "_snapshot_has_all_shards": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "main_path: str, main_filename: str, shards: Iterable[str], expected_sizes: dict[str, int]"
+        "kind": "def"
       },
       "_sniff_text_tool_name": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, enabled_names: set"
+        "kind": "def"
       },
       "_source_declares_option": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "source: str, option: str"
+        "kind": "def"
       },
       "_strip_flag_pairs": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "args: Iterable[str], flags: frozenset[str]"
+        "kind": "def"
       },
       "_swa_cache_path": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "_swa_entry_from_config_obj": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "cfg"
+        "kind": "def"
       },
       "_swa_entry_from_layer_types": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "lt"
+        "kind": "def"
       },
       "_swa_full_from_args_or_env": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]]=None"
+        "kind": "def"
       },
       "_sweep_abandoned_cpu_runtimes": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "runtime_root: Path"
+        "kind": "def"
       },
       "_with_gguf_load_marker": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "load: Callable"
+        "kind": "def"
       },
       "_without_subsequence": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "tokens: List[str], run: List[str]"
+        "kind": "def"
       },
       "_wsl_system_rocm_lib_dirs": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "cached_gguf_for_load": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "hf_repo: str, hf_variant: Optional[str], *, require_mmproj: bool=False, verify_sizes: bool=False, hf_token: Optional[str]=None"
+        "kind": "def"
       },
       "chat_load_active": {
-        "decorators": [],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "chat_load_in_flight": {
-        "decorators": [
-          "contextlib.contextmanager"
-        ],
-        "kind": "def",
-        "signature": ""
+        "kind": "def"
       },
       "classify_gpu_offload_lines": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "lines: 'list[str]'"
+        "kind": "def"
       },
       "detect_reasoning_flags": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "chat_template: Optional[str], model_identifier: Optional[str]=None, *, log_source: Optional[str]=None"
+        "kind": "def"
       },
       "gguf_load_in_flight": {
-        "decorators": [
-          "contextlib.contextmanager"
-        ],
-        "kind": "def",
-        "signature": "hf_repo: Optional[str]"
+        "kind": "def"
       },
       "hf_gguf_load_in_flight": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "hf_repo: str"
+        "kind": "def"
       },
       "logger": {
         "kind": "assign"
       },
       "paravirtual_normalized_request": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "*, gpu_memory_mode: Literal['auto', 'manual']='auto', gpu_layers: int=-1, tensor_parallel: bool=False, tensor_split: Optional[List[float]]=None, n_cpu_moe: int=0, extra_args: Optional[Iterable[str]]=None, log_dropped: bool=True"
+        "kind": "def"
       },
       "zero_vram_chat_load": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "gpu_memory_mode: str, gpu_layers: int, extra_args: Optional[list]=None, needs_mmproj: bool=False, speculative_type: Optional[str]=None"
+        "kind": "def"
       }
     }
   },
   "core.inference.safetensors_agentic": {
-    "regexes": {
-      "re.compile('\"name\"\\\\s*:\\\\s*\"([\\\\w-]+)\"')": 1,
-      "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)')": 1,
-      "re.compile('<function=([\\\\w-]+)>')": 1,
-      "re.compile('[\\\\w-]+(?:\\\\[(?:A(?:R(?:G(?:S)?)?)?)?)?')": 1,
-      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)')": 1
-    },
     "symbols": {
       "_FUNCTION_SIGNAL_RE": {
         "kind": "assign"
@@ -2510,97 +625,61 @@
         "kind": "assign"
       },
       "_accepts_output_callback": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "func: Callable[..., str]"
+        "kind": "def"
       },
       "_active_tool_names": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "active_tools: list[dict]"
+        "kind": "def"
       },
       "_call_single_turn": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "single_turn, conversation: list, active_tools: list[dict]"
+        "kind": "def"
       },
       "_coerce_arguments": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "raw_args, *, heal: bool, tool_name: str=''"
+        "kind": "def"
       },
       "_coerce_arguments_with_provenance": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "raw_args, *, heal: bool, tool_name: str=''"
+        "kind": "def"
       },
       "_detect_render_html_tool_start": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "content: str"
+        "kind": "def"
       },
       "_earliest_tool_signal": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "candidate: str, signals, active_tools: list[dict], *, unrestricted: bool=False"
+        "kind": "def"
       },
       "_has_genuine_tool_signal": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "candidate: str, signals, active_tools: list[dict], *, unrestricted: bool=False"
+        "kind": "def"
       },
       "_held_rehearsal_tail_len": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, active_tools: list[dict], *, unrestricted: bool=False"
+        "kind": "def"
       },
       "_is_rehearsal_prefix": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "stripped: str, active_tools: list[dict], *, unrestricted: bool=False"
+        "kind": "def"
       },
       "_looks_like_enabled_bare_json": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, enabled_tool_names: Optional[set]"
+        "kind": "def"
       },
       "_rehearsal_name_start": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "candidate: str, signal_pos: int, active_tools: list[dict], *, unrestricted: bool=False"
+        "kind": "def"
       },
       "_reprompt_intent_text": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, *, reasoning_prefilled: bool=False"
+        "kind": "def"
       },
       "_status_for_tool": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "tool_name: str, arguments: dict"
+        "kind": "def"
       },
       "_strip_tool_markup_final": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, *, auto_heal_tool_calls: bool, tool_protocol_active: bool=False, enabled_tool_names: Optional[set]=None"
+        "kind": "def"
       },
       "_tool_event_provenance": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "**flags: object"
+        "kind": "def"
       },
       "logger": {
         "kind": "assign"
       },
       "run_safetensors_tool_loop": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "*, single_turn: Callable[[list], Generator[str, None, None]], messages: list[dict], tools: list[dict], execute_tool: Callable[..., str], cancel_event: Optional[threading.Event]=None, auto_heal_tool_calls: bool=True, nudge_tool_calls: Optional[bool]=None, max_tool_iterations: int=25, tool_call_timeout: int=300, session_id: Optional[str]=None, thread_id: Optional[str]=None, rag_scope: Optional[dict]=None, confirm_tool_calls: bool=False, bypass_permissions: bool=False, permission_mode: Optional[str]=None, reasoning_prefilled: bool=False, continue_final_message: bool=False, markup=None, renderable_tools=None"
+        "kind": "def"
       },
       "strip_tool_markup_streaming": {
-        "decorators": [],
-        "kind": "def",
-        "signature": "text: str, *, auto_heal_tool_calls: bool=True, tool_protocol_active: bool=False, enabled_tool_names: Optional[set]=None"
+        "kind": "def"
       }
     }
   },
