@@ -27,6 +27,7 @@ and the caller falls back to dense-quantise (then GGUF). Inert with nothing conf
 
 from __future__ import annotations
 
+import threading as _threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -95,6 +96,15 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.granularity", "PerRow"),
     ("torchao.quantization.granularity", "PerTensor"),
     ("torchao.float8.inference", "Float8MMConfig"),
+    # mxfp8 / nvfp4: no hosted checkpoint uses these, but they are two of the four TQ_SCHEMES and
+    # scripts/build_prequant_checkpoint.py bakes them, so a LOCAL override can be either. torchao
+    # registers them itself on import of the prototype package -- which nothing on this path
+    # imports, so without naming them here the load refuses a checkpoint our own builder produced.
+    ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
+    ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
+    ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
+    ("torchao.prototype.mx_formats.nvfp4_tensor", "NVFP4Tensor"),
+    ("torchao.prototype.mx_formats.nvfp4_tensor", "QuantizeTensorToNVFP4Kwargs"),
     # The version string torch.save stamps into the subclass state. A str subclass, but it is not
     # in torch's default set, and without it every torchao checkpoint refuses to load.
     ("torch.torch_version", "TorchVersion"),
@@ -117,6 +127,63 @@ def _prequant_safe_globals() -> list:
     return pairs
 
 
+_SAFE_GLOBALS_LOCK = _threading.Lock()
+_SAFE_GLOBALS_REGISTERED: Optional[bool] = None
+
+
+def _register_prequant_safe_globals() -> bool:
+    """Register the allowlist ONCE, process-wide and permanently. True when the load can run.
+
+    Not the ``safe_globals`` context manager, deliberately. That adds the entries on entry and
+    REMOVES them on exit, against a process-wide table -- so two overlapping reads (a
+    download-plan probe beside a load, or two plan probes; both arrive on the route's thread
+    pool) let whichever finishes first strip the allowlist out from under the other's
+    ``torch.load``, failing a perfectly good checkpoint and dropping that load to dense. Adding
+    once and never removing has no such window.
+
+    The widening this costs is small and bounded: any OTHER ``weights_only`` load in the process
+    also accepts these torch/torchao tensor constructors. They build tensors and nothing else,
+    which is what torch's own allowlist mechanism is for; the thing being kept out is a pickle
+    naming ANY global, which is still refused.
+
+    Registration takes ``(object, name)`` pairs so a re-exported class is registered under the
+    name the pickle records. Torch grew that form in 2.6; an older torch registers under the
+    class's own ``__module__`` instead, which would silently refuse an fp8 checkpoint, so it
+    counts as unsupported here and ``restricted_prequant_load_supported`` tells planning to stop
+    offering pre-quant sources. Answered once and memoised, including the failure."""
+    global _SAFE_GLOBALS_REGISTERED
+
+    if _SAFE_GLOBALS_REGISTERED is not None:
+        return _SAFE_GLOBALS_REGISTERED
+    with _SAFE_GLOBALS_LOCK:
+        if _SAFE_GLOBALS_REGISTERED is not None:
+            return _SAFE_GLOBALS_REGISTERED
+        ok = False
+        try:
+            import torch
+
+            add = getattr(torch.serialization, "add_safe_globals", None)
+            if add is not None:
+                add(_prequant_safe_globals())
+                ok = True
+        except Exception:  # noqa: BLE001 -- no allowlist means no restricted load, never a raise
+            ok = False
+        _SAFE_GLOBALS_REGISTERED = ok
+        return ok
+
+
+def restricted_prequant_load_supported() -> bool:
+    """Whether this install can read a pre-quant checkpoint at all.
+
+    Pre-quant is a pickle format, so without the allowlist there is no safe way to open one and
+    the loader refuses. Planning has to ask the same question BEFORE it sizes the load: a plan
+    that counts on a 6 GB pre-quant artifact, drops the dense shards, evicts the resident
+    pipeline and only then meets the refusal has nothing left to fall back to but a dense
+    download it never budgeted for. ``usable_prequant_source`` therefore answers None here, for
+    hosted and local sources alike, which is the same answer the loader will give."""
+    return _register_prequant_safe_globals()
+
+
 def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
     """``torch.load`` a pre-quant checkpoint under the allowlist above.
 
@@ -126,18 +193,18 @@ def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
     costs nothing and a mutated artifact raises ``UnpicklingError`` into the caller's dense
     fallback instead of running.
 
-    Refuses outright on a torch too old to have ``safe_globals`` (< 2.6), rather than silently
-    reopening the unrestricted load."""
+    Refuses outright on a torch that cannot express the allowlist, rather than silently reopening
+    the unrestricted load."""
     import torch
 
-    safe_globals = getattr(torch.serialization, "safe_globals", None)
-    if safe_globals is None:
+    if not _register_prequant_safe_globals():
         raise RuntimeError(
-            "this torch has no torch.serialization.safe_globals (needs >= 2.6), so a pre-quant "
-            "checkpoint cannot be deserialized without allowing arbitrary pickle globals"
+            "this torch cannot register the pre-quant constructor allowlist (needs "
+            "torch.serialization.add_safe_globals with (object, name) support, i.e. >= 2.6), so "
+            "a pre-quant checkpoint cannot be deserialized without allowing arbitrary pickle "
+            "globals"
         )
-    with safe_globals(_prequant_safe_globals()):
-        return torch.load(path, weights_only = True, **kwargs)
+    return torch.load(path, weights_only = True, **kwargs)
 
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -346,7 +413,13 @@ def usable_prequant_source(
     The scheme check matters most under ``auto``, which picks a scheme the user never named: an
     int8 override must not read as an available fp8 pre-quant just because the file exists. A
     checkpoint whose scheme cannot be read is treated as not usable, matching every other unknown
-    here, since the loader would reject it too."""
+    here, since the loader would reject it too.
+
+    An install that cannot restrict the load has no usable pre-quant source AT ALL, hosted
+    included: the loader refuses every checkpoint there, and a plan that had already dropped the
+    dense shards for one would find that out after the eviction."""
+    if not restricted_prequant_load_supported():
+        return None
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is not None and src.kind == "path":
         if not local_prequant_path_ready(src.location):

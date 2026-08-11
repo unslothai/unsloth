@@ -333,15 +333,13 @@ def _stub_torch_accelerate(
             raise RuntimeError("corrupt checkpoint")
         return ckpt
 
-    @contextlib.contextmanager
-    def _safe_globals(entries):
+    def _add_safe_globals(entries):
         seen["safe_globals"] = list(entries)
-        yield
 
     torch.load = _load
-    # The load runs inside ``safe_globals`` with ``weights_only``; a stub that omitted the
+    # The load runs ``weights_only`` against a registered allowlist; a stub that omitted the
     # namespace would let a regression back to an unrestricted load pass every test here.
-    torch.serialization = types.SimpleNamespace(safe_globals = _safe_globals)
+    torch.serialization = types.SimpleNamespace(add_safe_globals = _add_safe_globals)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "torch.serialization", torch.serialization)
 
@@ -569,6 +567,7 @@ def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
     checkpoint -- and the artifact is a mutable remote file, so "the repo is first-party" is not
     a reason to run whatever bytes arrive. Everything the format needs is allowlisted instead."""
     seen = _stub_torch_accelerate(monkeypatch, _good_ckpt())
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: "/cache/x.pt")
     load_prequantized_transformer(
         _FakeTransformer,
@@ -580,7 +579,7 @@ def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
         scheme = "fp8",
     )
     assert seen["weights_only"] is True
-    assert seen["safe_globals"] is not None, "the allowlist has to be installed around the load"
+    assert seen["safe_globals"], "the allowlist has to be registered before the load"
 
 
 def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkeypatch):
@@ -593,6 +592,9 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     torchao's subclasses plus ``TorchVersion``, which torch does not allow by default."""
     listed = {f"{module}.{name}" for module, name in pq._PREQUANT_SAFE_GLOBALS}
     required = {
+        # every TQ_SCHEME the builder can bake, not just the two the hosted repos ship
+        "torchao.prototype.mx_formats.mx_tensor.MXTensor",
+        "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
         "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
         "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
         "torchao.dtypes.utils.PlainLayout",
@@ -735,11 +737,62 @@ def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(m
     """No allowlist support means no load. Falling back to an unrestricted one would put the
     sink back on exactly the installs least able to defend it."""
     torch = types.ModuleType("torch")
-    torch.load = lambda *a, **k: pytest.fail("torch.load must not run without safe_globals")
+    torch.load = lambda *a, **k: pytest.fail("torch.load must not run without add_safe_globals")
     torch.serialization = types.SimpleNamespace()
     monkeypatch.setitem(sys.modules, "torch", torch)
-    with pytest.raises(RuntimeError, match = "safe_globals"):
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    with pytest.raises(RuntimeError, match = "add_safe_globals"):
         pq._torch_load_prequant("/nonexistent.pt", map_location = "cpu")
+
+
+def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monkeypatch, tmp_path):
+    """Planning has to ask the loader's question BEFORE it sizes the load.
+
+    A plan that keeps a hosted pre-quant source, drops the dense shards for it and evicts the
+    resident pipeline has nothing left when the loader then refuses every checkpoint: the dense
+    build it now needs was never budgeted or staged. So the capability answer belongs in source
+    selection, not only at the load."""
+    import os
+
+    fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda: True)
+    assert pq.usable_prequant_source(fam, "int8") is not None
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda: False)
+    # Hosted and local alike: the loader refuses both, so neither is usable.
+    assert pq.usable_prequant_source(fam, "int8") is None
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    assert pq.usable_prequant_source(fam, "int8", path_override = str(ckpt)) is None
+
+
+def test_the_allowlist_is_registered_once_and_never_withdrawn(monkeypatch):
+    """The registration must OUTLIVE the load that installed it.
+
+    ``safe_globals`` as a context manager adds on entry and removes on exit, against a
+    process-wide table that is not refcounted. Two overlapping reads (a download-plan probe
+    beside a load: both arrive on the route's thread pool) then let whichever finishes first
+    strip the allowlist out from under the other's ``torch.load``, failing a good checkpoint and
+    dropping that load to dense. Registering once and never removing has no such window."""
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch.serialization, "add_safe_globals"):
+        pytest.skip("torch without add_safe_globals")
+    calls = []
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(
+        torch.serialization, "add_safe_globals", lambda entries: calls.append(list(entries))
+    )
+    # No remove_safe_globals / safe_globals context: nothing gives the entries back.
+    monkeypatch.setattr(
+        torch.serialization,
+        "safe_globals",
+        lambda *a, **k: pytest.fail("the load must not scope the allowlist to itself"),
+    )
+    monkeypatch.setattr(torch, "load", lambda *a, **k: {"ok": True})
+    assert pq._torch_load_prequant("/x.pt", map_location = "cpu") == {"ok": True}
+    assert pq._torch_load_prequant("/x.pt", map_location = "cpu") == {"ok": True}
+    assert len(calls) == 1, "registered once for the process, not per load"
+    assert calls[0], "and with the allowlist, not an empty list"
 
 
 # ── local-path opt-in gate ───────────────────────────────────────────────────────

@@ -776,6 +776,13 @@ def _h3_auto_denoiser_scheme(
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and
         # serving the other partition's would generate the wrong thing.
         return None
+    from .diffusion_prequant import restricted_prequant_load_supported
+
+    if not restricted_prequant_load_supported():
+        # An install that cannot restrict the deserialization cannot open a hosted checkpoint at
+        # all, and this decision runs BEFORE the download plan: choosing one here would drop the
+        # dense denoiser shards for an artifact the loader is going to refuse.
+        return None
     # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload
     # rotation at all (it does not survive the mid-block move), so taking it means pinning it, which
     # turns the memory floor from a max into a sum: 20.3 GB resident PLUS whatever runs beside it.
