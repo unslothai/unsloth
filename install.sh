@@ -2595,14 +2595,18 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         # file -L (lipo already follows the link). Trailing || true keeps the
         # installer alive under set -e when neither tool is present.
         #
-        # file -L FIRST, lipo only as the fallback: lipo is a Command Line Tools shim, so
+        # file -Lb FIRST, lipo only as the fallback: lipo is a Command Line Tools shim, so
         # on a Mac without CLT merely running it raises the "install the command line
         # developer tools" dialog -- 2>/dev/null hides its stderr but not a GUI dialog.
-        # file is base-system and always answers. Both spellings feed the same case below
-        # ("Mach-O 64-bit executable arm64", or "universal binary ... [x86_64] [arm64]",
-        # against lipo's "arm64" / "x86_64 arm64"), so the branch taken is unchanged.
-        # clean-machine-assert.sh:152 already made exactly this swap for its own use.
-        _archs=$(file -L "$VENV_DIR/bin/python" 2>/dev/null \
+        # file is base-system (absent from the xcode-select(1) FILES shim list) and always
+        # answers. -b is load-bearing, not tidiness: without it file prefixes the PATH, so
+        # a UNSLOTH_STUDIO_HOME containing "arm64" would match the *arm64* arm below and
+        # report an x86_64 venv as arm64, suppressing the recreate this block exists to
+        # trigger. With -b both spellings feed the same case ("Mach-O 64-bit executable
+        # arm64", "universal binary ... [x86_64] [arm64]", against lipo's "arm64" /
+        # "x86_64 arm64"), so the branch taken is unchanged.
+        # clean-machine-assert.sh:186 already made exactly this swap for its own use.
+        _archs=$(file -Lb "$VENV_DIR/bin/python" 2>/dev/null \
             || lipo -archs "$VENV_DIR/bin/python" 2>/dev/null || true)
         case "$_archs" in
             *arm64*)  _VENV_ARCH=arm64 ;;
