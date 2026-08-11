@@ -25,14 +25,9 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     _strip_mistral_reasoning,
+    strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS,
@@ -51,11 +46,8 @@ from core.inference.tool_call_parser import (
 # The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
 # pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
     _THINK_CLOSE_RE,
-    _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
-    apply_tool_strip_patterns,
     strip_outside_think,
 )
 from core.inference.tool_loop_controller import (
@@ -271,24 +263,14 @@ def strip_tool_markup_streaming(
     text = _strip_mistral_reasoning(text)
 
     def _seg(segment: str, is_last: bool) -> str:
-        # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
-        # strips first, then the guarded function-XML / GLM scans, then the regex arms
-        # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-        # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal strips are name-gated.
-        seg = _strip_mistral_closed_calls(segment)
-        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
-        if is_last:
-            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
-        seg = _strip_function_xml_calls(seg, final = is_last)
-        seg = _strip_glm_calls(seg, final = is_last)
-        pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
-        for pat in pats:
-            seg = pat.sub("", seg)
-        if is_last:
-            seg = apply_tool_strip_patterns(
-                seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = enabled_tool_names
-            )
-        return seg
+        # The scan order lives in the parser's ``strip_segment`` (seg_final -> is_last), so
+        # this path, the GGUF streaming path and ``strip_tool_markup`` cannot drift apart:
+        # balanced strips first, then the guarded function-XML / GLM scans, then the regex
+        # arms (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
+        # segment (a bare ``foo[ARGS]`` before <think> is prose).
+        return _parser_strip_segment(
+            segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
+        )
 
     # Preserve think blocks verbatim: stripping a rehearsed call inside one shrinks then
     # regrows the cumulative text, corrupting append-by-length consumers.

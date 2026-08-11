@@ -1,0 +1,16 @@
+[
+  {
+    "function": "strip_tool_call_markup",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.tool_healing",
+    "once": "get_weather[ARGS]",
+    "twice": ""
+  },
+  {
+    "function": "strip_tool_markup",
+    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "module": "core.inference.tool_call_parser",
+    "once": "get_weather[ARGS]",
+    "twice": ""
+  }
+]

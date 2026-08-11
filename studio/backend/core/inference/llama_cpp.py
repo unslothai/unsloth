@@ -83,6 +83,7 @@ from core.inference.tool_call_parser import (
     _strip_glm_calls,
     _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
+    strip_segment as _parser_strip_segment,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
@@ -136,11 +137,21 @@ class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
     Subclasses RuntimeError so existing handlers still catch it."""
 
+    __slots__ = ()
+
 
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
 
+    __slots__ = ()
 
+
+# Deliberately NOT ``slots=True``. It was measured (no benefit: the intent is built a
+# handful of times per load, not in any hot loop) and then tried, and it breaks callers
+# that reflect over the instance: ``slots=True`` removes ``__dict__``, so ``vars(intent)``
+# raises TypeError. That is not hypothetical -- it took out every GGUF load through
+# ``routes/inference.py`` and the MTP crash-recovery path in ``test_tensor_parallel.py``.
+# Reflection over this dataclass is part of how it is used; keep the ``__dict__``.
 @dataclass(frozen = True)
 class GgufLoadIntent:
     """Immutable caller intent replayed by retries and recovery."""
@@ -3034,6 +3045,12 @@ def _llama_lib_dir(binary: str) -> Path:
 
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
+# Names the staged CPU-only runtime must not carry over. Constant, so it is compiled once
+# here rather than rebuilt inside _cpu_isolated_binary.
+_GGML_GPU_BACKEND_RE = re.compile(
+    r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+)
+
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
     """Whether a live process still owns this staged CPU-fallback runtime."""
@@ -3138,6 +3155,8 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
 
 class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
+
+    __slots__ = ()
 
 
 class LlamaCppBackend:
@@ -9113,9 +9132,7 @@ class LlamaCppBackend:
             # and let the next stage collect what no live Studio holds.
             (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
-            gpu_backend = re.compile(
-                r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
-            )
+            gpu_backend = _GGML_GPU_BACKEND_RE
             cpu_library_present = False
             for source in lib_dir.iterdir():
                 try:
@@ -15251,26 +15268,14 @@ class LlamaCppBackend:
                 return text
 
             def _seg(segment: str, is_last: bool) -> str:
-                # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
-                # strips first (nested JSON removed whole; literal markup inside a value is that
-                # call's data), then the guarded function-XML / GLM scans, then the regex arms
-                # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-                # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal + markerless
-                # strips are name-gated on the ORIGINAL list (strip/detect aligned).
-                seg = _strip_mistral_closed_calls(segment)
-                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = _enabled_names_gate)
-                if is_last:
-                    seg = _strip_gemma_wrapperless_calls(seg, _enabled_names_gate)
-                seg = _strip_function_xml_calls(seg, final = is_last)
-                seg = _strip_glm_calls(seg, final = is_last)
-                pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
-                for pat in pats:
-                    seg = pat.sub("", seg)
-                if is_last:
-                    seg = apply_tool_strip_patterns(
-                        seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = _enabled_names_gate
-                    )
-                return seg
+                # The scan order used to be inlined here, one copy of four. It lives in the
+                # parser's ``strip_segment`` now, so this path, the safetensors loop and
+                # ``strip_tool_markup`` cannot drift apart. Streaming has no separate final
+                # pass, so the last segment always takes the end-of-turn arms (a bare
+                # ``foo[ARGS]`` before <think> is prose).
+                return _parser_strip_segment(
+                    segment, seg_final = is_last, enabled_tool_names = _enabled_names_gate
+                )
 
             # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
             return strip_outside_think(text, _seg)
