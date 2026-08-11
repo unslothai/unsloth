@@ -1159,13 +1159,13 @@ _AUDIO_TOKEN_PATTERNS = {
 # from them, and a codec added there without its marker here would silently stop being
 # detected. test_audio_token_detection.py fails if the two drift.
 _AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",            # csm
+    "<|AUDIO|>",  # csm
     "<|startoftranscript|>",  # whisper
-    "<|bicodec_",           # bicodec
-    "<|audio_start|>",      # dac
-    "<custom_token_",       # snac
-    "<audio_soft_token>",   # audio_vlm (Gemma 3n)
-    "<|audio|>",            # audio_vlm (Gemma 4)
+    "<|bicodec_",  # bicodec
+    "<|audio_start|>",  # dac
+    "<custom_token_",  # snac
+    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
+    "<|audio|>",  # audio_vlm (Gemma 4)
 )
 
 
