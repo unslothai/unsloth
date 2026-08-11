@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { STEPS } from "@/config/training";
 import { markOnboardingDone } from "@/features/auth";
+import { waitForHfTokenPersistence } from "@/features/hub/stores/hf-token-store";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   isTrainingMethodSupportedOnDevice,
@@ -71,7 +72,12 @@ export function WizardFooter({
             <Button
               variant="outline"
               className="px-4"
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await waitForHfTokenPersistence();
+                } catch {
+                  return;
+                }
                 markOnboardingDone();
                 window.location.assign(returnTo);
               }}
@@ -81,7 +87,12 @@ export function WizardFooter({
           )}
           {isLast ? (
             <Button
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await waitForHfTokenPersistence();
+                } catch {
+                  return;
+                }
                 markOnboardingDone();
                 window.location.assign(returnTo);
               }}
@@ -93,11 +104,16 @@ export function WizardFooter({
             </Button>
           ) : (
             <Button
-              onClick={() => {
+              onClick={async () => {
                 if (
                   currentStep === 1 &&
                   sessionStorage.getItem("unsloth_chat_only") === "1"
                 ) {
+                  try {
+                    await waitForHfTokenPersistence();
+                  } catch {
+                    return;
+                  }
                   sessionStorage.removeItem("unsloth_chat_only");
                   markOnboardingDone();
                   window.location.assign("/chat");
