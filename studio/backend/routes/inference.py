@@ -4715,6 +4715,25 @@ def _record_refused_request(
     api_monitor.fail(entry_id, refusal.message)
 
 
+def _resident_id_is_namespaced() -> bool:
+    """Whether what is serving has an ``org/name`` id to compare a request against.
+
+    A model loaded from a plain directory is advertised under a bare name, so a
+    namespaced request cannot be told apart from it. Refusing one there would 404
+    the weights that are in fact serving, so treat it as undecidable instead.
+    """
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        candidates = (
+            getattr(llama_backend, "model_identifier", None),
+            getattr(llama_backend, "_openai_advertised_id", None),
+            _llama_public_model_id(llama_backend),
+        )
+    else:
+        candidates = (getattr(get_inference_backend(), "active_model_name", None),)
+    return any("/" in (public_model_id(c) or "") for c in candidates if c)
+
+
 def _loaded_satisfies(requested: str) -> bool:
     """Whether what is serving right now actually answers to *requested*.
 
@@ -4970,6 +4989,12 @@ async def _reject_unservable_model(
         downloaded = here = switchable = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
+    if gguf_hub_repo and not (quantified or here):
+        # Decisive only against a resident carrying a hub-style id of its own; a
+        # directory-loaded model advertises a bare name that no namespaced request
+        # can be told apart from. Checked here, not with the other shape tests, so
+        # a foreign label never pays for it.
+        gguf_hub_repo = await asyncio.to_thread(_resident_id_is_namespaced)
     if not (quantified or here or gguf_hub_repo):
         return
     if switchable:
