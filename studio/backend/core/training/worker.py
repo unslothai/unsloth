@@ -986,9 +986,9 @@ _IMPORT_PROBE_TIMEOUT = 300
 def _is_importable_isolated(import_name: str) -> bool:
     """Probe the import in a child process.
 
-    A wheel built for the wrong arch can abort or segfault inside the extension's own
-    initialiser instead of raising, and that would kill this worker outright rather than
-    fall back. A child turns it into a return code (negative = fatal signal).
+    A wrong-arch wheel can abort or segfault in its initialiser instead of raising, which
+    would kill this worker rather than fall back. A child turns that into a return code
+    (negative = fatal signal).
     """
     try:
         result = _sp.run(
@@ -1001,8 +1001,7 @@ def _is_importable_isolated(import_name: str) -> bool:
             stdout = _sp.DEVNULL,
             stderr = _sp.DEVNULL,
             timeout = _IMPORT_PROBE_TIMEOUT,
-            # No env override: the probe should see exactly what the real in-process import
-            # will see a moment later, and nothing here decodes child output.
+            # No env override: the probe must see what the real in-process import will.
         )
     except (OSError, _sp.TimeoutExpired) as exc:
         logger.debug("%s import probe did not complete (%s)", import_name, exc)
@@ -1052,8 +1051,7 @@ def _install_package_wheel_first(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
-    # Set when a wheel installed but would not import: pip/uv treat the broken distribution
-    # as satisfying the fallback spec, so it has to be replaced rather than installed over.
+    # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30)
@@ -1080,8 +1078,8 @@ def _install_package_wheel_first(
         ):
             if result.returncode == 0:
                 # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
-                # verify rather than trust the exit code. Out of process: this wheel is
-                # unvalidated native code and a bad one can take the worker down with it.
+                # verify rather than trust the exit code, and do it out of process: a bad
+                # one can take the worker down with it.
                 if _is_importable_isolated(import_name):
                     logger.info("Installed prebuilt %s wheel successfully", display_name)
                     return True
@@ -1125,11 +1123,10 @@ def _install_package_wheel_first(
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
 
     if wheel_rejected:
-        # Remove it rather than installing over it. pip/uv would report the broken
-        # distribution as satisfying the spec and do nothing, and --force-reinstall is not
-        # the answer: both scope it to the whole resolved transaction ("Reinstall all
-        # packages"), which for flash-attn pulls in torch and could swap the running CUDA
-        # stack underneath this worker.
+        # Remove it rather than install over it: pip/uv would report the broken
+        # distribution as already satisfying the spec and do nothing. --force-reinstall is
+        # not the answer either, since both scope it to the whole resolved transaction,
+        # which for flash-attn means torch and the running CUDA stack.
         _uninstall_package(pypi_name, display_name)
 
     _send_status(event_queue, pypi_status_message)

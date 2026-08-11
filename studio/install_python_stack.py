@@ -3656,9 +3656,8 @@ def _flash_attn_importable() -> bool:
     """Whether flash_attn imports, checked out of process.
 
     A wrong-arch/ABI wheel installs fine and raises on import, so a zero pip exit code is
-    not proof the install is usable. Run it in a child so a half-loaded native extension
-    cannot poison the installer, and bound it: initialisation can hang rather than fail,
-    and an unbounded probe would leave setup waiting forever instead of warning.
+    not proof the install is usable. In a child, so a half-loaded native extension cannot
+    poison the installer, and bounded, since initialisation can hang rather than fail.
     """
     try:
         result = subprocess.run(
