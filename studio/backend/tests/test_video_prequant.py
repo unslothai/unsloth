@@ -1124,3 +1124,58 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     predownload = src.index("_predownload_base")
     assert planned < verified < predownload
     assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
+
+
+def _h3_placement_probe(
+    monkeypatch,
+    *,
+    free_gb,
+    te_gb,
+    denoiser_gb,
+    speed = "default",
+):
+    """Drive just the placement decision: does this load install the CPU-offload rotation?"""
+    from core.inference import video as vid
+
+    monkeypatch.setattr(
+        vid,
+        "_h3_dense_denoiser_resident_bytes",
+        lambda fam, **kw: (int(denoiser_gb * 1e9), int(te_gb * 1e9)),
+    )
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: int(free_gb * 1e9))
+    sizes = vid._h3_dense_denoiser_resident_bytes(None)
+    free = vid._h3_free_device_bytes("cuda")
+    return speed != vid.SPEED_OFF and vid._h3_dense_denoiser_fits(sizes, free)
+
+
+def test_a_card_that_holds_everything_does_not_install_the_offload_rotation(monkeypatch):
+    """``enable_auto_cpu_offload`` parks every component in HOST RAM and moves each one back inside
+    its own pre_forward. On a card that can hold the whole set that buys nothing and costs twice:
+    measured 42.2 GB peak host RSS on a 183 GB card with 103 GB of it in use, plus the conditioner
+    and VAEs crossing the bus on every generation."""
+    assert _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66) is True
+
+
+def test_a_card_that_cannot_hold_everything_keeps_the_rotation(monkeypatch):
+    # The rotation is what makes H3 run at all here, so the saving must never be taken on credit.
+    assert _h3_placement_probe(monkeypatch, free_gb = 80, te_gb = 40, denoiser_gb = 66) is False
+
+
+def test_speed_off_keeps_the_rotation_even_on_a_card_that_could_hold_everything(monkeypatch):
+    """The headroom in the sizing is for the family's DEFAULT frame count, so a resident set trades
+    the rotation's ability to absorb a much longer clip for throughput. An explicit speed_mode=off
+    is the one request that says do not make that trade."""
+    from core.inference import video as vid
+    assert (
+        _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66, speed = vid.SPEED_OFF)
+        is False
+    )
+
+
+def test_an_unreadable_card_keeps_the_rotation(monkeypatch):
+    # Cannot tell is not evidence of room, and guessing wrong here is an OOM rather than a slow load.
+    from core.inference import video as vid
+
+    monkeypatch.setattr(vid, "_h3_dense_denoiser_resident_bytes", lambda fam, **kw: (1, 1))
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
+    assert vid._h3_dense_denoiser_fits(vid._h3_dense_denoiser_resident_bytes(None), None) is False
