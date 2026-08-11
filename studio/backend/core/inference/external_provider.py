@@ -80,7 +80,6 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
-_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
 
 def _anthropic_sampling_params_removed(model: str) -> bool:
@@ -160,15 +159,9 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
             text = part.get("text")
             if isinstance(text, str):
                 summary_parts.append({"type": "summary_text", "text": text})
-    replay_item: dict[str, Any] = {
-        "type": "reasoning",
-        "id": item_id,
-        "summary": summary_parts,
-    }
-    status = item.get("status")
-    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
-        replay_item["status"] = status
-    return replay_item
+    # `id` and `summary` only: Responses rejects `status` on an input item
+    # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
+    return {"type": "reasoning", "id": item_id, "summary": summary_parts}
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`

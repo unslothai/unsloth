@@ -213,3 +213,88 @@ def test_image_generation_done_emits_tool_event_chunks(monkeypatch):
     assert ends[0]["size"] == "1024x1024"
     assert ends[0]["quality"] == "high"
     assert ends[0]["background"] == "opaque"
+
+
+# ── replayed reasoning item stays input-safe ────────────────────────
+
+
+def test_reasoning_replay_item_drops_status():
+    """Responses 400s with "Unknown parameter: 'input[1].status'" when an input
+    reasoning item carries `status`, which broke every replayed image edit."""
+    replay = ep_mod._sanitize_openai_reasoning_replay_item(
+        {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "thinking"}],
+            "encrypted_content": "secret",
+        }
+    )
+    assert replay == {
+        "type": "reasoning",
+        "id": "rs_abc",
+        "summary": [{"type": "summary_text", "text": "thinking"}],
+    }
+
+
+def test_replayed_image_edit_body_has_no_status_field(monkeypatch):
+    """End to end: a stored turn with reasoning + image_generation_call must
+    reach the wire without `status` on the reasoning item."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            content = (
+                b"event: response.completed\n"
+                b'data: {"type":"response.completed",'
+                b'"response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "draw a cat"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_abc",
+                            "status": "completed",
+                            "summary": [],
+                        },
+                        {"type": "image_generation_call", "id": "ig_abc"},
+                    ],
+                },
+                {"role": "user", "content": "make it blue"},
+            ],
+            model = "gpt-5.5",
+            max_tokens = 32,
+            reasoning_effort = "medium",
+            enabled_tools = ["image_generation"],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    items = captured["body"]["input"]
+    reasoning = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
+    assert reasoning, items
+    assert "status" not in reasoning[0], reasoning[0]
+    # The paired call must survive, else the edit loses its reference.
+    assert any(i.get("type") == "image_generation_call" for i in items if isinstance(i, dict)), items
