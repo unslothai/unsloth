@@ -568,8 +568,12 @@ def idempotence_failures(corpus) -> list:
 
 # ─────────────────────────── 3. Patch-target routing ───────────────────────────
 
+# Every first-party top-level package, so "every string patch target" is the truth
+# rather than an aspiration. The earlier list stopped at core/routes/utils/state and
+# silently skipped 32 live targets under hub, storage and picker.
 _PATCH_TARGET_RE = re.compile(
-    r"""(?:mock\.)?(?:patch|monkeypatch\.setattr)\(\s*["']((?:core|routes|utils|state)\.[\w.]+)["']"""
+    r"""(?:mock\.)?(?:patch|monkeypatch\.setattr)\(\s*"""
+    r"""["']((?:core|routes|utils|state|hub|storage|picker)\.[\w.]+)["']"""
 )
 
 
@@ -580,7 +584,10 @@ def patch_targets(tests_dir = None) -> dict:
     for path in sorted(tests_dir.rglob("test_*.py")):
         for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding = "utf-8", errors = "ignore")):
             dotted = match.group(1)
-            targets.setdefault(dotted, []).append(str(path.relative_to(BACKEND_ROOT)))
+            # ``as_posix``, not ``str``: the latter is the native form, so on Windows
+            # every recorded occurrence would come back with backslashes and the whole
+            # inventory would read as changed on an identical checkout.
+            targets.setdefault(dotted, []).append(path.relative_to(BACKEND_ROOT).as_posix())
     return targets
 
 
