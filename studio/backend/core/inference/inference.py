@@ -41,7 +41,6 @@ from core.inference.chat_template_helpers import (
     neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
-from core.inference.spark_tts_paths import spark_tts_base_repo
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -458,7 +457,17 @@ class InferenceBackend:
                             )
                         elif base_repo:
                             from huggingface_hub import snapshot_download
-                            hf_repo = spark_tts_base_repo(base_repo)
+                            # Registry alias ("Spark-TTS-0.5B/LLM") names a load
+                            # subdirectory, not a repo, so snapshot_download rejects it.
+                            # Same resolver the capability probe and the trainer preflight
+                            # use, rather than a second copy of the mapping.
+                            from utils.security import load_scan_target
+                            from utils.utils import canonical_model_repo_id
+
+                            hf_repo, _load_subdirs = load_scan_target(
+                                canonical_model_repo_id(base_repo), ()
+                            )
+                            hf_repo = hf_repo or base_repo
                             # Same token as the load below: a private or gated base would
                             # otherwise 401 here while resolving the BiCodec assets.
                             abs_repo_path = os.path.abspath(
