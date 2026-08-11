@@ -3037,11 +3037,20 @@ function Get-NodeDecision {
 
 
 function Test-PackagedFrontend {
-    param([string]$LocalInstall, [string]$IndexPath)
+    param([string]$LocalInstall, [string]$IndexPath, [string]$ProjectFilePath)
     # install.ps1 and `unsloth studio update` explicitly pass 0 for PyPI
     # installs. Wheel extraction mtimes do not preserve build ordering, so use
     # the release-built dist whenever its entry point is present.
-    return $LocalInstall -eq "0" -and (Test-Path -LiteralPath $IndexPath -PathType Leaf)
+    #
+    # $ProjectFilePath is the pyproject.toml beside studio/. The mode records
+    # where the Python package came from, not which tree this script runs out
+    # of, and an editable overlay separates the two: it leaves the mode at 0
+    # while $ScriptDir is a checkout, whose dist is a stale build artifact
+    # rather than a release one. A wheel ships no top-level files, so that file
+    # existing means source tree -- keep the mtime rebuild there.
+    if ($LocalInstall -ne "0") { return $false }
+    if ($ProjectFilePath -and (Test-Path -LiteralPath $ProjectFilePath -PathType Leaf)) { return $false }
+    return (Test-Path -LiteralPath $IndexPath -PathType Leaf)
 }
 
 $SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
@@ -3287,16 +3296,19 @@ Write-StudioLine ""
 $DistDir = Join-Path $FrontendDir "dist"
 $PackagedFrontend = Test-PackagedFrontend `
     -LocalInstall "$($env:STUDIO_LOCAL_INSTALL)" `
-    -IndexPath (Join-Path $DistDir "index.html")
+    -IndexPath (Join-Path $DistDir "index.html") `
+    -ProjectFilePath (Join-Path $PackageDir "pyproject.toml")
 # Wheel extraction mtimes are not a source-freshness signal. Standard PyPI
 # installs use the release-built dist; local/source installs retain mtime checks.
+# Tauri is checked first so the reported reason matches setup.sh on a desktop
+# update, where both this and the packaged branch would otherwise apply.
 $NeedFrontendBuild = $true
-if ($IsPipInstall -or $PackagedFrontend) {
-    $NeedFrontendBuild = $false
-    step "frontend" "bundled (pip install)"
-} elseif ($SkipFrontend) {
+if ($SkipFrontend) {
     $NeedFrontendBuild = $false
     step "frontend" "bundled (Tauri)"
+} elseif ($IsPipInstall -or $PackagedFrontend) {
+    $NeedFrontendBuild = $false
+    step "frontend" "bundled (pip install)"
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null

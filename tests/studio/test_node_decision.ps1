@@ -37,14 +37,25 @@ function D($node, $npm, $skip) { Get-NodeDecision -NodeVersion $node -NpmVersion
 
 $packagedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-packaged-frontend-" + [guid]::NewGuid())
 $packagedIndex = Join-Path $packagedRoot "frontend\dist\index.html"
+# The pyproject.toml beside studio/ that only a source checkout has. Absent
+# below unless a case is specifically about the editable-overlay tree.
+$packagedProject = Join-Path $packagedRoot "pyproject.toml"
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $packagedIndex) | Out-Null
 Set-Content -Path $packagedIndex -Value "<!doctype html>" -Encoding Ascii
 try {
-    Check "PyPI install uses packaged frontend" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex)
-    Check "local install rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "1" -IndexPath $packagedIndex))
-    Check "unset install mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "" -IndexPath $packagedIndex))
+    Check "PyPI install uses packaged frontend" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject)
+    Check "local install rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "1" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+    Check "unset install mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+
+    # Editable overlay: PyPI mode over a checkout, whose dist is a stale build
+    # artifact rather than a release one.
+    Set-Content -Path $packagedProject -Value "[project]" -Encoding Ascii
+    Check "source checkout in PyPI mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
+    Remove-Item -LiteralPath $packagedProject -Force
+    Check "packaged layout skips once no source marker remains" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject)
+
     Remove-Item -LiteralPath $packagedIndex -Force
-    Check "missing packaged index rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex))
+    Check "missing packaged index rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex -ProjectFilePath $packagedProject))
 } finally {
     Remove-Item -LiteralPath $packagedRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

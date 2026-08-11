@@ -1078,7 +1078,16 @@ _packaged_frontend_available() {
     # appear newer than the release-built dist even though both came from the
     # same wheel. Trust the packaged artifact when its entry point is present;
     # local/source installs set 1 (or leave the mode unset) and still rebuild.
+    #
+    # The mode alone is not enough. It records where the Python package came
+    # from, not which tree this script is running out of, and an editable
+    # overlay separates the two: UNSLOTH_CI_SOURCE_OVERLAY (and a venv left
+    # editable by an earlier --local run) leaves the mode at 0 while
+    # $SCRIPT_DIR is a checkout, whose dist is a stale build artifact rather
+    # than a release one. A wheel ships no top-level files, so a pyproject.toml
+    # next to studio/ means source tree -- keep the mtime rebuild there.
     [ "${STUDIO_LOCAL_INSTALL:-}" = "0" ] &&
+        [ ! -f "$REPO_ROOT/pyproject.toml" ] &&
         [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
 }
 
