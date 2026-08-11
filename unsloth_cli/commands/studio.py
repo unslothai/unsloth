@@ -276,6 +276,38 @@ def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
     return f"gfx{major}{minor}{step:x}"
 
 
+def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
+    """Whether the installed torch actually resolves through the ``rocm`` meta-package.
+
+    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their own
+    runtime and depend on nothing, so after a switch from the former to the latter the
+    meta-package is left behind describing a family that no longer has any bearing on what
+    torch will load. Unknown shapes answer False: refusing to arbitrate leaves the
+    environment untouched, which is the safe direction here.
+    """
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("torch-*.dist-info"):
+                if not re.fullmatch(r"torch-[^-]+\.dist-info", info.name):
+                    continue
+                metadata = info / "METADATA"
+                if not metadata.is_file():
+                    continue
+                try:
+                    text = metadata.read_text(encoding = "utf-8", errors = "replace")
+                except OSError:
+                    return False
+                for line in text.splitlines():
+                    if not line.lower().startswith("requires-dist:"):
+                        continue
+                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both count;
+                    # `rocm-sdk-core` does not, it is a component rather than the arbiter.
+                    if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
+                        return True
+                return False
+    return False
+
+
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None.
 
@@ -296,6 +328,15 @@ def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
     for several ISAs and so contradicts no override. Callers leave the environment
     alone on None.
     """
+    # The bare `rocm` metadata only describes a LIVE install while torch still resolves
+    # through it. Switching from AMD's per-gfx index to a generic pytorch.org ROCm one does
+    # not uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
+    # meta-package, so `rocm` is orphaned outright, and pip never removes it. Reading it then
+    # would name the OLD family and clear an override the generic wheels may be the only
+    # reason the GPU works at all. Torch's own requirements are the discriminator, so a stale
+    # meta-package arbitrates nothing.
+    if not _torch_requires_rocm_metapackage(venv_dir):
+        return None
     _metadata: Optional[Path] = None
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):

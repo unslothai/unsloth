@@ -36,6 +36,7 @@ def _make_venv(
     dist: "str | None",
     layout: str = "posix",
     orphans: "tuple[str, ...]" = (),
+    torch_needs_rocm: bool = True,
 ) -> Path:
     """A venv tree shaped like a real AMD per-gfx install.
 
@@ -48,6 +49,12 @@ def _make_venv(
     ``orphans`` are superseded runtimes left behind by a family switch. pip has no
     autoremove and the old distribution keeps its own name, so they accumulate; a
     fixture that never carried one could not tell an orphan from the active family.
+
+    ``torch_needs_rocm`` is the dependency edge that makes the meta-package authoritative.
+    AMD's per-gfx torch resolves through ``rocm``; the generic pytorch.org ROCm wheels vendor
+    their runtime and require nothing, so setting it False with a ``dist`` present is the
+    "switched to generic, meta-package orphaned" shape, where the stale metadata must not
+    arbitrate.
     """
     venv = tmp_path / "unsloth_studio"
     sp = (
@@ -56,6 +63,13 @@ def _make_venv(
         else venv / "Lib" / "site-packages"
     )
     sp.mkdir(parents = True)
+    _torch = sp / "torch-2.11.0.dist-info"
+    _torch.mkdir()
+    (_torch / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: torch\nVersion: 2.11.0\nRequires-Dist: filelock\n"
+        + ('Requires-Dist: rocm[libraries]==7.13.0\n' if torch_needs_rocm else ""),
+        encoding = "utf-8",
+    )
     for _orphan in orphans:
         (sp / f"rocm_sdk_libraries_{_orphan}-7.12.0.dist-info").mkdir()
     if dist is not None:
@@ -317,3 +331,26 @@ class TestEveryLaunchEntryPointClearsIt:
         anything the group callback does is skipped there."""
         import unsloth_cli
         assert unsloth_cli.studio_run is studio_cli.run
+
+
+def test_a_rocm_metapackage_orphaned_by_a_switch_to_generic_wheels_arbitrates_nothing(tmp_path):
+    """Switching from AMD's per-gfx index to a generic ROCm one must stop the meta-package
+    deciding anything.
+
+    The generic pytorch.org ROCm wheels vendor their own runtime and depend on no
+    meta-package, and pip has no autoremove, so `rocm` survives the switch describing the
+    family the OLD torch resolved. Trusting it there would clear an override that the generic
+    wheels may be the only reason the GPU works at all, which is the opposite of the fix.
+
+    Torch's own requirements are the discriminator, so the stale metadata is ignored while the
+    identical tree with an AMD torch still arbitrates.
+    """
+    from unsloth_cli.commands.studio import _installed_rocm_single_arch
+
+    live = _make_venv(tmp_path / "live", "rocm_sdk_libraries_gfx1151")
+    assert _installed_rocm_single_arch(live) == "gfx1151"
+
+    orphaned = _make_venv(
+        tmp_path / "orphaned", "rocm_sdk_libraries_gfx1151", torch_needs_rocm = False
+    )
+    assert _installed_rocm_single_arch(orphaned) is None
