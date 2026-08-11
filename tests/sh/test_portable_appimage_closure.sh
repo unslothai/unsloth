@@ -291,7 +291,7 @@ _classify() {
     bash -c '. "$1"; if [[ "$2" =~ $HOST_LIBS_RE ]]; then echo HOST; else echo bundled; fi' \
         _ "$_TMP/hostlibs.sh" "$1"
 }
-for _h in libstdc++.so.6 libgcc_s.so.1 libc.so.6; do
+for _h in libstdc++.so.6 libgcc_s.so.1 libc.so.6 libnghttp2.so.14; do
     assert_eq "$_h is host-provided" "HOST" "$(_classify "$_h")"
 done
 # The desktop stack must still travel with us, or this is a thin bundle again.

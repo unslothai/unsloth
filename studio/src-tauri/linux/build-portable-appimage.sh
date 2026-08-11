@@ -77,6 +77,19 @@ HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libasound|libpulse.*)\.so'
 #                  with the glibc this bundle already requires ships at least that.
 #   libgcc_s     : libstdc++'s own runtime, same reasoning and an ancient stable ABI.
 HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libstdc\+\+|libgcc_s)\.so'
+#   libnghttp2   : the same capture, one layer down, and the original #7953. The
+#                  bundle's libsoup and libwebkit2gtk pull in a 22.04 libnghttp2.so.14
+#                  that predates nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_
+#                  validation, and the host's libcurl-gnutls -- which the bundle does
+#                  not ship, so it is always the host's -- needs exactly that symbol.
+#                  Measured on ubuntu-24.04 with the bundle preloaded:
+#                    dlopen host libcurl-gnutls.so.4 -> undefined symbol: nghttp2_...
+#                  Taking it from the host inverts the direction: nghttp2 only adds
+#                  symbols, so a host newer than the build satisfies the bundle, and a
+#                  host older than 22.04 is already excluded by the glibc floor. The
+#                  cost is that a host without nghttp2 at all cannot run the bundle --
+#                  acceptable, since it ships with curl on every desktop distro.
+HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libnghttp2)\.so'
 
 # Names the app dlopens, so they never appear in ldd output and must be pulled in
 # by hand. The tray crate looks these up at runtime; WebKit loads its own
