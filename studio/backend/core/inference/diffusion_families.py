@@ -508,6 +508,33 @@ def supported_family_names() -> tuple[str, ...]:
     return tuple(fam.name for fam in _FAMILIES)
 
 
+def detect_family_by_pipeline_class(class_name: Optional[str]) -> Optional[DiffusionFamily]:
+    """The family a saved pipeline's ``model_index.json`` ``_class_name`` names, or None.
+
+    Evidence out of the checkpoint rather than out of its name, the counterpart of reading
+    ``general.architecture`` from a GGUF. A local diffusers pipeline whose directory carries no
+    family keyword -- an HF cache snapshot, whose leaf is a commit hash, is the ordinary case
+    (#8407) -- has no name left to match, so the listing dropped it as task=null and the Images
+    picker hid a model the load path accepts.
+
+    The task variants are matched too, so a checkpoint saved as an img2img/inpaint/controlnet
+    pipeline resolves to the same family. Exact class names only: this cannot fire on a checkpoint
+    that is not the family it claims to be."""
+    key = (class_name or "").strip()
+    if not key:
+        return None
+    for fam in _FAMILIES:
+        for candidate in (
+            fam.pipeline_class,
+            fam.img2img_pipeline_class,
+            fam.inpaint_pipeline_class,
+            fam.controlnet_pipeline_class,
+        ):
+            if candidate and candidate == key:
+                return fam
+    return None
+
+
 def detect_family_for_pick(
     repo_id: str,
     gguf_filename: Optional[str] = None,

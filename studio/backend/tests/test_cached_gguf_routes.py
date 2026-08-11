@@ -4382,3 +4382,216 @@ def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
     # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
     for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
         assert models_route._arch_to_task(None, (name,)) is None, name
+
+
+# ── #8406 / #8407: GGUF folder classification must not depend on directory order ──
+
+
+def _arch_gguf(path: Path, architecture: str) -> Path:
+    """A minimal valid GGUF carrying just ``general.architecture``, like the other suites'
+    fabricated headers (``tests/test_llama_cpp_placement.py::_write_gguf``)."""
+    import struct
+
+    def string(value: str) -> bytes:
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    path.parent.mkdir(parents = True, exist_ok = True)
+    metadata = string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    return path
+
+
+def _both_walk_orders(root: Path, monkeypatch, classify):
+    """*classify* under both possible ``_iter_gguf_paths`` orders.
+
+    The real walk is ``rglob``, i.e. raw directory order, which differs between filesystems and
+    between a folder and a fresh copy of it -- which is what moving the Models folder makes. The
+    order is the input being varied, so it is forced rather than hoped for.
+    """
+    paths = sorted(root.rglob("*.gguf"))
+    answers = []
+    for order in (paths, list(reversed(paths))):
+        monkeypatch.setattr(
+            models_route, "_iter_gguf_paths", lambda _root, deadline = None, _o = order: iter(_o)
+        )
+        answers.append(classify())
+    return answers
+
+
+def test_a_mixed_gguf_repo_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
+    """#8406 / #8407. Community image and video GGUF bundles ship the text encoder beside the
+    denoiser -- ``BlackStone-Yu/Z-Image-Turbo-GGUF`` carries a ``qwen3`` conditioner next to its
+    ``lumina2`` DiT, and ``unsloth/MiniMax-H3-GGUF`` does the same -- so the repo held both
+    answers and returned whichever file the unordered walk yielded first.
+
+    Ordering alone is not enough: it would still hand the answer to whichever name sorts first.
+    The denoiser is what the repo IS, so a media task outranks the encoder's text one.
+    """
+    repo_dir = tmp_path / "models--BlackStone-Yu--Z-Image-Turbo-GGUF"
+    _arch_gguf(repo_dir / "Qwen3-4B-UD-Q6_K_XL.gguf", "qwen3")
+    _arch_gguf(repo_dir / "z_image_turbo-Q6_K.gguf", "lumina2")
+    repo_info = SimpleNamespace(
+        repo_id = "BlackStone-Yu/Z-Image-Turbo-GGUF", repo_path = str(repo_dir)
+    )
+
+    answers = _both_walk_orders(
+        repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
+    )
+    assert answers == ["text-to-image", "text-to-image"], answers
+
+
+def test_a_mixed_local_gguf_folder_classifies_the_same_in_either_walk_order(tmp_path, monkeypatch):
+    """The local twin of the above, and the half that made an image model unfindable: with the
+    encoder answering first the folder is tagged ``text-generation``, which drops it out of the
+    Images picker (``taskMatchesFilter`` rejects any task not in the requested set) and offers a
+    diffusion DiT in the chat one."""
+    folder = tmp_path / "AI Models" / "flux-bundle"
+    _arch_gguf(folder / "t5xxl-Q8_0.gguf", "t5encoder")
+    _arch_gguf(folder / "flux1-dev-Q4_K_M.gguf", "flux")
+    model = SimpleNamespace(
+        path = str(folder),
+        id = str(folder),
+        model_id = None,
+        display_name = "flux-bundle",
+        model_format = "gguf",
+    )
+
+    answers = _both_walk_orders(folder, monkeypatch, lambda: models_route._local_model_task(model))
+    assert answers == ["text-to-image", "text-to-image"], answers
+
+
+def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, monkeypatch):
+    """The guard on the fix. Preferring the media answer must not invent one: a repo with no
+    diffusion GGUF in it has to stay ``text-generation`` in both orders, or the change would put
+    chat models in the Images picker -- the direction #8406 was filed about."""
+    repo_dir = tmp_path / "models--unsloth--DeepSeek-V4-Flash-0731-GGUF"
+    _arch_gguf(repo_dir / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL.gguf", "deepseek4")
+    _arch_gguf(repo_dir / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", "deepseek4")
+    repo_info = SimpleNamespace(
+        repo_id = "unsloth/DeepSeek-V4-Flash-0731-GGUF", repo_path = str(repo_dir)
+    )
+
+    answers = _both_walk_orders(
+        repo_dir, monkeypatch, lambda: models_route._repo_gguf_task(repo_info)
+    )
+    assert answers == ["text-generation", "text-generation"], answers
+
+
+# ── #8407: a moved image model keeps no name to detect its family from ──
+
+
+def _saved_pipeline(root: Path, class_name: str) -> Path:
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    for component in ("transformer", "vae", "text_encoder"):
+        (root / component).mkdir(parents = True, exist_ok = True)
+        (root / component / "config.json").write_text("{}")
+        (root / component / "diffusion_pytorch_model.safetensors").write_bytes(b"w" * 2048)
+    return root
+
+
+def test_a_moved_image_pipeline_is_classified_from_its_saved_pipeline_class(tmp_path):
+    """#8407. The reporter changed the Models folder and image models were then not found at all,
+    while chat models were still listed.
+
+    That asymmetry is structural. A GGUF is classified from ``general.architecture``, read out of
+    the file, so a move cannot touch it. A diffusers pipeline was classified from names only, and
+    the name a Hugging Face snapshot directory carries is a commit hash -- so the model the
+    listing had just PROVEN to be a pipeline (it has a ``model_index.json``) came back task=null
+    and the Images picker hid it. The index names the pipeline class; that is evidence out of the
+    checkpoint, exactly like the GGUF architecture read.
+    """
+    snapshot = _saved_pipeline(
+        tmp_path / "N-AI-Models" / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b", "FluxPipeline"
+    )
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(model) == "text-to-image"
+
+
+def test_a_moved_pipeline_that_names_no_known_family_is_still_not_tagged(tmp_path):
+    """The guard on the fix above. Reading the index must not turn into "any pipeline directory is
+    an image model": the Images load path 400s AFTER evicting chat when no family is supported, so
+    a checkpoint whose class matches nothing in the registry stays untagged, as before."""
+    snapshot = _saved_pipeline(
+        tmp_path / "N-AI-Models" / "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "SomeOtherPipeline"
+    )
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert models_route._local_model_task(model) is None
+
+
+def test_family_needles_recover_the_repo_id_from_the_hf_cache_directory(tmp_path):
+    """#8407, the second half of the same loss. A folder still in cache layout carries its repo id
+    in the ``models--org--name`` directory, and a scan folder registered at or inside such a repo
+    leaves every other needle equal to the commit hash. Decoding it is a strict read of a real
+    ``models--*/snapshots/*`` path, so no arbitrary parent directory token can match this way.
+    """
+    snapshot = (
+        tmp_path
+        / "N-AI-Models"
+        / "models--black-forest-labs--FLUX.1-dev"
+        / "snapshots"
+        / "0f3d1a2b4c5d6e7f8091a2b3c4d5e6f708192a3b"
+    )
+    snapshot.mkdir(parents = True)
+    model = SimpleNamespace(
+        path = str(snapshot),
+        id = str(snapshot),
+        model_id = None,
+        display_name = snapshot.name,
+        model_format = None,
+    )
+    assert "black-forest-labs/FLUX.1-dev" in models_route._local_family_needles(model)
+
+    # A directory that merely sits under a folder named for a family must not gain a needle.
+    plain = tmp_path / "flux" / "my-checkpoint"
+    plain.mkdir(parents = True)
+    plain_model = SimpleNamespace(
+        path = str(plain),
+        id = str(plain),
+        model_id = None,
+        display_name = plain.name,
+        model_format = None,
+    )
+    assert set(models_route._local_family_needles(plain_model)) == {"my-checkpoint"}
+
+
+def test_only_the_first_shard_of_a_split_gguf_is_read_to_classify_a_repo(tmp_path, monkeypatch):
+    """llama.cpp writes the full KV block into shard 1 and a minimal one into the rest, so shards
+    2..N are both the wrong files to read an architecture from and the expensive ones: a 51-shard
+    repo would cost 51 header reads to answer one question. They are skipped."""
+    repo_dir = tmp_path / "models--unsloth--Big-GGUF"
+    _arch_gguf(repo_dir / "Big-Q4_K_M-00001-of-00003.gguf", "llama")
+    for index in ("00002", "00003"):
+        (repo_dir / f"Big-Q4_K_M-{index}-of-00003.gguf").write_bytes(b"not a gguf header")
+
+    read: list[str] = []
+    real = models_route._gguf_architecture
+    monkeypatch.setattr(
+        models_route,
+        "_gguf_architecture",
+        lambda path: (read.append(Path(path).name), real(path))[1],
+    )
+    # Trailing shards first, which is a walk order the filesystem is free to hand back: without
+    # the skip they are opened, read as unclassifiable, and only then is shard 1 reached.
+    monkeypatch.setattr(
+        models_route,
+        "_iter_gguf_paths",
+        lambda _root, deadline = None: iter(sorted(repo_dir.rglob("*.gguf"), reverse = True)),
+    )
+    repo_info = SimpleNamespace(repo_id = "unsloth/Big-GGUF", repo_path = str(repo_dir))
+
+    assert models_route._repo_gguf_task(repo_info) == "text-generation"
+    assert read == ["Big-Q4_K_M-00001-of-00003.gguf"], read
