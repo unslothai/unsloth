@@ -62,7 +62,9 @@ def _research_payload(opt_out: bool):
     """The payload ResearchSupervisor._stream_completion builds, with the opt-out on or off."""
     body = {
         "model": "test/model.gguf",
-        "messages": [{"role": "user", "content": "<untrusted_web_evidence>...</untrusted_web_evidence>"}],
+        "messages": [
+            {"role": "user", "content": "<untrusted_web_evidence>...</untrusted_web_evidence>"}
+        ],
         "stream": True,
         "stream_options": {"include_usage": True},
         "temperature": 0.2,
@@ -138,7 +140,9 @@ def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
             **_research_payload(opt_out), response_format = {"type": "json_object"}
         )
         assert inference_route._takes_tool_passthrough(payload, backend) is True
-        bodies.append(inference_route._build_openai_passthrough_body(payload, llama_backend = backend))
+        bodies.append(
+            inference_route._build_openai_passthrough_body(payload, llama_backend = backend)
+        )
 
     assert bodies[0] == bodies[1]
     assert "tool_choice" not in bodies[1] and "tools" not in bodies[1]
