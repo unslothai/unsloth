@@ -277,8 +277,14 @@ export interface DiffusionDownloadPlan {
     files: string[];
     bytes: number;
     gguf_filename: string | null;
+    /** Whether this entry holds the selected model. Only the planner knows, because a gated pick is staged from an ungated mirror under a different repo id. Optional: an older backend omits it. */
+    checkpoint?: boolean;
   }[];
   total_bytes: number;
+  /** Full declared footprint, including files already present in cache. */
+  required_bytes?: number;
+  /** Selected checkpoint's contribution to required_bytes. */
+  checkpoint_bytes?: number;
   /**
    * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
    * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
@@ -591,12 +597,22 @@ export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingSta
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
 
-// One image-dataset folder under the Studio datasets root (GET /api/train/diffusion/info).
+// One dataset folder under the Studio datasets root (GET /api/train/diffusion/info): images,
+// clips, or both. `clip_count` is absent on older backends, hence optional.
 export interface DiffusionDatasetSummary {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
+}
+
+/** trainable items in a dataset folder, of whichever kind. */
+export function datasetItemCount(d: {
+  image_count: number;
+  clip_count?: number;
+}): number {
+  return d.image_count + (d.clip_count ?? 0);
 }
 
 // Per-family training defaults (from GET /api/train/diffusion/info). Absent on older backends; the Train tab then falls back to a hardcoded list.
@@ -625,8 +641,25 @@ export interface DiffusionTrainableFamily {
   recommended_precision?: string;
   // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
   supports_compile?: boolean;
+  // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
+  // Undefined on an older backend, which has no checkpointless family, so it reads as true.
+  supports_checkpoints?: boolean;
+  /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
+  max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the checkpoint it trained on (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
+  // Variant-specific training-base to inference-base pairs, including public mirror ids.
+  deploy_bases?: Record<string, string>;
+  // Per-checkpoint facts that overlay the family-level chips for multi-size families.
+  base_specs?: Record<
+    string,
+    {
+      params?: string | null;
+      qlora_vram_gb?: number | null;
+      gated?: boolean | null;
+      note?: string | null;
+    }
+  >;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.
@@ -659,14 +692,23 @@ export async function uploadDiffusionDataset(
   );
 }
 
-// One image in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned images.
+// One item in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned items.
+// `kind` is absent on older backends, which listed images only; treat a missing value as "image".
 export interface DiffusionDatasetImageRecord {
   filename: string;
   caption: string | null;
   caption_source: "sidecar" | "metadata" | "none";
+  kind?: "image" | "clip";
   width: number;
   height: number;
   size_bytes: number;
+}
+
+/** the records the labeling grid can render: clips have no thumbnail endpoint. */
+export function imageRecordsOnly(
+  records: DiffusionDatasetImageRecord[],
+): DiffusionDatasetImageRecord[] {
+  return records.filter((r) => (r.kind ?? "image") === "image");
 }
 
 export interface DiffusionDatasetImages {
@@ -746,6 +788,7 @@ export interface DiffusionDatasetImportResult {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
   imported: number;
   license: string;

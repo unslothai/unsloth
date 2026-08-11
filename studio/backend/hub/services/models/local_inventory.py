@@ -123,10 +123,17 @@ def _is_diffusers_pipeline_dir(path: Path) -> bool:
     publisher walk descends into it and offers its components (``vae``, ``transformer``, ...) as
     separate models, none of which any loader can start.
 
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, which is the pair the video loader accepts, so recognising only the
+    conventional one hid a valid local root from the picker and left the publisher walk to offer
+    its components separately.
+
     ``routes.models._local_pipeline_index`` is the same test; the two scanners are separate
     modules, and only that one had it."""
     try:
-        return (path / "model_index.json").is_file()
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 

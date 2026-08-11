@@ -86,6 +86,8 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
+      videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
       newBadge: "Nouveau",
@@ -390,6 +392,9 @@ export const fr = {
           "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
         keepKvDescription:
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        apiOnly: "Décharger uniquement les modèles chargés par l'API",
+        apiOnlyDescription:
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Studio et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -920,6 +925,11 @@ export const fr = {
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      thinking: {
+        collapseByDefault: "Replier la réflexion par défaut",
+        collapseByDefaultDescription:
+          "Garde la réflexion repliée pendant que le modèle réfléchit, au lieu de l’ouvrir automatiquement. Dépliez un bloc pour le lire.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Réduire les blocs HTML",
@@ -1415,6 +1425,7 @@ export const fr = {
       history: "Historique",
     },
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
+    checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
     sections: {
       model: "Modèle",

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import threading
 import time
@@ -23,7 +24,7 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
+    incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
     repo_cache_dir_name,
 )
@@ -336,6 +337,56 @@ def _quants_from_state(
     return variants, has_vision
 
 
+def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
+    """Group key for variants that share one companion download footprint.
+
+    The companion set (text encoders, VAE, tokenizer, configs) is not a property of
+    the repo: ``detect_family_for_pick`` falls back to ``repo_id/filename``, so a
+    neutral repo can hold GGUFs of different families with different base repos,
+    and ``sd_cpp_text_encoders_for`` picks Qwen3-8B vs Qwen3-4B per klein checkpoint
+    size within one family. Both sources of variation therefore go into the key, so
+    a client that resolves the footprint once per key never advertises one row's
+    total on another row.
+
+    Local resolution only, and never raises: the key is an optimization for the
+    client's grouping, so an unknown key (None) must not fail the listing.
+    """
+    try:
+        from core.inference.diffusion_families import (
+            detect_family_for_pick,
+            sd_cpp_text_encoders_for,
+        )
+
+        fam = detect_family_for_pick(repo_id, filename)
+        if fam is None:
+            return None
+        inner_dim = None
+        if fam.name == "flux.2-klein":
+            from core.inference.diffusion_compat import flux2_inner_dim_for_pick
+
+            inner_dim = flux2_inner_dim_for_pick(repo_id, filename, allow_network = False)
+            identity = f"{repo_id}/{filename}".lower()
+            sized = re.search(r"(?<![a-z0-9])(?:4b|9b)(?![a-z0-9])", identity)
+            if (
+                inner_dim is None
+                and sized is None
+                and "klein4b" not in identity
+                and "klein9b" not in identity
+            ):
+                unknown = hashlib.sha256(filename.lower().encode("utf-8")).hexdigest()[:16]
+                return f"{fam.name}:unknown:{unknown}"
+        encoders = sd_cpp_text_encoders_for(fam, repo_id, filename, inner_dim = inner_dim)
+        # Hashed, not joined raw: the encoder table is long, and the key is opaque
+        # to the client, which only ever compares it for equality.
+        digest = hashlib.sha256(
+            "\n".join("/".join(str(part) for part in entry) for entry in encoders).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"{fam.name}:{digest}"
+    except Exception as e:
+        logger.debug("Dependency key unavailable for %s/%s: %s", repo_id, filename, e)
+        return None
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -487,14 +538,21 @@ def delete_variant_incomplete_blobs_result(
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
-        for h in target_hashes:
-            incomplete = blobs_dir / f"{h}{INCOMPLETE_SUFFIX}"
-            if incomplete.exists():
-                try:
-                    incomplete.unlink()
-                    deleted += 1
-                except OSError as e:
-                    logger.warning(f"Failed to unlink {incomplete}: {e}")
+        try:
+            candidates = list(blobs_dir.iterdir())
+        except OSError as e:
+            logger.warning(f"Failed to list partial blobs in {blobs_dir}: {e}")
+            continue
+        for incomplete in candidates:
+            try:
+                if not incomplete.is_file():
+                    continue
+                if incomplete_blob_hash(incomplete.name) not in target_hashes:
+                    continue
+                incomplete.unlink()
+                deleted += 1
+            except OSError as e:
+                logger.warning(f"Failed to unlink {incomplete}: {e}")
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 
@@ -949,6 +1007,7 @@ async def get_gguf_variants_answer(
                         download_size_bytes = v.size_bytes,
                         downloaded = _downloaded(v),
                         partial = not _downloaded(v),
+                        dependency_key = _variant_dependency_key(response_repo_id, v.filename),
                     )
                     for v in variants
                 ],
@@ -977,6 +1036,7 @@ async def get_gguf_variants_answer(
                             v.quant,
                             repo_cache_dir,
                         ),
+                        dependency_key = _variant_dependency_key(response_repo_id, v.filename),
                     )
                     for v in variants
                 ],
@@ -1005,6 +1065,7 @@ async def get_gguf_variants_answer(
                     partial_transport = _partial_transport_for_variant(
                         repo_id, v.quant, repo_cache_dir
                     ),
+                    dependency_key = _variant_dependency_key(repo_id, v.filename),
                 )
                 for v in state[0]
                 if v.quant and v.quant.lower() not in listed
@@ -1413,6 +1474,7 @@ async def get_gguf_variants_answer(
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
+                dependency_key = _variant_dependency_key(repo_id, v.filename),
             )
 
         return GgufVariantsResponse(

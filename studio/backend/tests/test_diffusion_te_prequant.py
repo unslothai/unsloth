@@ -282,9 +282,14 @@ def test_te_base_equivalent_groups():
     assert te_base_equivalent(
         "black-forest-labs/FLUX.1-Krea-dev", "black-forest-labs/FLUX.1-schnell"
     )
+    # Z-Image ships one Qwen3-4B encoder for the distilled Turbo and the undistilled base, so the
+    # Turbo-baked artifact serves both and training on the base does not re-pull it dense.
+    assert te_base_equivalent("Tongyi-MAI/Z-Image-Turbo", "Tongyi-MAI/Z-Image")
+    assert te_base_equivalent("Tongyi-MAI/Z-Image", "Tongyi-MAI/Z-Image-Turbo")
     # Unrelated bases stay refused, including across groups.
     assert not te_base_equivalent("Qwen/Qwen-Image", "black-forest-labs/FLUX.1-schnell")
     assert not te_base_equivalent("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.2-klein-4B")
+    assert not te_base_equivalent("Tongyi-MAI/Z-Image", "Qwen/Qwen-Image")
 
 
 def test_validate_accepts_equivalent_base():

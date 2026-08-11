@@ -67,6 +67,7 @@ import {
   type DiffusionTrainingRunDetail,
   type DiffusionTrainingRunSummary,
   type DiffusionTrainingStatus,
+  datasetItemCount,
   getDiffusionTrainingInfo,
   getDiffusionTrainingRun,
   getDiffusionTrainingStatus,
@@ -79,6 +80,7 @@ import {
 } from "../api";
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
 import {
+  DATASET_CLIP_EXTS,
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
   chunkDatasetUpload,
@@ -99,6 +101,11 @@ import {
   buildDiffusionResumePayload,
   resumeActionLabel,
 } from "./resume-diffusion-run";
+import {
+  resolveDiffusionDeployBase,
+  resolveDiffusionTrainingBase,
+} from "./diffusion-train-deploy";
+import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -112,6 +119,7 @@ type FamilyPreset = {
   params?: string;
   qlora_vram_gb?: number | null;
   note?: string;
+  base_specs?: DiffusionTrainableFamily["base_specs"];
 };
 
 const FAMILY_PRESETS: FamilyPreset[] = [
@@ -137,8 +145,12 @@ const FAMILY_PRESETS: FamilyPreset[] = [
   },
   {
     name: "z-image",
-    label: "Z-Image-Turbo (6B)",
-    base_repos: ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"],
+    label: "Z-Image (6B)",
+    base_repos: [
+      "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+      "Tongyi-MAI/Z-Image-Turbo",
+      "Tongyi-MAI/Z-Image",
+    ],
     defaults: { rank: 16, lr: 0.0001, resolution: 768 },
     vram_note: "The smallest and fastest. A good first pick.",
     params: "6B",
@@ -172,6 +184,15 @@ function repoIsPrequantized(baseModel: string): boolean {
 }
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
+
+/** "12 images", "12 clips", or "12 items" for a mixed folder. The picker has one line per
+ *  dataset, and a clip folder reading "0 images" is exactly the bug this labels away. */
+function datasetItemLabel(d: { image_count: number; clip_count?: number }): string {
+  const clips = d.clip_count ?? 0;
+  const total = d.image_count + clips;
+  const noun = clips === 0 ? "image" : d.image_count === 0 ? "clip" : "item";
+  return `${total} ${noun}${total === 1 ? "" : "s"}`;
+}
 // min-w-0 + a truncating value: a long option would otherwise set the grid column min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
@@ -230,11 +251,10 @@ function FieldLabel({
 
 /** The family's training facts as chips: size, QLoRA VRAM floor, access. What a chip cannot
  *  carry stays as a line below, as does the prose from a backend too old to send the fields. */
-function FamilyFacts({ family }: { family?: FamilyPreset }) {
+function FamilyFacts({ family, baseModel }: { family?: FamilyPreset; baseModel?: string }) {
   if (!family) return null;
-  const hasChips = Boolean(
-    family.params || family.qlora_vram_gb || family.gated,
-  );
+  const facts = resolveDiffusionTrainingFacts(family, baseModel);
+  const hasChips = Boolean(facts.params || facts.qlora_vram_gb || facts.gated);
   if (!hasChips) {
     return family.vram_note ? (
       <p className="text-ui-11 leading-snug text-muted-foreground">
@@ -245,18 +265,18 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
-        {family.params ? (
+        {facts.params ? (
           <Badge variant="secondary" className="font-normal">
-            {family.params}
+            {facts.params}
           </Badge>
         ) : null}
-        {family.qlora_vram_gb != null ? (
+        {facts.qlora_vram_gb != null ? (
           <Badge variant="secondary" className="font-normal">
-            QLoRA {family.qlora_vram_gb}GB+ VRAM
+            QLoRA {facts.qlora_vram_gb}GB+ VRAM
           </Badge>
         ) : null}
         {/* Access, not a spec: a neutral fill sets it apart from the capability chips. */}
-        {family.gated ? (
+        {facts.gated ? (
           <Badge
             variant="secondary"
             className="bg-muted font-normal text-muted-foreground"
@@ -265,11 +285,11 @@ function FamilyFacts({ family }: { family?: FamilyPreset }) {
           </Badge>
         ) : null}
       </div>
-      {(family.gated || family.note) && (
+      {(facts.gated || facts.note) && (
         <p className="text-ui-11 leading-snug text-muted-foreground">
-          {family.gated ? "Needs its license and your HF token." : null}
-          {family.gated && family.note ? " " : null}
-          {family.note}
+          {facts.gated ? "Needs its license and your HF token." : null}
+          {facts.gated && facts.note ? " " : null}
+          {facts.note}
         </p>
       )}
     </div>
@@ -295,6 +315,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
+      base_specs: r.base_specs,
       // The chips travel together: a backend reporting any of them owns the whole set, so a
       // preset value cannot sit beside a live one describing a different build.
       ...(r.params != null || r.qlora_vram_gb != null || r.note != null
@@ -322,6 +343,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
       params: r.params ?? "",
       qlora_vram_gb: r.qlora_vram_gb ?? null,
       note: r.note ?? "",
+      base_specs: r.base_specs,
     });
   }
   return merged;
@@ -400,6 +422,17 @@ export function DiffusionTrainPanel({
   }, [reportedFamily?.precision_modes, familyUntrainable]);
   // Whether to show the torch.compile control. The backend advertises it per family; default on for DiT families on an older backend.
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
+  // Same idea for checkpoints. MiniMax-H3's loop writes no resume bundle and its validation
+  // REFUSES a nonzero save_steps rather than ignoring it, so leaving the field on offer meant a
+  // user could set it and get a rejected Start with nothing on the control saying why.
+  const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // And the batch axis, third of the same kind. MiniMax-H3's forward covers ONE packed
+  // sequence, so its validation REFUSES a batch above 1 rather than clamping. The field was
+  // rendered unrestricted and always sent, so a 2 typed here -- or simply carried over from the
+  // family the user was on a moment ago -- rejected Start with nothing on the control to say
+  // why. Hidden when the family caps it at 1, and the cap is what gets sent.
+  const maxBatchSize = reportedFamily?.max_train_batch_size ?? null;
+  const batchIsFixed = maxBatchSize != null && maxBatchSize <= 1;
 
   const setBaseChoice = onBaseChoiceChange;
   const [customBase, setCustomBase] = useState("");
@@ -432,6 +465,7 @@ export function DiffusionTrainPanel({
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
   const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
   const [batchSize, setBatchSize] = useState(1);
+  const effectiveBatchSize = maxBatchSize == null ? batchSize : Math.min(batchSize, maxBatchSize);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
   // Periodic resume points. 0 (off) keeps the default behaviour: only a stop-and-save writes one,
@@ -569,11 +603,20 @@ export function DiffusionTrainPanel({
       baseDirty.current = false;
     }
     // An already-valid base wins: the top bar sets family and base together, so this must not snap back to the family's first repo.
+    // A loaded checkpoint may be the DISTILLED half of a pair, which is not trainable and so is
+    // never in base_repos. Fall back to the training base the family pairs it with before
+    // dropping to base_repos[0], or opening Train with the 9B model loaded seeds the 4B base.
+    // reportedFamily, not family: the pairing lives in deploy_bases, which only the backend
+    // reports. The static presets have no pairings, so an older backend simply keeps today's
+    // behaviour here.
+    const pairedTrainingBase = loadedBaseRepo
+      ? resolveDiffusionTrainingBase(reportedFamily, loadedBaseRepo)
+      : null;
     const preferLoaded = family.base_repos.includes(baseChoice)
       ? baseChoice
       : loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
         ? loadedBaseRepo
-        : family.base_repos[0] ?? CUSTOM_BASE;
+        : (pairedTrainingBase ?? family.base_repos[0] ?? CUSTOM_BASE);
     if (!baseDirty.current) setBaseChoice(preferLoaded);
     if (!settingsDirty.current) {
       setLearningRate(family.defaults.lr);
@@ -589,7 +632,7 @@ export function DiffusionTrainPanel({
           : "auto",
       );
     }
-  }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
+  }, [family, loadedBaseRepo, reportedFamily]);
 
   // mixed_precision is an SDXL-only lever. A dense DiT base precision requires bf16 compute and every DiT family trains in bf16,
   // so reset to bf16 on a change to a DiT family, or an fp16 value left from SDXL rides along and the backend rejects it.
@@ -687,11 +730,14 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
-  // A dataset where every image already ships a caption needs no trigger prompt; hide the field and explain why.
+  // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
+  // total over both kinds, so every ratio below has to be against this and not image_count.
+  const selectedItemCount = selectedDataset ? datasetItemCount(selectedDataset) : 0;
+  // A dataset where every item already ships a caption needs no trigger prompt; hide the field and explain why.
   const fullyCaptioned = Boolean(
     selectedDataset &&
-      selectedDataset.image_count > 0 &&
-      selectedDataset.caption_count >= selectedDataset.image_count,
+      selectedItemCount > 0 &&
+      selectedDataset.caption_count >= selectedItemCount,
   );
 
   // Map the backend's paired history arrays into the chart component's {step,value} series.
@@ -764,7 +810,7 @@ export function DiffusionTrainPanel({
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
       }
-      const { files, imageCount, skipped, collisions } = selectDatasetFiles(picked);
+      const { files, imageCount, clipCount, skipped, collisions } = selectDatasetFiles(picked);
       if (collisions.length > 0) {
         const { kind, first, second } = collisions[0];
         const more =
@@ -782,15 +828,16 @@ export function DiffusionTrainPanel({
       }
       if (files.length === 0) {
         toast.error(
-          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) and, ` +
+          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) or ` +
+            `clips (${DATASET_CLIP_EXTS.join(", ")}) and, ` +
             "optionally, a caption file beside each one.",
         );
         return;
       }
-      // /diffusion/info only lists folders holding an image, so say why the set will not
-      // appear yet rather than refusing a captions-first upload.
+      // /diffusion/info only lists folders holding a trainable item, so say why the set will
+      // not appear yet rather than refusing a captions-first upload.
       const newCaptionsOnly =
-        imageCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
+        imageCount === 0 && clipCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
       if (uploadInFlight.current) {
         toast.error("An upload is already running. Wait for it to finish, then try again.");
         return;
@@ -888,26 +935,26 @@ export function DiffusionTrainPanel({
         } else {
           toast.success(
             `Uploaded ${sent} file${sent === 1 ? "" : "s"} - ` +
-              `"${res.name}" now has ${res.image_count} images, ` +
+              `"${res.name}" now has ${datasetItemLabel(res)}, ` +
               `${res.caption_count} captioned`,
           );
         }
         if (skipped > 0) {
           toast.info(
             `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ` +
-              `${skipped === 1 ? "was" : "were"} neither an image nor a caption.`,
+              `${skipped === 1 ? "was" : "were"} neither an image, a clip, nor a caption.`,
           );
         }
         if (newCaptionsOnly) {
           toast.info(
-            `"${res.name}" holds captions but no images yet, so it stays out of the dataset ` +
-              "picker until you add some.",
+            `"${res.name}" holds captions but no images or clips yet, so it stays out of the ` +
+              "dataset picker until you add some.",
           );
         }
         if (misKeyed) {
           toast.info(
             `${misKeyed} keys its captions on subfolder paths, and a dataset folder is flat, ` +
-              "so those rows will not match. A .txt beside each image always will.",
+              "so those rows will not match. A .txt beside each file always will.",
           );
         }
         await refreshInfo();
@@ -984,16 +1031,16 @@ export function DiffusionTrainPanel({
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the backend silently skips every uncaptioned image.
     if (
       selectedDataset &&
-      selectedDataset.caption_count < selectedDataset.image_count &&
+      selectedDataset.caption_count < selectedItemCount &&
       !instancePrompt.trim()
     ) {
       toast.error(
         selectedDataset.caption_count === 0
-          ? "These images have no captions - add a trigger prompt so the trainer knows " +
-              "what to learn (it becomes the caption for every image)."
-          : `Only ${selectedDataset.caption_count} of ${selectedDataset.image_count} images ` +
+          ? "This dataset has no captions - add a trigger prompt so the trainer knows " +
+              "what to learn (it becomes the caption for every item)."
+          : `Only ${selectedDataset.caption_count} of ${selectedItemCount} items ` +
               "have captions - the rest would be silently skipped. Add a trigger prompt " +
-              "(it becomes their caption) or caption every image.",
+              "(it becomes their caption) or caption every one.",
       );
       return;
     }
@@ -1029,14 +1076,19 @@ export function DiffusionTrainPanel({
         train_steps: durationUnit === "epochs" ? undefined : steps,
         num_epochs: durationUnit === "epochs" ? epochs : undefined,
         learning_rate: learningRate,
-        train_batch_size: batchSize,
+        // The family cap, not the field: it is only hidden, not reset, so a value typed for
+        // another family would otherwise still be sent and refused.
+        train_batch_size: effectiveBatchSize,
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
-        save_steps: Math.max(0, Math.floor(saveSteps)),
+        // Zero rather than the field's value when the family has none, because the field is
+        // only hidden, not reset: a value typed for one family would otherwise still be sent
+        // after switching to a checkpointless one, and refused.
+        save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only send compile where supported.
         base_precision: isDiT ? basePrecision : undefined,
@@ -1056,6 +1108,7 @@ export function DiffusionTrainPanel({
     family,
     dataset,
     selectedDataset,
+    selectedItemCount,
     outputDir,
     instancePrompt,
     resolution,
@@ -1075,6 +1128,8 @@ export function DiffusionTrainPanel({
     isDiT,
     basePrecision,
     supportsCompile,
+    supportsCheckpoints,
+    effectiveBatchSize,
     compileTransformer,
     poll,
   ]);
@@ -1135,13 +1190,12 @@ export function DiffusionTrainPanel({
     [poll],
   );
 
-  // Resolve the repo an adapter should be PREVIEWED on: a family that trains on one checkpoint but runs adapters on another
-  // declares a deploy_base. Only a recognised training base is overridden; a custom typed repo is respected as-is.
+  // Resolve the repo an adapter should be previewed on. Variant-specific pairs cover FLUX.2
+  // Klein's 4B and 9B bases; the scalar fallback keeps older backends and Krea 2 working.
   const deployBaseFor = useCallback(
     (trainedBase: string, famName: string): string => {
       const rec = info?.families?.find((f) => f.name === famName);
-      if (rec?.deploy_base && rec.base_repos.includes(trainedBase)) return rec.deploy_base;
-      return trainedBase;
+      return resolveDiffusionDeployBase(rec, trainedBase);
     },
     [info?.families],
   );
@@ -1268,20 +1322,24 @@ export function DiffusionTrainPanel({
           step: 64,
           hint: "The pixel size images train at, in multiples of 64. Higher is sharper and costs noticeably more VRAM.",
         })}
-        {numberField("Batch", batchSize, setBatchSize, 1, {
-          hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
-        })}
+        {!batchIsFixed &&
+          numberField("Batch", batchSize, setBatchSize, 1, {
+            hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
+          })}
         {numberField("Grad accumulation", gradAccum, setGradAccum, 1, {
-          hint: "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
+          hint: batchIsFixed
+            ? "Collects this many clips before each update. This model trains one clip at a time, so this is the only way to raise the effective batch."
+            : "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
         })}
         {numberField("Seed", seed, setSeed, 42, {
           min: 0,
           hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
         })}
-        {numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
-          min: 0,
-          hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
-        })}
+        {supportsCheckpoints &&
+          numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
+            min: 0,
+            hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
+          })}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
@@ -1470,7 +1528,7 @@ export function DiffusionTrainPanel({
                 ))}
               </SelectContent>
             </Select>
-            <FamilyFacts family={family} />
+            <FamilyFacts family={family} baseModel={resolvedBase} />
           </div>
 
           <div className={fieldClass}>
@@ -1552,10 +1610,10 @@ export function DiffusionTrainPanel({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* Name plus image count only; captions and license show elsewhere. */}
+                  {/* Name plus item count only; captions and license show elsewhere. */}
                   {(info?.datasets ?? []).map((d) => (
                     <SelectItem key={d.name} value={d.name}>
-                      {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
+                      {d.name} - {datasetItemLabel(d)}
                     </SelectItem>
                   ))}
                   {pendingExamples.length > 0 && (
@@ -1681,8 +1739,8 @@ export function DiffusionTrainPanel({
                 </div>
                 <p className="text-ui-11 leading-snug text-muted-foreground">
                   {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
-                  A caption file beside an image (cat.png and cat.txt) is read as that image's
-                  caption.
+                  Images, or clips for the video families. A caption file beside one (cat.png and
+                  cat.txt, or cat.mp4 and cat.txt) is read as that item's caption.
                 </p>
               </div>
             ) : (
@@ -1697,21 +1755,29 @@ export function DiffusionTrainPanel({
                       onChanged={() => void refreshInfo()}
                     />
                   )}
-                  <LabelingGridToggle
-                    count={selectedDataset.image_count}
-                    open={gridOpen}
-                    onToggle={() => setGridOpen((o) => !o)}
-                  />
-                  {gridOpen && (
-                    <DatasetLabelingGrid
-                      dataset={dataset}
-                      refreshKey={gridRefresh}
-                      onCountsChanged={() => void refreshInfo()}
-                    />
+                  {/* The grid renders thumbnails, so it is offered only where there are images.
+                      One guard over the toggle AND the grid: gating only the toggle would leave
+                      an open grid with nothing to close it once a mixed folder's last image is
+                      deleted, since the clips keep the folder listed. */}
+                  {selectedDataset.image_count > 0 && (
+                    <>
+                      <LabelingGridToggle
+                        count={selectedDataset.image_count}
+                        open={gridOpen}
+                        onToggle={() => setGridOpen((o) => !o)}
+                      />
+                      {gridOpen && (
+                        <DatasetLabelingGrid
+                          dataset={dataset}
+                          refreshKey={gridRefresh}
+                          onCountsChanged={() => void refreshInfo()}
+                        />
+                      )}
+                    </>
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
                     <p className="text-ui-11 leading-snug text-muted-foreground">
-                      No captions yet, so the trigger prompt describes every image.
+                      No captions yet, so the trigger prompt describes every item.
                     </p>
                   )}
                 </>
@@ -1730,7 +1796,7 @@ export function DiffusionTrainPanel({
           {/* Trigger + adapter name (trigger first: it describes the dataset, the name just labels the output) */}
           {fullyCaptioned ? (
             <p className="text-ui-11 leading-snug text-muted-foreground">
-              All {selectedDataset?.image_count} images have captions, so no trigger prompt
+              Every item in {selectedDataset?.name} has a caption, so no trigger prompt
               is needed.
             </p>
           ) : (

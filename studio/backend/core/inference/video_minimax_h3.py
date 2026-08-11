@@ -325,6 +325,19 @@ def h3_transformer_task(filename: str) -> str:
     return H3_TASK_REFERENCES if name.startswith("minimax_h3_ref2va") else H3_TASK_KEYFRAMES
 
 
+def h3_denoiser_component(task: Optional[str]) -> str:
+    """The pipeline component / base-repo subfolder holding ``task``'s denoiser partition.
+
+    One repo, two partitions: the keyframe workflows (fl2va, and text-only through it) denoise
+    against ``transformer``, the reference workflow against ``transformer_ref``. Diffusers names
+    the components that way too, so this single answer serves the seed target, the offload pin and
+    the config subfolder alike -- and seeding ``transformer`` for a reference load would leave the
+    denoise step with no denoiser and pull the dense 66.28 GB partition anyway."""
+    return (
+        "transformer_ref" if (task or "").strip().lower() == H3_TASK_REFERENCES else "transformer"
+    )
+
+
 def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) -> Any:
     """Scale a reference to its policy limit without changing its aspect ratio or upscaling."""
     from PIL import Image
@@ -702,6 +715,13 @@ class MiniMaxH3NativeRuntime:
     engine: Any
     files: Any
     offload_flags: tuple[str, ...]
+    # (size, mtime_ns) of the sd-cli this runtime was built on, taken at load, right after
+    # ensure_h3_sd_cpp_binary vetted it for H3 support and accelerator. Every generation compares
+    # against THIS, not against whatever the path holds when it starts: an install that lands
+    # between the load and a generation replaces the binary in place, and two reads taken after it
+    # agree with each other while agreeing with nothing that was ever checked. None means the
+    # identity could not be taken, which reads as "cannot vouch" rather than "unchanged".
+    binary_identity: Optional[tuple[int, int]] = None
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

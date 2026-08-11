@@ -81,6 +81,8 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      trainChecking: "正在检查此设备是否支持训练...",
+      videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",
@@ -360,6 +362,9 @@ export const zhCN = {
         keepKv: "空闲卸载后保留聊天上下文",
         keepKvDescription:
           "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+        apiOnly: "仅卸载由 API 加载的模型",
+        apiOnlyDescription:
+          "空闲卸载会将你在 Studio 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -865,6 +870,11 @@ export const zhCN = {
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      thinking: {
+        collapseByDefault: "默认折叠思考过程",
+        collapseByDefaultDescription:
+          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",
@@ -1320,6 +1330,7 @@ export const zhCN = {
       history: "历史",
     },
     loadingRuntime: "正在加载训练运行时...",
+    checkingSupport: "正在检查此设备是否支持训练...",
     backToHistory: "返回历史",
     sections: {
       model: "模型",
