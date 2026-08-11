@@ -111,20 +111,19 @@ export function UpdateBanner({
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
-                  // Floor = this card with its notes closed, measured in a
-                  // browser: 8rem for one row of actions, 12rem once the card
-                  // is narrow enough to wrap them onto a second (184px at a
-                  // 390px viewport). The row wraps below a 404px card, which is
-                  // a 436px viewport, so 480px leaves margin for wider text.
-                  // Under the floor a capped rail takes the height out of the
-                  // notes, which clip; min-height:auto would instead be the
-                  // whole card, so this one would yield nothing and clip the
-                  // banner below it.
+                  // Floor = this card with its notes closed. Written against
+                  // --ui-font-scale so it tracks Settings > Appearance: at the
+                  // 20px maximum the action row wraps at every card width and
+                  // the notes-closed card is 209px, well over the 128px a
+                  // default-font measurement would have pinned. Under the floor
+                  // a capped rail takes the height out of the notes, which
+                  // clip; min-height:auto would instead be the whole card, so
+                  // this one would yield nothing and clip the banner below it.
                   //
                   // The failure card has no notes to give up, so shrinking it
                   // could only clip the diagnostics and the retry button. It
                   // holds its height and the rail scrolls instead.
-                  showFailure ? "shrink-0" : "min-h-48 min-[480px]:min-h-32",
+                  showFailure ? "shrink-0" : "min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)]",
                 ),
           )}
           data-testid="tauri-update-banner"
@@ -277,18 +276,30 @@ export function UpdateBanner({
                 </div>
               )}
             </div>
-            {manualMessage && (
-              <p className="mt-3 shrink-0 text-xs text-destructive">
-                {manualMessage}
-              </p>
-            )}
-            {manualReport && (
-              <textarea
-                readOnly={true}
-                value={manualReport}
-                onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full shrink-0 resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
-              />
+            {(manualMessage || manualReport) && (
+              // The clipboard fallback, and the one region of the failure card
+              // that may give up height. The card is capped at the viewport and
+              // clips, and the rail cannot scroll to what that cap hides, so
+              // without a scroller here the report the reader is being asked to
+              // select and copy is the part that goes missing in a short window.
+              <div
+                className="hover-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain"
+                data-testid="tauri-update-manual-report"
+              >
+                {manualMessage && (
+                  <p className="mt-3 text-xs text-destructive">
+                    {manualMessage}
+                  </p>
+                )}
+                {manualReport && (
+                  <textarea
+                    readOnly={true}
+                    value={manualReport}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                  />
+                )}
+              </div>
             )}
           </div>
         </motion.div>

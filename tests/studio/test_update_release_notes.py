@@ -1115,6 +1115,12 @@ def test_code_span_closers_ignore_backslashes():
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 
+# The card's notes-closed height, written against Settings > Appearance rather
+# than measured once at the default 15px: at the 20px maximum the action row
+# wraps at every card width and a fixed 128px floor cuts the buttons in half.
+_SCALED_FLOOR = "min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)]"
+
+
 def _overlay_stacks(provider: str) -> int:
     """How many bottom-right overlay stacks the provider renders."""
     return len(re.findall(r"z-\[9998\][^\"]*flex flex-col items-end gap-2", provider))
@@ -1139,7 +1145,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead and the stack scrolls past it.
     web = WEB_BANNER.read_text(encoding = "utf-8")
-    assert "min-h-48" in web and "min-[480px]:min-h-32" in web
+    assert _SCALED_FLOOR in web, "the floor is fixed, so it is wrong at other type sizes"
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
@@ -1150,7 +1156,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert "min-h-48" in tauri and "min-[480px]:min-h-32" in tauri
+    assert _SCALED_FLOOR in tauri, "the floor is fixed, so it is wrong at other type sizes"
 
 
 def test_the_stack_geometry_is_checked_numerically():

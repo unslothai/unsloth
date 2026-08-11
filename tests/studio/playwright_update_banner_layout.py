@@ -145,6 +145,17 @@ VIEWPORTS = [
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 
+# The two that squeeze the rail hardest, re-run at the largest UI font size.
+# The whole matrix again would not fit the job's budget and would say the same
+# thing three times over.
+FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500)]
+# appearance-custom-store.ts: UI_FONT_SIZE_RANGE, UI_FONT_SIZE_CSS_BASE and the
+# persist version. Kept in step by test_update_release_notes.py.
+UI_FONT_SIZE_MAX = 20
+UI_FONT_SIZE_DEFAULT = 15
+UI_FONT_SIZE_CSS_BASE = 16
+APPEARANCE_STORE_VERSION = 5
+
 failures: list[str] = []
 checks = [0]
 
@@ -222,11 +233,13 @@ MEASURE = """
   const surface = card ? card.firstElementChild : null;
   return {
     viewport: {width: innerWidth, height: innerHeight},
-    card: clip(card, rail), llama: clip(llama, rail),
+    // Clipped by the card, not by the rail. What the rail hides is under a
+    // fold the reader can scroll to; what the card hides is gone for good.
+    card: rect(card), llama: rect(llama),
     notesBody: clip(body, notes),
-    toggle: clip(clip(toggle, surface), rail),
-    snooze: clip(clip(snooze, surface), rail),
-    copy: clip(clip(copy, surface), rail),
+    toggle: clip(toggle, surface),
+    snooze: clip(snooze, surface),
+    copy: clip(copy, surface),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
     // pointer-events-none costs the rail its scrollbar, so it may only be
@@ -242,6 +255,48 @@ MEASURE = """
   };
 }
 """
+
+
+# Scroll each box into the rail's view and report what is still hidden. The
+# rail is the last resort the cards fall back on, so "below the fold" is a pass
+# and "cannot be brought into view" is the failure.
+REACH = """
+(selectors) => {
+  const q = (sel) => document.querySelector(sel);
+  const card = q('[data-testid="web-update-banner"]');
+  const llama = q('[data-testid="llama-update-banner"]');
+  const rail = card ? card.parentElement : (llama ? llama.parentElement : null);
+  if (!rail) return null;
+  const was = rail.scrollTop;
+  const out = {};
+  for (const [name, sel] of Object.entries(selectors)) {
+    const el = q(sel);
+    if (!el) { out[name] = null; continue; }
+    el.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    const r = el.getBoundingClientRect();
+    const b = rail.getBoundingClientRect();
+    out[name] = {
+      hidden: Math.round(Math.max(0,
+        Math.max(b.top - r.top, 0) + Math.max(r.bottom - b.bottom, 0)) * 10) / 10,
+      offscreen: r.top < -0.5 || r.bottom > innerHeight + 0.5,
+      // Taller than the fold itself: no scroll position shows all of it, and
+      // none has to, since every part of it can be scrolled to.
+      taller: r.height > b.height + 1,
+      scrollable: rail.scrollHeight > rail.clientHeight,
+    };
+  }
+  rail.scrollTop = was;
+  return out;
+}
+"""
+
+REACHABLE = {
+    "card": '[data-testid="web-update-banner"]',
+    "llama": '[data-testid="llama-update-banner"]',
+    "toggle": '[data-testid="web-update-release-notes-toggle"]',
+    "snooze": '[data-testid="web-update-snooze-button"]',
+    "copy": '[data-testid="web-update-copy-button"]',
+}
 
 
 def overlap(a: dict | None, b: dict | None) -> float:
@@ -288,6 +343,20 @@ def measure(page, label: str) -> dict:
             inside(facts[name], view),
             f"{name}={facts[name]} viewport={view}",
         )
+    # Anything the rail is holding under its fold has to come back when the
+    # rail is scrolled to it, and land on screen when it does.
+    reach = page.evaluate(REACH, REACHABLE)
+    for name, seen in (reach or {}).items():
+        if seen is None:
+            continue
+        reached = (
+            seen["scrollable"] if seen["taller"] else seen["hidden"] <= 1.0
+        )
+        check(
+            f"{label}: the {name} can be scrolled into the rail's view",
+            reached and not seen["offscreen"],
+            f"{name}={seen}",
+        )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
         check(
@@ -307,11 +376,24 @@ def measure(page, label: str) -> dict:
     for name in ("card", "llama", "toggle", "snooze", "copy"):
         box = facts[name]
         check(
-            f"{label}: the {name} is not clipped away",
+            f"{label}: the card does not clip its own {name} away",
             box is not None and box["height"] > 1.0 and box["width"] > 1.0,
             f"{name}={box}",
         )
     return facts
+
+
+def stub(payload: dict):
+    """A route handler that answers with `payload`."""
+
+    def handler(route) -> None:
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps(payload),
+        )
+
+    return handler
 
 
 def boot(page, path: str) -> None:
@@ -444,6 +526,51 @@ def main() -> int:
                 f"text={facts['llamaText']!r}",
             )
             llama_payload[0] = LLAMA_STATUS
+            context.close()
+
+        # Settings > Appearance scales the type, and the card's floor is
+        # written against that scale rather than measured once at the default.
+        # At the 20px maximum the action row wraps at every card width, so a
+        # default-font floor left the buttons clipped inside the card.
+        for width, height in FONT_SCALE_VIEWPORTS:
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            context.add_init_script(
+                "localStorage.setItem('unsloth_appearance_customization', "
+                + json.dumps(
+                    json.dumps(
+                        {
+                            "state": {"customization": {"uiFontSize": UI_FONT_SIZE_MAX}},
+                            "version": APPEARANCE_STORE_VERSION,
+                        }
+                    )
+                )
+                + ");"
+            )
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+            ):
+                # A two-argument handler is called with (route, request), so the
+                # payload has to be closed over rather than defaulted in.
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            scale = page.evaluate(
+                "() => getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--ui-font-scale').trim()"
+            )
+            check(
+                f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
+                scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
+                f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+            )
+            measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
+            page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
             context.close()
         browser.close()
 

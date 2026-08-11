@@ -63,17 +63,22 @@ for (const [name, source] of CARDS) {
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // The floor is the card with its notes closed, measured in a browser: 8rem
-    // for one row of actions, 12rem once the card is narrow enough to wrap them
-    // onto two. min-h-0 was the old floor and it is no floor at all.
+    // The floor is the card with its notes closed. It has to be written
+    // against --ui-font-scale, not measured once at the default type size:
+    // Settings > Appearance goes to 20px, where the action row wraps at every
+    // card width and a 128px floor cuts the buttons in half.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
     assert.match(
       source,
-      /min-h-48[^"]*min-\[480px\]:min-h-32/,
-      "one floor for both widths clips the wrapped action row",
+      /min-h-\[calc\(12rem\*var\(--ui-font-scale,1\)\/0\.9375\)\]/,
+      "the floor is a fixed height, so it is wrong at every other type size",
+    );
+    assert.ok(
+      !/min-h-48|min-h-32/.test(source),
+      "a leftover fixed floor still binds and still clips",
     );
   });
 }
@@ -83,8 +88,21 @@ test("the desktop failure card does not shrink at all", () => {
   // only clips the diagnostics and the retry button.
   assert.match(
     TAURI,
-    /showFailure \? "shrink-0" : "min-h-48 min-\[480px\]:min-h-32"/,
+    /showFailure \? "shrink-0" : "min-h-\[calc\(12rem/,
     "the failure card shares the notes-bearing card's floor, which is too low",
+  );
+});
+
+test("the desktop failure card can scroll to its own diagnostics", () => {
+  // The card is capped at the viewport and clips, and the rail cannot scroll
+  // to what that cap hides, so the clipboard fallback needs its own scroller
+  // or the report the reader is told to copy is the part that disappears.
+  const region = classes(TAURI, "hover-scrollbar min-h-0 flex-1 ");
+  assert.match(region, /\boverflow-y-auto\b/, "the report cannot be scrolled");
+  assert.match(region, /\boverscroll-contain\b/);
+  assert.ok(
+    !/shrink-0[^"]*resize-none/.test(TAURI),
+    "a shrink-0 textarea pushes itself past the card's cap again",
   );
 });
 
@@ -101,7 +119,7 @@ test("the two update cards do not drift apart", () => {
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => !rule.includes("min-h-32") && rule !== "min-h-48")
+      .filter((rule) => !rule.startsWith("min-h-"))
       .join(" ");
   assert.equal(
     root(TAURI),
