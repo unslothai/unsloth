@@ -213,6 +213,23 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const dropRow = useCallback(
     (id: string) => {
       setRows((prev) => prev.filter((r) => r.id !== id));
+      // Release the thumbnail with the row. Its element unmounts without the observer reporting it,
+      // so the id would sit in `visible` forever and permanently protect its blob from eviction,
+      // walking the cache past its budget one restore at a time.
+      blobs.current.delete(id);
+      requested.current.delete(id);
+      setVisible((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setThumbs((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       // The page that owns this gallery is mounted persistently and only loads on mount, so it has
       // to be told the shelf changed or the strip stays stale until a reload.
       notifyGalleryChanged(kind);

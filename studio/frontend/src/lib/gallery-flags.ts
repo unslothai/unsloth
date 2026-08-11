@@ -107,9 +107,12 @@ export async function hasUnknownRecord<T extends FlaggableItem>(
   for (let page = 0; page < maxPages; page += 1) {
     const { items, hasMore } = await fetchPage(page * pageSize);
     for (const record of items) {
-      if (!knownIds.has(record.id)) return true;
-      // The first unpinned row was already known, so nothing new was saved.
-      if (!record.pinned) return false;
+      // A saved record is never pinned, so a pinned row is never the proof -- not even an unknown
+      // one. With more pins than the client had loaded, treating an unfamiliar pin as evidence
+      // would report a generation that never reached the server as finished.
+      if (record.pinned) continue;
+      // The first unpinned row is where a new record would be, so it alone decides.
+      return !knownIds.has(record.id);
     }
     if (!hasMore || items.length === 0) return false;
   }

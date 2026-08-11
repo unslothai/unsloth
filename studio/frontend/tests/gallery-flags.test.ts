@@ -151,3 +151,16 @@ test("the probe stops at its page cap instead of scanning the whole gallery", as
 test("an empty gallery reports no new record", async () => {
   assert.equal(await hasUnknownRecord(new Set(), pager([], 50), 50), false);
 });
+
+test("an unknown pinned row is not proof that a generation landed", async () => {
+  // With more pins than the client had loaded, knownIds omits the later ones. Treating such a pin
+  // as evidence reported a lost submission as a finished run that produced no image.
+  const listing = [item("loadedPin", 5, true), item("unloadedPin", 4, true), item("old", 1)];
+  const known = new Set(["loadedPin", "old"]);
+  assert.equal(await hasUnknownRecord(known, pager(listing, 50), 50), false);
+});
+
+test("a new record is still found past an unknown pinned row", async () => {
+  const listing = [item("unloadedPin", 4, true), item("fresh", 9), item("old", 1)];
+  assert.equal(await hasUnknownRecord(new Set(["old"]), pager(listing, 50), 50), true);
+});
