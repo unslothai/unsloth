@@ -486,7 +486,10 @@ def _capture_body(monkeypatch, **kwargs) -> dict:
 def test_claude_5_uses_adaptive_thinking_and_effort(monkeypatch, model):
     """Claude 5 / Opus 4.8 must get adaptive thinking, not a bare request."""
     body = _capture_body(
-        monkeypatch, model = model, enable_thinking = True, reasoning_effort = "xhigh",
+        monkeypatch,
+        model = model,
+        enable_thinking = True,
+        reasoning_effort = "xhigh",
     )
     assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert body["output_config"] == {"effort": "xhigh"}
