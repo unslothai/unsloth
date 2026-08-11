@@ -401,6 +401,36 @@ def test_an_empty_handoff_is_ignored(tmp_path):
     assert _run(tmp_path, [], env = {HANDOFF: ""})["arch"] is None
 
 
+@requires_pwsh
+@pytest.mark.parametrize(
+    "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
+)
+def test_a_mask_suppresses_the_handoff(tmp_path, var):
+    """The mask selects the unrecognized discrete card, so the inference above deliberately
+    resolves nothing rather than borrowing the 780M's arch. The installer scans without the mask
+    and forwards that very arch, and taking it would install for a GPU the mask hides from the
+    runtime entirely (ROCR filters below HIP, so masked devices never reach enumeration)."""
+    adapters = [(_R780M, 0), ("AMD Radeon RX 5700 XT", 0)]
+    assert _run(tmp_path, adapters, env = {var: "1", HANDOFF: "gfx1103"})["arch"] is None
+
+
+@requires_pwsh
+def test_a_mask_suppresses_the_handoff_even_with_no_adapters_to_check_it_against(tmp_path):
+    """Setup saw no names at all, so it cannot confirm the forwarded arch is the selected device.
+    Refuse rather than guess."""
+    assert _run(tmp_path, [], env = {"HIP_VISIBLE_DEVICES": "0", HANDOFF: "gfx1151"})["arch"] is None
+
+
+@requires_pwsh
+def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
+    out = _run(
+        tmp_path,
+        [(_R780M, 0), ("AMD Radeon RX 5700 XT", 0)],
+        env = {"HIP_VISIBLE_DEVICES": "1", "UNSLOTH_ROCM_GFX_ARCH": "gfx1010", HANDOFF: "gfx1103"},
+    )
+    assert out["arch"] == "gfx1010"
+
+
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 

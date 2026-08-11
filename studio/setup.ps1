@@ -2437,7 +2437,13 @@ if (-not $HasNvidiaSmi) {
     #    cpu torch against the ROCm wheels just placed, calls the venv stale, and loops forever.
     #    Private, never UNSLOTH_ROCM_GFX_ARCH: nested installers read that as an operator
     #    override, and this value is inferred, not chosen by anyone.
-    if (-not $script:ROCmGfxArch -and $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) {
+    #    Skipped under a visible-device mask, matching the inference above, which leaves
+    #    $pickedName unset rather than borrowing a peer's arch when pinned. The installer's scan
+    #    ignores the masks, so its answer is the FIRST adapter, not the selected one, and taking
+    #    it would install for a GPU the mask hides from the runtime entirely. A host that wants
+    #    an arch named under a mask sets UNSLOTH_ROCM_GFX_ARCH, which still wins above.
+    if (-not $script:ROCmGfxArch -and $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -and
+        -not (Test-VisibleDevicesPinned)) {
         $script:ROCmGfxArch = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF.Trim().ToLower()
         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
         substep "gfx arch forwarded by the installer: $script:ROCmGfxArch" "Cyan"
