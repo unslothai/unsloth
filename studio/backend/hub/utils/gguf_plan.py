@@ -257,6 +257,8 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     exact = plans.get(wanted)
     if exact is not None:
         return exact
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, and picking either would load a different task.
     matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
 

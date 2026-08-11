@@ -362,8 +362,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
-      gguf("unsloth/MiniMax-H3-GGUF", { totalParams: 20_111_438_744 }),
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
+      gguf("unsloth/MiniMax-H3-GGUF", {
+        label: "GGUF",
+        keywords: [
+          "gguf",
+          "quantized",
+          "fl2va",
+          "ref2va",
+          "keyframes",
+          "references",
+        ],
+        totalParams: 20_111_438_744,
+      }),
     ],
   },
   {
@@ -591,6 +603,19 @@ export function curatedCapabilitiesFor(
   };
 }
 
+/** Human-facing name of an exact curated artifact, including the artifact label
+ * when its model has more than one selectable representation. */
+export function curatedDisplayNameFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): string | null {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return null;
+  return hit.group.artifacts.length > 1
+    ? `${hit.group.displayName} (${hit.artifact.label})`
+    : hit.group.displayName;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
@@ -598,10 +623,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
     for (const artifact of group.artifacts) {
       options.push({
         id: artifact.repoId,
-        name:
-          group.artifacts.length > 1
-            ? `${group.displayName} (${artifact.label})`
-            : group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
       });

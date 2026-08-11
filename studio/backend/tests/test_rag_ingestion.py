@@ -4,6 +4,7 @@
 """Ingestion lifecycle tests: pending -> completed, SSE events, dedupe, delete."""
 
 import os
+import sqlite3
 import threading
 import time
 
@@ -39,6 +40,38 @@ def _wait_finished(
 
 def _wait_completed(job_id, timeout = 30.0):
     return _wait_finished(job_id, timeout, ("completed", "failed"))
+
+
+def test_initial_connection_failure_marks_ingestion_failed(rag_home, monkeypatch, tmp_path):
+    path = _write(tmp_path, "doc.txt", "alpha bravo")
+    scope = store.kb_scope("K1")
+    conn = rag_db.get_connection()
+    try:
+        document_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "doc.txt",
+            sha256 = "hash",
+            stored_path = path,
+            status = "pending",
+        )
+        job_id = ingestion._new_job(conn, document_id, scope)
+    finally:
+        conn.close()
+    original_get_connection = rag_db.get_connection
+    attempts = 0
+
+    def fail_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is busy")
+        return original_get_connection()
+
+    monkeypatch.setattr(rag_db, "get_connection", fail_once)
+    ingestion._run(job_id, document_id, scope, path, None)
+
+    assert ingestion.get_job_status(job_id)["status"] == "failed"
 
 
 def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp_path):
@@ -158,6 +191,42 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
     conn = rag_db.get_connection()
     try:
         assert len(store.list_documents(conn, scope)) == 1
+    finally:
+        conn.close()
+
+
+def test_manual_upload_does_not_dedupe_to_linked_folder_document(
+    rag_home, stub_embeddings, tmp_path
+):
+    path = _write(tmp_path, "manual.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    sha = ingestion._sha256_file(path)
+    conn = rag_db.get_connection()
+    try:
+        linked_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "linked.txt",
+            sha256 = sha,
+            kb_id = "K1",
+            status = "completed",
+            linked_folder_id = "folder-1",
+            linked_relative_path = "linked.txt",
+        )
+        store.set_document_status(conn, linked_id, "completed", num_chunks = 1)
+    finally:
+        conn.close()
+
+    manual_id, job_id = ingestion.start_ingestion(scope, "K1", None, "manual.txt", path)
+    events = _drain(job_id)
+    _wait_completed(job_id)
+
+    assert manual_id != linked_id
+    assert not any(event.get("deduped") for event in events)
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, linked_id) is not None
+        assert store.get_document(conn, manual_id)["linked_folder_id"] is None
     finally:
         conn.close()
 

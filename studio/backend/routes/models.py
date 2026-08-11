@@ -299,10 +299,15 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 
 def _local_pipeline_index(d: Path) -> bool:
-    """True when *d* is a diffusers PIPELINE root (top-level ``model_index.json``, weights in
-    component subdirs), which ``_is_model_directory`` (root config + loose weights) rejects."""
+    """True when *d* is a diffusers PIPELINE root (a top-level index, weights in component
+    subdirs), which ``_is_model_directory`` (root config + loose weights) rejects.
+
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, and the video loader accepts exactly that pair, so recognising only the
+    conventional one hid a valid local root from the picker and let the publisher walk descend
+    into it and offer its components as separate, unusable models."""
     try:
-        return (d / "model_index.json").is_file()
+        return (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
     except OSError:
         return False
 
@@ -1208,16 +1213,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1228,8 +1237,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
@@ -2761,7 +2775,7 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
     refuses a delete, a false miss loses weights.
     """
-    from hub.utils.gguf import bare_quant_alias
+    from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
 
     left = (a or "").strip().lower()
     right = (b or "").strip().lower()
@@ -2770,7 +2784,11 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     if left == right:
         return True
     for key, bare in ((left, right), (right, left)):
-        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
             return True
     return False
 
@@ -3711,19 +3729,22 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
     *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
     doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
-    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
-    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
-    files too and then took whichever sorted first. Exact keys are used alone whenever any
-    exist, and the label is the fallback for the rows that have no qualified spelling.
+    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
+    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    first file would load a different task. Exact keys are used alone whenever any exist, and the
+    label is the fallback for rows with no root-stem identity.
     """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
-    if _variant_keys_match(_gguf_variant_key(rel_path), want):
+    key = _gguf_variant_key(rel_path)
+    if _variant_keys_match(key, want):
         return 0
+    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+        return None
     return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
 
 
@@ -3736,7 +3757,9 @@ def _variant_keys_match(key: str, want: str) -> bool:
     key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
     bare aliases it was written for.
     """
-    if "/" in key or "/" in want:
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+
+    if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
         return key.strip().lower() == want.strip().lower()
     return _normalized_quant_label(key) == _normalized_quant_label(want)
 
@@ -3897,10 +3920,24 @@ _VIDEO_GEN_TASK = "text-to-video"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
+# The two denoiser partitions, by the filename prefix the loader itself validates against
+# (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
+# evidence there is, and it is the same evidence the load path acts on.
+_H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
-    """True when a name hint is one of the MiniMax-H3 GGUF bundle repos (video, never chat)."""
+    """True when a name hint names MiniMax-H3 GGUF weights (video, never chat).
+
+    Either a known bundle repo id, or a validated denoiser FILENAME. The filename half matters
+    for a GGUF the user copied into a custom local directory rather than leaving under one of the
+    bundle ids: with no architecture metadata to fall back on, ``_local_model_task`` returned null
+    and an otherwise loadable checkpoint was dropped from the Video On Device picker."""
     if not hint:
         return False
+    name = str(hint).strip().lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name.endswith(".gguf") and name.startswith(_H3_DENOISER_GGUF_PREFIXES):
+        return True
     try:
         from hub.utils.gguf import is_h3_bundle_repo
         return is_h3_bundle_repo(hint)

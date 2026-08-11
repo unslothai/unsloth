@@ -378,6 +378,9 @@ export const ar = {
         keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
         keepKvDescription:
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+        apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
+        apiOnlyDescription:
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Studio في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -892,6 +895,11 @@ export const ar = {
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      thinking: {
+        collapseByDefault: "طيّ التفكير افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",

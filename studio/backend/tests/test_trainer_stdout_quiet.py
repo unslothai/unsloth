@@ -23,7 +23,46 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import importlib  # noqa: E402
+import types  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
+
 import pytest  # noqa: E402
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper, and the same reason, as in test_training_preflight.py and
+    test_training_progress_callback.py: core.training.trainer imports unsloth (and through it
+    unsloth_zoo) and trl at module scope, while the pytest matrix in studio-backend-ci.yml
+    installs studio.txt plus torch and transformers and stops there. The heavier
+    repo-cpu-tests job beside it is the one that installs unsloth_zoo, and it runs the
+    REPO-ROOT tests/, not this tree -- so nothing here can rely on those packages being
+    present. Unstubbed, this module fails COLLECTION, which fails the whole job rather than
+    one test. Real installs are left alone, so a developer box still exercises the genuine
+    import. __spec__ = None keeps the trainer's own _ensure_real_packages namespace-shadow
+    guard a no-op on the stub."""
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
 

@@ -371,6 +371,9 @@ export const ja = {
         keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
           "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        apiOnly: "API が読み込んだモデルのみアンロード",
+        apiOnlyDescription:
+          "アイドル時の自動アンロードでは、Studio から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -879,6 +882,11 @@ export const ja = {
         "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      thinking: {
+        collapseByDefault: "思考をデフォルトで折りたたむ",
+        collapseByDefaultDescription:
+          "モデルの思考中も自動で展開せず、折りたたんだままにします。読みたいときはブロックを展開してください。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",

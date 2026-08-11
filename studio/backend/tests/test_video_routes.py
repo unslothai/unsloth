@@ -122,7 +122,8 @@ class _FakeBackend(video_module.VideoBackend):
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         # Non-GGUF loads are gated to unsloth/* repos, the official bases, and existing local paths.
-        trusted = model_path.lower().startswith(("unsloth/", "lightricks/")) or (
+        # minimaxai/: the real gate trusts MiniMaxAI/MiniMax-H3 as an official family base repo.
+        trusted = model_path.lower().startswith(("unsloth/", "lightricks/", "minimaxai/")) or (
             Path(model_path).expanduser().exists()
         )
         if kind != "gguf" and not trusted:
@@ -206,6 +207,18 @@ class _FakeBackend(video_module.VideoBackend):
             "has_audio": True,
             "defaults": _defaults(),
         }
+
+
+@pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """These tests are about the route, not about the runner's diffusers.
+
+    The module docstring promises they run without diffusers, and most do, but the
+    MiniMax-H3 download plan reaches `import diffusers` in video.py's modular-workflow
+    branch. Backend CI installs no diffusers (it lives in requirements/diffusers-pin.txt,
+    which only install_python_stack.py applies), so without the proxy that one test dies
+    on ModuleNotFoundError. Same fixture the diffusion test modules already use.
+    """
 
 
 @pytest.fixture
@@ -1261,6 +1274,68 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
 
     assert resp.status_code == 200, resp.json()
     assert seen["h3_task"] == "ref2va"
+
+
+def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
+    # The plan route asks the same (scheme, PARTITION) question the load does, so a pick it
+    # answers 200 is one the load will honour. Both halves matter and they are one test because
+    # either alone passes for the wrong reason: refusing everything, or accepting everything.
+    #
+    # ref2va now has its own hosted int8 and fp8 denoisers, so the reference partition is a real
+    # pick rather than a keyframe checkpoint wearing the wrong name. A scheme with no checkpoint
+    # at all is still refused BEFORE staging, which is the failure this route check was added for
+    # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
+    #
+    # The host-level precision gate is a DIFFERENT question from the one under test, and on a
+    # box with no CUDA and no torchao it answers 409 before the partition check is ever reached.
+    # Stubbing it keeps the availability refusal (a 400, raised by validate_load_request below)
+    # under test everywhere, including the Backend CI matrix that installs no torchao. Same stub
+    # the neighbouring route tests use; test_video_h3_te_quant.py covers the gate itself.
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    def _ask(scheme):
+        return client.post(
+            "/api/inference/video/download-plan",
+            json = {
+                "model_path": "MiniMaxAI/MiniMax-H3",
+                "family_override": "minimax-h3",
+                "model_kind": "pipeline",
+                "transformer_quant": scheme,
+                "h3_task": "ref2va",
+            },
+        )
+
+    served = _ask("int8")
+    assert served.status_code == 200, served.json()
+    # Planned for the partition that was asked for, not the keyframe one it used to fall back to.
+    assert seen["h3_task"] == "ref2va"
+    assert seen["transformer_quant"] == "int8"
+
+    seen.clear()
+    refused = _ask("nvfp4")
+    assert refused.status_code == 400
+    detail = refused.json()["detail"]
+    # Named per task: "unavailable" here is a claim about ref2va, not about the whole family.
+    assert "ref2va" in detail
+    # A refusal that does not name the alternative just moves the dead end earlier.
+    assert "int8" in detail and "fp8" in detail
+    assert not seen, "download_plan must not be reached for a refused pick"
 
 
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):

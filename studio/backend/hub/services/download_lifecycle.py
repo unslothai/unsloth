@@ -337,7 +337,7 @@ def finalize_worker_exit(
                 )
 
                 note_downloaded(repo_id)
-                invalidate_index()
+                invalidate_index(additions_only = True)
                 # Rebuild here, not on the first request, to keep the scan off the
                 # request path.
                 warm_index_soon()
@@ -776,6 +776,34 @@ def _repo_bytes_on_disk(repo_type, repo_id: str, cache_dir) -> "Optional[int]":
     return None if state is None else int(state[0])
 
 
+def _sweep_ownership(metadata, own_blob_hashes, owned_for_sweep, repo_type: str, repo_id: str):
+    """(owned hashes, owns-everything) for a job that has just reached a terminal state.
+
+    A variant job whose API-side hash pre-resolution failed carries a non-null variant with an
+    EMPTY hash set, so neither claim applies and its own fresh partial waits out a grace that
+    exists to guess at a writer we already know is dead. The worker wrote a manifest naming the
+    files it fetched, so read the ownership back off that.
+    """
+    if own_blob_hashes is None:
+        return None, True
+    if owned_for_sweep:
+        return frozenset(owned_for_sweep), False
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.read_manifest(
+        repo_type,
+        repo_id,
+        getattr(metadata, "variant", None),
+        hub_cache = getattr(metadata, "hub_cache", None),
+    )
+    recovered = {
+        expected.sha256
+        for expected in getattr(manifest, "expected_files", ()) or ()
+        if getattr(expected, "sha256", None)
+    }
+    return frozenset(recovered), False
+
+
 def _job_bytes_on_disk(repo_type, repo_id: str, cache_dir, blob_hashes) -> "Optional[int]":
     """Bytes THIS job owns, or None when unmeasurable.
 
@@ -924,6 +952,13 @@ def register_worker(
     _own_blob_hashes = (
         getattr(_metadata, "blob_hashes", frozenset())
         if getattr(_metadata, "variant", None)
+        else None
+    )
+    # Companions (a shared mmproj) live only in the progress set, and this worker was writing
+    # one when it died just as much as it was writing the main quant.
+    _owned_for_sweep = (
+        getattr(_metadata, "progress_blob_hashes", None) or _own_blob_hashes
+        if _own_blob_hashes is not None
         else None
     )
     # Sampled before the worker can write, so "did this job move bytes over Xet" is answerable on
@@ -1099,6 +1134,43 @@ def register_worker(
                     )
             except Exception:
                 logger.exception("post-finalize marker cleanup failed for %s", key)
+            try:
+                # The second look for anything prepare_cache_for_transport spared as too
+                # recently written. A download runs for long enough that a partial orphaned
+                # before it started is well past the grace by now, and the peer set still
+                # shields a same-repo variant writing a shared companion right now.
+                # This job's own blobs skip the abandonment wait, but ONLY once the job is
+                # genuinely finished. A cancelled worker's partial was written seconds ago, so
+                # the wait would strand it for the rest of the session; and its writer has just
+                # been reaped, which is the very thing the wait is there to guess at. A retry
+                # relaunched above leaves the job active, and then it is not ours to assume.
+                terminal = registry.get_job(key).state not in ("running", "cancelling")
+                _owned, _owns_all = (
+                    _sweep_ownership(
+                        _metadata, _own_blob_hashes, _owned_for_sweep, repo_type, repo_id
+                    )
+                    if terminal
+                    else (None, False)
+                )
+                swept = download_registry.sweep_abandoned_partials(
+                    repo_type,
+                    repo_id,
+                    protected_blob_hashes = registry.peer_blob_hashes(key),
+                    # A companion a sibling is writing right now is still held back by
+                    # peer_blob_hashes above, whatever this job believes it owns.
+                    owned_blob_hashes = _owned,
+                    owns_all_blobs = _owns_all,
+                    # The cache this worker actually wrote to. Resolving the live one instead
+                    # would miss the orphan whenever the download location changed mid-run,
+                    # and sweep a cache this job never touched.
+                    root = _cache_dir,
+                )
+                if swept:
+                    logger.info(
+                        "%sswept %d unresumable partial blob(s) for %s", log_prefix, swept, repo_id
+                    )
+            except Exception:
+                logger.exception("abandoned-partial sweep failed for %s", key)
             finally:
                 hf_cache_scan.invalidate_hf_cache_scans()
 

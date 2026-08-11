@@ -1,14 +1,19 @@
 name: Publish Desktop Release
 
+# Manual dispatch only: sharing release-desktop.yml's concurrency group, a publish-fired
+# run stalls the desktop build queued behind it -- and predates any bundles anyway.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Unified v... release to expose once to legacy desktop-latest clients'
+        description: 'Unified v... release to validate and expose to clients (for example, v0.1.61-beta)'
         type: string
         required: true
+      repair_pointer:
+        description: 'Release carries no bundles of its own: carry the newest desktop manifest onto it so update checks stop 404ing'
+        type: boolean
+        required: false
+        default: false
       bridge_legacy_channel:
         description: 'One-time migration only: mirror this release manifest to existing desktop-latest'
         type: boolean
@@ -26,15 +31,15 @@ concurrency:
 jobs:
   publish-updater:
     name: Validate published desktop release
-    if: >-
-      (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')) ||
-      (github.event_name == 'workflow_dispatch' && inputs.bridge_legacy_channel)
+    # A mistakenly flagged prerelease still reaches the job, so validation fails
+    # visibly instead of silently skipping.
+    if: ${{ startsWith(inputs.release_tag, 'v') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GH_REPO: ${{ github.repository }}
-      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
 
     steps:
       - name: Harden runner (audit)
@@ -42,19 +47,14 @@ jobs:
         with:
           egress-policy: audit
 
-      # The v... release is published before release-desktop.yml attaches the
-      # bundles, so this fires first on a release that carries none. Skip cleanly
-      # instead of failing; the desktop run advances the channel itself.
+      # A release with no bundles is a normal dispatch, so decide from the assets: with
+      # repair_pointer the run carries a manifest forward, without it nothing to validate.
       - name: Check for desktop bundles
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" != "release" ]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           asset_names="$RUNNER_TEMP/release-asset-names.txt"
           # Fail closed: an unreadable release must not look like one with no bundles.
           if ! gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$asset_names"; then
@@ -74,8 +74,10 @@ jobs:
       # newest desktop manifest onto this release instead, so discovery follows
       # desktop metadata rather than release order. The manifest keeps its own
       # version and its URLs keep pointing at the immutable release that built it.
+      # Validation and promotion below stay skipped; re-dispatch without repair_pointer
+      # once the release carries its own bundles.
       - name: Carry desktop metadata forward
-        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'false' }}
+        if: ${{ inputs.repair_pointer && steps.gate.outputs.proceed == 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -96,6 +98,32 @@ jobs:
 
           semver = re.compile(r'^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$')
           releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+
+          # /releases/latest never resolves to a draft or prerelease, so a manifest
+          # carried onto one cannot repair the endpoint however well the upload goes;
+          # the source filter below already refuses them. Read the target from the
+          # listing already fetched: /releases/tags/{tag} returns 404 for a draft,
+          # which has no git tag until it is published.
+          target = next(
+              (r for r in releases if r.get('tag_name') == os.environ['RELEASE_TAG']),
+              None,
+          )
+          # Fail closed: the listing is one page, so a target beyond it has a state
+          # this step cannot read; skipping the check below would upload the manifest
+          # and report a repair anyway.
+          if target is None:
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is not among the 100 most recent releases; "
+                  'refusing to carry a manifest onto a target whose draft or '
+                  'prerelease state cannot be checked'
+              )
+          if target.get('draft') or target.get('prerelease'):
+              state = 'draft' if target.get('draft') else 'prerelease'
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is a {state}, which /releases/latest never "
+                  'resolves to; refusing to carry a manifest that cannot repair the pointer'
+              )
+
           candidates = [
               release for release in releases
               if semver.fullmatch(release.get('tag_name') or '')
@@ -145,14 +173,16 @@ jobs:
           PY
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/carry-forward/latest.json" --clobber
           echo "Carried ${source_tag} updater metadata onto ${RELEASE_TAG}."
-          # GitHub moves /releases/latest when the release is published, before this
-          # job can start, so update checks 404 from that moment until the upload
-          # above. Record it: a long queue makes the gap worth knowing about.
+          # GitHub moved /releases/latest when the release was published, so update
+          # checks 404 from then until the upload above. Nothing is automatic now, so
+          # record that gap: its length is a human response time.
           {
             printf '### Desktop updater pointer\n\n'
             printf '%s carried no desktop bundles, so it now serves the %s manifest.\n\n' \
               "$RELEASE_TAG" "$source_tag"
             printf 'Update checks returned 404 between the release being published and this upload.\n'
+            printf '\nRe-dispatch without repair_pointer once %s carries its own bundles.\n' \
+              "$RELEASE_TAG"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download updater metadata
@@ -165,20 +195,6 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
           gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater"
           test -s "$RUNNER_TEMP/desktop-updater/latest.json"
-
-      - name: Remove standalone signature assets
-        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Scoped to the desktop bundles: the v... release carries other assets too.
-          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
-            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
-          while IFS= read -r asset_name; do
-            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
-          done <<< "$signature_assets"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
 
       - name: Validate updater metadata
         if: steps.gate.outputs.proceed == 'true'
@@ -238,7 +254,7 @@ jobs:
           PY
 
       - name: Prevent GitHub latest downgrade
-        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -303,8 +319,26 @@ jobs:
           PY
 
 
+      # Deletion is permanent and the tag is now hand-typed, so every check that can
+      # reject the target runs above this. Validation only asks whether each manifest
+      # bundle is present, so the surviving .sig assets do not change its verdict.
+      # The re-fetch keeps source-release.json current for the promotion below.
+      - name: Remove standalone signature assets
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Scoped to the desktop bundles: the v... release carries other assets too.
+          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
+
       - name: Mark published release as GitHub latest
-        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -314,8 +348,11 @@ jobs:
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
           test -n "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "latest.json") | .url')"
 
+      # The gate conjunct is load-bearing: this step reads the manifest fetched by
+      # "Download updater metadata", itself gated on proceed == 'true'. Without it a
+      # repair_pointer run that also bridges would die on a file it never downloaded.
       - name: Bridge legacy desktop-latest clients once
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bridge_legacy_channel }}
+        if: ${{ steps.gate.outputs.proceed == 'true' && inputs.bridge_legacy_channel }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

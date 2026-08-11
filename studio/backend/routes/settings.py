@@ -10,8 +10,16 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write, require_ui_session
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -49,6 +57,7 @@ from utils.model_memory_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -56,6 +65,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -107,6 +117,74 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
+    return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
 class HelperPrecachePayload(BaseModel):
@@ -163,6 +241,7 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
+    auto_unload_api_only: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -176,6 +255,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
     # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+    # When true, the idle unload spares models loaded from the UI, not just via the API.
+    auto_unload_api_only: bool = DEFAULT_AUTO_UNLOAD_API_ONLY
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -489,6 +570,7 @@ def get_openai_auto_switch(
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
         auto_unload_keep_kv = get_auto_unload_keep_kv(),
         auto_download_model = get_stored_openai_auto_download_enabled(),
+        auto_unload_api_only = get_auto_unload_api_only(),
     )
 
 
@@ -497,11 +579,12 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds, keep_kv, auto_download = set_openai_auto_switch(
+        enabled, idle_seconds, keep_kv, auto_download, api_only = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
             payload.auto_unload_keep_kv,
             payload.auto_download_model,
+            payload.auto_unload_api_only,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -523,6 +606,7 @@ def update_openai_auto_switch(
         idle_unload_active = idle_unload_active,
         auto_unload_keep_kv = keep_kv,
         auto_download_model = auto_download,
+        auto_unload_api_only = api_only,
     )
 
 

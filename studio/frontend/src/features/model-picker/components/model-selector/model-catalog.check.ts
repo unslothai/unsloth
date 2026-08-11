@@ -19,6 +19,7 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  curatedDisplayNameFor,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -216,9 +217,28 @@ for (const id of [
   assert.ok(imageOptionIds.has(id), `image option missing: ${id}`);
 }
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
-for (const id of ["unsloth/LTX-2.3-GGUF", ...OLD_PIPELINE_MODELS]) {
+for (const id of [
+  "unsloth/LTX-2.3-GGUF",
+  "unsloth/MiniMax-H3-GGUF",
+  ...OLD_PIPELINE_MODELS,
+]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
+
+// H3 publishes both denoiser partitions in its official bundle. One artifact lets the lister's
+// partition-aware labels expose both in Recommended and On Device without a community mirror.
+const h3Group = groupForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG);
+assert.ok(h3Group);
+assert.deepEqual(
+  h3Group.artifacts
+    .filter((artifact) => artifact.format === "gguf")
+    .map((artifact) => artifact.repoId),
+  ["unsloth/MiniMax-H3-GGUF"],
+);
+assert.equal(
+  curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
+  "MiniMax H3 (GGUF)",
+);
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 

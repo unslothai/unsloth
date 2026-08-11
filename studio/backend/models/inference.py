@@ -1023,6 +1023,13 @@ class ChatMessage(BaseModel):
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
+    reasoning_content: Optional[str] = Field(
+        None,
+        description = (
+            "Assistant reasoning from an earlier turn, replayed to local chat templates "
+            "that consume the OpenAI-compatible reasoning_content field."
+        ),
+    )
     tool_call_id: Optional[str] = Field(
         None,
         description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
@@ -1043,6 +1050,14 @@ class ChatMessage(BaseModel):
             "from assistant messages to replay text-part signatures."
         ),
     )
+
+    @field_validator("reasoning_content", mode = "before")
+    @classmethod
+    def _ignore_non_string_reasoning(cls, value):
+        # This field used to be ignored as an unknown key. Some compatible
+        # gateways send structured reasoning, so declaring the string form must
+        # not turn those previously accepted requests into validation errors.
+        return value if isinstance(value, str) else None
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":
@@ -1324,7 +1339,7 @@ class ChatCompletionRequest(BaseModel):
     # ── External provider routing (x-unsloth extensions) ──────────
     provider_id: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Saved provider config ID. If set with encrypted_api_key, routes to external LLM.",
+        description = "[x-unsloth] Saved provider config ID. Its stored key is used when encrypted_api_key is omitted.",
     )
     provider_type: Optional[str] = Field(
         None,
@@ -1652,13 +1667,17 @@ class ToolConfirmRequest(BaseModel):
 class OpenAIContainerRequest(BaseModel):
     """Shared body for the OpenAI container endpoints (list / create / delete).
 
-    Carries the encrypted API key + base URL so the route can decrypt and proxy
-    to the user's account, keeping the key off backend persistent storage.
+    Carries a saved provider ID or one-time encrypted API key plus base URL so
+    the route can proxy to the user's account.
     """
 
-    encrypted_api_key: str = Field(
-        ...,
-        description = "[x-unsloth] RSA-encrypted, base64-encoded OpenAI API key.",
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved OpenAI provider config whose stored key may be used.",
+    )
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Optional RSA-encrypted OpenAI API key override.",
     )
     provider_base_url: Optional[str] = Field(
         None,

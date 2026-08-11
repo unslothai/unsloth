@@ -393,6 +393,9 @@ export const de = {
         keepKv: "Chat-Kontext beim automatischen Entladen behalten",
         keepKvDescription:
           "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
+        apiOnly: "Nur über die API geladene Modelle entladen",
+        apiOnlyDescription:
+          "Das automatische Entladen bei Inaktivität lässt ein von dir in Studio geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -925,6 +928,11 @@ export const de = {
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      thinking: {
+        collapseByDefault: "Denken standardmäßig einklappen",
+        collapseByDefaultDescription:
+          "Das Denken bleibt eingeklappt, während das Modell denkt, statt automatisch aufzuklappen. Zum Lesen einen Block ausklappen.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",

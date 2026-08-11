@@ -97,6 +97,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
+import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
 
 import {
   type ControlNetSpecInput,
@@ -150,48 +151,6 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   reference: "the source and reference images",
   controlnet: "the control image",
 };
-
-// Generation defaults when the model is unrecognised: the distilled few-step / no-CFG shape. Also seeds the sliders.
-const DEFAULT_GEN = { steps: 9, guidance: 0 };
-
-const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
-  { match: "z-image-turbo", steps: 9, guidance: 0 },
-  // Krea 2 Raw is the undistilled base: 52 steps at guidance 3.5, so it must precede the distilled "krea-2" key below.
-  { match: "krea-2-raw", steps: 52, guidance: 3.5 },
-  // Krea 2 Turbo is distilled (TDM): 8 steps, no CFG. "krea-2" covers Turbo and any other krea id but Raw, matched above.
-  { match: "krea-2", steps: 8, guidance: 0 },
-  { match: "flux.1-schnell", steps: 4, guidance: 0 },
-  // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
-  { match: "kontext", steps: 28, guidance: 2.5 },
-  // Krea FLUX.1-dev finetune runs its card recipe (28 steps, guidance 4.5); before the generic flux.1 key.
-  { match: "flux.1-krea", steps: 28, guidance: 4.5 },
-  { match: "flux.1", steps: 28, guidance: 3.5 },
-  { match: "flux.2-klein", steps: 4, guidance: 0 },
-  // FLUX.2-dev is the full (non-distilled) model: more steps + real guidance, unlike klein.
-  { match: "flux.2-dev", steps: 28, guidance: 4 },
-  { match: "qwen-image", steps: 20, guidance: 4 },
-  { match: "z-image", steps: 20, guidance: 4 },
-  // Ideogram 4 card settings (48 steps, guidance 7). At exactly these the backend keeps its tapered guidance schedule.
-  { match: "ideogram", steps: 48, guidance: 7 },
-  // Lumina Image 2.0 model-card recipe (the backend adds cfg_trunc_ratio itself).
-  { match: "lumina", steps: 50, guidance: 4 },
-  // HunyuanImage 2.1: 50 steps; guidance feeds distilled_guidance_scale, real CFG runs in the repo guiders.
-  { match: "hunyuanimage", steps: 50, guidance: 3.25 },
-  // HiDream-I1: Full runs 50 steps at guidance 5; the Dev/Fast distillations are guidance-free.
-  { match: "hidream-i1-dev", steps: 28, guidance: 0 },
-  { match: "hidream-i1-fast", steps: 16, guidance: 0 },
-  { match: "hidream", steps: 50, guidance: 5 },
-  // SDXL: Turbo is distilled (few steps, no CFG), base wants ~30 steps and CFG ~7; "sdxl-turbo" precedes "sdxl".
-  { match: "sdxl-turbo", steps: 3, guidance: 0 },
-  { match: "stable-diffusion-xl", steps: 30, guidance: 7 },
-  { match: "sdxl", steps: 30, guidance: 7 },
-];
-
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  // The fallback is only hit for an unrecognised on-device image GGUF; a curated entry covers every model in MODELS.
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
-}
 
 // Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks the W:H proportion; the sliders set the size.
 const ASPECT_RATIOS: Record<string, [number, number]> = {
@@ -1123,7 +1082,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const { isMobile, pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "A hyper-realistic cinematic photograph of an enchanting Victorian tea party deep inside a magical Wonderland garden, inspired by Alice in Wonderland aesthetics. A mysterious Cheshire Cat with glowing emerald eyes and a subtle mischievous smile sits beside an ornate antique tea table, surrounded by porcelain teacups, roses, playing cards, mushrooms, and floating candles. Elegant Victorian dresses, intricate lace details, golden afternoon sunlight filtering through twisted trees, whimsical fantasy atmosphere, realistic fur texture, natural lighting, shallow depth of field, shot on an 85mm lens, ultra detailed, photorealistic, cinematic composition, masterpiece photography",
+    "Cinematic wide shot of a whimsical Alice in Wonderland tea party in an overgrown Victorian garden. Exactly three figures at a long white lace-draped table: a tall eccentric gentleman in an oversized emerald velvet top hat pouring tea from a silver pot mid-motion; a young woman in a pale blue Victorian dress seated left, holding a porcelain teacup with both hands, looking up and laughing; an older woman in deep burgundy seated right in profile, reaching for a tiered cake stand. Detailed embroidered fabrics, realistic skin texture, natural expressions. The table holds mismatched porcelain, antique silverware, towering pastel cakes, and wildflowers. Giant red-capped mushrooms rise behind the table, with ancient trees overhead and golden sunlight streaming through leaves. Shot on 85mm, f/2.8, focus on the gentleman, soft background falloff. Photorealistic, saturated storybook color, warm amber and deep green palette.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);

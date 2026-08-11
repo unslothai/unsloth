@@ -348,7 +348,7 @@ from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
-from utils.changelog import get_release_notes, is_supported_version_query
+from utils.release_notes import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -359,13 +359,17 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except (OSError, UnicodeDecodeError):
-        pass
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
+    root = _Path(__file__).resolve().parents[2] / "unsloth"
+    for version_file in (root / "_version.py", root / "models" / "_utils.py"):
+        try:
+            for line in version_file.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("__version__ = "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except (OSError, UnicodeDecodeError):
+            continue
     return "dev"
 
 
@@ -563,6 +567,25 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     return True
 
 
+def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
+    # A real lifespan worker carries a generation; direct calls without one are tests.
+    if generation is None:
+        return
+    try:
+        from core.rag.folder_sync import start_auto_sync
+        from storage.studio_db import get_chat_project
+        start_auto_sync(
+            admission_lock = _post_warm_lock,
+            admit = lambda: _post_warm_generation == generation,
+            project_exists = lambda project_id: get_chat_project(project_id) is not None,
+        )
+    except Exception as exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).warning(
+            "linked-folder auto-sync failed at startup: %s", exc
+        )
+
+
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
@@ -592,8 +615,12 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
+    if _post_warm_retired(generation):
+        return
+    _start_linked_folder_auto_sync(generation)
+
     # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair has its own opt-out, and gating it would leave a broken MLX Mac chat-only.
+    # autorepair and linked-folder scheduling have their own lifecycles.
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return
 
@@ -725,6 +752,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+    try:
+        from core.rag.folder_sync import stop_auto_sync
+        stop_auto_sync()
+    except Exception as exc:
+        _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
 
     # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
     # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
@@ -1296,8 +1328,8 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
-    """``(chat_only, chat_only_reason)`` if detection is settled, else ``None``.
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
+    """``(chat_only, chat_only_reason, chat_only_detail)`` if detection is settled, else ``None``.
 
     A seqlock read rather than ``_DETECT_LOCK``: that lock would park the endpoint for the
     whole torch import, the stall this startup path removes. A forced re-detect clears the
@@ -1316,12 +1348,16 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
         reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
+        # re-detect starting in between would pair this reply's reason with a detail from
+        # a different pass, or with none at all.
+        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason
+            return chat_only, reason, detail
     return None
 
 
@@ -1565,6 +1601,12 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # What specifically blocked that reason, when detection recorded one. Only the MLX
+        # gate does today, and only because it is all-or-nothing: without it the greyed-out
+        # Train row can only say "run `unsloth studio update`", which is no help to someone
+        # whose update has already run and left one package behind. From the snapshot, so it
+        # cannot come from a different detection pass than the reason beside it.
+        authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
@@ -1604,7 +1646,7 @@ def studio_release_notes(
     refresh: bool = Query(False),
     _current_subject: str = Depends(get_current_subject),
 ):
-    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    """Return the newest release's notes. `version` is echoed, not looked up."""
     if not is_supported_version_query(version):
         raise HTTPException(status_code = 422, detail = "Invalid version.")
     return get_release_notes(version, refresh = refresh)

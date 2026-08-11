@@ -197,23 +197,21 @@ def _run_create_release(
     }
     env.update(kwargs.pop("extra_env", None) or {})
 
-    # Execute the production publish sequence in one shell so the notes,
-    # metadata and provenance files cross the same step boundaries as Actions.
+    # Execute the production publish sequence in one shell so the notes and
+    # metadata files cross the same step boundaries as Actions.
     names = (
         "Validate versioned release state",
-        "Generate versioned updater metadata and provenance",
-        "Record desktop build provenance on the release",
+        "Generate versioned updater metadata",
     )
-    create_step = _step(
-        workflow, "publish-release", "Record desktop build provenance on the release"
-    )
+    host = "Generate versioned updater metadata"
+    create_step = _step(workflow, "publish-release", host)
     create_step["run"] = "\n".join(
         _step(workflow, "publish-release", name)["run"] for name in names
     )
     return _run_step(
         workflow,
         "publish-release",
-        "Record desktop build provenance on the release",
+        host,
         tmp_path,
         extra_env = env,
         **kwargs,
@@ -323,37 +321,31 @@ def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
-def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path):
+def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     workflow = _workflow()
-    digests = _stage_assets(tmp_path)
     result, commands = _run_create_release(workflow, tmp_path)
     assert result.returncode == 0, result.stderr
 
     # The release already exists, so nothing is created and no tag is reserved.
     assert not [line for line in commands if line.startswith("gh release create")]
     assert not [line for line in commands if "git/refs" in line]
-    assert any(line.startswith("gh release edit") for line in commands)
+    # The body is the maintainer's changelog. Assets are uploaded beside it and
+    # the notes are never edited, so nothing this workflow does can clobber it.
+    assert not [line for line in commands if line.startswith("gh release edit")]
+    assert not (tmp_path / "desktop-release-body.md").exists()
 
-    body_file = tmp_path / "desktop-release-body.md"
-    body = body_file.read_text(encoding = "utf-8")
-    assert SOURCE_SHA in body
-    for name, digest in digests.items():
-        assert f"{digest}  {name}" in body
     latest = tmp_path / "latest.json"
+    assert latest.is_file()
     metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
     for platform in metadata["platforms"].values():
         decoded = base64.b64decode(platform["signature"], validate = True)
         assert decoded.startswith(b"untrusted comment:")
         assert b"\ntrusted comment:" in decoded
-    assert latest.is_file()
-    assert f"{hashlib.sha256(latest.read_bytes()).hexdigest()}  latest.json" in body
-    assert ".sig" not in body
 
-    # Keep digests out of updater notes, and out of the changelog we append to.
+    # The updater popup shows the maintainer notes, never build metadata.
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
-    assert "Desktop app for Unsloth." not in body
 
 
 def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
@@ -389,14 +381,14 @@ def test_a_validation_only_run_touches_nothing_public():
     mutating = (
         "Publish versioned release assets",
         "Publish versioned updater metadata",
-        "Record desktop build provenance on the release",
         "Promote normal release to GitHub latest",
     )
     for name in mutating:
         step = steps[names.index(name)]
         assert step.get("if") == "${{ !inputs.draft }}", name
 
-    # Provenance last, so a retry after a partial upload records what shipped.
+    # Promotion last, so latest only moves once the assets are actually on the
+    # release and a partial upload cannot leave latest pointing at an empty one.
     for upload in mutating[:2]:
         assert names.index(upload) < names.index(mutating[2])
 
@@ -470,3 +462,132 @@ def test_the_promotion_guard_fails_closed_on_a_failed_latest_lookup():
     assert "refusing to promote" in fallback.lower()
     assert "exit 1" in fallback
     assert "2>/dev/null" not in guard.split("releases/latest", 1)[1].split("\n", 1)[0]
+
+
+def _guarded_bodies(script, header):
+    """Return the body of every `header` block, delimited by matching braces."""
+    bodies = []
+    at = script.find(header)
+    while at != -1:
+        start = at + len(header)
+        depth = 1
+        for index in range(start, len(script)):
+            if script[index] == "{":
+                depth += 1
+            elif script[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(script[start:index])
+                    break
+        else:
+            raise AssertionError(f"unbalanced braces after {header!r}")
+        at = script.find(header, start)
+    assert bodies, f"{header!r} is gone"
+    return bodies
+
+
+def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
+    """Dead cmdlets must not read as "no scanner"; only a dead engine may.
+
+    The escape hatch added for a one-off runner incident became the permanent
+    path: the Defender WMI provider and service RPC endpoint have been down on
+    every Windows runner since 2026-08-06, so `Get-MpComputerStatus` throws and
+    three releases shipped unscanned. MpCmdRun.exe answers independently of the
+    cmdlets, so an unavailable cmdlet surface may only cost the configuration
+    checks, never the scan itself.
+    """
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    # The unavailable branch records the fact and keeps going.
+    unavailable = scan.split("$cmdletsDown = [bool]$unavailable", 1)
+    assert len(unavailable) == 2, "the cmdlet-unavailable branch no longer sets $cmdletsDown"
+    before_control = unavailable[1].split("EICAR positive control", 1)[0]
+    assert (
+        "exit 0" not in before_control
+    ), "unavailable cmdlets still short-circuit the scan before the positive control"
+
+    # The two cmdlets fail independently, so each probe must sit under its OWN
+    # guard, not merely some guard: pooling both bodies would accept
+    # $pref.MAPSReporting under `if ($status)`, where a dead status cmdlet again
+    # discards a readable MAPSReporting=0 and scans blind to the "!ml" cloud
+    # verdicts this gate exists to catch.
+    guards = {
+        "$status": _guarded_bodies(scan, "if ($status) {"),
+        "$pref": _guarded_bodies(scan, "if ($pref) {"),
+    }
+    for probe in (
+        "$status.RealTimeProtectionEnabled",
+        "$pref.MAPSReporting",
+        "$pref.DisableBlockAtFirstSeen",
+        "$pref.SubmitSamplesConsent",
+        "$pref.CloudBlockLevel",
+        "$pref.ExclusionPath",
+    ):
+        owner = probe.split(".", 1)[0]
+        assert any(
+            probe in body for body in guards[owner]
+        ), f"{probe} left the `if ({owner})` guard that proves it was read"
+        for other, bodies in guards.items():
+            if other != owner and any(probe in body for body in bodies):
+                raise AssertionError(
+                    f"{probe} is gated on `if ({other})`, which fails independently "
+                    f"of {owner}; one dead cmdlet would discard the other cmdlet's "
+                    "readable result"
+                )
+    outside = scan
+    for bodies in guards.values():
+        for body in bodies:
+            outside = outside.replace(body, "", 1)
+    for held in ("$status.", "$pref."):
+        assert held not in outside, f"a {held[:-1]} dereference sits outside its availability guard"
+
+    config = scan.split("$fatal = @()", 1)[1].split("# Configuration is not connectivity", 1)[0]
+    assert "$cmdletsDown" not in config, (
+        "the configuration checks are gated on the blanket flag again; one dead "
+        "cmdlet would discard the other cmdlet's readable result"
+    )
+
+    # The only remaining skip: a control that will not fire, the one signal that
+    # MpCmdRun cannot scan either.
+    skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
+    assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
+    assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]
+    assert "not a clean verdict" in skip[0].rsplit("::warning::", 1)[1] + skip[1]
+
+    # A detection still fails the job, cmdlets or not.
+    assert "Refusing to publish a Windows bundle Defender flags" in scan
+    assert "Refusing to publish bundles Defender could not scan" in scan
+
+
+def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
+    """A sample that vanishes during the scan is a live engine, not a missing one.
+
+    Defender remediates asynchronously and MpCmdRun opening the sample is itself
+    the trigger, so the write can succeed, `Test-Path` can see the file, and
+    real-time protection can quarantine it mid-scan. MpCmdRun then reports no
+    threat, `$controlPassed` stays false, and with the cmdlets down the skip branch
+    exits 0, publishing every bundle unscanned on a runner whose scanner just
+    proved itself. Only a sample that survives means no scanner.
+    """
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    body = _guarded_bodies(scan, "if (Test-Path $eicarPath) {")[0]
+    _, scanned, after = body.partition("-DisableRemediation")
+    assert scanned, "the positive control no longer scans the sample with MpCmdRun"
+    # The re-check has to land after the scan and before this step's own cleanup,
+    # or it proves nothing about who removed the file.
+    recheck, cleaned, _ = after.partition("Remove-Item $eicarPath")
+    assert cleaned, "the positive control no longer removes the sample afterwards"
+    assert "-not (Test-Path $eicarPath)" in recheck, (
+        "the positive control never re-checks the sample after the scan, so a "
+        "sample quarantined mid-scan reads as a missing scanner and skips the "
+        "bundle scan on a runner where Defender is demonstrably live"
+    )
+    assert (
+        "$controlPassed = $true" in recheck
+    ), "the vanished sample is noticed but still does not pass the control"
+    # Only a vanished sample may pass this way. -DisableRemediation stops the scan
+    # from deleting the file, so with no engine it survives and the skip applies.
+    assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
+        "$controlPassed = $true"
+    ), "the control passes without first confirming the sample is gone"

@@ -166,6 +166,7 @@ import {
   type CatalogGroup,
   artifactForRepoId,
   curatedCapabilitiesFor,
+  curatedDisplayNameFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
 } from "./model-catalog";
@@ -5037,7 +5038,9 @@ export function HubModelPicker({
                         return (
                           <div key={id}>
                             <ModelRow
-                              label={id}
+                              label={
+                                (catalog && curatedDisplayNameFor(id, catalog)) || id
+                              }
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
@@ -5142,7 +5145,9 @@ export function HubModelPicker({
                       return (
                         <div key={id}>
                           <ModelRow
-                            label={id}
+                            label={
+                              (catalog && curatedDisplayNameFor(id, catalog)) || id
+                            }
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
@@ -5251,7 +5256,9 @@ export function HubModelPicker({
                         return (
                           <div key={id}>
                             <ModelRow
-                              label={id}
+                              label={
+                                (catalog && curatedDisplayNameFor(id, catalog)) || id
+                              }
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}

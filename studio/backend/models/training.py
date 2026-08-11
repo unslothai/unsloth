@@ -972,14 +972,17 @@ class DiffusionTrainingStartResponse(BaseModel):
 
 
 class DiffusionMetricHistory(BaseModel):
-    """Paired step-indexed history arrays for the live training charts. ``lr`` and
-    ``grad_norm`` entries may be null so those sparse series still align with ``steps``
-    by index."""
+    """Paired step-indexed history arrays for the live training charts. Every series but
+    ``loss`` may hold nulls so the sparse ones still align with ``steps`` by index."""
 
     steps: List[int] = Field(default_factory = list)
     loss: List[float] = Field(default_factory = list)
     lr: List[Optional[float]] = Field(default_factory = list)
     grad_norm: List[Optional[float]] = Field(default_factory = list)
+    # The two halves of a joint video+audio objective (MiniMax-H3). All-null on every other
+    # family, which is what lets the chart decide whether to draw the split curves at all.
+    video_loss: List[Optional[float]] = Field(default_factory = list)
+    audio_loss: List[Optional[float]] = Field(default_factory = list)
 
 
 class DiffusionTrainingStatusResponse(BaseModel):
@@ -996,6 +999,10 @@ class DiffusionTrainingStatusResponse(BaseModel):
     learning_rate: Optional[float] = None
     # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts).
     grad_norm: Optional[float] = None
+    # The last per-modality losses of a joint video+audio run (MiniMax-H3), None elsewhere. The
+    # combined loss can hold steady while one modality degrades, so these are reported apart.
+    video_loss: Optional[float] = None
+    audio_loss: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None
@@ -1104,8 +1111,22 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the
+    # "Checkpoint every" control: save_steps is refused, not ignored, for such a family, so
+    # offering the control means offering a value that rejects Start. Defaults True so an older
+    # backend's payload, which has no such families in it, keeps the control.
+    supports_checkpoints: bool = True
+    # The largest batch this family's loop can form, or None for unrestricted. 1 for a family
+    # whose forward covers one packed sequence: the panel then drops the Batch control, since a
+    # value above the cap is refused rather than clamped. Declared here or Pydantic silently
+    # drops it from the response and the panel's clamp never receives its input.
+    max_train_batch_size: Optional[int] = None
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
+    # Variant-specific training-base to inference-base pairs, including public mirror ids.
+    deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):

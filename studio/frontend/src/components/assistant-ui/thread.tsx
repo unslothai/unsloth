@@ -5337,9 +5337,10 @@ const CancelledIndicator: FC = () => {
 
 /** Text of an assistant turn: what a continuation resumes from.
  *
- * Text parts only, matching replay: reasoning is not sent back. Joined with nothing,
- * like the backend's `trailing_assistant_text`: a turn split around a reasoning part
- * never had a newline between its halves, and inventing one moves the boundary. */
+ * Text parts only: a continuation resumes the visible answer, not its private reasoning.
+ * Joined with nothing, like the backend's `trailing_assistant_text`: a turn split around
+ * a reasoning part never had a newline between its halves, and inventing one moves the
+ * boundary. */
 function assistantMessageText(content: readonly unknown[] | undefined): string {
   if (!content) {
     return "";

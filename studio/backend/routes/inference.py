@@ -562,6 +562,17 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
+def _estimate_messages_tokens(messages: list) -> int:
+    """Conservatively estimate a complete message list.
+
+    Templates disagree about when historical ``reasoning_content`` renders,
+    and arbitrary GGUFs can carry custom templates. Counting the serialized
+    field avoids a retry that still exceeds context. The overflow recovery path
+    clips large reasoning traces before it evicts conversation turns.
+    """
+    return sum(_estimate_message_tokens(msg) for msg in messages)
+
+
 def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
@@ -595,7 +606,8 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    estimates = {id(msg): _estimate_message_tokens(msg) for msg in messages}
+    total_est = sum(estimates[id(msg)] for msg in messages)
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -609,7 +621,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     while kept_middle and current_est > target_est:
         victim = kept_middle.pop(0)
         dropped += len(victim)
-        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+        current_est -= sum(estimates[id(msg)] for msg in victim)
 
     if dropped == 0:
         return messages, 0
@@ -625,6 +637,26 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
 _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 # Generous head+tail first; cut harder if the estimate still misses the target.
 _CLIP_KEEP_CHARS = (1500, 400)
+
+
+def _clip_reasoning_contents(messages: list, keep: int = _CLIP_KEEP_CHARS[-1]) -> int:
+    """Clip oversized assistant reasoning before sizing an overflow retry.
+
+    Reasoning can live in the protected anchor or tail where group eviction
+    cannot reach it. It is also the least useful history to preserve after the
+    server has already reported an overflow, so shrink it before dropping whole
+    conversation turns.
+    """
+    clipped = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        reasoning = msg.get("reasoning_content")
+        if not isinstance(reasoning, str) or len(reasoning) <= 2 * keep + len(_CLIP_MARKER):
+            continue
+        msg["reasoning_content"] = reasoning[:keep] + _CLIP_MARKER + reasoning[-keep:]
+        clipped += 1
+    return clipped
 
 
 def _clip_long_contents(messages: list, target_est: int) -> int:
@@ -644,7 +676,7 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     clipped = 0
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
-            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+            if _estimate_messages_tokens(messages) <= target_est:
                 return clipped
             content = msg.get("content")
             if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
@@ -660,10 +692,21 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    pre_clip_est = _estimate_messages_tokens(messages)
+    clipped = _clip_reasoning_contents(messages)
+    total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
-        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        prompt_target = _OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx
+        if clipped:
+            # The server counted the body before the retry-only clip. Rescale
+            # using this estimator's pre/post ratio so the removed trace is not
+            # charged again by middle eviction.
+            n_prompt = n_prompt * total_est / max(1, pre_clip_est)
+        if clipped and n_prompt <= prompt_target:
+            keep_ratio = 1.0
+        else:
+            keep_ratio = min(0.95, prompt_target / max(1.0, n_prompt))
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
@@ -673,9 +716,8 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    clipped = 0
-    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
-        clipped = _clip_long_contents(body.get("messages") or [], target_est)
+    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+        clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
     if n_ctx:
@@ -2100,6 +2142,25 @@ from auth.authentication import API_KEY_PREFIX, get_current_subject
 from state import active_generations
 
 
+def _request_api_key_token(request: Any) -> Optional[str]:
+    """Return any sk-unsloth bearer used for authentication, including workflow keys."""
+    try:
+        header = request.headers.get("authorization")
+    except Exception:
+        return None
+    if not isinstance(header, str):
+        return None
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.startswith(API_KEY_PREFIX):
+        return None
+    return token
+
+
+def _request_has_api_key(request: Any) -> bool:
+    """Whether the request used any API key rather than an interactive session JWT."""
+    return _request_api_key_token(request) is not None
+
+
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
@@ -2109,15 +2170,10 @@ def _request_used_api_key(request: Any) -> bool:
     itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this only decides a monitor label and must never fail a
-    # load. Only a real Request hands back a string; the load routes take stand-ins too.
-    try:
-        header = request.headers.get("authorization")
-    except Exception:
-        return False
-    if not isinstance(header, str):
-        return False
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.startswith(API_KEY_PREFIX):
+    # load. Saved-secret authorization uses _request_has_api_key instead, because
+    # internal workflow keys must remain programmatic callers for credential access.
+    token = _request_api_key_token(request)
+    if token is None:
         return False
     try:
         return not auth_storage.is_internal_api_key(token)
@@ -2128,7 +2184,6 @@ def _request_used_api_key(request: Any) -> bool:
 
 from state.tool_approvals import resolve_tool_decision
 
-from core.inference.key_exchange import decrypt_api_key
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
@@ -2152,6 +2207,7 @@ from core.inference.passthrough_healing import (
 from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
+from routes.provider_credentials import resolve_provider_api_key_or_400
 from storage import providers_db
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
@@ -4749,6 +4805,33 @@ def _loaded_satisfies(requested: str) -> bool:
     return _matches_any(base, [active, public_model_id(active)])
 
 
+def _loaded_identity_satisfies(requested: str) -> bool:
+    """Whether an explicit resident identity answers to *requested*.
+
+    Unlike :func:`_loaded_satisfies`, this excludes a public id derived from a
+    filesystem path, so a request naming that alias still passes through the
+    resolver and the serving backend records it for responses and ``/v1/models``.
+    A request naming the load path itself is held back until that recording has
+    happened, for the same reason.
+    """
+    from core.inference.openai_auto_download import split_model_ref
+
+    base, _ = split_model_ref(requested)
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        identifier = getattr(llama_backend, "model_identifier", None)
+        advertised = getattr(llama_backend, "_openai_advertised_id", None)
+        # A manual load of a local path advertises nothing, so only the path could match
+        # and answering from it would skip the recording: /v1/models and every response
+        # would report the filename. One request pays the resolver, the rest match the
+        # alias it recorded and land here.
+        if advertised is None and identifier and _looks_like_local_path(identifier):
+            return False
+        return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    return bool(active and _matches_any(base, [active]) and _loaded_satisfies(requested))
+
+
 def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
     """Refuse a name we cannot yet place, rather than answer it with another model."""
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
@@ -5020,7 +5103,11 @@ async def _maybe_auto_switch_model(
         idle_unload_is_configured,
         model_override_load_kwargs,
     )
-    from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.local_model_resolver import (
+        resolve_local_gguf,
+        resolve_trusted_cached_local_gguf,
+        warm_index_soon,
+    )
     from core.inference.llama_keepwarm import (
         get_last_unloaded_model,
         inference_lifecycle_gate,
@@ -5047,16 +5134,29 @@ async def _maybe_auto_switch_model(
         await _reject_unservable_model(requested_model, fastapi_request)
         return
 
+    # The common Studio path names the model that is already serving. Resolve that
+    # from resident state before consulting the filesystem index: rebuilding a stale
+    # multi-root index here used to hold the request for seconds before streaming.
+    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+        warm_index_soon()
+        return
+
     async def _resolve_and_switch() -> None:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
         # With auto-switch off (or an omitted-model reload-only request), skip the
         # resolve so only the reload-stash path runs and no name is ever matched.
         reload_only = requested_model == _RELOAD_ONLY_MODEL
-        resolved = (
-            await asyncio.to_thread(resolve_local_gguf, requested_model)
-            if auto_switch_on and not reload_only
-            else None
-        )
+        resolved = None
+        if auto_switch_on and not reload_only:
+            # Fresh hits and entries retained across an additions-only download are
+            # safe to use immediately. An expired/config-invalidated hit, a cold
+            # cache, and every miss must refresh before an unrelated resident model
+            # can answer or an entry from a removed scan root can trigger a switch.
+            resolved = resolve_trusted_cached_local_gguf(requested_model)
+            if resolved is not None:
+                warm_index_soon()
+            else:
+                resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
@@ -5255,6 +5355,9 @@ async def _maybe_auto_switch_model(
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
+                        # API provenance: idle auto-unload may free this one even when
+                        # scoped to API loads.
+                        get_llama_cpp_backend()._loaded_by_user_action = False
                 finally:
                     # Deregister before releasing the gate: otherwise a swap on another
                     # loop counts this finished request as queued and unloads its model.
@@ -6885,11 +6988,18 @@ async def load_model(
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
     return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject), label = "Model load"
+        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
+        label = "Model load",
     )
 
 
-async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def load_model_gated(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
@@ -6911,7 +7021,7 @@ async def load_model_gated(request: LoadRequest, fastapi_request: Request, curre
         _raise_if_sidecar_swap_in_progress()
         # The active-generation gate runs inside _load_model_impl, once it knows this is a real
         # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-        return await _load_model_impl(
+        response = await _load_model_impl(
             request,
             fastapi_request,
             current_subject,
@@ -6921,6 +7031,11 @@ async def load_model_gated(request: LoadRequest, fastapi_request: Request, curre
                 cancel = cancel,
             ),
         )
+        # Record provenance only once the model is resident, and here rather than
+        # inside the impl so the already-loaded fast paths are covered too. Preview
+        # keeps the False default: only an explicit UI load pins.
+        get_llama_cpp_backend()._loaded_by_user_action = user_initiated
+        return response
 
 
 async def _load_model_impl(
@@ -9748,7 +9863,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 
     Returns:
         system_prompt:  System message text (empty string if none).
-        chat_messages:  Non-system messages with content flattened to strings.
+        chat_messages:  Non-system messages with content flattened to strings and
+                        assistant reasoning_content preserved.
         image_base64:   Base64 of the *first* image found, or ``None``.
     """
     system_parts: list[str] = []
@@ -9766,9 +9882,10 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             continue
 
         # ── User / assistant messages ─────────────────────────
+        combined_text: Optional[str] = None
         if isinstance(msg.content, str):
             # Plain string content — pass through
-            chat_messages.append({"role": msg.role, "content": msg.content})
+            combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
             text_parts: list[str] = []
@@ -9783,7 +9900,17 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
             combined_text = "\n".join(text_parts) if text_parts else ""
-            chat_messages.append({"role": msg.role, "content": combined_text})
+        elif msg.role == "assistant" and msg.reasoning_content:
+            # A reasoning-only turn has no visible content, but still needs a
+            # message for templates that consume reasoning_content.
+            combined_text = ""
+
+        if combined_text is None:
+            continue
+        chat_message = {"role": msg.role, "content": combined_text}
+        if msg.role == "assistant" and msg.reasoning_content:
+            chat_message["reasoning_content"] = msg.reasoning_content
+        chat_messages.append(chat_message)
 
     return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
 
@@ -10129,7 +10256,7 @@ async def _proxy_to_external_provider(
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
 
-    if payload.provider_id:
+    if payload.provider_id and not payload.encrypted_api_key:
         config = providers_db.get_provider(payload.provider_id)
         if config is None:
             raise HTTPException(
@@ -10141,8 +10268,10 @@ async def _proxy_to_external_provider(
                 status_code = 400,
                 detail = f"Provider '{config['display_name']}' is disabled.",
             )
-        provider_type = provider_type or config["provider_type"]
-        base_url = base_url or config["base_url"]
+        # A saved credential is scoped to this saved provider. Never pair it with
+        # request-controlled routing metadata.
+        provider_type = config["provider_type"]
+        base_url = config["base_url"]
 
     if not provider_type:
         raise HTTPException(
@@ -10159,16 +10288,11 @@ async def _proxy_to_external_provider(
             detail = f"Unknown provider type: {provider_type}",
         )
 
-    api_key = ""
-    if payload.encrypted_api_key:
-        try:
-            api_key = decrypt_api_key(payload.encrypted_api_key)
-        except Exception as exc:
-            logger.warning("external_provider.decrypt_failed", error = str(exc))
-            raise HTTPException(
-                status_code = 400,
-                detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
-            )
+    api_key = resolve_provider_api_key_or_400(
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not _request_has_api_key(request),
+    )
 
     model = payload.external_model or payload.model
     if model == "default":
@@ -10305,7 +10429,9 @@ async def _proxy_to_external_provider(
 # ── OpenAI shell-tool container management ───────────────────────
 
 
-def _resolve_openai_cloud_client(body: OpenAIContainerRequest) -> ExternalProviderClient:
+def _resolve_openai_cloud_client(
+    body: OpenAIContainerRequest, *, allow_saved_key: bool
+) -> ExternalProviderClient:
     """
     Decrypt the API key + validate the base URL points at OpenAI cloud, then
     build an ExternalProviderClient for the three container CRUD endpoints
@@ -10314,7 +10440,29 @@ def _resolve_openai_cloud_client(body: OpenAIContainerRequest) -> ExternalProvid
     custom presets.
     """
     base_url = body.provider_base_url or get_base_url("openai")
-    if not base_url or "api.openai.com" not in base_url:
+    if body.provider_id and not body.encrypted_api_key:
+        config = providers_db.get_provider(body.provider_id)
+        if config is None:
+            raise HTTPException(
+                status_code = 404,
+                detail = f"Provider config not found: {body.provider_id}",
+            )
+        if config["provider_type"] != "openai":
+            raise HTTPException(
+                status_code = 400,
+                detail = "OpenAI container management requires a saved OpenAI provider.",
+            )
+
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
+        base_url = config["base_url"]
+    from urllib.parse import urlparse
+
+    parsed_base_url = urlparse(base_url)
+    if parsed_base_url.scheme != "https" or parsed_base_url.hostname != "api.openai.com":
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -10323,14 +10471,13 @@ def _resolve_openai_cloud_client(body: OpenAIContainerRequest) -> ExternalProvid
                 f"points at {base_url!r}."
             ),
         )
-    try:
-        api_key = decrypt_api_key(body.encrypted_api_key)
-    except Exception as exc:
-        logger.warning("external_provider.decrypt_failed", error = str(exc))
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to decrypt API key. The server key may have changed — try refreshing the page.",
-        )
+    api_key = resolve_provider_api_key_or_400(
+        body.provider_id,
+        body.encrypted_api_key,
+        allow_saved_key = allow_saved_key,
+    )
+    if not api_key:
+        raise HTTPException(status_code = 400, detail = "No OpenAI API key is saved.")
     return ExternalProviderClient(
         provider_type = "openai",
         base_url = base_url,
@@ -10362,10 +10509,12 @@ def _summarize_container(raw: dict) -> OpenAIContainerSummary:
     response_model = ListOpenAIContainersResponse,
 )
 async def list_openai_containers(
-    body: OpenAIContainerRequest, current_subject: str = Depends(get_current_subject)
+    body: OpenAIContainerRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ) -> ListOpenAIContainersResponse:
     """List the user's OpenAI shell-tool containers."""
-    client = _resolve_openai_cloud_client(body)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.list_openai_containers()
@@ -10402,10 +10551,12 @@ async def list_openai_containers(
     response_model = OpenAIContainerSummary,
 )
 async def create_openai_container(
-    body: CreateOpenAIContainerBody, current_subject: str = Depends(get_current_subject)
+    body: CreateOpenAIContainerBody,
+    request: Request,
+    _current_subject: str = Depends(get_current_subject),
 ) -> OpenAIContainerSummary:
     """Create a named container with the user-chosen idle TTL."""
-    client = _resolve_openai_cloud_client(body)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.create_openai_container(
@@ -10438,7 +10589,9 @@ async def create_openai_container(
 
 @router.post("/external/openai/containers/delete", status_code = 204)
 async def delete_openai_container(
-    body: DeleteOpenAIContainerBody, current_subject: str = Depends(get_current_subject)
+    body: DeleteOpenAIContainerBody,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ) -> None:
     """Delete a named container by id."""
     logger.info(
@@ -10447,7 +10600,7 @@ async def delete_openai_container(
         body.container_id,
         body.provider_base_url,
     )
-    client = _resolve_openai_cloud_client(body)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             await client.delete_openai_container(body.container_id)
@@ -18810,16 +18963,32 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _normalize_local_assistant_message(message: dict) -> Optional[dict]:
+    """Enforce the local backend's assistant-message wire contract.
+
+    Bare assistant messages are Stop-button sentinels and must disappear.
+    A reasoning-only completed turn is real history, but llama.cpp checks for a
+    ``content`` or ``tool_calls`` key before reading ``reasoning_content``. Give
+    that turn an empty content key without mutating the caller's dictionary.
+    """
+    if message.get("role") != "assistant":
+        return message
+    if message.get("content") or message.get("tool_calls"):
+        return message
+    if message.get("reasoning_content"):
+        if message.get("content") == "":
+            return message
+        return {**message, "content": ""}
+    return None
+
+
 def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
-    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    """Drop Stop-button sentinels and normalize reasoning-only turns."""
     out: list[dict] = []
-    for m in messages:
-        if m.get("role") == "assistant":
-            has_content = bool(m.get("content"))
-            has_tool_calls = bool(m.get("tool_calls"))
-            if not has_content and not has_tool_calls:
-                continue
-        out.append(m)
+    for message in messages:
+        normalized = _normalize_local_assistant_message(message)
+        if normalized is not None:
+            out.append(normalized)
     return out
 
 
@@ -18869,6 +19038,57 @@ _LOCAL_SERVER_BUILTIN_TOOL_NAMES = frozenset(
 )
 
 
+def _merge_stranded_local_assistant_turns(messages: list[tuple[dict, bool]]) -> list[dict]:
+    """Fold scrubbed provider-tool fragments into their visible answer.
+
+    Removing a provider-synthetic call and its tool result can expose adjacent
+    assistant messages that were one logical response. Strict local templates
+    reject that role sequence. A small state machine carries a stranded fragment
+    through any number of synthetic rounds, preserving text-part lists and
+    reasoning oldest-first, until the next assistant message completes it.
+    """
+    out: list[dict] = []
+    pending: Optional[dict] = None
+
+    for message, message_is_stranded in messages:
+        if pending is None:
+            if message_is_stranded:
+                pending = message
+            else:
+                out.append(message)
+            continue
+
+        if message.get("role") != "assistant":
+            out.append(pending)
+            pending = None
+            out.append(message)
+            continue
+
+        merged = dict(message)
+        old_content = pending.get("content")
+        new_content = merged.get("content")
+        if old_content or new_content:
+            merged["content"] = _merge_user_content(old_content, new_content)
+
+        old_reasoning = pending.get("reasoning_content")
+        new_reasoning = merged.get("reasoning_content")
+        reasoning_parts = [
+            value for value in (old_reasoning, new_reasoning) if isinstance(value, str) and value
+        ]
+        if reasoning_parts:
+            merged["reasoning_content"] = "\n\n".join(reasoning_parts)
+
+        if message_is_stranded:
+            pending = merged
+        else:
+            out.append(merged)
+            pending = None
+
+    if pending is not None:
+        out.append(pending)
+    return out
+
+
 def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     """Drop synthetic provider-side tool_calls + matching role=tool replies on
     the local-backend (llama-server / GGUF) dispatch path.
@@ -18884,10 +19104,10 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     sees an orphan tool_call_id.
     """
     dropped_ids: set[str] = set()
-    sanitized_assistant: list[dict] = []
+    sanitized_assistant: list[tuple[dict, bool]] = []
     for m in messages:
         if m.get("role") != "assistant":
-            sanitized_assistant.append(m)
+            sanitized_assistant.append((m, False))
             continue
         tool_calls = m.get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
@@ -18899,7 +19119,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             # dropped); round-22 added it, which made this leak possible.
             if "extra_content" in m:
                 m = {k: v for k, v in m.items() if k != "extra_content"}
-            sanitized_assistant.append(m)
+            sanitized_assistant.append((m, False))
             continue
         cleaned: list[dict] = []
         for tc in tool_calls:
@@ -18945,22 +19165,26 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             m_clean["tool_calls"] = cleaned
         else:
             m_clean.pop("tool_calls", None)
-        if not m_clean.get("content") and not m_clean.get("tool_calls"):
+        is_stranded = bool(m.get("tool_calls")) and not cleaned
+        if (
+            not m_clean.get("content")
+            and not m_clean.get("reasoning_content")
+            and not m_clean.get("tool_calls")
+        ):
             continue  # assistant turn now empty, drop
-        sanitized_assistant.append(m_clean)
+        sanitized_assistant.append((m_clean, is_stranded))
 
-    if not dropped_ids:
-        return sanitized_assistant
-    out: list[dict] = []
-    for m in sanitized_assistant:
+    out: list[tuple[dict, bool]] = []
+    for m, is_stranded in sanitized_assistant:
         if (
             m.get("role") == "tool"
             and isinstance(m.get("tool_call_id"), str)
             and m["tool_call_id"] in dropped_ids
         ):
             continue
-        out.append(m)
-    return out
+        out.append((m, is_stranded))
+    merged = _merge_stranded_local_assistant_turns(out)
+    return _drop_empty_assistant_sentinels(merged)
 
 
 def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None:
