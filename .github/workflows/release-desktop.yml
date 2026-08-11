@@ -870,6 +870,13 @@ jobs:
       # Bump the URL and the digest together when moving off 0.10.0.
       - name: Install trusted-signing-cli
         if: matrix.platform == 'windows-latest'
+        # Explicit, like every other Windows step in this file. windows-latest
+        # already defaults to pwsh, but the retry parameters below are
+        # PowerShell 6+ only: under Windows PowerShell 5.1 the download fails
+        # with "A parameter cannot be found that matches parameter name
+        # 'MaximumRetryCount'". Naming the shell keeps that dependency
+        # deliberate rather than inherited from a runner default.
+        shell: pwsh
         env:
           TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
           TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
@@ -905,6 +912,7 @@ jobs:
       # no obvious cause.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"

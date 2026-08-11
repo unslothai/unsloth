@@ -47,6 +47,15 @@ def test_the_signing_cli_is_pinned_by_url_and_digest():
     assert len(step["env"]["TRUSTED_SIGNING_CLI_SHA256"]) == 64
 
 
+def test_both_steps_name_the_shell_they_need():
+    # Invoke-WebRequest -MaximumRetryCount / -RetryIntervalSec are PowerShell 6+
+    # only. windows-latest defaults to pwsh, so this works either way, but an
+    # inherited default is not where a release download should get its
+    # interpreter from, and every other Windows step here says pwsh outright.
+    for name in ("Install trusted-signing-cli", "Verify trusted-signing-cli"):
+        assert _step(name)["shell"] == "pwsh", name
+
+
 def test_a_digest_mismatch_stops_the_release_before_anything_is_signed():
     run = _step("Install trusted-signing-cli")["run"]
     assert "Get-FileHash" in run
@@ -83,9 +92,9 @@ def test_the_check_exits_non_zero_on_every_failure_path():
 
 
 def test_a_binary_that_cannot_start_is_caught():
-    # A truncated cache entry gives "Exec format error", which is a terminating
+    # A truncated download gives "Exec format error", which is a terminating
     # PowerShell error, not a native exit code. Without the catch the step dies
-    # on that line and never prints the cache-bump recovery.
+    # on that line and never prints the annotation explaining why.
     run = _verify_step()["run"]
     assert "try {" in run
     assert "catch {" in run
