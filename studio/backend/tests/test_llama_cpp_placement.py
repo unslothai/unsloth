@@ -557,6 +557,30 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
     assert backend.spec_fallback_reason is None
 
 
+def test_an_mla_model_keeps_the_reason_that_actually_dropped_its_drafter(tmp_path):
+    """An MLA embedded-MTP model has no drafter to save: Auto drops it by policy,
+    because llama.cpp's MLA/DSA MTP path is slower than no speculation at all. If
+    the VRAM branch claims it first, the notice tells the user to force MTP at a
+    smaller context, i.e. to buy a known regression with their context length."""
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    # Embedded head, MLA geometry, no sidecar: exactly the GLM-5.2 shape.
+    backend._nextn_predict_layers = 1
+    backend._kv_lora_rank = 512
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_mtp": True,
+        "mtp_token": "mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(backend, gguf, speculative_type = "auto", n_ctx = 8192)
+
+    cmd = result["cmd"]
+    assert "draft-mtp" not in cmd
+    assert cmd[cmd.index("--spec-type") + 1] == "ngram-mod"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+
+
 def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
     """_plan_tensor_parallel reserves a per-device tensor buffer on geometry this
     layer-split probe does not model, so under tensor mode the probe stands down

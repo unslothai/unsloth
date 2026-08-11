@@ -14150,7 +14150,17 @@ class LlamaCppBackend:
         # UD-Q4_K_XL + mmproj-kquant + dflash-kquant, b10342, B200, n_max=2, greedy,
         # ~545 image tokens gave 92.1 -> 114.2 tok/s at 0.646 acceptance with output
         # byte-identical to the drafter-free run.
-        if drafter_no_vram:
+        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with
+        # no sidecar is already dropped by policy below, so reporting the VRAM reason
+        # for it would tell the user to force MTP at a smaller context: a path that is
+        # slower than the ngram-mod they are getting. Let it fall through to the MLA
+        # branch, which drops the same drafter for the reason that actually applies.
+        _no_vram_drops_a_real_drafter = (
+            bool(dspark_draft_path and caps.get("supports_dspark"))
+            or bool(dflash_draft_path and caps.get("supports_dflash"))
+            or not _auto_mla_embedded_mtp
+        )
+        if drafter_no_vram and _no_vram_drops_a_real_drafter:
             # The fit found room for the target but not for the drafter's reserve,
             # and reserved nothing for it, so emitting one now would OOM the load.
             # Same downgrade as the MLA branch below: ngram-mod costs no VRAM, and

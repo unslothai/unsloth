@@ -5686,6 +5686,22 @@ def _remote_gguf_companion_bytes(
 # established direction here is to over-estimate. Only reached when the listing
 # cannot be read at all, where llama-server may still open the repo from its
 # local HF cache and make every one of those bytes resident.
+# The extras flags that name a Hugging Face repository rather than a path on disk.
+# _extra_args_mtp_draft_path returns the value without saying which flag carried it,
+# and the two need different treatment: a repo id is sized from its listing, while a
+# --model-draft that is not a file is simply a drafter that will not load.
+_HF_DRAFT_FLAGS = ("--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft")
+
+
+def _extra_args_name_a_remote_draft(extra_args: Optional[list[str]]) -> bool:
+    for raw in extra_args or []:
+        token = str(raw)
+        head = token.split("=", 1)[0]
+        if head in _HF_DRAFT_FLAGS:
+            return True
+    return False
+
+
 _REMOTE_DRAFTER_RESERVE_BYTES = 12 * 1024**3
 
 
@@ -5734,7 +5750,7 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
     try:
         from core.inference.llama_cpp import _gguf_extra_shards
         from huggingface_hub import model_info
-        from utils.models.drafters import dflash_budget_bytes
+        from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         sizes: dict[str, int] = {}
@@ -5760,8 +5776,15 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         # the fetch can load none of them and no draft weights become resident.
         # Charging the reserve there 409s a load for VRAM nothing will take.
         bounded = dflash_budget_bytes(sizes, _gguf_extra_shards)
-        if bounded or sizes:
+        if bounded:
             return bounded
+        # Zero from a non-empty listing means one of two things. Every family
+        # incomplete: the fetch can load none of them, so zero is the answer.
+        # Complete families whose sizes the listing did not carry: something WILL
+        # load and we simply do not know how big, which is the cache-then-reserve
+        # case, not a free load.
+        if sizes and not any(split_listing_is_complete(sizes, name) for name in sizes):
+            return 0
     except Exception as e:
         logger.warning(f"Could not size remote drafter repo {spec}: {e}")
     # Unreadable listings are the case where the repo is already in the local HF
@@ -6078,8 +6101,14 @@ def _estimate_gguf_required_gb(
             and not _extras_own_drafter
             and not _draft_pinned_to_cpu
         )
+        # Two independent ways Auto never reaches DFlash: extras owning --spec-type
+        # return before any mode branch, and extras naming their own drafter are the
+        # drafter the loader uses instead of a discovered sidecar.
         _auto_dflash = (
-            _spec_mode == "auto" and not _extra_args_own_spec and not _draft_pinned_to_cpu
+            _spec_mode == "auto"
+            and not _extra_args_own_spec
+            and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
         )
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
@@ -6186,8 +6215,11 @@ def _estimate_gguf_required_gb(
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
-        elif _extras_draft:
+        elif _extras_draft and _extra_args_name_a_remote_draft(llama_extra_args):
             _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
+        # else: a local --model-draft that is not on disk. llama-server cannot load
+        # a drafter from it, so it becomes no VRAM; charging a repository reserve
+        # for a misspelled path would 409 a load whose drafter simply never starts.
 
         if total_bytes > 0:
             return (total_bytes + _extras_bytes) / (1024**3) + _estimate_gguf_kv_gb(

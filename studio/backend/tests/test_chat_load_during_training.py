@@ -1871,6 +1871,89 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # The whole 30 GB set that is actually resident, not the flat reserve.
         self.assertEqual(charged, 30 * 1024**3)
 
+    def test_a_local_model_draft_that_is_not_on_disk_is_not_priced_as_a_repo(self):
+        """--model-draft takes a path, --spec-draft-hf takes a repo id. A path that
+        does not exist is a drafter llama-server will not load, so it costs nothing.
+        Charging it the unreadable-repo reserve 409s the chat load over 12 GiB that
+        a typo, not a download, put in the extras."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
+        ):
+            charged = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--model-draft", "/nope/does-not-exist.gguf"],
+            )
+        self.assertAlmostEqual(charged, 4.0, places = 6)
+
+    def test_a_listing_that_carries_no_sizes_still_pays_the_reserve(self):
+        """A complete family whose listing omits sizes is not a free drafter, it is
+        an unmeasured one: something loads and the guard does not know how big. The
+        zero answer belongs to the case where every family is an incomplete split
+        and the fetch can load none of them."""
+        sizeless = SimpleNamespace(
+            siblings = [SimpleNamespace(rfilename = "drafter-Q4_K_M.gguf", size = None)]
+        )
+        with (
+            patch("huggingface_hub.model_info", return_value = sizeless),
+            patch("huggingface_hub.scan_cache_dir", return_value = SimpleNamespace(repos = [])),
+        ):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        self.assertEqual(charged, self.route._REMOTE_DRAFTER_RESERVE_BYTES)
+
+    def test_extras_naming_their_own_drafter_do_not_also_pay_for_a_dflash_sidecar(self):
+        """A drafter in the extras is the drafter the loader launches: the Auto
+        promotion that would have discovered the repo's DFlash sidecar never runs.
+        Billing both charges the training job for weights only one of them loads."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+        )
+        siblings = [SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 2 * 1024**3)]
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ),
+            patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 3 * 1024**3),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            self._dflash_capable(),
+        ):
+            charged = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec-draft-hf", "org/drafter"],
+            )
+        # The extras drafter, not the extras drafter plus the sidecar Auto no
+        # longer reaches.
+        self.assertAlmostEqual(charged, 13.0, places = 6)
+
     def test_a_remote_drafter_that_is_neither_listable_nor_cached_pays_the_reserve(self):
         """Nothing to measure and nothing to download over the Hub that just
         refused the listing, so the reserve is a cushion rather than a bound."""
