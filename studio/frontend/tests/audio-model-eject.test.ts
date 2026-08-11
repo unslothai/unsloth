@@ -50,7 +50,7 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
   // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
   assert.match(
     source,
-    /const releaseTranscribeSelection = useCallback\([\s\S]*await unloadSttModel\(sttEngineForRepoId\(selected\)\);\s*forget\(\);\s*await refreshSttStatus\(\)/,
+    /const releaseTranscribeSelection = useCallback\([\s\S]*await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);\s*forget\(\);\s*await refreshSttStatus\(\)/,
   );
   assert.match(
     source,
@@ -62,7 +62,7 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
   );
   assert.match(
     adapterSource,
-    /unloadSttModel\(engine\?: SttEngine\)[\s\S]*\?engine=\$\{encodeURIComponent\(engine\)\}/,
+    /unloadSttModel\(\s*engine\?: SttEngine,[\s\S]*params\.set\("engine", engine\)/,
   );
   assert.match(
     source,
@@ -121,4 +121,19 @@ test("a dictation model this page did not load survives a mode switch", () => {
     source,
     /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
   );
+});
+
+test("the eject unload names the model this page claimed", () => {
+  // `owned` is decided locally, so another surface can switch the same engine before the
+  // request lands; an unscoped unload then tore down a model this page never owned.
+  assert.match(
+    source,
+    /await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);/,
+  );
+});
+
+test("the unload request carries the claimed model to the backend", () => {
+  const adapter = adapterSource;
+  assert.match(adapter, /export function unloadSttModel\(\s*engine\?: SttEngine,\s*model\?: string,/);
+  assert.match(adapter, /if \(model\) params\.set\("model", model\);/);
 });

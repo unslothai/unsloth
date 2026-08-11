@@ -525,7 +525,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
     // Forget only once the sidecar is actually released: clearing first left a failed
     // unload with the model in VRAM, no selection, and no Eject to retry with.
-    await unloadSttModel(sttEngineForRepoId(selected));
+    // Scoped to the model this page claimed: `owned` was decided here, and another
+    // surface can switch the same engine before the request lands, so an unscoped
+    // unload would tear down a model this page never owned.
+    await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
   }, [refreshSttStatus, sttReady, sttLoadedModel]);

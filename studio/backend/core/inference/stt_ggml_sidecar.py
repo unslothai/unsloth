@@ -806,15 +806,37 @@ class GgmlSttSidecar:
         if process is not None:
             forget_pid(process.pid)
 
-    def unload(self, wait: bool = True) -> None:
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_ggml_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(self, wait: bool = True, expected_model: Optional[str] = None) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
         `transcribe` holds ``_lock`` across the whole round trip, so a caller releasing
-        engines it does not own must not block behind one.
+        engines it does not own must not block behind one. ``expected_model`` scopes the
+        release to one model, compared under the lock.
         """
         if not self._lock.acquire(blocking = wait):
             return
         try:
+            if not self._holds_expected_model(expected_model):
+                return
             self._release_locked()
         finally:
             self._lock.release()

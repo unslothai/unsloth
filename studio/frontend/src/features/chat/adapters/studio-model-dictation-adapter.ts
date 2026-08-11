@@ -290,9 +290,19 @@ export async function cancelSttDownload(
 }
 
 /** Release the local STT model and its RAM/VRAM allocations. */
-export function unloadSttModel(engine?: SttEngine): Promise<void> {
+/** Release the dictation sidecar. `model` scopes the release to the model the caller
+ *  claims: another surface can switch the same engine between the ownership check and
+ *  this request arriving, and the backend compares under the sidecar's own lock rather
+ *  than releasing whatever is resident by then. */
+export function unloadSttModel(
+  engine?: SttEngine,
+  model?: string,
+): Promise<void> {
   return queueSttLifecycle(async () => {
-    const query = engine ? `?engine=${encodeURIComponent(engine)}` : "";
+    const params = new URLSearchParams();
+    if (engine) params.set("engine", engine);
+    if (model) params.set("model", model);
+    const query = params.size ? `?${params}` : "";
     const response = await authFetch(
       `/api/inference/audio/stt/unload${query}`,
       { method: "POST" },

@@ -489,6 +489,9 @@ def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
         ri, "_stt_sidecar_for", lambda engine: type("S", (), {"transcribe": busy})()
     )
     monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
+    # The route makes the model resident through the registry before transcribing, which
+    # would reach the real llama.cpp sidecar here. This test is about the error mapping.
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (lambda *a, **k: None, lambda *a: []))
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(

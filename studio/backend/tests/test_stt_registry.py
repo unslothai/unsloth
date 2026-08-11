@@ -24,6 +24,7 @@ class _Sidecar:
         self._fail = fail
         self.unloaded = False
         self.unload_waits = []
+        self.unload_expected = []
         self.loaded_with = None
         self.load_cancel_event = None
 
@@ -38,10 +39,11 @@ class _Sidecar:
         self.loaded_with = model
         self.load_cancel_event = request_cancel_event
 
-    def unload(self, wait = True):
+    def unload(self, wait = True, expected_model = None):
         if self._fail:
             raise RuntimeError("boom")
         self.unload_waits.append(wait)
+        self.unload_expected.append(expected_model)
         self.unloaded = True
 
 
@@ -75,7 +77,10 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
     order = []
     sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
     for name, sidecar in sidecars.items():
-        sidecar.unload = lambda wait = True, name = name: order.append(f"unload:{name}")
+        sidecar.unload = (
+            lambda wait = True, expected_model = None, name = name:
+            order.append(f"unload:{name}")
+        )
     target = sidecars["mtmd"]
     target.load = lambda model, request_cancel_event = None: order.append("load:mtmd")
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
@@ -407,3 +412,110 @@ def test_a_blocking_unload_still_gives_up_after_the_drain_window(monkeypatch):
     sidecar._active_requests = 1
     MtmdSttSidecar.unload(sidecar, wait = True)
     assert sidecar.released == [True]
+
+
+def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
+    """Each sidecar loads its own model, but only the registry frees the others.
+
+    An API client alternating between engines through /v1/audio/transcriptions never
+    calls /audio/stt/load, so without this both models stayed resident until their
+    independent idle timers fired, which OOMs a device that fits either alone.
+    """
+    import asyncio
+
+    import routes.inference as ri
+
+    loaded: list[tuple] = []
+    monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
+    monkeypatch.setattr(
+        ri, "_stt_sidecar_for",
+        lambda engine: type("S", (), {"transcribe": staticmethod(
+            lambda *a, **k: {"text": "hi", "model": "qwen3-asr-0.6b"}
+        )})(),
+    )
+    monkeypatch.setattr(
+        ri, "_stt_lifecycle",
+        lambda: (lambda model, engine, cancel = None: loaded.append((model, engine)),
+                 lambda *a: []),
+    )
+
+    result = asyncio.run(
+        ri._transcribe_audio_result(
+            b"audio", model = "qwen3-asr-0.6b", language = None, fast = True, engine = "mtmd",
+        )
+    )
+    assert result["text"] == "hi"
+    assert loaded == [("qwen3-asr-0.6b", "mtmd")]
+
+
+def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
+    """The lifecycle the route calls is the registry's, whose contract is single
+    residency; this pins that it releases the others rather than only allocating."""
+    from core.inference import stt_registry
+
+    released: list = []
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda engine, model: True)
+    monkeypatch.setattr(stt_registry, "unload", lambda engines, wait = True: released.append(list(engines)))
+    monkeypatch.setattr(
+        stt_registry, "sidecar_for",
+        lambda engine: type("S", (), {"load": staticmethod(lambda *a, **k: None)})(),
+    )
+
+    stt_registry.load("qwen3-asr-0.6b", "mtmd")
+    assert released and "mtmd" not in released[0]
+    assert set(released[0]) == {e for e in stt_registry.STT_ENGINES if e != "mtmd"}
+
+
+def test_a_scoped_unload_leaves_another_surfaces_newer_model_alone():
+    """Ownership is decided by the caller, so a queued Eject can arrive after another
+    surface switched the same engine. The comparison happens under the sidecar's own
+    lock, which is the only place the answer cannot go stale."""
+    import threading
+
+    from core.inference.stt_sidecar import WhisperSttSidecar
+
+    sidecar = WhisperSttSidecar.__new__(WhisperSttSidecar)
+    sidecar._lock = threading.RLock()
+    sidecar._model_id = "base"
+    released = []
+    sidecar._release_engine_locked = lambda: released.append(True)
+
+    # The caller owned "small"; "base" belongs to whoever loaded it after.
+    WhisperSttSidecar.unload(sidecar, expected_model = "small")
+    assert released == []
+
+    # Its own model still goes, and so does an unscoped release.
+    WhisperSttSidecar.unload(sidecar, expected_model = "base")
+    assert released == [True]
+    WhisperSttSidecar.unload(sidecar)
+    assert released == [True, True]
+
+
+def test_a_scoped_unload_accepts_the_short_key_the_client_sends():
+    """Clients name the sidecar key ("small"), which the sidecar stores resolved."""
+    import threading
+
+    from core.inference.stt_sidecar import WhisperSttSidecar, resolve_model_id
+
+    sidecar = WhisperSttSidecar.__new__(WhisperSttSidecar)
+    sidecar._lock = threading.RLock()
+    sidecar._model_id = resolve_model_id("small")
+    released = []
+    sidecar._release_engine_locked = lambda: released.append(True)
+
+    WhisperSttSidecar.unload(sidecar, expected_model = "small")
+    assert released == [True]
+
+
+def test_the_registry_passes_the_claimed_model_to_each_sidecar(monkeypatch):
+    from core.inference import stt_registry
+
+    seen: list[tuple] = []
+    monkeypatch.setattr(
+        stt_registry, "sidecar_for",
+        lambda engine: type("S", (), {"unload": staticmethod(
+            lambda wait = True, expected_model = None: seen.append((engine, expected_model))
+        )})(),
+    )
+    stt_registry.unload(["gguf"], expected_model = "small")
+    assert seen == [("gguf", "small")]

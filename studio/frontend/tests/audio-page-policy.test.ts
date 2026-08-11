@@ -513,3 +513,30 @@ test("a failed transcribe release puts the page back in Transcribe", () => {
     /void release\.then\(\(released\) => \{[\s\S]{0,600}?if \(!released && modeRef\.current === "speak"\) setMode\("transcribe"\);/,
   );
 });
+
+test("a gguf selection served by Transformers still reads as resident", () => {
+  // Without whisper-server the backend serves and loads the equivalent Transformers
+  // model, so residency for the pick lives in that block. Reading only the gguf block
+  // returned nothing on the refresh that completes the load (preserveSelected is true
+  // there) and the Transcribe controls stayed disabled until the page was revisited.
+  const status = {
+    transformers: { loaded_model: "small", available: true },
+    gguf: { loaded_model: null, available: false },
+  };
+  assert.deepEqual(resolveSttResidency(status, "gguf", true), {
+    model: "small",
+    engine: "gguf",
+  });
+  assert.equal(resolveSttLoadedModel(status, "gguf", true), "small");
+
+  // whisper.cpp present: its own block still answers, and an empty one is still empty.
+  const live = {
+    transformers: { loaded_model: "small", available: true },
+    gguf: { loaded_model: "base", available: true },
+  };
+  assert.deepEqual(resolveSttResidency(live, "gguf", true), {
+    model: "base",
+    engine: "gguf",
+  });
+  assert.equal(resolveSttResidency({ gguf: { loaded_model: null } }, "gguf", true), null);
+});

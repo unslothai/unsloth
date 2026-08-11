@@ -239,6 +239,7 @@ export function sttSelectionReady(
 type SttEngineResidency = {
   loaded_model?: string | null;
   loading?: boolean;
+  available?: boolean;
 };
 
 type SttResidencyStatus = SttEngineResidency & {
@@ -273,8 +274,15 @@ export function resolveSttResidency(
   selectedEngine: SttEngine | null,
   preserveSelected: boolean,
 ): SttResidency | null {
+  // A whisper.cpp pick on a host without whisper-server is deliberately served, and
+  // loaded, through Transformers, so its residency lives in that block. Same fallback
+  // sttEngineStatusFor applies; the engine reported stays the selected one, because that
+  // is what the user picked and what the backend routes. Without this the refresh that
+  // completes the load found nothing (it runs while preserveSelected is true) and the
+  // Transcribe controls stayed disabled until the page was left and revisited.
   const selectedStatus =
-    selectedEngine === "transformers"
+    selectedEngine === "transformers" ||
+    (selectedEngine === "gguf" && status.gguf?.available === false)
       ? (status.transformers ?? status)
       : selectedEngine
         ? status[selectedEngine]

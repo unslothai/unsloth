@@ -91,18 +91,26 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         return False
 
 
-def unload(engines: Optional[Sequence[str]] = None, *, wait: bool = True) -> list[str]:
+def unload(
+    engines: Optional[Sequence[str]] = None,
+    *,
+    wait: bool = True,
+    expected_model: Optional[str] = None,
+) -> list[str]:
     """Release every named engine (all of them by default), reporting refusals.
 
     Each is attempted even after a failure: more than one can hold memory at
     once after an engine switch, so stopping early would strand the rest.
     ``wait=False`` leaves a sidecar that is mid-request resident instead of
     blocking on it, for callers releasing engines they do not own.
+    ``expected_model`` releases only a sidecar still holding that model, compared
+    under its own lock, so a caller that owns one model cannot tear down another
+    surface's newer one.
     """
     failed: list[str] = []
     for name in STT_ENGINES if engines is None else engines:
         try:
-            sidecar_for(name).unload(wait = wait)
+            sidecar_for(name).unload(wait = wait, expected_model = expected_model)
         except Exception as exc:  # noqa: BLE001 - report after attempting all
             logger.warning("Failed to unload STT engine '%s': %s", name, exc)
             failed.append(name)

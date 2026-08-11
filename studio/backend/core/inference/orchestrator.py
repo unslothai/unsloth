@@ -1549,10 +1549,17 @@ class InferenceOrchestrator:
         from core.inference import stt_registry
         stt_registry.load(model, engine, request_cancel_event)
 
-    def unload_stt_model(self, engines: Optional[Sequence[str]] = None) -> list:
-        """Release dictation models (all engines by default); returns refusals."""
+    def unload_stt_model(
+        self,
+        engines: Optional[Sequence[str]] = None,
+        expected_model: Optional[str] = None,
+    ) -> list:
+        """Release dictation models (all engines by default); returns refusals.
+
+        ``expected_model`` scopes the release to a sidecar still holding that model.
+        """
         from core.inference import stt_registry
-        return stt_registry.unload(engines)
+        return stt_registry.unload(engines, expected_model = expected_model)
 
     def resident_stt_model(self) -> dict:
         """What dictation holds, alongside active_model_name for chat."""

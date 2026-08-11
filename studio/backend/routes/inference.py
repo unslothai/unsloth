@@ -9889,12 +9889,18 @@ async def stt_validate(
 
 @studio_router.post("/audio/stt/unload")
 async def stt_unload(
-    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    engine: Optional[str] = None,
+    model: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Release the local STT model when dictation is idle.
 
     Without an engine, both sidecars unload so an engine switch in Voice
-    settings always frees whichever backend was resident.
+    settings always frees whichever backend was resident. ``model`` scopes the
+    release to the model the caller claims: a surface owns one model, and another
+    can switch the same engine between that ownership check and this request
+    arriving, so the sidecar re-checks under its own lock rather than releasing
+    whatever happens to be resident by then.
     """
     if engine is None:
         engines = None
@@ -9906,7 +9912,7 @@ async def stt_unload(
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines)
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines, model)
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -9972,6 +9978,14 @@ async def _transcribe_audio_result(
         else None
     )
     try:
+        # An implicit load has to go through the registry, not the sidecar: each sidecar
+        # loads its own model happily, but only the registry releases the other engines.
+        # An API client alternating between engines (Qwen3-ASR then Whisper through
+        # /v1/audio/transcriptions) therefore held both until their independent idle
+        # timers fired, which is what OOMs a device that fits either alone. A no-op once
+        # the model is resident, so the steady state costs a residency check.
+        load_stt, _ = _stt_lifecycle()
+        await asyncio.to_thread(load_stt, model, serving_engine, cancel_event)
         if cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
