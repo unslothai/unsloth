@@ -390,6 +390,26 @@ def bare_quant_alias(key: str) -> str:
     return extract_quant_label(f"{basename}.gguf")
 
 
+def is_qualified_gguf_variant_key(key: str) -> bool:
+    """Whether *key* names more than its bare quantization.
+
+    Usually a directory (``distilled/model-Q6_K``), but H3's root-level partitions use the full
+    filename stem (``minimax_h3_ref2va_pruned-Q6_K``). Comparing against the bare alias covers
+    both and leaves ordinary keys such as ``Q6_K`` and ``IQ4_XS-3.53bpw`` untouched.
+    """
+    normalized = (key or "").strip().replace("\\", "/")
+    return bool(normalized) and bare_quant_alias(normalized).lower() != normalized.lower()
+
+
+def is_h3_denoiser_variant_key(key: str) -> bool:
+    """Whether *key* is one of H3's root-level denoiser checkpoint identities."""
+    normalized = (key or "").strip().replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1].lower()
+    return basename.startswith(_H3_DENOISER_PARTITIONS) and is_qualified_gguf_variant_key(
+        normalized
+    )
+
+
 def _is_quant_directory(segment: str) -> bool:
     """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
 

@@ -212,6 +212,33 @@ def _run(model, hf_token = None):
         # Still a path, not a variant: no Hub repo precedes the colon.
         ("/home/me/models/x:build/llama-13b", ("/home/me/models/x:build/llama-13b", None)),
         ("D:/models/repo:build/llama-13b", ("D:/models/repo:build/llama-13b", None)),
+        # A native Windows path is one reference: the drive letter is no repo id, so
+        # reading the rest of the path as its variant refused a model already loaded.
+        ("C:\\models\\qwen.gguf", ("C:\\models\\qwen.gguf", None)),
+        ("c:\\qwen.gguf", ("c:\\qwen.gguf", None)),
+        ("\\\\server\\share\\qwen.gguf", ("\\\\server\\share\\qwen.gguf", None)),
+        # A quant still pins one, on either spelling of the path.
+        ("C:\\models\\qwen.gguf:Q4_K_M", ("C:\\models\\qwen.gguf", "Q4_K_M")),
+        ("C:/models/qwen.gguf:Q4_K_M", ("C:/models/qwen.gguf", "Q4_K_M")),
+        ("\\\\server\\share\\qwen.gguf:Q4_K_M", ("\\\\server\\share\\qwen.gguf", "Q4_K_M")),
+        # A backslash-qualified variant key still parses behind a real Hub repo.
+        ("org/repo:build\\model.gguf", ("org/repo", "build\\model.gguf")),
+        ("D:\\models\\repo:build\\llama-13b", ("D:\\models\\repo:build\\llama-13b", None)),
+        # Extended-length and device-namespace prefixes, used past MAX_PATH.
+        ("\\\\?\\C:\\models\\qwen.gguf", ("\\\\?\\C:\\models\\qwen.gguf", None)),
+        ("\\\\.\\C:\\models\\qwen.gguf", ("\\\\.\\C:\\models\\qwen.gguf", None)),
+        ("\\\\?\\C:\\models\\qwen.gguf:UD-Q4_K_XL", ("\\\\?\\C:\\models\\qwen.gguf", "UD-Q4_K_XL")),
+        # Drive-relative: no separator after the colon at all.
+        ("C:models\\x.gguf", ("C:models\\x.gguf", None)),
+        # Mixed separators, and the bare drive root.
+        ("C:/models\\x.gguf", ("C:/models\\x.gguf", None)),
+        ("C:\\models/x.gguf", ("C:\\models/x.gguf", None)),
+        ("C:\\", ("C:\\", None)),
+        # An admin UNC share.
+        ("\\\\server\\share$\\qwen.gguf", ("\\\\server\\share$\\qwen.gguf", None)),
+        # An Ollama tag must still split, or a foreign id starts being served locally.
+        ("name:latest", ("name", "latest")),
+        ("llama3:8b", ("llama3", "8b")),
     ],
 )
 def test_split_model_ref(raw, expected):
@@ -257,9 +284,12 @@ def test_looks_like_quant_separates_quants_from_foreign_tags():
     assert auto_dl.looks_like_quant("UD-Q6_K_XL")
     assert auto_dl.looks_like_quant("q4_k_m")
     assert auto_dl.looks_like_quant("F16")
+    assert auto_dl.looks_like_quant("minimax_h3_ref2va_pruned-Q6_K")
     # Ollama-style tags are not quants and must not read as a GGUF reference.
     assert not auto_dl.looks_like_quant("latest")
     assert not auto_dl.looks_like_quant("8b")
+    assert not auto_dl.looks_like_quant("8b-instruct-q4_0")
+    assert not auto_dl.looks_like_quant("7b-chat-v1.5-q8_0")
     assert not auto_dl.looks_like_quant(None)
 
 
@@ -1175,6 +1205,18 @@ def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:Q8_0") is False
 
 
+def test_a_windows_path_matches_the_gguf_loaded_from_it(monkeypatch):
+    # The drive letter read as the repo and the rest of the path as an explicit quant, so a
+    # model loaded from that path never matched its own name and the call was refused instead.
+    loaded = _Loaded("C:\\models\\qwen.gguf", "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf") is True
+    # Either spelling of the same path names the same weights.
+    assert inference_route._loaded_satisfies("C:/models/qwen.gguf") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q4_K_M") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q8_0") is False
+
+
 def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):
     # The whole-repo job key can hold a stale error that would free the probe's slot.
     hub["on_probe"] = lambda: _run_nested()
@@ -1446,6 +1488,65 @@ def test_warming_the_index_never_waits_on_the_scan_lock(monkeypatch):
                 break
             _time.sleep(0.01)
     assert elapsed < 0.5, f"request path blocked on the warm scan for {elapsed:.2f}s"
+
+
+def test_invalidation_during_a_warm_preserves_a_second_scan(monkeypatch):
+    import threading
+    import time as _time
+
+    from core.inference import local_model_resolver as resolver
+
+    first_scan_started = threading.Event()
+    release_first_scan = threading.Event()
+    invalidation_finished = threading.Event()
+    second_scan_finished = threading.Event()
+    scans = []
+
+    def _index():
+        scans.append(1)
+        if len(scans) == 1:
+            # Match the real _index(): keep invalidation blocked until this pass
+            # publishes, then keep the worker alive until invalidation has marked
+            # the just-published snapshot stale.
+            with resolver._lock:
+                first_scan_started.set()
+                assert release_first_scan.wait(5)
+                resolver._scan = (_time.monotonic(), {})
+            assert invalidation_finished.wait(5)
+        else:
+            second_scan_finished.set()
+        return {}
+
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    monkeypatch.setattr(resolver, "_index", _index)
+
+    _real_warm_index_soon()
+    assert first_scan_started.wait(5)
+
+    def _invalidate_and_warm():
+        resolver.invalidate_index()
+        _real_warm_index_soon()
+        invalidation_finished.set()
+
+    invalidator = threading.Thread(target = _invalidate_and_warm)
+    invalidator.start()
+    release_first_scan.set()
+    invalidator.join(timeout = 5)
+
+    try:
+        assert not invalidator.is_alive()
+        assert second_scan_finished.wait(5)
+        assert scans == [1, 1]
+    finally:
+        release_first_scan.set()
+        invalidation_finished.set()
+        for _ in range(500):
+            if not resolver._warming:
+                break
+            _time.sleep(0.01)
 
 
 def test_a_stale_index_is_refreshed_so_a_hub_download_becomes_visible(monkeypatch):

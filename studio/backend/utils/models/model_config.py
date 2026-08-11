@@ -2435,11 +2435,11 @@ def _qualified_variant_name(filename: str, label: str) -> str:
     if _gguf_variant_token(filename) is None:
         return label
     key = _gguf_variant_key(filename)
-    # Only a PATH-qualified key. Without the slash the key is the bare quant token, and this
-    # module's label is the richer of the two: it carries the bpw modifier that keeps
-    # ``model-IQ4_XS-3.53bpw.gguf`` and ``model-IQ4_XS-3.97bpw.gguf`` separately selectable, which
-    # the token extractor drops. Swapping in the token would merge them.
-    return key if "/" in key else label
+    # A qualified key carries more identity than the bare quant: usually a directory, but H3's
+    # root-level partitions use the full stem. Compare against the plain key rather than look for
+    # a slash, keeping bpw-only keys on the label that separates 3.53bpw from 3.97bpw.
+    plain = _quant_token_with_bpw(filename)
+    return key if plain is not None and key.lower() != plain.lower() else label
 
 
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:

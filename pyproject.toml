@@ -42,19 +42,14 @@ dependencies = [
 unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = {attr = "unsloth._version.__version__"}
 
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.cmdclass]
-# Snapshots CHANGELOG.md into studio/ so every build path ships it.
-build_py = "_changelog_build.build_py"
-
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
-    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",
