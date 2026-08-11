@@ -1907,6 +1907,27 @@ def test_high_risk_dispatcher_non_terminal():
             True,
         ),
         ("import yaml.loader\nprint(yaml.load(fh, Loader=yaml.loader.SafeLoader))", False),
+        # Naming an always-unsafe loader asks, whatever expression binds or calls
+        # it later. The safe reads never mention these names.
+        ("import yaml\nfor fn in [yaml.unsafe_load]: fn(s)", True),
+        ("import yaml\nprint([fn(s) for fn in [yaml.unsafe_load]])", True),
+        ("import yaml\nclass L(*(yaml.Loader,)): pass\nL(s).get_data()", True),
+        ("import yaml\ndef choose(): return yaml.unsafe_load\nld = choose()\nld(s)", True),
+        ("import yaml\n@lambda _: yaml.unsafe_load\ndef load(): pass\nload(s)", True),
+        (
+            "import yaml\ndef run(ld=yaml.safe_load if ok else yaml.unsafe_load): ld(s)\nrun()",
+            True,
+        ),
+        (
+            "import yaml\nm = yaml\nclass Box:\n    SafeLoader = yaml.Loader\nm = Box\n"
+            "yaml.load(s, Loader=m.SafeLoader)",
+            True,
+        ),
+        (
+            "import yaml\nr = getattr(yaml.SafeLoader, 'yaml_' + 'constructors')\nr['!e'] = cb\n"
+            "yaml.safe_load(s)",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

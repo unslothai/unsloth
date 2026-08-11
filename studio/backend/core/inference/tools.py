@@ -2566,6 +2566,13 @@ _AST_MATCH_CAPTURE = tuple(
 )
 _AST_MATCH_MAPPING = tuple(n for n in (getattr(ast, "MatchMapping", None),) if n)
 _AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
+# Loaders with no safe way to call them. load/load_all are excluded because
+# Loader= decides those. For the rest there is nothing to inspect: naming one
+# is enough to ask, whatever expression later binds or invokes it. That is
+# what makes this terminate instead of chasing each way to launder a value.
+_AUTO_ALWAYS_UNSAFE_LOAD_ATTRS = (
+    _AUTO_UNSAFE_PY_LOAD_FUNCS - {"load", "load_all"}
+) | _AUTO_UNSAFE_PY_LOAD_CLASSES
 # Loader classes that cannot construct arbitrary callables in any PyYAML
 # version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
 # absent on purpose: it was an RCE before PyYAML 5.4 (CVE-2020-14343).
@@ -3588,6 +3595,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # keyword, so only they can earn the safe-loader exemption below.
     load_func_aliases: "set[str]" = set()
     load_class_aliases: "set[str]" = set()
+    always_unsafe_aliases: "set[str]" = set()
     # Loaders bound onto an attribute (holder.load = yaml.unsafe_load), like
     # attr_open_aliases does for open, and the same for the module itself
     # (box.loader_module = yaml), which is then a loader receiver.
@@ -3915,6 +3923,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # same registration with the name spelled at runtime.
         "__dict__",
         "vars",
+        # getattr(SafeLoader, "yaml_" + "constructors") spells it at runtime.
+        "getattr",
     }
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
@@ -4067,10 +4077,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     for alias in node.names:
                         if alias.name in _AUTO_UNSAFE_PY_LOAD_FUNCS:
                             load_func_aliases.add(alias.asname or alias.name)
+                            if alias.name in _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS:
+                                always_unsafe_aliases.add(alias.asname or alias.name)
                             if node.module.split(".")[0] in _AUTO_YAML_MODULES:
                                 yaml_func_aliases.add(alias.asname or alias.name)
                         elif alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES:
                             load_class_aliases.add(alias.asname or alias.name)
+                            always_unsafe_aliases.add(alias.asname or alias.name)
                         # from yaml.loader import SafeLoader is the documented safe
                         # spelling; record it so Loader=SafeLoader stays auto-approved.
                         # An import is not an assignment, so any later binding of the
@@ -4447,6 +4460,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             break
     if not _alias_converged:
         return True
+    # Naming an always-unsafe loader anywhere asks, no matter what expression
+    # binds, forwards or invokes it (a decorator, a factory return, a loop, a
+    # starred base, a rebound alias). The safe reads never mention these names.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS and _is_load_module(node.value):
+                return True
+        elif isinstance(node, ast.Name) and node.id in always_unsafe_aliases:
+            return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
