@@ -3221,16 +3221,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
          spacing belongs inside each pane. The same 50rem page-container breakpoint
          drives this body and the header above, regardless of sidebar width. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              // pb-20 at every width: the floating Generate button below is absolutely
-              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
-              // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3769,15 +3766,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </AdvancedDisclosure>
 
           </div>
-          {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-10 pb-7">
+          {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
+          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
                  (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
                  same handler, so one control stops all of them. */
               <Button
-                // Opaque hover: this one floats over the settings too.
-                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -3786,7 +3782,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </Button>
             ) : (
               <Button
-                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={handleGenerate}
                 disabled={busy !== null || !status?.loaded}
               >
