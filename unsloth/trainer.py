@@ -767,9 +767,8 @@ def _backwards_compatible_trainer(trainer_class, config_class):
                 config = config_class(**config_dict)
             else:
                 # Every trl config subclasses TrainingArguments, so this is the
-                # branch real calls take, and config_dict was going nowhere.
-                # Reinitialising is what the comment above rules out, so set the
-                # caller's values on the config they passed instead of dropping them.
+                # branch real calls take and config_dict was going nowhere. Set
+                # the moved values on the caller's config rather than rebuild it.
                 config = training_args
                 for key, value in additional_config_kwargs.items():
                     if key in config_fields or key in moved_params:
@@ -1001,10 +1000,10 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
-    # Auto-packing must wrap first so it ends up INSIDE the backwards-compatible
-    # wrapper: a moved `packing` kwarg has to reach the config before packing is
-    # decided, else the block is undone right after it is applied. Guarded so a
-    # failure here still leaves the pre-0.13 compatibility wrappers installed.
+    # Auto-packing wraps first so it lands INSIDE the backwards-compatible one: a
+    # moved `packing` kwarg must reach the config before packing is decided, else
+    # the block is undone right after. Guarded so a failure here still leaves the
+    # pre-0.13 compatibility wrappers installed.
     try:
         _patch_sft_trainer_auto_packing(trl)
     except Exception as exc:

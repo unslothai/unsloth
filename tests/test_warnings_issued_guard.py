@@ -355,10 +355,9 @@ if __name__ == "__main__":
 
 # ---- the kwargs the wrapper exists to move -------------------------------
 #
-# These use a real trl config rather than a stand-in, deliberately. Every trl
-# config subclasses transformers.TrainingArguments, and that is exactly what
-# `new_init` branches on, so a plain dataclass takes the other branch and the
-# tests would pass against the bug.
+# A real trl config, not a stand-in: `new_init` branches on
+# isinstance(TrainingArguments), so a plain dataclass takes the other branch and
+# the tests would pass against the bug.
 
 
 def _sft_config():
@@ -396,9 +395,8 @@ def _wrapped_recording():
 
 
 def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
-    """The whole point of the wrapper: settings that used to be trainer kwargs
-    have to end up on the config. They were computed and then dropped whenever
-    `args` was given, which is every real call."""
+    """Settings that used to be trainer kwargs have to end up on the config.
+    They were computed and then dropped whenever `args` was given."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
     assert config.packing is False and config.max_length != 2048
@@ -418,9 +416,8 @@ def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
 
 
 def test_the_callers_own_config_object_is_the_one_used(tmp_path):
-    """Reinitialising re-triggers trl's mutually exclusive checks, which is why
-    this branch exists at all, so the values have to be set rather than a new
-    config built."""
+    """Reinitialising re-triggers trl's mutually exclusive checks, so the values
+    have to be set rather than a new config built."""
     Trainer, config_class = _wrapped_recording()
     config = config_class(output_dir = str(tmp_path), report_to = [])
 
@@ -448,10 +445,9 @@ def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
 
 
 def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
-    """Order matters now that the kwargs are applied. `_patch_sft_trainer_auto_packing`
-    reads `packing` off the config and blocks it for VLMs, custom collators and the
-    padding-free blocklist, so it has to wrap first (inner) and see the moved value.
-    Wrapped last it decides on the old value, and the block is undone right after."""
+    """Auto-packing reads `packing` off the config to block VLMs, custom collators
+    and the blocklist, so it has to wrap first and see the moved value. Wrapped
+    last it decides on the old one, and the block is undone right after."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             body = ast.get_source_segment(SRC, node)
@@ -465,8 +461,8 @@ def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
 
 
 def test_auto_packing_failure_still_leaves_the_wrapper_installed():
-    """Going first means a raise here would skip the wrapping loop entirely and
-    drop pre-0.13 compatibility, so the call has to be guarded."""
+    """Going first, a raise here would skip the wrapping loop and drop pre-0.13
+    compatibility, so the call has to be guarded."""
     for node in ast.walk(ast.parse(SRC)):
         if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
             guarded = any(
