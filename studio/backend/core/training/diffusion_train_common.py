@@ -498,12 +498,23 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Per-family training defaults surfaced by the Train UI: starting points, not hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big flow-matching DiTs.
-    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
+    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big
+    # flow-matching DiTs. The ramp only exists under a warmup-capable schedule -- the default
+    # "constant" scheduler makes get_scheduler ignore num_warmup_steps entirely -- so a family that
+    # advertises lr_warmup_steps MUST also advertise the scheduler that realizes it, or the ramp is a
+    # silent no-op for any client that builds its request from these defaults.
+    "flux.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     "qwen-image": {
         "lora_rank": 16,
         "learning_rate": 5e-5,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
@@ -514,12 +525,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     "flux.2-dev": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
+        "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
     # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
@@ -1047,6 +1060,27 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
+        # Couple the schedule to the warmup request. diffusers' get_scheduler builds a plain
+        # "constant" LambdaLR that never reads num_warmup_steps, so a request that asks for a
+        # warmup ramp under "constant" silently gets no ramp -- exactly the trap the flow-matching
+        # family defaults fell into. The defaults table now advertises "constant_with_warmup" for
+        # those families, so this promotion never fires for a request built from them; it is the
+        # backstop for any OTHER caller (a raw API request, a future UI) that sets "constant" with
+        # a positive warmup directly. A zero warmup (sdxl, z-image, krea-2, and every explicit
+        # constant run) is left as "constant", so no-warmup behaviour is unchanged. Only "constant"
+        # is promoted -- an already-warmup-capable schedule (cosine, linear, constant_with_warmup)
+        # is left exactly as advertised.
+        lr_scheduler = str(self.lr_scheduler)
+        try:
+            lr_warmup_steps = int(self.lr_warmup_steps or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"lr_warmup_steps must be a whole number, got {self.lr_warmup_steps!r}"
+            ) from exc
+        if lr_warmup_steps < 0:
+            raise ValueError("lr_warmup_steps must be >= 0")
+        if lr_scheduler == "constant" and lr_warmup_steps > 0:
+            lr_scheduler = "constant_with_warmup"
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
@@ -1228,6 +1262,8 @@ class DiffusionLoraConfig:
         return replace(
             self,
             learning_rate = learning_rate,
+            lr_scheduler = lr_scheduler,
+            lr_warmup_steps = lr_warmup_steps,
             lora_alpha = alpha,
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
