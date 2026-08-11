@@ -12,12 +12,82 @@ pub(crate) fn executable_path(pid: u32) -> Option<PathBuf> {
 
 /// Whether `pid` is running out of `tree`.
 ///
-/// None when the executable could not be read, which every caller has to decide
-/// about for itself: it is the answer both for a process we may not query and
-/// for a platform with no implementation here.
-pub(crate) fn runs_from(pid: u32, tree: &Path) -> Option<bool> {
+/// None is "cannot tell", which every caller has to decide about for itself. It
+/// covers a process we may not query, a platform with no implementation here,
+/// and the venv case below.
+///
+/// `shared_interpreters` are executables that a process inside the tree may be
+/// running without the tree appearing anywhere in its image path. uv builds a
+/// venv whose `bin/python` is a symlink to the base interpreter, which
+/// `install.sh` relies on, and both `/proc/{pid}/exe` and `proc_pidpath` report
+/// the resolved target. Seeing that binary is therefore no proof either way, so
+/// it answers None rather than false: guessing false would let a repair rewrite
+/// the venv underneath a live backend, which is the failure this guards.
+pub(crate) fn runs_from(pid: u32, tree: &Path, shared_interpreters: &[PathBuf]) -> Option<bool> {
+    // argv[0] keeps the path as invoked, so it still names the venv where the
+    // image path no longer does. Positive evidence only: a process can be given
+    // any argv, and there is no platform where its absence means anything.
+    if let Some(argv0) = first_argument(pid) {
+        if path_is_within(&argv0, tree) {
+            return Some(true);
+        }
+    }
     let exe = executable_path(pid)?;
-    Some(path_is_within(&exe, tree))
+    if path_is_within(&exe, tree) {
+        return Some(true);
+    }
+    if shared_interpreters.iter().any(|shared| is_same_path(shared, &exe)) {
+        return None;
+    }
+    Some(false)
+}
+
+fn is_same_path(left: &Path, right: &Path) -> bool {
+    // Both sides are canonicalized by the caller where the filesystem allows
+    // it, so this is the last-resort textual comparison.
+    left.as_os_str().to_string_lossy().to_lowercase()
+        == right.as_os_str().to_string_lossy().to_lowercase()
+}
+
+/// The command line's argv[0] for `pid`.
+///
+/// Linux only. macOS needs a KERN_PROCARGS2 sysctl, and Windows reads the
+/// remote PEB; neither is implemented, and neither needs to be, because a
+/// Windows venv holds a real `python.exe` rather than a symlink.
+#[cfg(target_os = "linux")]
+fn first_argument(pid: u32) -> Option<PathBuf> {
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let argv0 = cmdline.split(|byte| *byte == 0).next()?;
+    if argv0.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(String::from_utf8_lossy(argv0).into_owned()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn first_argument(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
+/// Interpreters a backend of this install may be running through a symlink.
+///
+/// Both venv layouts, since `~/.unsloth/studio` is shared with the CLI
+/// installer and an older install still has the `.venv` one. Canonicalized so
+/// the comparison above meets the same resolved path the OS reports; an entry
+/// that does not resolve is dropped, since nothing can be running it.
+pub(crate) fn shared_interpreters_in(tree: &Path) -> Vec<PathBuf> {
+    let mut resolved = Vec::new();
+    for venv in ["unsloth_studio", ".venv"] {
+        for (dir, name) in [("bin", "python"), ("Scripts", "python.exe")] {
+            let candidate = tree.join(venv).join(dir).join(name);
+            if let Ok(target) = std::fs::canonicalize(&candidate) {
+                if !resolved.contains(&target) {
+                    resolved.push(target);
+                }
+            }
+        }
+    }
+    resolved
 }
 
 fn path_is_within(path: &Path, tree: &Path) -> bool {
@@ -123,11 +193,58 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let tree = exe.parent().unwrap().to_path_buf();
 
-        assert_eq!(runs_from(std::process::id(), &tree), Some(true));
+        assert_eq!(runs_from(std::process::id(), &tree, &[]), Some(true));
         assert_eq!(
-            runs_from(std::process::id(), Path::new("/definitely/elsewhere")),
+            runs_from(std::process::id(), Path::new("/definitely/elsewhere"), &[]),
             Some(false)
         );
+    }
+
+    /// The reported venv case: uv symlinks bin/python at the base interpreter,
+    /// so the image path leaves the tree entirely. Answering "not ours" there
+    /// would rewrite the venv underneath a live backend.
+    #[test]
+    fn a_process_running_a_shared_interpreter_is_indeterminate() {
+        let exe = std::env::current_exe().unwrap();
+
+        assert_eq!(
+            runs_from(
+                std::process::id(),
+                Path::new("/definitely/elsewhere"),
+                std::slice::from_ref(&exe)
+            ),
+            None
+        );
+        // Some other program on the same pid stays a clear no.
+        assert_eq!(
+            runs_from(
+                std::process::id(),
+                Path::new("/definitely/elsewhere"),
+                &[PathBuf::from("/usr/bin/some-other-python")]
+            ),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn only_a_resolvable_interpreter_is_listed() {
+        let tree = tempfile::tempdir().unwrap();
+        let bin = tree.path().join("unsloth_studio").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let target = tree.path().join("base-python");
+        std::fs::write(&target, "").unwrap();
+
+        assert!(shared_interpreters_in(tree.path()).is_empty());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, bin.join("python")).unwrap();
+
+            assert_eq!(
+                shared_interpreters_in(tree.path()),
+                vec![std::fs::canonicalize(&target).unwrap()]
+            );
+        }
     }
 
     #[test]

@@ -16,9 +16,10 @@ use std::path::Path;
 /// part that decides.
 pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
     let root = crate::diagnostics::studio_dir();
+    let shared = crate::process_identity::shared_interpreters_in(&root);
     let probe = Probe {
         is_live: &|pid| crate::desktop_backend_owner::pid_is_not_dead(pid),
-        runs_from_tree: &|pid| crate::process_identity::runs_from(pid, &root),
+        runs_from_tree: &|pid| crate::process_identity::runs_from(pid, &root, &shared),
     };
     live_backend_pid_in(&root, port, &probe)
 }
