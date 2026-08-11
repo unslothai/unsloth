@@ -125,6 +125,7 @@ def test_release_appimage_passes_the_bundled_host_library_guard():
     commands = "\n".join(
         line for line in package["run"].splitlines() if not line.strip().startswith("#")
     )
+
     # Both packagers run now, so presence proves nothing -- identify them by the
     # output each is handed. The one given "$appimage", the canonical name users
     # download, is the one that must carry the guard; "$portable" is a separate,
@@ -145,12 +146,12 @@ def test_release_appimage_passes_the_bundled_host_library_guard():
         "the plainly-named -Linux.AppImage must come from the packager that runs "
         "assert_thin_appdir (#7953)"
     )
-    assert _output_of("build-portable-appimage.sh") == '"$portable"', (
-        "the portable bundle must not take the canonical AppImage name"
+    assert (
+        _output_of("build-portable-appimage.sh") == '"$portable"'
+    ), "the portable bundle must not take the canonical AppImage name"
+    packager = (REPO_ROOT / "studio" / "src-tauri" / "linux" / "build-thin-appimage.sh").read_text(
+        encoding = "utf-8"
     )
-    packager = (
-        REPO_ROOT / "studio" / "src-tauri" / "linux" / "build-thin-appimage.sh"
-    ).read_text(encoding = "utf-8")
     assert "assert_thin_appdir" in packager
     # The specific pairing measured to break on Ubuntu 24.04 / Linux Mint 22: a
     # bundled nghttp2 with no bundled curl, against the host's newer libcurl-gnutls.
