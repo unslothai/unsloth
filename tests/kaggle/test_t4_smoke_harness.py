@@ -1538,18 +1538,72 @@ def test_the_grpo_leg_no_longer_carries_xformers():
     assert not any("xformers" in i for g in LEGS["grpo"].install for i in g)
 
 
-def test_the_unwired_note_still_matches_the_leg_it_describes():
-    """UNWIRED is the record of what was measured. A version bump that
-    leaves the prose behind turns the one durable artefact of three dead
-    sessions into a misleading one."""
+def test_every_leg_is_either_wired_or_explained():
+    """The invariant that outlives any particular leg. A leg missing from both
+    KERNELS and UNWIRED is one nobody runs and nobody has written down why."""
+    from legs import KERNELS, LEGS, UNWIRED
+
+    wired = {name for kernel in KERNELS for name in kernel}
+    for name in LEGS:
+        assert name in wired or name in UNWIRED, (
+            f"leg {name!r} is in neither KERNELS nor UNWIRED"
+        )
+
+
+def test_nothing_is_both_wired_and_unwired():
+    """UNWIRED is a list of open questions. An entry for a leg that already
+    runs is a stale note, and a stale note is worse than none."""
+    from legs import KERNELS, UNWIRED
+
+    wired = {name for kernel in KERNELS for name in kernel}
+    assert not (wired & set(UNWIRED)), sorted(wired & set(UNWIRED))
+
+
+def test_an_unwired_note_says_what_is_unknown():
+    """An unwired leg whose note reads as settled is a leg someone wires
+    without running it. Vacuous while UNWIRED is empty, and that is correct:
+    it has something to check the moment a leg goes back in."""
     from legs import UNWIRED
 
-    note = UNWIRED["grpo"]
-    assert _grpo_vllm_pin() in note
-    assert KAGGLE_IMAGE_TORCH in note
-    # It must still say what is UNKNOWN. An unwired leg whose note reads as
-    # settled is a leg someone wires without running it.
-    assert "STILL UNKNOWN" in note
+    for name, note in UNWIRED.items():
+        assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
+
+
+def test_the_grpo_leg_keeps_the_config_that_actually_fit():
+    """Every one of these is load-bearing on a 14.56GB card.
+
+    Two probes with the notebook's own settings -- seq 2048, 4 generations,
+    rank 32, utilization 0.9 -- died in the backward at
+    unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in 16-bit
+    and 19.25GB in 4-bit. The set below passed on kernel
+    unsloth-t4-ci-53efcc4e at 13.60GB with reward_std 0.707 at step 2.
+
+    Restoring any of them to the notebook's value is a session that OOMs, so
+    it fails here instead."""
+    from legs import LEGS
+
+    args = LEGS["grpo"].args
+    for flag, value in (
+        ("--gpu-memory-utilization", "0.5"),
+        ("--max-seq-length", "1024"),
+        ("--num-generations", "2"),
+        ("--lora-rank", "16"),
+    ):
+        assert flag in args, f"grpo leg lost {flag}"
+        assert args[args.index(flag) + 1] == value, (
+            f"{flag} is {args[args.index(flag) + 1]}, not the {value} that fit"
+        )
+    assert "--load-in-4bit" in args
+
+
+def test_the_grpo_leg_still_pins_the_vllm_that_matches_the_image():
+    """The pin is chosen to match the image's torch to the patch, not to be
+    old. Any other release replaces torch, which is what killed three probe
+    sessions."""
+    from legs import LEGS
+
+    install = " ".join(part for group in LEGS["grpo"].install for part in group)
+    assert _grpo_vllm_pin() in install
 
 
 # --------------------------------------------------------------- workflow

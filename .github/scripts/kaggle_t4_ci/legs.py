@@ -241,7 +241,30 @@ LEGS: dict[str, Leg] = {
             "unsloth",
             "unsloth_zoo",
         ),
-        args = ("--max-steps", "3"),
+        # EVERY ONE OF THESE FIVE IS LOAD-BEARING ON A 14.56GB CARD, and the
+        # values are the ones that passed rather than the ones that look
+        # reasonable. Two probes with the notebook's own settings -- seq 2048,
+        # 4 generations, rank 32, utilization 0.9 -- died in the BACKWARD at
+        # unsloth_zoo/gradient_checkpointing.py:1013, peaking at 15.97GB in
+        # 16-bit and 19.25GB in 4-bit.
+        #
+        # 4-bit is not the lever it looks like: it peaked HIGHER than 16-bit,
+        # because quantizing weights does nothing for activations while
+        # utilization 0.9 still hands vLLM ~13GB up front. UNSLOTH_VLLM_STANDBY
+        # returns the weights during training but not the KV cache
+        # reservation, so the utilization figure is the one that decides
+        # whether a backward has anywhere to run.
+        #
+        # Measured on kernel unsloth-t4-ci-53efcc4e: peak 13.60GB allocated of
+        # 14.56GB, three steps in 192s.
+        args = (
+            "--max-steps", "3",
+            "--load-in-4bit",
+            "--gpu-memory-utilization", "0.5",
+            "--max-seq-length", "1024",
+            "--num-generations", "2",
+            "--lora-rank", "16",
+        ),
         env = {
             "UNSLOTH_VLLM_STANDBY": "1",
             # See the install comment. Named rather than probed so that a
@@ -288,66 +311,19 @@ MAX_LEGS_PER_KERNEL = 2
 # install, and deleting it would mean rediscovering the install problem from
 # scratch. Every entry must say what was measured.
 UNWIRED: dict[str, str] = {
-    "grpo": (
-        "The install that killed three probe sessions has been re-solved; "
-        "what is left is a runtime question that needs one session on a real "
-        "T4. Wired only after that session.\n\n"
-        "WHAT THE PROBES MEASURED, 2026-08-11. All three died replacing the "
-        "image's torch 2.10.0+cu128 with the torch `vllm==0.11.2` pins "
-        "(2.9.0). None failed for a reason to do with sm_75, memory or "
-        "GRPO.\n"
-        "  1. venv seeing the image (kernels 8161ceb9, 7ab727f1): both cards "
-        "     died at `import torch` with `libcusparseLt.so.0: cannot open "
-        "     shared object file`. pip had treated torch's pinned NVIDIA "
-        "     runtime packages as satisfied by the image's copies, which "
-        "     belong to 2.10.\n"
-        "  2. that package named and force-reinstalled (kernel f88c929b): "
-        "     the cusparseLt error cleared and the next one appeared one "
-        "     package along, `libtorch_cuda.so: undefined symbol: "
-        "     ncclCommWindowRegister`. IDENTICAL on vllm 0.11.2 and 0.15.1, "
-        "     so it was never a vLLM-version question.\n"
-        "  3. fully isolated venv, pip resolving the whole stack (kernel "
-        "     9ac72efe): no payload output past venv creation, Kaggle's own "
-        "     nbconvert failed at t=406s with NotJSONError, and the session "
-        "     sat in RUNNING past its 5400s ceiling until deleted by hand, "
-        "     about an hour of quota later.\n\n"
-        "WHAT CHANGED. The common cause is one line: vLLM pins torch "
-        "exactly, and no release in the 0.11-0.16 range pins the version the "
-        "image ships. Releases 0.17.0 through 0.19.1 pin `torch==2.10.0`, "
-        "which is the image's torch to the patch, so the leg now installs "
-        "`vllm==0.19.1` and replaces nothing. That removes the cause of 1 "
-        "and 2 outright, and removes the reason probe 3 needed an isolated "
-        "venv at all.\n\n"
-        "MEASURED SINCE, kernel unsloth-t4-ci-e2d9ce9b. The install works. "
-        "torch stayed at the image's 2.10.0+cu128, vllm 0.19.1 installed and "
-        "imported, xformers was absent as intended, and the payload ran on a "
-        "real Tesla T4 reporting DeviceCapability(major=7, minor=5) with "
-        "VLLM_ATTENTION_BACKEND=TRITON_ATTN accepted. It reached engine "
-        "construction, which is further than any earlier probe got by the "
-        "whole width of the install.\n\n"
-        "It then died in flashinfer 0.6.6's JIT, and NOT for an sm_75 reason: "
-        "all three .cu files compiled cleanly for "
-        "`-gencode=arch=compute_75,code=sm_75` and the LINK failed with "
-        "`/usr/bin/ld: cannot find -lcuda`. `-L/usr/local/cuda/lib64/stubs` "
-        "is on the command line, so the image simply has no driver stub "
-        "`libcuda.so`, only the runtime `libcuda.so.1`. The leg now sets "
-        "VLLM_USE_FLASHINFER_SAMPLER=0 so nothing JITs at all.\n\n"
-        "WHAT IS STILL UNKNOWN, and is the whole content of the session that "
-        "would wire this:\n"
-        "  a. Whether the engine builds once flashinfer is out of the way. "
-        "     Everything up to that point is now measured rather than "
-        "     argued, but engine construction itself has not yet "
-        "     succeeded.\n"
-        "  b. Whether 8GB of 16-bit weights plus a vLLM engine plus a LoRA "
-        "     trainer fit in 14.56GB. The notebook's own committed output "
-        "     shows vLLM auto-reducing gpu_memory_utilization 0.9 -> 0.69 on "
-        "     a T4, which is evidence it has been done, not that it will be "
-        "     done at this vLLM version.\n\n"
-        "The payload is ready either way: it asserts on reward and "
-        "reward_std rather than loss, because TRL's GRPO loss is ~0 by "
-        "construction at num_iterations=1 and beta=0 and would pass on a "
-        "run that learned nothing."
-    ),
+    # Empty on purpose. Every leg in LEGS is in KERNELS.
+    #
+    # `grpo` was the last entry here and came out on 2026-08-11 after kernel
+    # unsloth-t4-ci-53efcc4e passed on a real Tesla T4: reward_std 0.707 and
+    # grad_norm 0.772 at step 2, peak 13.60GB of 14.56GB, three steps in 192s.
+    # The four blockers it cleared on the way are recorded where each fix
+    # lives -- the vLLM/torch pin and the attention backend in the leg's
+    # install comment, the flashinfer link shim and the base-model chat
+    # template in run_grpo_t4.py, and the T4-sized training config in the
+    # leg's args.
+    #
+    # A leg belongs here only while there is a specific unanswered question
+    # about it that a session would answer. "Not tried yet" is not that.
 }
 
 # Which legs travel in which kernel. One entry per kernel, and a kernel runs
@@ -363,7 +339,7 @@ UNWIRED: dict[str, str] = {
 # `grpo` goes when its install works.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
-    ("gptoss",),
+    ("gptoss", "grpo"),
 )
 
 
