@@ -715,13 +715,22 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "disable_dns_pinning,expected_url",
+    "disable_dns_pinning,proxied,expected_url",
     [
-        (False, "https://203.0.113.7:8443/page?q=1"),
-        (True, "https://example.com:8443/page?q=1"),
+        (False, False, "https://203.0.113.7:8443/page?q=1"),
+        (False, True, "https://203.0.113.7:8443/page?q=1"),
+        # The opt-out only applies to a proxied fetch: a direct one would resolve
+        # the hostname again, which is the DNS-rebinding hole it must not reopen.
+        (True, False, "https://203.0.113.7:8443/page?q=1"),
+        (True, True, "https://example.com:8443/page?q=1"),
     ],
 )
-def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinning, expected_url):
+def test_fetch_url_raw_dns_pinning_proxy_opt_out(
+    monkeypatch,
+    disable_dns_pinning,
+    proxied,
+    expected_url,
+):
     import email
     import urllib.request
 
@@ -757,6 +766,14 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(monkeypatch, disable_dns_pinnin
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+    # Patch the lookups rather than the env: getproxies/proxy_bypass read system
+    # settings on macOS and Windows.
+    monkeypatch.setattr(
+        urllib.request,
+        "getproxies",
+        lambda: {"https": "http://proxy.corp:3128"} if proxied else {},
+    )
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
 
     # No embedded credentials: the web access policy rejects those outright
     # (see test_fetch_url_raw_rejects_embedded_credentials).

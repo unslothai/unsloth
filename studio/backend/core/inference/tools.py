@@ -9829,6 +9829,29 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
+def _explicit_proxy_applies(url: str) -> bool:
+    """Whether urllib sends *url* through an explicitly configured proxy.
+
+    Only then does the hostname have to stay in the request URL: the proxy does
+    the DNS itself and applies hostname policy / TLS interception, and this host
+    never resolves the name at connect time. Without a proxy urllib resolves it
+    again, which is exactly what DNS rebinding attacks, so the fetch stays pinned
+    to the validated IP.
+    """
+    from urllib.parse import urlparse
+    from urllib.request import getproxies, proxy_bypass
+
+    parsed = urlparse(url)
+    if parsed.scheme not in getproxies():
+        return False
+    try:
+        return not proxy_bypass(parsed.hostname or "")
+    except (OSError, ValueError):
+        # proxy_bypass reads system config on macOS/Windows; treat a failure as
+        # "no proxy" so the safe pinned path is what we fall back to.
+        return False
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
@@ -10182,8 +10205,12 @@ def _fetch_url_raw(
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
-                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and _explicit_proxy_applies(
+                current_url
+            ):
+                # Enterprise proxies need the hostname in CONNECT for policy and TLS
+                # interception. The proxy resolves it, so this host never repeats the
+                # lookup and there is no rebinding window to close here.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
