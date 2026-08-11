@@ -1060,17 +1060,13 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
-        # Couple the schedule to the warmup request. diffusers' get_scheduler builds a plain
-        # "constant" LambdaLR that never reads num_warmup_steps, so a request that asks for a
-        # warmup ramp under "constant" silently gets no ramp -- exactly the trap the flow-matching
-        # family defaults fell into. The defaults table now advertises "constant_with_warmup" for
-        # those families, so this promotion never fires for a request built from them; it is the
-        # backstop for any OTHER caller (a raw API request, a future UI) that sets "constant" with
-        # a positive warmup directly. A zero warmup (sdxl, z-image, krea-2, and every explicit
-        # constant run) is left as "constant", so no-warmup behaviour is unchanged. Only "constant"
-        # is promoted -- an already-warmup-capable schedule (cosine, linear, constant_with_warmup)
-        # is left exactly as advertised.
-        lr_scheduler = str(self.lr_scheduler)
+        # The warmup request is validated but never rewritten. diffusers' get_scheduler builds a
+        # plain "constant" LambdaLR that never reads num_warmup_steps, so the fix for that pair is
+        # the defaults table above advertising "constant_with_warmup" next to its warmup steps.
+        # Promoting "constant" here instead would change what identity_for_config records, and
+        # every bundle written before the promotion stores "constant": replaying its own config
+        # would normalise to "constant_with_warmup" and resume preflight would reject the run it
+        # came from as a changed learning-rate schedule.
         try:
             lr_warmup_steps = int(self.lr_warmup_steps or 0)
         except (TypeError, ValueError) as exc:
@@ -1079,8 +1075,6 @@ class DiffusionLoraConfig:
             ) from exc
         if lr_warmup_steps < 0:
             raise ValueError("lr_warmup_steps must be >= 0")
-        if lr_scheduler == "constant" and lr_warmup_steps > 0:
-            lr_scheduler = "constant_with_warmup"
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
@@ -1262,7 +1256,6 @@ class DiffusionLoraConfig:
         return replace(
             self,
             learning_rate = learning_rate,
-            lr_scheduler = lr_scheduler,
             lr_warmup_steps = lr_warmup_steps,
             lora_alpha = alpha,
             lora_target_modules = targets,

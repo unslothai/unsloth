@@ -6,8 +6,8 @@
 A family that advertises lr_warmup_steps must also advertise a scheduler that
 realizes it: diffusers' "constant" schedule never reads num_warmup_steps, so
 the pair ("constant", warmup > 0) is a silent no-op. Covers the defaults-table
-invariant, the normalized() promotion backstop for direct callers, and that
-no-warmup behaviour is unchanged."""
+invariant, that normalized() validates the warmup value without rewriting the
+requested schedule, and that no-warmup behaviour is unchanged."""
 
 from __future__ import annotations
 
@@ -55,18 +55,30 @@ def test_no_warmup_families_are_untouched():
         assert cfg.lr_warmup_steps == 0
 
 
-def test_normalized_promotes_constant_with_positive_warmup():
-    cfg = _cfg("sdxl", lr_scheduler = "constant", lr_warmup_steps = 20).normalized()
-    assert cfg.lr_scheduler == "constant_with_warmup"
-    assert cfg.lr_warmup_steps == 20
-
-
-def test_normalized_leaves_explicit_schedulers_alone():
-    for scheduler in ("constant_with_warmup", "cosine", "linear"):
+def test_normalized_leaves_the_requested_scheduler_alone():
+    for scheduler in ("constant", "constant_with_warmup", "cosine", "linear"):
         cfg = _cfg("sdxl", lr_scheduler = scheduler, lr_warmup_steps = 20).normalized()
         assert cfg.lr_scheduler == scheduler
+        assert cfg.lr_warmup_steps == 20
     cfg = _cfg("sdxl", lr_scheduler = "constant", lr_warmup_steps = 0).normalized()
     assert cfg.lr_scheduler == "constant"
+
+
+def test_a_constant_schedule_with_warmup_still_resumes_its_own_bundle():
+    """lr_scheduler is a checkpoint identity field, so rewriting the requested pair inside
+    normalized() would strand every bundle written before the rewrite: its manifest records
+    "constant" while replaying that same config would now normalise to something else, and
+    resume preflight rejects the difference as a changed learning-rate schedule."""
+    from core.training.diffusion_checkpoint import CheckpointIdentity, identity_for_config
+
+    cfg = _cfg("sdxl", lr_scheduler = "constant", lr_warmup_steps = 20).normalized()
+    incoming = identity_for_config(cfg)
+    assert incoming.lr_scheduler == "constant"
+    stored = CheckpointIdentity.from_dict(
+        {**incoming.as_dict(), "lr_scheduler": "constant", "lr_warmup_steps": 20}
+    )
+    assert stored is not None
+    assert stored.mismatch_reason(incoming) is None
 
 
 def test_negative_warmup_is_rejected():
