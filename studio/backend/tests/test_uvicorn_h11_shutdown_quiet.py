@@ -74,7 +74,11 @@ class _FakeTransport(asyncio.Transport):
     def is_closing(self):
         return self.closing
 
-    def get_extra_info(self, name, default = None):
+    def get_extra_info(
+        self,
+        name,
+        default = None,
+    ):
         if name == "sockname":
             return ("127.0.0.1", 8000)
         if name == "peername":
@@ -90,11 +94,13 @@ class _FakeTransport(asyncio.Transport):
 
 async def _app(scope, receive, send):
     assert scope["type"] == "http"
-    await send({
-        "type": "http.response.start",
-        "status": 200,
-        "headers": [(b"content-type", b"text/plain")],
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")],
+        }
+    )
     await send({"type": "http.response.body", "body": b"ok"})
 
 
@@ -138,9 +144,7 @@ async def _serve_then_shutdown_then_poll(protocol_class):
 def test_late_poll_after_shutdown_is_dropped(patched_protocol_class, caplog):
     """The patched protocol must ignore the post-close read instead of answering it."""
     with caplog.at_level(logging.WARNING, logger = "uvicorn.error"):
-        protocol, transport = asyncio.run(
-            _serve_then_shutdown_then_poll(patched_protocol_class)
-        )
+        protocol, transport = asyncio.run(_serve_then_shutdown_then_poll(patched_protocol_class))
 
     assert protocol.conn.our_state is h11.CLOSED
     assert b"400" not in b"".join(transport.chunks)
