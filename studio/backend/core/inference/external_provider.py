@@ -6396,6 +6396,17 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
             ),
             None,
         )
+        if not isinstance(text, str) or not text.strip():
+            # FastAPI-style bodies (vllm, llama.cpp, custom OpenAI-compat) carry
+            # `detail`: a string, or a validation list of `{msg, loc}` entries.
+            detail = payload.get("detail")
+            if isinstance(detail, str):
+                text = detail
+            elif isinstance(detail, list):
+                msgs = [
+                    d["msg"] for d in detail if isinstance(d, dict) and isinstance(d.get("msg"), str)
+                ]
+                text = "; ".join(msgs) or None
 
     if not isinstance(text, str) or not text.strip():
         # Not JSON means already-friendly text: collapse whitespace and cap so

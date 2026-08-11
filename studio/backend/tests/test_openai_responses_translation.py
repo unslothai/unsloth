@@ -801,10 +801,19 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
             ' "status": "INVALID_ARGUMENT"}}',
             "API key not valid. (INVALID_ARGUMENT)",
         ),
+        # FastAPI-style bodies from OpenAI-compat backends (vllm, llama.cpp).
+        ('{"detail": "Model unavailable"}', "Model unavailable"),
+        (
+            '{"detail": [{"loc": ["body", "model"], "msg": "field required"},'
+            ' {"msg": "bad temperature"}]}',
+            "field required; bad temperature",
+        ),
         # Already-friendly text passes through; empty/detail-free bodies fall back.
         ("Timeout waiting for openai response", "Timeout waiting for openai response"),
         ("", "openai returned HTTP 500 with no error details."),
         ('{"error": {}}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": []}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": {"weird": 1}}', "openai returned HTTP 500 with no error details."),
     ),
 )
 def test_upstream_error_body_reduced_to_its_message(body, expected):
