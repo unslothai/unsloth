@@ -709,10 +709,9 @@ def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
 def test_windows_slim_does_not_require_cpu_only_libomp(
     tmp_path, monkeypatch, backend, module, host_kwargs
 ):
-    # The published Windows manifest is shared by every backend and lists the
-    # OpenMP runtime that only the CPU llama bundle ships. The GPU bundles omit
-    # it and their ggml DLLs do not import it, so these must all stay valid
-    # pairings; the CPU bundle ships it either way.
+    # The shared Windows manifest lists the OpenMP runtime only the cpu llama
+    # bundle ships; the GPU bundles omit it and never import it, so every
+    # backend must still pair.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", module):

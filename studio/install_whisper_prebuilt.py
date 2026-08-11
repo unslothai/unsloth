@@ -417,11 +417,10 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows:
-        # The shared Windows manifest lists libomp because the CPU llama bundle
-        # links ggml against it; the GPU bundles (rocm, vulkan, cuda) do not ship
-        # it and their ggml DLLs do not import it. libomp is a transitive dep of
-        # llama's own ggml, so a working llama install already satisfies it and
-        # this gate only ever mis-rejects. Keep the ggml ABI sonames; drop libomp.
+        # The shared Windows manifest lists libomp because only the cpu llama
+        # bundle links ggml against it; rocm/cuda/vulkan neither ship nor import
+        # it. It is a transitive dep of llama's own ggml, so a working llama
+        # install already satisfies it and this gate can only mis-reject.
         # link_ggml_runtime still wires it whenever the bundle ships it.
         required_sonames = [
             name
