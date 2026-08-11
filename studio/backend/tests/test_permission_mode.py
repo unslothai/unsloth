@@ -1805,6 +1805,30 @@ def test_high_risk_dispatcher_non_terminal():
         ),  # a parameter shadows the imported class
         ("import yaml\ndef run(p):\n    f, d = p\n    f(d)\nrun((yaml.unsafe_load, s))", True),
         ("def run(p):\n    a, b = p\n    return a + b\nprint(run((1, 2)))", False),
+        # Once a constructor is registered, the safe loader is tainted whichever
+        # way the snippet reaches it.
+        (
+            "import yaml\nyaml.SafeLoader.add_constructor('!e', cb)\n"
+            "yaml.SafeLoader(s).get_data()",
+            True,
+        ),
+        (
+            "import yaml\nh.fn = yaml.safe_load\nyaml.SafeLoader.add_constructor('!e', cb)\n"
+            "h.fn(s)",
+            True,
+        ),
+        ("import yaml\nh.fn = yaml.safe_load\nprint(h.fn(open('c.yml')))", False),
+        ("import yaml\nprint(yaml.SafeLoader(open('c.yml').read()).get_data())", False),
+        # YAMLObject's metaclass registers from_yaml with no registrar call.
+        (
+            "import yaml\nclass T(yaml.YAMLObject):\n    yaml_loader = yaml.SafeLoader\n"
+            "    yaml_tag = '!t'\nyaml.safe_load(s)",
+            True,
+        ),
+        # A conditional hides which loader is selected.
+        ("import yaml\nld = yaml.unsafe_load if allow else yaml.safe_load\nld(s)", True),
+        ("import yaml\nld = yaml.safe_load if ok else yaml.unsafe_load\nld(s)", True),
+        ("p = 'a.yml' if flag else 'b.yml'\nprint(open(p).read())", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

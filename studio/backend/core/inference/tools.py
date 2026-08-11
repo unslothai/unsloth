@@ -3587,6 +3587,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Names bound to yaml.safe_load / safe_load_all, gated only once a registered
     # constructor makes even that read tag-directed.
     safe_func_aliases: "set[str]" = set()
+    attr_safe_func_aliases: "set[str]" = set()
     # Names bound to a literal container that holds a forwardable callable
     # (packed = (yaml.load, s)), so run(*packed) is still seen as an escape.
     packed_callable_names: "set[str]" = set()
@@ -3840,6 +3841,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         "add_multi_constructor",
         "yaml_constructors",
         "yaml_multi_constructors",
+        # yaml.YAMLObject's metaclass registers the class's from_yaml against
+        # whatever yaml_loader names, so the registration has no call site.
+        "YAMLObject",
+        "yaml_loader",
+        "from_yaml",
     }
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
@@ -3979,6 +3985,22 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if isinstance(value, (ast.IfExp, ast.BoolOp)):
+                # loader = yaml.unsafe_load if flag else yaml.safe_load: only one
+                # branch runs and the flag is not ours to evaluate, so bind the
+                # loader branch if there is one.
+                _branches = (
+                    [value.body, value.orelse]
+                    if isinstance(value, ast.IfExp)
+                    else list(value.values)
+                )
+                for _b in _branches:
+                    if _is_loader_attr(_b) or (
+                        isinstance(_b, ast.Name)
+                        and (_b.id in load_func_aliases or _b.id in load_class_aliases)
+                    ):
+                        value = _b
+                        break
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -4111,6 +4133,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and _is_load_module(value.value)
             ) or (isinstance(value, ast.Name) and value.id in safe_func_aliases):
                 safe_func_aliases.update(targets)  # f = yaml.safe_load
+                attr_safe_func_aliases.update(attr_targets)  # holder.fn = yaml.safe_load
             if _is_safe_loader(value):
                 # Safe = yaml.SafeLoader factors out a provably safe read, so keep
                 # the exemption, but only for a name bound exactly once here.
@@ -4422,9 +4445,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # registered, which puts a callback behind the payload's tags.
                     if (
                         (registers_constructor or uses_setattr)
-                        and func.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+                        and (
+                            func.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+                            or func.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                        )
                         and _is_load_module(func.value)
                     ):
+                        return True
+                    # A safe-load helper captured on an attribute, once tainted.
+                    if (
+                        registers_constructor or uses_setattr
+                    ) and func.attr in attr_safe_func_aliases:
                         return True
                     # A code-executing loader (torch.load, joblib.load,
                     # yaml.load/unsafe_load) runs code embedded in the data it
