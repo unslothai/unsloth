@@ -201,3 +201,32 @@ test("counts that cannot describe a bar do not draw one", () => {
     percent: null,
   });
 });
+
+test("a trainer's own start line stays on the model row whatever it trains", () => {
+  // `Starting SNAC training...` and `Starting Whisper training...` name a codec only
+  // because it names the run. Matching `snac`/`whisper` sent them to the dataset row while
+  // the sibling `Starting CSM training...` went to the model row, so the same event landed
+  // in different places depending on which family was selected.
+  for (const message of [
+    "Starting SNAC training...",
+    "Starting Whisper training...",
+    "Starting CSM training...",
+    "Starting embedding training...",
+    "Starting training...",
+    "Initializing MLX training...",
+    "Queued MLX training setup",
+  ]) {
+    const { title } = parsePreparationProgress(message, "Preparing");
+    assert.equal(classifyPreparation(title), "model", message);
+  }
+});
+
+test("reloading the eval split is dataset work", () => {
+  // Says "eval split" rather than "dataset", so no pattern caught it and a dataset reload
+  // was reported on the model row.
+  const { title } = parsePreparationProgress(
+    "Cached eval split unavailable; reloading train and eval from the Hub...",
+    "Preparing",
+  );
+  assert.equal(classifyPreparation(title), "dataset");
+});

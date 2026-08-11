@@ -182,3 +182,41 @@ test("a cached entry of unknown size still settles instead of hanging", () => {
   assert.equal(unsized.percent, 100);
   assert.equal(unsized.settled, true);
 });
+
+test("a response without complete_on_disk never settles on verification alone", () => {
+  // A backend older than the field. Reading a missing value as truthy would settle a row
+  // nothing has verified, and the poll would stop on its very first reading.
+  const legacy = {
+    downloaded_bytes: 400 * MB,
+    completed_bytes: 200 * MB,
+    expected_bytes: 20 * GB,
+    progress: 0.02,
+    cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+  } as DownloadProgressReading;
+  const first = downloadStateFromProgress(legacy);
+  assert.equal(first.completeOnDisk, false);
+  assert.equal(first.settled, false);
+  assert.equal(downloadStateFromProgress(legacy, first).settled, false);
+});
+
+test("a stale reading cannot become the baseline the next poll settles against", () => {
+  // The poll is an interval, not a chain, so a slow request can resolve after a newer one.
+  // Comparing byte counts for equality means a stale pair looks exactly like a quiet one,
+  // and the row would settle reporting the STALE total as its size.
+  const fresh: DownloadProgressReading = {
+    downloaded_bytes: 12 * GB,
+    completed_bytes: 12 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.6,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+  };
+  const stale = { ...fresh, downloaded_bytes: 4 * GB, completed_bytes: 4 * GB, progress: 0.2 };
+  const settled = pollTwice(fresh);
+  assert.equal(settled.settled, true);
+  assert.equal(coerceCachedStateReady(settled).totalBytes, 12 * GB);
+  // The overlay drops the stale response by generation, so the row keeps the fresh total.
+  const afterStale = downloadStateFromProgress(stale, settled);
+  assert.equal(afterStale.settled, false);
+  assert.equal(downloadStateFromProgress(stale, afterStale).totalBytes, 20 * GB);
+});

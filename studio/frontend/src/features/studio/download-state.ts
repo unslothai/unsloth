@@ -10,7 +10,9 @@ export type DownloadProgressReading = {
   completed_bytes: number;
   expected_bytes: number;
   progress: number;
-  complete_on_disk: boolean;
+  // optional on purpose: a backend older than this field is the one case where treating a
+  // missing value as `true` would settle a row that nothing verified.
+  complete_on_disk?: boolean;
   // omitted, not nulled, when the cache could not be scanned at all.
   cache_path?: string | null;
 };
@@ -44,6 +46,7 @@ export function downloadStateFromProgress(
   reading: DownloadProgressReading,
   previous: DownloadState = EMPTY_DOWNLOAD_STATE,
 ): DownloadState {
+  const completeOnDisk = reading.complete_on_disk ?? false;
   const totalBytes = reading.expected_bytes;
   const downloadedBytes = reading.downloaded_bytes;
   const completedBytes = reading.completed_bytes;
@@ -58,8 +61,8 @@ export function downloadStateFromProgress(
     totalBytes,
     percent: totalBytes > 0 ? Math.min(100, Math.round(reading.progress * 100)) : 0,
     cachePath: reading.cache_path ?? null,
-    completeOnDisk: reading.complete_on_disk,
-    settled: reading.complete_on_disk || (nothingInFlight && unchanged),
+    completeOnDisk,
+    settled: completeOnDisk || (nothingInFlight && unchanged),
   };
 }
 

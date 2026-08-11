@@ -104,12 +104,20 @@ function useHfDownloadProgress(
     let interval: ReturnType<typeof setInterval> | null = null;
     // settling compares against the previous reading, so the poll carries it rather than reading it back out of React.
     let latest = EMPTY_DOWNLOAD_STATE;
+    // the tick does not wait for the request, so a slow response can land after a newer
+    // one. settling compares byte counts for equality, so a stale reading both revokes a
+    // correct settle and becomes the baseline the next poll settles against -- reporting
+    // the stale total as the row's size. discard anything older than what we already have.
+    let issued = 0;
+    let applied = 0;
 
     const poll = async () => {
       if (cancelled || finished) return;
+      const generation = ++issued;
       try {
         const prog = await fetcher(repoId);
-        if (cancelled) return;
+        if (cancelled || generation <= applied) return;
+        applied = generation;
         const next = downloadStateFromProgress(prog, latest);
         latest = next;
         setState(next);
@@ -155,6 +163,17 @@ type ResourceRowProps = {
   preparation: PreparationProgress | null;
 };
 
+// Whether the row would draw anything. The caller needs the same answer: the row is
+// mounted unconditionally now, and its `AnimatedSpan` wrapper still lays out a line even
+// when the row itself renders null, which left a blank gap in the terminal for a run whose
+// dataset never produces a transfer.
+export function resourceRowHasContent(
+  state: DownloadState,
+  preparation: PreparationProgress | null,
+): boolean {
+  return Boolean(preparation) || state.downloadedBytes > 0 || Boolean(state.cachePath);
+}
+
 // one row per resource for its whole setup: the transfer while bytes move, then that
 // resource's preparation step once they stop.
 function ResourceRow({
@@ -167,8 +186,11 @@ function ResourceRow({
   // produces, so we show "5.2 / 20.7 GB • 85.3 MB/s • 3m 12s left", not just the pair.
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
-  if (!preparation && state.downloadedBytes <= 0 && !state.cachePath) return null;
-  const isComplete = state.settled;
+  if (!resourceRowHasContent(state, preparation)) return null;
+  // the coerced state, not the raw one: `coerceCachedStateReady` declines to rewrite a
+  // reading with no cache path, so keying the badge off `settled` alone put a green Ready
+  // next to a percent still below 100.
+  const isComplete = state.settled && state.percent >= 100;
   // uploaded and S3 datasets never produce a transfer, so preparation is all this row has.
   const preparing =
     state.downloadedBytes > 0 && !state.settled ? null : preparation;
@@ -408,7 +430,7 @@ export function TrainingStartOverlay({
             <AnimatedSpan className="mt-3 text-muted-foreground">
               {t("studio.trainingStart.datasetStreaming")}
             </AnimatedSpan>
-          ) : (
+          ) : resourceRowHasContent(datasetDownload, datasetPreparation) ? (
             <AnimatedSpan className="mt-3">
               <ResourceRow
                 label={t("studio.trainingStart.dataset")}
@@ -416,14 +438,16 @@ export function TrainingStartOverlay({
                 preparation={datasetPreparation}
               />
             </AnimatedSpan>
-          )}
-          <AnimatedSpan className="mt-3">
-            <ResourceRow
-              label={t("studio.trainingStart.modelWeights")}
-              state={modelDownload}
-              preparation={modelPreparation}
-            />
-          </AnimatedSpan>
+          ) : null}
+          {resourceRowHasContent(modelDownload, modelPreparation) ? (
+            <AnimatedSpan className="mt-3">
+              <ResourceRow
+                label={t("studio.trainingStart.modelWeights")}
+                state={modelDownload}
+                preparation={modelPreparation}
+              />
+            </AnimatedSpan>
+          ) : null}
           </Terminal>
         </div>
       </div>
