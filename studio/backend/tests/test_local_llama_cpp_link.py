@@ -13,11 +13,13 @@ These exercise real link behavior rather than grepping the scripts.
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from utils import llama_cpp_update as u
+from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
 
 
@@ -99,7 +101,31 @@ def test_start_update_refuses_local_link(tmp_path: Path, monkeypatch) -> None:
     assert res["reason"] == "local_link"
 
 
-def _run_orphan_scan(monkeypatch, studio_root: Path, fake: _FakeProc) -> int:
+def _fake_procfs(tmp_path: Path, fake: _FakeProc) -> Path:
+    """Build a /proc-shaped tree holding a single llama-server process."""
+    root = tmp_path / "fake-proc"
+    entry = root / str(fake.info["pid"])
+    entry.mkdir(parents = True)
+    # comm sits between the first "(" and the last ")" of the stat line.
+    (entry / "stat").write_bytes(
+        f"{fake.info['pid']} (llama-server) S 1 0 0".encode("utf-8")
+    )
+    (entry / "exe").symlink_to(fake.info["exe"])
+    # A non-numeric sibling and a process with a different name must be ignored.
+    (root / "self").mkdir()
+    other = root / str(fake.info["pid"] + 1)
+    other.mkdir()
+    (other / "stat").write_bytes(b"1 (python3) S 1 0 0")
+    return root
+
+
+def _run_orphan_scan(
+    monkeypatch,
+    studio_root: Path,
+    fake: _FakeProc,
+    scan: str = "psutil",
+    tmp_path: Path = None,
+) -> int:
     # psutil drives the cross-platform process scan; skip (rather than error) if a
     # minimal test env lacks it. CI installs it so these tests actually run.
     psutil = pytest.importorskip("psutil")
@@ -110,11 +136,35 @@ def _run_orphan_scan(monkeypatch, studio_root: Path, fake: _FakeProc) -> int:
         staticmethod(lambda: (studio_root.resolve(), False)),
     )
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
-    monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
+
+    if scan == "procfs":
+        # Linux reads /proc directly. Point it at a fixture tree and intercept
+        # the signal, since the fixture's pid is not a real process.
+        if sys.platform != "linux":
+            pytest.skip("the procfs scan only runs on Linux")
+        monkeypatch.setattr(
+            llama_cpp_module, "_PROC_ROOT", str(_fake_procfs(tmp_path, fake))
+        )
+
+        def _fake_kill(pid, sig):
+            if pid == fake.info["pid"]:
+                fake.kill()
+                return
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setattr(os, "kill", _fake_kill)
+    else:
+        # No /proc means the cross-platform psutil branch, which is what
+        # macOS and Windows take.
+        monkeypatch.setattr(
+            llama_cpp_module, "_PROC_ROOT", str(studio_root / "no-such-proc")
+        )
+        monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
     return LlamaCppBackend._kill_orphaned_servers()
 
 
-def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("scan", ["psutil", "procfs"])
+def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch, scan) -> None:
     studio_root = tmp_path / "studio-home"
     studio_root.mkdir()
     external = tmp_path / "external"
@@ -124,12 +174,13 @@ def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch) -> N
 
     exe_under_link = str((external / _server_subpath()).resolve())
     fake = _FakeProc(os.getpid() + 777, exe_under_link)
-    killed = _run_orphan_scan(monkeypatch, studio_root, fake)
+    killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
     assert killed == 0
     assert fake.killed is False
 
 
-def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("scan", ["psutil", "procfs"])
+def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch, scan) -> None:
     # Control: a real (non-link) managed root still gets its orphan reaped, so
     # the spare-the-link test above is meaningful (not a no-op).
     studio_root = tmp_path / "studio-home"
@@ -139,6 +190,6 @@ def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch) -> No
     exe.write_text("x")
 
     fake = _FakeProc(os.getpid() + 888, str(exe.resolve()))
-    killed = _run_orphan_scan(monkeypatch, studio_root, fake)
+    killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
     assert killed == 1
     assert fake.killed is True
