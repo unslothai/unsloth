@@ -641,6 +641,7 @@ def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
     _clear_compiled_cache_unless_shared(
         getattr(app.state, "live_sibling_backend", None),
         started_at = getattr(app.state, "backend_started_at", None),
+        established_probe = getattr(app.state, "established_sibling_backend", None),
     )
 
 

@@ -1089,6 +1089,24 @@ def _legacy_record() -> "tuple[int, float | None, str | None] | None":
         return None
 
 
+def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
+    for record in records:
+        if record is None:
+            continue
+        pid, created, _address = record
+        if pid == me or not _pid_alive(pid):
+            continue
+        # Corroborate against every other record for this PID, the way
+        # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
+        # time, and an untimed record is trusted unconditionally, so on its own
+        # it would resurrect a server that died and had its PID reused -- and
+        # keep the compiled cache forever on the strength of it. A timestamped
+        # record for the same PID that fails the check is the proof it is gone.
+        if _pid_is_studio_backend(pid, [created] + [r[1] for r in timed if r[0] == pid]):
+            return pid
+    return None
+
+
 def live_sibling_backend() -> "int | None":
     """PID of another live Studio backend of this install, or None.
 
@@ -1107,21 +1125,21 @@ def live_sibling_backend() -> "int | None":
     """
     me = os.getpid()
     timed = [r for r in _startup_marker_records() + _per_port_records() if r is not None]
-    for record in timed + [_legacy_record()]:
-        if record is None:
-            continue
-        pid, created, _address = record
-        if pid == me or not _pid_alive(pid):
-            continue
-        # Corroborate against every other record for this PID, the way
-        # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
-        # time, and an untimed record is trusted unconditionally, so on its own
-        # it would resurrect a server that died and had its PID reused -- and
-        # keep the compiled cache forever on the strength of it. A timestamped
-        # record for the same PID that fails the check is the proof it is gone.
-        if _pid_is_studio_backend(pid, [created] + [r[1] for r in timed if r[0] == pid]):
-            return pid
-    return None
+    return _live_sibling(timed + [_legacy_record()], me, timed)
+
+
+def established_sibling_backend() -> "int | None":
+    """PID of a sibling that has already bound a port, or None.
+
+    Deliberately blind to startup markers. A sibling that is itself still
+    starting has not cleaned anything, so it is not a reason to keep a stale
+    cache; a sibling that is serving is, and a pre-upgrade one writes no marker
+    and no stamp, so judging it by whether it has cleared would clear the cache
+    underneath it.
+    """
+    me = os.getpid()
+    timed = [r for r in _per_port_records() if r is not None]
+    return _live_sibling(timed + [_legacy_record()], me, timed)
 
 
 def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
@@ -2032,7 +2050,22 @@ _PARALLEL_MAX = 64
 _PARALLEL_DEFAULT_PLAIN = 4
 
 
-def run_server(
+def run_server(*args, **kwargs):
+    """Start the server, and take the startup marker back if it never starts.
+
+    An embedded caller keeps its process alive across a failure -- colab.py
+    catches SystemExit and Exception around this -- and no exit hook runs then.
+    A marker left behind would answer every later sibling probe as a live
+    backend, so no backend of this install would clear the compiled cache again.
+    """
+    try:
+        return _run_server(*args, **kwargs)
+    except BaseException:
+        _remove_startup_marker()
+        raise
+
+
+def _run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
     frontend_path: Path = _DEFAULT_FRONTEND_PATH,
@@ -2185,6 +2218,7 @@ def run_server(
     # shutdown, when a sibling may have started since. On app.state rather than
     # imported, because main.py must not import this module back.
     app.state.live_sibling_backend = live_sibling_backend
+    app.state.established_sibling_backend = established_sibling_backend
     # Read here rather than in main.py: the decision is about whether anything
     # cleared since THIS process started, and the marker is already written.
     app.state.backend_started_at = _process_create_time(os.getpid())

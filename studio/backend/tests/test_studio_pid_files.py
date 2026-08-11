@@ -878,14 +878,80 @@ def test_one_of_two_cold_starts_clears_the_stale_modules(tmp_path, monkeypatch):
     )
     started = time.time()
 
-    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550, started_at = started)
+    cache_cleanup.clear_compiled_cache_unless_shared(
+        lambda: 8550, started_at = started, established_probe = lambda: None
+    )
 
     assert events == ["clear"], "the first cold start clears"
 
     # A second one, started at the same time, now finds a clear newer than itself.
-    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551, started_at = started)
+    cache_cleanup.clear_compiled_cache_unless_shared(
+        lambda: 8551, started_at = started, established_probe = lambda: None
+    )
 
     assert events == ["clear"], "the second one keeps what the first just cleaned"
+
+
+def test_an_established_sibling_keeps_the_cache_even_with_no_stamp(tmp_path, monkeypatch):
+    # A pre-upgrade sibling writes no stamp at all, so judging it by stamps
+    # would read an established backend as a concurrent cold start and clear the
+    # cache underneath it.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(
+        lambda: 8550, started_at = time.time(), established_probe = lambda: 8550
+    )
+
+    assert events == []
+
+
+def test_one_install_stamp_does_not_speak_for_another_installs_caches(tmp_path, monkeypatch):
+    # Two installs sharing only UNSLOTH_COMPILE_LOCATION: a stamp for the shared
+    # directory must not stand in for this install's own cache dirs, whose stale
+    # modules register_compiled_cache_on_path would put back on sys.path.
+    shared = tmp_path / "shared"
+    private = tmp_path / "private"
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [shared, private])
+    shared.mkdir()
+    (shared / "cleared").write_text(str(time.time() + 60), encoding = "utf-8")
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(
+        lambda: 8550, started_at = time.time(), established_probe = lambda: None
+    )
+
+    assert events == ["clear"], "the unstamped private cache still needs clearing"
+
+
+def test_a_partial_lock_set_is_not_reported_as_held(tmp_path, monkeypatch):
+    # The directory that fails may be the shared one two installs coordinate
+    # through, so holding only the private locks is not protection.
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(
+        cache_cleanup, "cache_coordination_dirs", lambda: [tmp_path / "ok", blocked / "lock"]
+    )
+
+    with cache_cleanup.compiled_cache_lock() as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
+
+
+def test_coordination_paths_that_cannot_be_resolved_degrade(tmp_path, monkeypatch):
+    # No temp dir, or a configured path that will not expand: taking the lock has
+    # to degrade rather than abort a startup that only wanted to know about siblings.
+    def boom():
+        raise RuntimeError("no temp dir")
+
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", boom)
+
+    with cache_cleanup.compiled_cache_lock() as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
 
 
 def test_a_sibling_that_started_before_us_keeps_the_cache(tmp_path, monkeypatch):
@@ -933,3 +999,37 @@ def test_contention_is_still_retried_to_the_timeout(tmp_path, monkeypatch):
     with cache_cleanup.compiled_cache_lock(timeout = 0.2) as state:
         assert state == cache_cleanup.LOCK_BUSY
     assert time.monotonic() - started >= 0.2, "contention waits out the budget"
+
+
+def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
+    # colab.py catches SystemExit and Exception around run_server and keeps the
+    # process alive, so no exit hook runs. A marker left behind would answer
+    # every later probe as a live backend of this install.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(run, "_run_server", explode)
+
+    with pytest.raises(RuntimeError):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
+    # SystemExit is a BaseException, and it is the one colab.py catches.
+    run.write_startup_marker()
+
+    def bail(*args, **kwargs):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(run, "_run_server", bail)
+
+    with pytest.raises(SystemExit):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []

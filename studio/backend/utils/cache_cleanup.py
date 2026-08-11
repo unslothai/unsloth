@@ -318,7 +318,15 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
     """
     import time
 
-    paths = sorted(cache_coordination_dirs())
+    try:
+        paths = sorted(cache_coordination_dirs())
+    except Exception as exc:  # noqa: BLE001
+        # No temp dir, or a configured path that will not expand. Discovery is
+        # part of taking the lock, so it degrades the same way rather than
+        # aborting a startup that only wanted to know about siblings.
+        logger.debug(f"Could not resolve the compiled-cache coordination dirs ({exc})")
+        yield LOCK_UNAVAILABLE
+        return
     fds: "List[int]" = []
     unsupported = 0
     state = LOCK_HELD
@@ -359,10 +367,13 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
                     break
             if state == LOCK_BUSY:
                 break
-        if state != LOCK_BUSY and not fds:
-            # Nothing could be locked anywhere, which must not mean "never clear
-            # the cache again" on this machine.
-            state = LOCK_UNAVAILABLE if unsupported else LOCK_HELD
+        if state != LOCK_BUSY and (unsupported or not fds):
+            # A partial set is not protection: the one directory that failed may
+            # be the shared one two installs coordinate through, and reporting
+            # held would let both into the critical section. Unavailable is the
+            # honest answer, and it degrades to the unserialized probe rather
+            # than meaning "never clear the cache again" on this machine.
+            state = LOCK_UNAVAILABLE
         yield state
     finally:
         for fd in fds:
@@ -373,22 +384,30 @@ def _clear_stamp_paths() -> List[Path]:
     return [d / "cleared" for d in cache_coordination_dirs()]
 
 
-def _last_clear_time() -> float:
-    """When a backend of this install last cleared, or 0.0.
+def _every_path_cleared_since(started_at: float) -> bool:
+    """Whether every cache this install would clear has been cleared since then.
 
     Read under the lock. Two launches that overlap after a crash both publish a
     startup marker before either reaches its clear, so each would see the other
     and keep a cache that is stale for both. The stamp lets exactly one of them
     do the clear: whoever holds the lock first finds no stamp newer than its own
-    start and clears, and the other then sees a stamp newer than its start.
+    start and clears, and the other then sees one.
+
+    Every path has to answer, not the newest of them: two installs sharing only
+    UNSLOTH_COMPILE_LOCATION would otherwise let one install's stamp for the
+    shared directory stand in for the other's private install-tree caches, whose
+    stale modules `register_compiled_cache_on_path` would then put on sys.path.
     """
-    newest = 0.0
-    for path in _clear_stamp_paths():
+    paths = _clear_stamp_paths()
+    if not paths:
+        return False
+    for path in paths:
         try:
-            newest = max(newest, float(path.read_text(encoding = "utf-8").strip()))
+            if float(path.read_text(encoding = "utf-8").strip()) <= started_at:
+                return False
         except (OSError, ValueError):
-            continue
-    return newest
+            return False
+    return True
 
 
 def _record_clear() -> None:
@@ -403,22 +422,26 @@ def _record_clear() -> None:
 
 
 def clear_compiled_cache_unless_shared(
-    sibling_probe = None, started_at: "float | None" = None
+    sibling_probe = None,
+    started_at: "float | None" = None,
+    established_probe = None,
 ) -> None:
     """Clear the compiled cache, unless another backend of this install is live.
 
     The cache sits in the install tree, not the studio home, so two of our own
     backends share it and the wipe would delete modules the other one is still
     importing -- including the Unsloth*Trainer.py that the in-process clears
-    preserve for spawn workers. run_server supplies the probe; without it (tests,
-    an embedded app) the old unconditional clear stands.
+    preserve for spawn workers. run_server supplies the probes; without them
+    (tests, an embedded app) the old unconditional clear stands.
 
     The probe and the clear run under `compiled_cache_lock` so a sibling cannot
     publish itself in between and lose the modules it has already compiled.
 
-    `started_at` is this process's start time. A sibling that is itself still
-    starting is not a reason to keep a cache nobody has cleaned yet, so a clear
-    recorded before we started does not count and one recorded after does.
+    A sibling that has already bound a port always keeps the cache. Only a
+    sibling that is itself still starting, and only when nothing has cleared
+    since we started, is treated as a concurrent cold start whose stale modules
+    still need removing; a pre-upgrade sibling writes no stamp at all, so
+    judging it by stamps would clear the cache underneath it.
     """
     if not callable(sibling_probe):
         clear_unsloth_compiled_cache()
@@ -436,12 +459,15 @@ def clear_compiled_cache_unless_shared(
             clear_unsloth_compiled_cache()
             _record_clear()
             return
-        # A sibling is up, but if nothing has cleared since we started then it
-        # is another cold start and the modules are stale for both of us.
-        if started_at is not None and _last_clear_time() <= started_at:
+        established = established_probe() if callable(established_probe) else sibling
+        if (
+            established is None
+            and started_at is not None
+            and not _every_path_cleared_since(started_at)
+        ):
             logger.info(
                 f"Clearing the compiled cache before backend {sibling} uses it: "
-                "no backend of this install has cleared it since this one started"
+                "it is starting too and nothing has cleared since this one did"
             )
             clear_unsloth_compiled_cache()
             _record_clear()
