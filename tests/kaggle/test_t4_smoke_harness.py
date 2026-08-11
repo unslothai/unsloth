@@ -1545,9 +1545,7 @@ def test_every_leg_is_either_wired_or_explained():
 
     wired = {name for kernel in KERNELS for name in kernel}
     for name in LEGS:
-        assert name in wired or name in UNWIRED, (
-            f"leg {name!r} is in neither KERNELS nor UNWIRED"
-        )
+        assert name in wired or name in UNWIRED, f"leg {name!r} is in neither KERNELS nor UNWIRED"
 
 
 def test_nothing_is_both_wired_and_unwired():
@@ -1564,7 +1562,6 @@ def test_an_unwired_note_says_what_is_unknown():
     without running it. Vacuous while UNWIRED is empty, and that is correct:
     it has something to check the moment a leg goes back in."""
     from legs import UNWIRED
-
     for name, note in UNWIRED.items():
         assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
 
@@ -1590,9 +1587,9 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
         ("--lora-rank", "16"),
     ):
         assert flag in args, f"grpo leg lost {flag}"
-        assert args[args.index(flag) + 1] == value, (
-            f"{flag} is {args[args.index(flag) + 1]}, not the {value} that fit"
-        )
+        assert (
+            args[args.index(flag) + 1] == value
+        ), f"{flag} is {args[args.index(flag) + 1]}, not the {value} that fit"
     assert "--load-in-4bit" in args
 
 

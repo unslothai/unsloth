@@ -258,12 +258,17 @@ LEGS: dict[str, Leg] = {
         # Measured on kernel unsloth-t4-ci-53efcc4e: peak 13.60GB allocated of
         # 14.56GB, three steps in 192s.
         args = (
-            "--max-steps", "3",
+            "--max-steps",
+            "3",
             "--load-in-4bit",
-            "--gpu-memory-utilization", "0.5",
-            "--max-seq-length", "1024",
-            "--num-generations", "2",
-            "--lora-rank", "16",
+            "--gpu-memory-utilization",
+            "0.5",
+            "--max-seq-length",
+            "1024",
+            "--num-generations",
+            "2",
+            "--lora-rank",
+            "16",
         ),
         env = {
             "UNSLOTH_VLLM_STANDBY": "1",
