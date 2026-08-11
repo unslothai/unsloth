@@ -1056,13 +1056,38 @@ jobs:
           #
           # Mint/Ubuntu 24.04 is a far larger population than the immutable distros, and
           # #7953 was a release blocker, so the plainly-named download stays the thin
-          # one until the portable bundle stops capturing host loads.
-          # build-portable-appimage.sh and its tests stay in the tree.
+          # one: a user who picks the default gets the bundle that is known to render
+          # everywhere the app is supported.
           studio/src-tauri/linux/build-thin-appimage.sh \
             "$deb_path" \
             "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
             "$appimage"
+
+          # ...and the portable bundle ships beside it, named explicitly.
+          #
+          # The two failure modes are not symmetric. The thin bundle cannot START on a
+          # host without WebKitGTK, and prints an apt command an immutable distro cannot
+          # run -- there is no workaround on a Steam Deck. The portable bundle starts
+          # there and works, and its open problem is confined to 24.04, where it renders
+          # nothing (EGL_BAD_PARAMETER) while staying alive.
+          #
+          # So neither is right for everyone, and picking one costs somebody the app
+          # entirely. Shipping both under distinct names lets the default stay safe while
+          # the immutable distros get something that runs, and nobody on Mint reaches the
+          # experimental one by accident. It is built from the SAME deb as the thin one,
+          # so the payload is identical and only the packaging differs.
+          #
+          # Deliberately NOT signed and NOT in the updater feed: latest.json points at
+          # the plain -Linux.AppImage, and an updater that swapped a user's thin install
+          # for a portable one would change packaging under them without asking.
+          portable="$output_dir/unsloth-studio_${APP_VERSION}_amd64-portable.AppImage"
+          export PORTABLE_APPIMAGE_PATH="$portable"
+          studio/src-tauri/linux/build-portable-appimage.sh \
+            "$deb_path" \
+            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
+            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
+            "$portable"
           signature="${appimage}.sig"
           # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
           npx --prefix studio tauri signer sign "$appimage"
@@ -1089,6 +1114,12 @@ jobs:
           deb_paths = json.loads(os.environ['ARTIFACT_PATHS'])
           appimage = os.environ['APPIMAGE_PATH']
           paths = [*deb_paths, appimage, f'{appimage}.sig']
+          # tauri-action knows nothing about the portable bundle, so without this it
+          # would be built and then discarded with the runner. No .sig: it is a plain
+          # download, not an updater target.
+          portable = os.environ.get('PORTABLE_APPIMAGE_PATH')
+          if portable:
+              paths.append(portable)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'artifactPaths={json.dumps(paths)}\n')
           PY
@@ -1630,6 +1661,10 @@ jobs:
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
               ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
+              # MUST precede the plain '.AppImage' entry: the portable bundle ends with
+              # that too, so a later match would stage it over the thin one and trip the
+              # duplicate-name check below.
+              ('-portable.AppImage', f'{base_name}-Linux-portable.AppImage'),
               ('.AppImage', f'{base_name}-Linux.AppImage'),
               ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
               ('-setup.exe', f'{base_name}-Windows.exe'),

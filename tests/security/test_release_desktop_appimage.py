@@ -61,15 +61,19 @@ def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
     assert "--bundles deb" in build["with"]["args"]
     assert '"createUpdaterArtifacts":false' in build["with"]["args"]
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build.get("env", {})
-    # Exactly one AppImage is built, and it is the thin one. Compare against the
-    # commands only: the step explains in a comment why the portable builder is not
-    # called, and a naive substring check would match that explanation.
+    # Both AppImages are built, once each, from the same deb. Compare against the
+    # commands only: the step explains the split in a comment, and a naive substring
+    # check would match the explanation rather than the invocation.
     commands = "\n".join(
         line for line in package["run"].splitlines() if not line.strip().startswith("#")
     )
     assert commands.count("build-thin-appimage.sh") == 1
-    assert "build-portable-appimage.sh" not in commands
+    assert commands.count("build-portable-appimage.sh") == 1
+    # Only the thin one is signed and fed to the updater. Signing the portable bundle
+    # would make it an updater target and could swap a user's thin install for a
+    # different packaging without asking.
     assert 'tauri signer sign "$appimage"' in package["run"]
+    assert 'tauri signer sign "$portable"' not in package["run"]
     assert 'tauri signer sign "$appimage" > "$signature"' not in package["run"]
     assert "base64.b64decode(signature_value, validate=True)" in package["run"]
     assert "f'{appimage}.sig'" in package["run"]
@@ -121,18 +125,32 @@ def test_release_appimage_passes_the_bundled_host_library_guard():
     commands = "\n".join(
         line for line in package["run"].splitlines() if not line.strip().startswith("#")
     )
-    invoked = [
-        name
-        for name in ("build-thin-appimage.sh", "build-portable-appimage.sh")
-        if name in commands
-    ]
-    assert invoked == ["build-thin-appimage.sh"], (
-        f"the release invokes {invoked}; only the packager that runs assert_thin_appdir "
-        "may build the shipped AppImage (#7953)"
+    # Both packagers run now, so presence proves nothing -- identify them by the
+    # output each is handed. The one given "$appimage", the canonical name users
+    # download, is the one that must carry the guard; "$portable" is a separate,
+    # explicitly-named asset.
+    def _output_of(script: str) -> str:
+        body = commands.split(script, 1)[1]
+        # The invocation is a backslash-continued run of arguments; the last one is
+        # the output path.
+        args: list[str] = []
+        for line in body.splitlines():
+            args.append(line.strip().rstrip("\\").strip())
+            if not line.rstrip().endswith("\\"):
+                break
+        return args[-1]
+
+    assert "build-thin-appimage.sh" in commands and "build-portable-appimage.sh" in commands
+    assert _output_of("build-thin-appimage.sh") == '"$appimage"', (
+        "the plainly-named -Linux.AppImage must come from the packager that runs "
+        "assert_thin_appdir (#7953)"
     )
-    packager = (REPO_ROOT / "studio" / "src-tauri" / "linux" / invoked[0]).read_text(
-        encoding = "utf-8"
+    assert _output_of("build-portable-appimage.sh") == '"$portable"', (
+        "the portable bundle must not take the canonical AppImage name"
     )
+    packager = (
+        REPO_ROOT / "studio" / "src-tauri" / "linux" / "build-thin-appimage.sh"
+    ).read_text(encoding = "utf-8")
     assert "assert_thin_appdir" in packager
     # The specific pairing measured to break on Ubuntu 24.04 / Linux Mint 22: a
     # bundled nghttp2 with no bundled curl, against the host's newer libcurl-gnutls.
