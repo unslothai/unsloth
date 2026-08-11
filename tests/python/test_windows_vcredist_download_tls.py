@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The direct VC++ runtime download must negotiate TLS 1.2 on legacy protocol defaults."""
+"""The direct VC++ runtime download must negotiate TLS 1.2 and run only Microsoft's binary."""
 
 from __future__ import annotations
 
@@ -25,6 +25,19 @@ def _download_block() -> str:
     start = source.index(_START)
     end = source.index(_END, start) + len(_END)
     return source[start:end]
+
+
+def test_the_download_is_verified_as_microsoft_signed_before_it_runs():
+    # No pwsh needed: Get-AuthenticodeSignature is Windows-only, so the ordering of the three
+    # steps in the real block is the thing to hold still. A verification placed after
+    # Start-Process, or one that only checks Status, would still "pass" on a swapped binary.
+    block = _download_block()
+    download = block.index("Invoke-WebRequest")
+    verify = block.index("Get-AuthenticodeSignature", download)
+    execute = block.index("Start-Process", verify)
+    assert download < verify < execute
+    assert "SignatureStatus]::Valid" in block
+    assert "O=Microsoft Corporation" in block
 
 
 def _script(starting_protocol: str) -> str:
