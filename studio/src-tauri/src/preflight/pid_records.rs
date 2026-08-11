@@ -1,6 +1,8 @@
+use crate::process_identity::ProcessOrigin;
 use std::path::Path;
 
-/// The pid of a live backend running out of THIS install, if one is recorded.
+/// The pid of a live backend of THIS install that is serving `port`, if one is
+/// recorded.
 ///
 /// A mutation rewrites the install tree, so the question it has to answer about
 /// an unattributable backend is not "is something listening" but "is a live
@@ -8,12 +10,22 @@ use std::path::Path;
 /// cannot answer that: a Studio reached through an SSH forward answers from
 /// 127.0.0.1 exactly like a local one.
 ///
-/// Two things are combined to answer it. The server records itself on bind, in
-/// a per-port `studio-{port}-{pid}.pid` file and, for older builds, in a bare
-/// `studio.pid`. Those records are hints only: they outlive crashes, the
-/// per-port write is best effort, and the OS reuses pids. So each recorded pid
-/// is then attributed by the executable it is actually running, which is the
-/// part that decides.
+/// The server records itself on bind, in a per-port `studio-{port}-{pid}.pid`
+/// file and, for older builds, in a bare `studio.pid`. Those records are hints
+/// only: they outlive crashes, the per-port write is best effort, and the OS
+/// reuses pids. So each recorded pid is checked against the process actually
+/// wearing it, by start time and by what it is running.
+pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
+    let root = record_root();
+    let interpreters = crate::process_identity::interpreters_of(&root);
+    let probe = Probe {
+        is_live: &|pid| crate::desktop_backend_owner::pid_is_not_dead(pid),
+        origin: &|pid| crate::process_identity::origin_of(pid, &root, &interpreters),
+        started_at: &crate::process_identity::process_start_time_secs,
+    };
+    live_backend_pid_in(&root, port, &probe)
+}
+
 #[cfg(test)]
 pub(super) static TEST_RECORD_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> =
     std::sync::Mutex::new(None);
@@ -30,39 +42,53 @@ fn record_root() -> std::path::PathBuf {
     crate::diagnostics::studio_dir()
 }
 
-pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
-    let root = record_root();
-    let shared = crate::process_identity::shared_interpreters_in(&root);
-    let probe = Probe {
-        is_live: &|pid| crate::desktop_backend_owner::pid_is_not_dead(pid),
-        runs_from_tree: &|pid| crate::process_identity::runs_from(pid, &root, &shared),
-    };
-    live_backend_pid_in(&root, port, &probe)
-}
-
 /// What the OS is asked about a recorded pid, injected so the decision below
 /// can be tested without real processes to point it at.
 struct Probe<'a> {
     /// False only when the pid is provably gone.
     is_live: &'a dyn Fn(u32) -> bool,
-    /// None when the executable could not be read.
-    runs_from_tree: &'a dyn Fn(u32) -> Option<bool>,
+    origin: &'a dyn Fn(u32) -> ProcessOrigin,
+    /// Unix epoch seconds the process started, when the OS will say.
+    started_at: &'a dyn Fn(u32) -> Option<f64>,
 }
 
-/// Whether a recorded pid still runs, and if so out of our tree.
-///
-/// `Ok(None)` is "running, but we could not read its executable": another
-/// user's process, or a platform with no implementation. It is deliberately
-/// distinct from `Ok(Some(false))`, because the two get different answers below.
-type Attribution = Result<Option<bool>, Dead>;
+/// A record and the process wearing its pid, once the two have been compared.
+enum Recorded {
+    /// The pid is gone, or belongs to a process that started at a different
+    /// time, so the record is left over from a crash.
+    Stale,
+    /// Live, and running out of this install.
+    OurBackend,
+    /// Live, and running an interpreter this install's venv defers to. It may
+    /// be our backend and may be any other program sharing that interpreter.
+    MaybeOurs,
+    /// Live, and running something else entirely.
+    Foreign,
+    /// Live, and the OS would not say what it is running.
+    Opaque,
+}
 
-struct Dead;
+/// The Python side uses the same one-second window in `_pid_is_studio_backend`.
+const START_TIME_TOLERANCE_SECS: f64 = 1.0;
 
-fn attribute(pid: u32, probe: &Probe) -> Attribution {
+fn classify(pid: u32, recorded_start: Option<f64>, probe: &Probe) -> Recorded {
     if !(probe.is_live)(pid) {
-        return Err(Dead);
+        return Recorded::Stale;
     }
-    Ok((probe.runs_from_tree)(pid))
+    // A recorded start time that disagrees is proof the pid was reused, which
+    // no amount of executable evidence can override: the process the record
+    // described is gone.
+    if let (Some(recorded), Some(actual)) = (recorded_start, (probe.started_at)(pid)) {
+        if (actual - recorded).abs() > START_TIME_TOLERANCE_SECS {
+            return Recorded::Stale;
+        }
+    }
+    match (probe.origin)(pid) {
+        ProcessOrigin::InsideTree => Recorded::OurBackend,
+        ProcessOrigin::SharedInterpreter => Recorded::MaybeOurs,
+        ProcessOrigin::Elsewhere => Recorded::Foreign,
+        ProcessOrigin::Unknown => Recorded::Opaque,
+    }
 }
 
 fn live_backend_pid_in(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
@@ -72,9 +98,8 @@ fn live_backend_pid_in(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
     legacy_record_pid(root, probe)
 }
 
-/// A record naming this exact port is strong evidence on its own, so an
-/// executable we cannot read leaves it standing. Only positive proof that the
-/// process belongs to some other tree clears it.
+/// A record naming this exact port is strong evidence on its own, so anything
+/// short of proof that the pid belongs elsewhere leaves it standing.
 fn per_port_record_pid(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
     let prefix = format!("studio-{port}-");
     for entry in std::fs::read_dir(root).ok()?.flatten() {
@@ -82,8 +107,9 @@ fn per_port_record_pid(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
         let Some(name) = file_name.to_str() else {
             continue;
         };
-        // Read from the name, not the body: the name is what the binding
-        // process wrote about itself, and no partial write can garble it.
+        // The pid comes from the name, not the body: the name is what the
+        // binding process wrote about itself, and no partial write can garble
+        // it. The body is read only for the start time.
         let Some(pid) = name
             .strip_prefix(&prefix)
             .and_then(|rest| rest.strip_suffix(".pid"))
@@ -91,9 +117,9 @@ fn per_port_record_pid(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
         else {
             continue;
         };
-        match attribute(pid, probe) {
-            Ok(Some(false)) | Err(Dead) => continue,
-            Ok(_) => return Some(pid),
+        match classify(pid, recorded_start_time(&entry.path()), probe) {
+            Recorded::OurBackend | Recorded::MaybeOurs | Recorded::Opaque => return Some(pid),
+            Recorded::Foreign | Recorded::Stale => continue,
         }
     }
     None
@@ -101,23 +127,46 @@ fn per_port_record_pid(root: &Path, port: u16, probe: &Probe) -> Option<u32> {
 
 /// The legacy record names no port, and a build old enough to be the id-less
 /// backend we are asking about is exactly the build that writes only this file.
-/// It is also the sole record when a per-port write failed. Since it cannot be
-/// tied to the port, it blocks only on positive attribution: a pid the OS will
-/// not tell us about is not enough to strand a repair on.
+/// It is also the sole record when a per-port write failed.
+///
+/// It carries no start time, so a reused pid cannot be ruled out here the way
+/// it can above. A process the OS will not describe is therefore not enough to
+/// strand a repair on, while one that could be running our own interpreter is.
 fn legacy_record_pid(root: &Path, probe: &Probe) -> Option<u32> {
     let body = std::fs::read_to_string(root.join("studio.pid")).ok()?;
     // pid 0 and 1 are never a backend, and signalling either would be a bug.
-    let pid = body.trim().parse::<u32>().ok().filter(|pid| *pid > 1)?;
-    match attribute(pid, probe) {
-        Ok(Some(true)) => Some(pid),
-        _ => None,
+    let pid = body
+        .lines()
+        .next()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|pid| *pid > 1)?;
+    match classify(pid, None, probe) {
+        Recorded::OurBackend | Recorded::MaybeOurs => Some(pid),
+        Recorded::Foreign | Recorded::Opaque | Recorded::Stale => None,
     }
+}
+
+/// Line two of a record, written by the server as `psutil` epoch seconds. A
+/// blank or absent line means the server could not determine it.
+fn recorded_start_time(path: &Path) -> Option<f64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    const RECORDED: u32 = 4242;
+    const RECORDED_8888: &str = "studio-8888-4242.pid";
 
     struct Home {
         dir: tempfile::TempDir,
@@ -140,33 +189,36 @@ mod tests {
         }
     }
 
-    const RECORDED: u32 = 4242;
-    const RECORDED_8888: &str = "studio-8888-4242.pid";
-
-    fn live(runs_from_tree: &dyn Fn(u32) -> Option<bool>) -> Probe<'_> {
+    fn probe(origin: &dyn Fn(u32) -> ProcessOrigin) -> Probe<'_> {
         Probe {
             is_live: &|_| true,
-            runs_from_tree,
+            origin,
+            started_at: &|_| None,
         }
     }
 
     fn gone<'a>() -> Probe<'a> {
         Probe {
             is_live: &|_| false,
-            runs_from_tree: &|_| unreachable!("a dead pid is never attributed"),
+            origin: &|_| unreachable!("a dead pid is never attributed"),
+            started_at: &|_| unreachable!("a dead pid is never timed"),
         }
     }
 
-    fn ours(_pid: u32) -> Option<bool> {
-        Some(true)
+    fn ours(_pid: u32) -> ProcessOrigin {
+        ProcessOrigin::InsideTree
     }
 
-    fn theirs(_pid: u32) -> Option<bool> {
-        Some(false)
+    fn shared(_pid: u32) -> ProcessOrigin {
+        ProcessOrigin::SharedInterpreter
     }
 
-    fn unreadable(_pid: u32) -> Option<bool> {
-        None
+    fn theirs(_pid: u32) -> ProcessOrigin {
+        ProcessOrigin::Elsewhere
+    }
+
+    fn opaque(_pid: u32) -> ProcessOrigin {
+        ProcessOrigin::Unknown
     }
 
     #[test]
@@ -175,7 +227,7 @@ mod tests {
         home.record(RECORDED_8888, "");
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&ours)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&ours)),
             Some(RECORDED)
         );
     }
@@ -189,29 +241,86 @@ mod tests {
         assert_eq!(live_backend_pid_in(&home.path(), 8888, &gone()), None);
     }
 
-    /// The pid outlived the record and now belongs to something else. Codex
-    /// flagged this as a stale-record veto over a live repair.
     #[test]
     fn a_reused_pid_running_another_tree_is_ignored() {
         let home = Home::new();
         home.record(RECORDED_8888, "");
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&theirs)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&theirs)),
             None
         );
     }
 
-    /// ...but a record naming this very port, whose process we simply may not
-    /// query, keeps blocking. Guessing "not ours" there would rewrite the venv
-    /// underneath a live server.
+    /// The pid was reused by a process sharing our base interpreter, so the
+    /// executable proves nothing. The recorded start time still does.
+    #[test]
+    fn a_recorded_start_time_that_disagrees_settles_a_reused_pid() {
+        let home = Home::new();
+        home.record(RECORDED_8888, "4242\n1000.0\n127.0.0.1");
+        let reused = Probe {
+            is_live: &|_| true,
+            origin: &shared,
+            started_at: &|_| Some(9999.0),
+        };
+
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &reused), None);
+    }
+
+    #[test]
+    fn a_matching_start_time_leaves_the_record_standing() {
+        let home = Home::new();
+        home.record(RECORDED_8888, "4242\n1000.0\n127.0.0.1");
+        let same = Probe {
+            is_live: &|_| true,
+            origin: &shared,
+            started_at: &|_| Some(1000.4),
+        };
+
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 8888, &same),
+            Some(RECORDED)
+        );
+    }
+
+    /// An untimed record cannot be checked, so it is trusted, exactly as
+    /// `_pid_is_studio_backend` trusts one on the Python side.
+    #[test]
+    fn a_record_without_a_start_time_is_not_second_guessed() {
+        let home = Home::new();
+        home.record(RECORDED_8888, "4242\n\n127.0.0.1");
+        let timed = Probe {
+            is_live: &|_| true,
+            origin: &shared,
+            started_at: &|_| Some(9999.0),
+        };
+
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 8888, &timed),
+            Some(RECORDED)
+        );
+    }
+
+    /// A backend behind a symlinked venv or a Windows trampoline cannot be
+    /// positively attributed, and a record naming its port must still block.
+    #[test]
+    fn a_shared_interpreter_on_a_recorded_port_blocks() {
+        let home = Home::new();
+        home.record(RECORDED_8888, "");
+
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 8888, &probe(&shared)),
+            Some(RECORDED)
+        );
+    }
+
     #[test]
     fn a_per_port_record_we_cannot_attribute_still_blocks() {
         let home = Home::new();
         home.record(RECORDED_8888, "");
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&unreadable)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&opaque)),
             Some(RECORDED)
         );
     }
@@ -223,7 +332,7 @@ mod tests {
         // A port that merely starts with the digits of ours is another port.
         home.record("studio-88881-4242.pid", "");
 
-        assert_eq!(live_backend_pid_in(&home.path(), 8888, &live(&ours)), None);
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &probe(&ours)), None);
     }
 
     /// A pre-upgrade server records itself here and nowhere else, and it is
@@ -234,7 +343,20 @@ mod tests {
         home.record("studio.pid", &RECORDED.to_string());
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&ours)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&ours)),
+            Some(RECORDED)
+        );
+    }
+
+    /// On macOS a backend behind the symlinked venv is never more than
+    /// "maybe", and a legacy record is all a pre-upgrade one leaves.
+    #[test]
+    fn a_legacy_record_on_a_shared_interpreter_blocks() {
+        let home = Home::new();
+        home.record("studio.pid", &RECORDED.to_string());
+
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 8888, &probe(&shared)),
             Some(RECORDED)
         );
     }
@@ -245,20 +367,20 @@ mod tests {
         home.record("studio.pid", &RECORDED.to_string());
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&theirs)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&theirs)),
             None
         );
     }
 
-    /// The legacy record names no port, so an unreadable process behind it is
-    /// not evidence about this one.
+    /// The legacy record names no port and carries no start time, so a process
+    /// the OS will not describe is not evidence enough to strand a repair.
     #[test]
     fn a_legacy_record_we_cannot_attribute_does_not_block() {
         let home = Home::new();
         home.record("studio.pid", &RECORDED.to_string());
 
         assert_eq!(
-            live_backend_pid_in(&home.path(), 8888, &live(&unreadable)),
+            live_backend_pid_in(&home.path(), 8888, &probe(&opaque)),
             None
         );
     }
@@ -276,11 +398,11 @@ mod tests {
         let home = Home::new();
         home.record("studio.pid", "1");
 
-        assert_eq!(live_backend_pid_in(&home.path(), 8888, &live(&ours)), None);
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &probe(&ours)), None);
 
         home.record("studio.pid", "not a pid");
 
-        assert_eq!(live_backend_pid_in(&home.path(), 8888, &live(&ours)), None);
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &probe(&ours)), None);
     }
 
     /// The reported case: the backend on the port is reached over an SSH
@@ -290,7 +412,7 @@ mod tests {
         let home = Home::new();
         home.record("studio-8888-notapid.pid", "");
 
-        assert_eq!(live_backend_pid_in(&home.path(), 8888, &live(&ours)), None);
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &probe(&ours)), None);
     }
 
     #[test]
@@ -298,7 +420,7 @@ mod tests {
         let home = Home::new();
 
         assert_eq!(
-            live_backend_pid_in(&home.path().join("absent"), 8888, &live(&ours)),
+            live_backend_pid_in(&home.path().join("absent"), 8888, &probe(&ours)),
             None
         );
     }
@@ -327,7 +449,11 @@ mod system_tests {
         /// as a backend of that tree exactly the way a real one does.
         fn at_our_own_tree() -> Self {
             let guard = ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+            let dir = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .to_path_buf();
             *TEST_RECORD_ROOT.lock().unwrap() = Some(dir.clone());
             Self {
                 _guard: guard,
@@ -416,6 +542,33 @@ mod system_tests {
         assert_eq!(found, None);
     }
 
+    /// A record whose start time names a different process settles it even
+    /// when the executable cannot.
+    #[test]
+    fn a_record_whose_start_time_disagrees_is_ignored() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let me = std::process::id();
+        root.record(&format!("studio-8894-{me}.pid"), &format!("{me}\n1.0\n"));
+
+        assert_eq!(live_backend_pid_on_port(8894), None);
+    }
+
+    /// ...and one that matches is left standing. The recorded time is read
+    /// from the OS rather than hardcoded, which also checks the two agree.
+    #[test]
+    fn a_record_whose_start_time_agrees_is_found() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let me = std::process::id();
+        let started = crate::process_identity::process_start_time_secs(me)
+            .expect("this platform should report its own start time");
+        root.record(
+            &format!("studio-8895-{me}.pid"),
+            &format!("{me}\n{started}\n"),
+        );
+
+        assert_eq!(live_backend_pid_on_port(8895), Some(me));
+    }
+
     #[test]
     fn a_legacy_record_naming_this_install_is_found() {
         let mut root = RecordRoot::at_our_own_tree();
@@ -423,37 +576,5 @@ mod system_tests {
         root.record("studio.pid", &me.to_string());
 
         assert_eq!(live_backend_pid_on_port(8893), Some(me));
-    }
-
-    /// uv symlinks the venv interpreter at a base one outside the tree, so the
-    /// OS reports the base binary as the image. Reproduced with a real symlink
-    /// and a real process: the record must still be able to block. Unix only,
-    /// because a Windows venv holds a real python.exe and cannot hit this.
-    #[cfg(unix)]
-    #[test]
-    fn a_symlinked_interpreter_does_not_look_like_a_foreign_process() {
-        let tree = tempfile::tempdir().unwrap();
-        let bin = tree.path().join("unsloth_studio").join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let mut child = spawn_foreign();
-        let foreign_exe = std::fs::read_link(format!("/proc/{}/exe", child.id()))
-            .or_else(|_| which_foreign())
-            .unwrap();
-        std::os::unix::fs::symlink(&foreign_exe, bin.join("python")).unwrap();
-
-        let shared = crate::process_identity::shared_interpreters_in(tree.path());
-        let verdict = crate::process_identity::runs_from(child.id(), tree.path(), &shared);
-        // Same process, without the venv link in play, is plainly foreign.
-        let without_link = crate::process_identity::runs_from(child.id(), tree.path(), &[]);
-        child.kill().unwrap();
-        child.wait().unwrap();
-
-        assert_eq!(verdict, None, "a symlinked venv interpreter proves nothing");
-        assert_eq!(without_link, Some(false));
-    }
-
-    #[cfg(unix)]
-    fn which_foreign() -> std::io::Result<PathBuf> {
-        std::fs::canonicalize("/bin/sleep").or_else(|_| std::fs::canonicalize("/usr/bin/sleep"))
     }
 }
