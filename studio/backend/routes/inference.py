@@ -381,6 +381,14 @@ def _effective_max_tokens(payload):
 # client error rather than a one-token generation.
 _MIN_SPEECH_OUTPUT_TOKENS = 64
 
+# The backends do not generate from the raw text: each wraps it in codec delimiters
+# (llama_cpp.py:_TTS_PROMPTS, and the model-specific prompts the Transformers generators
+# build), so the real prompt is longer than what the estimate below sees. Budgeting the
+# whole remainder left zero headroom and those few tokens pushed prompt + max_new_tokens
+# back over the context. Generous rather than exact, since the wrapper is chosen deeper
+# than this and 32 tokens off a 2048 context is not worth threading it up here.
+_TTS_PROMPT_FORMAT_RESERVE = 32
+
 
 def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends.
@@ -396,7 +404,10 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
     if prompt:
         context_length = _monitor_context_length()
         if context_length:
-            budget = min(budget, context_length - _prompt_token_estimate(prompt))
+            budget = min(
+                budget,
+                context_length - _prompt_token_estimate(prompt) - _TTS_PROMPT_FORMAT_RESERVE,
+            )
     # A caller that reached generation with no budget left gets one token and a useless
     # clip; the routes reject that case up front instead.
     return max(1, budget)
@@ -412,7 +423,10 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     context_length = _monitor_context_length()
     if not context_length:
         return
-    if context_length - _prompt_token_estimate(text) < _MIN_SPEECH_OUTPUT_TOKENS:
+    remaining = (
+        context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
+    )
+    if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
         raise HTTPException(
             status_code = 400,
             detail = (

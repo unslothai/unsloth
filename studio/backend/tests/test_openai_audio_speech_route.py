@@ -172,7 +172,13 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     budget = routes_module._tts_max_new_tokens(payload, text)
 
     assert budget < 2048
-    assert budget == 2048 - routes_module._prompt_token_estimate(text)
+    # Minus the codec wrapper too: the backends generate from a formatted prompt, not the
+    # raw text, so budgeting the whole remainder left the few delimiter tokens to overflow.
+    assert budget == (
+        2048
+        - routes_module._prompt_token_estimate(text)
+        - routes_module._TTS_PROMPT_FORMAT_RESERVE
+    )
 
 
 def test_an_over_context_prompt_is_a_client_error(monkeypatch):
@@ -218,3 +224,40 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
     assert len(remaining) == 3
     # Newest kept, oldest dropped.
     assert set(ids[-3:]) == remaining
+
+
+def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path):
+    """A count alone does not bound the disk: 2000 clips of maximum-length speech is tens
+    of gigabytes, and stopping /v1/audio/speech filling the disk is what the cap is for."""
+    import core.inference.audio_gallery as gallery
+
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1000")
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", str(4 * 1024))
+    meta = {
+        "prompt": "p", "model": "m", "audio_type": "snac", "sample_rate": 24000,
+        "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+    }
+    ids = [gallery.save(b"R" * 1024, meta)["id"] for _ in range(10)]
+
+    remaining = [clip["id"] for clip in gallery.list_audio()]
+    assert len(remaining) == 4, remaining
+    assert set(ids[-4:]) == set(remaining)
+
+
+def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(
+    monkeypatch, tmp_path
+):
+    """The newest clip is the one the caller just generated. Pruning it because it alone
+    exceeds the quota would read as a silent failure."""
+    import core.inference.audio_gallery as gallery
+
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
+    meta = {
+        "prompt": "p", "model": "m", "audio_type": "snac", "sample_rate": 24000,
+        "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+    }
+    saved = gallery.save(b"R" * 4096, meta)
+
+    assert [clip["id"] for clip in gallery.list_audio()] == [saved["id"]]

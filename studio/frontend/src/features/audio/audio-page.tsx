@@ -343,7 +343,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const sttLoadingGeneration = useRef<number | null>(null);
   // Residency is not ownership: the activation resync adopts whatever a sidecar already
   // holds, including a model chat dictation loaded, and that must survive a mode switch.
-  const sttLoadedByThisPage = useRef(false);
+  // The identity, not a boolean: another surface can replace the sidecar's model while
+  // Audio is inactive, and a bare flag then claimed that replacement too, so Eject
+  // unloaded a model this page never loaded.
+  const sttLoadedByThisPage = useRef<{
+    model: string;
+    engine: "transformers" | "gguf" | "mtmd";
+  } | null>(null);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
     repoId: string;
@@ -494,12 +500,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
   const releaseTranscribeSelection = useCallback(async () => {
     const selected = selectedSttRepoRef.current;
-    const owned = sttReady && selected !== null && sttLoadedByThisPage.current;
+    const claim = sttLoadedByThisPage.current;
+    const owned =
+      sttReady &&
+      selected !== null &&
+      claim !== null &&
+      claim.model === sttLoadedModel &&
+      claim.engine === sttLoadedEngine;
     const forget = () => {
       deferredSttLoad.current = null;
       selectedSttRepoRef.current = null;
       sttLoadGeneration.current += 1;
-      sttLoadedByThisPage.current = false;
+      sttLoadedByThisPage.current = null;
       setSelectedSttRepo(null);
     };
     if (!owned) {
@@ -511,7 +523,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     await unloadSttModel(sttEngineForRepoId(selected));
     forget();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady]);
+  }, [refreshSttStatus, sttReady, sttLoadedModel, sttLoadedEngine]);
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
@@ -883,7 +895,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       try {
         try {
           await loadSttModel(sidecarKey, engine, controller.signal);
-          sttLoadedByThisPage.current = true;
+          sttLoadedByThisPage.current = { model: sidecarKey, engine };
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
@@ -927,7 +939,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           if (!isCurrent()) return;
           toast.loading(`Loading ${sidecarKey}…`, { id: toastId });
           await loadSttModel(sidecarKey, engine, controller.signal);
-          sttLoadedByThisPage.current = true;
+          sttLoadedByThisPage.current = { model: sidecarKey, engine };
         }
         if (isCurrent())
           toast.success("Transcription model ready", { id: toastId });

@@ -102,19 +102,22 @@ test("selected and fallback clip actions remain named and downloadable", () => {
 
 test("a dictation model this page did not load survives a mode switch", () => {
   // The activation resync adopts whatever a sidecar holds, including chat dictation's model.
+  // The identity, not a boolean. Another surface can swap the sidecar's model while Audio
+  // is inactive; the activation resync then adopts it, and a bare flag claimed it too, so
+  // Eject unloaded a model this page never loaded.
   assert.match(
     source,
-    /const owned = sttReady && selected !== null && sttLoadedByThisPage\.current;/,
+    /claim\.model === sttLoadedModel &&\s*claim\.engine === sttLoadedEngine/,
   );
   // Ownership is claimed after a successful load, not before it: claiming up front left the
   // flag set when a download was cancelled while the backend kept the previous resident
   // model, so leaving Transcribe unloaded another surface's model.
   assert.doesNotMatch(
     source,
-    /setBusy\("loading"\);\s*sttLoadedByThisPage\.current = true;/,
+    /setBusy\("loading"\);\s*sttLoadedByThisPage\.current = \{/,
   );
   assert.match(
     source,
-    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = true;/,
+    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = \{ model: sidecarKey, engine \};/,
   );
 });

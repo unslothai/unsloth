@@ -66,6 +66,12 @@ def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
 _MAX_CLIPS_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_CLIPS"
 _DEFAULT_MAX_CLIPS = 2000
 
+# A count alone does not bound the disk: 2000 clips of maximum-length speech is tens of
+# gigabytes, and the cap exists to stop /v1/audio/speech filling the disk. Whichever limit
+# binds first wins.
+_MAX_BYTES_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_BYTES"
+_DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024
+
 
 def _max_clips() -> int:
     """0, or any non-numeric value such as "off", disables pruning.
@@ -73,39 +79,71 @@ def _max_clips() -> int:
     An unset variable is the only case that takes the default: restoring it for a value the
     operator did set would delete recordings they had asked to keep.
     """
-    raw = os.environ.get(_MAX_CLIPS_ENV)
+    return _env_limit(_MAX_CLIPS_ENV, _DEFAULT_MAX_CLIPS)
+
+
+def _max_bytes() -> int:
+    return _env_limit(_MAX_BYTES_ENV, _DEFAULT_MAX_BYTES)
+
+
+def _env_limit(name: str, default: int) -> int:
+    raw = os.environ.get(name)
     if raw is None:
-        return _DEFAULT_MAX_CLIPS
+        return default
     try:
         return max(0, int(raw.strip()))
     except (AttributeError, ValueError):
         return 0
 
 
+def _clip_bytes(audio_id: str) -> int:
+    try:
+        return (gallery_dir() / f"{audio_id}.wav").stat().st_size
+    except OSError:
+        return 0
+
+
 def _prune_to_cap() -> int:
-    """Drop the oldest owned pairs beyond the cap; return the count removed.
+    """Drop the oldest owned pairs beyond the count or byte cap; return the count removed.
 
     Best-effort: a save must not fail because housekeeping did. Only Studio-owned pairs are
     considered, so a foreign or orphan wav is never destroyed.
     """
     cap = _max_clips()
-    if cap <= 0:
+    byte_cap = _max_bytes()
+    if cap <= 0 and byte_cap <= 0:
         return 0
     try:
         entries = _list_audio_entries()
     except Exception:  # noqa: BLE001 - never fail the save that triggered this
         return 0
-    if len(entries) <= cap:
+
+    # Newest first, so the index where either budget runs out is the cut point. The newest
+    # clip is always kept: it is the one the caller just generated, and dropping it would
+    # make a single oversized request look like a silent failure.
+    keep = len(entries) if cap <= 0 else min(cap, len(entries))
+    if byte_cap > 0:
+        running = 0
+        for index, (record, _cursor) in enumerate(entries[:keep]):
+            running += _clip_bytes(record["id"])
+            if running > byte_cap and index > 0:
+                keep = index
+                break
+    if keep >= len(entries):
         return 0
+
     removed = 0
-    for record, _cursor in entries[cap:]:
+    for record, _cursor in entries[keep:]:
         try:
             if delete(record["id"]):
                 removed += 1
         except Exception:  # noqa: BLE001
             continue
     if removed:
-        logger.info("audio_gallery.pruned: removed %d clip(s) over the %d cap", removed, cap)
+        logger.info(
+            "audio_gallery.pruned: removed %d clip(s) over the %d clip / %d byte cap",
+            removed, cap, byte_cap,
+        )
     return removed
 
 
