@@ -1003,8 +1003,12 @@ def _patch_trl_trainer():
 
     # Auto-packing must wrap first so it ends up INSIDE the backwards-compatible
     # wrapper: a moved `packing` kwarg has to reach the config before packing is
-    # decided, else the block is undone right after it is applied.
-    _patch_sft_trainer_auto_packing(trl)
+    # decided, else the block is undone right after it is applied. Guarded so a
+    # failure here still leaves the pre-0.13 compatibility wrappers installed.
+    try:
+        _patch_sft_trainer_auto_packing(trl)
+    except Exception as exc:
+        logger.warning(f"Unsloth: could not enable SFT auto-packing ({exc}).")
 
     for x in trl_classes:
         try:

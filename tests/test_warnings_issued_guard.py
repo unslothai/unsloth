@@ -462,3 +462,18 @@ def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
     assert body.index("_patch_sft_trainer_auto_packing(trl)") < body.index(
         "_backwards_compatible_trainer(trl."
     )
+
+
+def test_auto_packing_failure_still_leaves_the_wrapper_installed():
+    """Going first means a raise here would skip the wrapping loop entirely and
+    drop pre-0.13 compatibility, so the call has to be guarded."""
+    for node in ast.walk(ast.parse(SRC)):
+        if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
+            guarded = any(
+                "_patch_sft_trainer_auto_packing" in ast.dump(stmt)
+                for stmt in node.body
+                if isinstance(stmt, ast.Try)
+            )
+            assert guarded, "_patch_sft_trainer_auto_packing must be wrapped in try/except"
+            return
+    raise AssertionError("_patch_trl_trainer not found")
