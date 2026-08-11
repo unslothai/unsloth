@@ -166,6 +166,14 @@ _FRAGMENTS = (
     '{"name": "get_weather", "parameters": {"city": "Paris"}}',
     "<|message_model|>get_weather<|content_invoke_tool_json|>"
     '{"name": "get_weather", "args": {"city": "Paris"}}<|end_message|>',
+    "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>"
+    '{"city": "Paris"}<｜tool▁call▁end｜><｜tool▁calls▁end｜>',
+    "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>get_weather\n"
+    '```json\n{"city": "Paris"}\n```<｜tool▁calls▁end｜>',
+    "<|tool_calls_section_begin|><|tool_call_begin|>functions.get_weather:0"
+    '<|tool_call_argument_begin|>{"city": "Paris"}<|tool_call_end|>'
+    "<|tool_calls_section_end|>",
+    "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>",
     "<think>I should call get_weather[ARGS]{} but not really</think>",
     "<think>unclosed reasoning",
     '```\nget_weather[ARGS]{"city": "Paris"}\n```',
@@ -214,8 +222,15 @@ def _drive(func, text: str):
     kwargs = {}
     if "enabled_tool_names" in params:
         kwargs["enabled_tool_names"] = set(_ENABLED_NAMES)
-    if "final" in params and params["final"].default is not inspect.Parameter.empty:
-        kwargs["final"] = True
+    # ``final`` / ``seg_final`` / ``id_offset`` are keyword-only and mostly required, so
+    # the positional loop below skips them. Supplying them here is what keeps the strip
+    # and parse entry points drivable: without it they raise ``TypeError`` on every
+    # input, and a digest over one constant pins nothing.
+    for flag in ("final", "seg_final"):
+        if flag in params:
+            kwargs[flag] = True
+    if "id_offset" in params:
+        kwargs["id_offset"] = 0
 
     args = [text]
     # Positional index arguments (``brace_start``, ``start``, ``pos``, ``brace_pos``)

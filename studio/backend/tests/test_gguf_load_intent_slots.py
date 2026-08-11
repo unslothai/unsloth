@@ -109,8 +109,15 @@ def test_fields_and_asdict_are_unaffected(intent):
     "exception", [CountAborted, LlamaServerNotFoundError, _LlamaStreamCancelled]
 )
 def test_signal_exceptions_carry_empty_slots(exception):
-    """These only ever signal; the empty ``__slots__`` keeps them from growing a dict."""
+    """These only ever signal, and the empty ``__slots__`` records that.
+
+    It does not remove the instance dict: ``BaseException`` declares one itself, so every
+    exception instance keeps it however a subclass is declared. What the declaration buys
+    is the statement of intent plus the guarantee that the class carries no slot of its
+    own, which is what the assertion below pins.
+    """
     assert exception.__slots__ == ()
+    assert "__dict__" in vars(BaseException)
 
     with pytest.raises(exception, match = "boom"):
         raise exception("boom")
