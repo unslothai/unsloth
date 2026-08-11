@@ -210,9 +210,8 @@ def test_raw_dataset_cache_has_data_ignores_appledouble_sidecars(monkeypatch, tm
 
 
 def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(monkeypatch, tmp_path):
-    """A repo whose only non-card files are `CITATION.cff` and a legacy loading script has no
-    rows to give: neither suffix is in `datasets`' extension map, and a script needs
-    `trust_remote_code`, which no dataset load path here passes and `datasets>=4` removed."""
+    """Neither suffix is in `datasets`' extension map, and a script also needs
+    `trust_remote_code`, which no load path here passes and `datasets>=4` removed."""
     repo_root = _dataset_snapshot(
         monkeypatch,
         tmp_path,
@@ -223,8 +222,7 @@ def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(monk
 
 
 def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monkeypatch, tmp_path):
-    """The suffix rule is for files only. A script sitting next to real data, or a directory
-    that merely happens to be named like one, must still read as payload."""
+    """The suffix rule is for files only: a script beside real data is still payload."""
     repo_root = _dataset_snapshot(
         monkeypatch,
         tmp_path,
@@ -237,9 +235,8 @@ def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monke
 def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
     monkeypatch, tmp_path
 ):
-    """The metadata FILE names must not prune directories. `datasets` excludes only hidden and
-    `__`-prefixed dirs, so it resolves `license/train.parquet` happily, and applying the file
-    list to the directory took the whole subtree out and hid the dataset from On Device."""
+    """`datasets` excludes only hidden and `__`-prefixed dirs, so `license/train.parquet`
+    resolves; applying the file list to the directory hid the dataset from On Device."""
     repo_root = _dataset_snapshot(
         monkeypatch,
         tmp_path,
@@ -250,18 +247,14 @@ def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
 
 
 def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monkeypatch, tmp_path):
-    """A directory link pointing back inside the snapshot passes the containment test, so it
-    is only the visited set that stops the descent. The case that matters is a Windows junction:
-    `os.walk(followlinks = False)` descends those, because neither `is_symlink()` nor a pre-3.12
-    `is_junction()` reports the reparse point. Linux `os.walk` declines the symlink on its own,
-    which would make this pass either way, so the walk here descends the link the way Windows
-    does and the test asserts the pruning that ends it."""
+    """A link back inside the snapshot passes containment, so only the visited set stops the
+    descent. Linux `os.walk` declines a symlink on its own, which would make this pass either
+    way, so the walk here descends it the way Windows descends a junction."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
     data = next((repo_root / "snapshots").iterdir()) / "data"
     (data / "loop").symlink_to(data, target_is_directory = True)
-    # A junction is a reparse point that resolves like a link while reporting `is_symlink()`
-    # False, which is the whole reason the containment test exists. Linux cannot create one,
-    # so the closest faithful fixture is a symlink that answers the way a junction does.
+    # a junction resolves like a link while reporting `is_symlink()` False, and Linux cannot
+    # create one, so this is a symlink that answers the way a junction does.
     real_is_symlink = Path.is_symlink
     monkeypatch.setattr(
         Path,
@@ -293,9 +286,8 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
 
 
 def test_raw_dataset_cache_has_data_rejects_an_empty_payload_file(monkeypatch, tmp_path):
-    """A zero-byte `train.jsonl` from a cancelled write looks like payload and yields nothing.
-    `local_options._empty_payload` is what the resolver asks, so this asks the same thing
-    rather than settling for the file existing."""
+    """A zero-byte file looks like payload and yields nothing, so this asks
+    `local_options._empty_payload` rather than settling for the file existing."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     snapshot = next((repo_root / "snapshots").iterdir())
     (snapshot / "train.jsonl").write_bytes(b"")
@@ -308,10 +300,8 @@ def test_raw_dataset_cache_has_data_rejects_an_empty_payload_file(monkeypatch, t
 
 
 def test_raw_dataset_cache_has_data_rejects_a_payload_file_with_no_rows(monkeypatch, tmp_path):
-    """Bytes are not rows. `_rowless` is the resolver's probe for a csv holding only its header
-    and a json holding `[]`, and the picker resolves no trainable split from either, so the row
-    was offered On Device and then failed. A rowless file is not counted, but it does not
-    condemn its siblings: datasets drops that split and builds the rest."""
+    """Bytes are not rows: `_rowless` probes a header-only csv and a `[]` json, from which the
+    picker resolves no split. A rowless file is dropped, but it does not condemn its siblings."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     snapshot = next((repo_root / "snapshots").iterdir())
     (snapshot / "train.csv").write_bytes(b"text,label\n")
@@ -325,9 +315,8 @@ def test_raw_dataset_cache_has_data_rejects_a_payload_file_with_no_rows(monkeypa
 
 
 def test_raw_dataset_cache_has_data_walks_a_redirect_instead_of_trusting_it(monkeypatch, tmp_path):
-    """A migrated cache keeps its data behind a directory link, so pruning one hid the dataset.
-    Taking the link itself as proof is the opposite error: a stale redirect to an empty or
-    metadata-only target supplies no rows either. The target is walked, not assumed."""
+    """Pruning a redirect hid migrated caches; taking one as proof is the opposite error, since
+    a stale redirect holds no rows. The target is walked, not assumed."""
     stale = tmp_path / "elsewhere" / "stale"
     stale.mkdir(parents = True)
     (stale / "README.md").write_bytes(b"x")
@@ -345,9 +334,8 @@ def test_raw_dataset_cache_has_data_walks_a_redirect_instead_of_trusting_it(monk
 def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it(
     monkeypatch, tmp_path
 ):
-    """`alias -> data` listed before `data` must not book the target's resolved path. The walk
-    never descends the alias on POSIX, so booking it pruned the real directory and lost the
-    payload under it -- on nothing but enumeration order."""
+    """The walk never descends the alias on POSIX, so booking its target pruned the real
+    directory and lost the payload under it, on nothing but enumeration order."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/train.parquet"))
     snapshot = next((repo_root / "snapshots").iterdir())
     (snapshot / "alias").symlink_to(snapshot / "data", target_is_directory = True)
@@ -373,9 +361,8 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
 
 
 def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(monkeypatch, tmp_path):
-    """`_data_suffix` drops a trailing compression suffix and then walks the rest, so a gzipped
-    card or script is still metadata while `train.parquet.gz` and `records.parquet.backup` are
-    still payload. Reading only the last suffix got both of those backwards."""
+    """`_data_suffix` drops a trailing compression suffix then walks the rest. Reading only the
+    last suffix got both directions backwards."""
     metadata_only = _dataset_snapshot(
         monkeypatch,
         tmp_path / "meta",
@@ -392,9 +379,8 @@ def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(mon
 
 
 def test_raw_dataset_cache_has_data_ignores_payload_links_whose_blob_is_gone(monkeypatch, tmp_path):
-    """A pruned blob leaves its snapshot link behind. `is_snapshot_partial` catches that on the
-    newest snapshot, but this check judges the pinned revision, so it must not depend on the two
-    agreeing -- a link that resolves to nothing cannot be opened and is not payload."""
+    """`is_snapshot_partial` catches this on the newest snapshot, but this check judges the
+    pinned revision, so it must not depend on the two agreeing."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     snapshot = next((repo_root / "snapshots").iterdir())
     (snapshot / "train.parquet").symlink_to("../../blobs/pruned")

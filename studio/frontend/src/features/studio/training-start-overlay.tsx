@@ -187,14 +187,11 @@ function ResourceRow({
   const stats = useTransferStats(state.downloadedBytes, state.totalBytes);
 
   if (!resourceRowHasContent(state, preparation)) return null;
-  // the coerced state, not the raw one: `coerceCachedStateReady` declines to rewrite a
-  // reading with no cache path, so keying the badge off `settled` alone put a green Ready
-  // next to a percent still below 100.
+  // the coerced state: `coerceCachedStateReady` declines to rewrite a reading with no cache
+  // path, so `settled` alone put a green Ready next to a percent below 100.
   const isComplete = state.settled && state.percent >= 100;
-  // uploaded and S3 datasets never produce a transfer, so preparation is all this row has.
-  // Gated on bytes actually moving, not on `!settled`: an orphaned `.incomplete` blob in the
-  // raw hub cache keeps `downloaded !== completed` forever, so a dataset loaded from its
-  // processed Arrow cache stayed labelled Downloading through the whole tokenize.
+  // gated on bytes actually moving, not on `!settled`: an orphaned `.incomplete` blob keeps
+  // `downloaded !== completed` forever, which kept a processed-cache load labelled Downloading.
   const preparing = state.moving ? null : preparation;
   const statusLabel = preparing
     ? preparing.title
@@ -211,9 +208,8 @@ function ResourceRow({
     showRate && state.totalBytes > 0 ? formatEta(stats.etaSeconds) : "--";
   const etaSuffix =
     etaStr !== "--" ? ` • ${t("studio.trainingStart.left", { eta: etaStr })}` : "";
-  // An unsettled transfer keeps its byte line under the preparation title: a stall and an
-  // orphaned `.incomplete` blob look identical from byte counts alone, so a genuinely stalled
-  // download must not lose "963.2 MB / 1.51 GB" just because the worker's message took over.
+  // an unsettled transfer keeps its byte line under the preparation title: a stall and an
+  // orphaned blob look alike from byte counts, so a stalled download must not lose them.
   const sizeLabel = preparing
     ? (preparing.detail ??
       (state.settled || state.totalBytes <= 0
@@ -439,9 +435,9 @@ export function TrainingStartOverlay({
               <AnimatedSpan className="mt-3 text-muted-foreground">
                 {t("studio.trainingStart.datasetStreaming")}
               </AnimatedSpan>
-              {/* a streamed dataset has no transfer to show, but it is still tokenized and
-                  formatted, and that work took minutes behind a static note. the row carries
-                  the preparation step only, on an empty state, so nothing implies a download. */}
+              {/* streaming has no transfer to show, but it still tokenizes and formats. the
+                  row carries the preparation step on an empty state, so nothing implies a
+                  download. */}
               {datasetPreparation ? (
                 <AnimatedSpan className="mt-3">
                   <ResourceRow

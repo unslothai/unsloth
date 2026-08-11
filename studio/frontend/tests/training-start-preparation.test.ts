@@ -112,10 +112,9 @@ test("a step naming only a repo id routes by that name", () => {
 });
 
 test("every tqdm description the dataset work emits reaches the dataset row", () => {
-  // Swept from the `desc =` literals under studio/backend/utils/datasets and
-  // studio/backend/core/training. `_monitor_tqdm` forwards these verbatim, and none of them
-  // carries a word the earlier patterns matched, so a mapping pass that runs for minutes
-  // rendered under Model weights while the dataset row sat on Ready.
+  // Swept from the `desc =` literals under studio/backend. `_monitor_tqdm` forwards these
+  // verbatim, and none carried a word the earlier patterns matched, so a mapping pass that
+  // runs for minutes rendered under Model weights.
   const resources = {
     modelName: "Qwen/Qwen3-0.6B",
     datasetName: "ryanmarten/OpenThoughts-1k-sample",
@@ -136,9 +135,8 @@ test("every tqdm description the dataset work emits reaches the dataset row", ()
 });
 
 test("an id shared by both repos routes by wording, not by the tie-break", () => {
-  // The Hub allows the same owner/name as a model and as a dataset, and then the id says
-  // nothing about which row a message belongs to. The longer-id tie-break handed every one
-  // of those to the dataset, so the model row sat empty for the whole load.
+  // The Hub allows one owner/name as both repo types, and then the id decides nothing. The
+  // longer-id tie-break handed all of those to the dataset, emptying the model row.
   const resources = { modelName: "org/foo", datasetName: "org/foo" };
   assert.equal(classifyPreparation("Loading org/foo", resources), "model");
   assert.equal(classifyPreparation("Tokenizing org/foo", resources), "dataset");

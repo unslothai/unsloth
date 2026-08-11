@@ -111,9 +111,8 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
 
 
 # anything not named here counts as payload, so unknown formats are never read as an empty
-# snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36.
-# the data-file names come from local_options rather than a second copy, so this check and the
-# resolver that decides whether a cache yields rows can never drift apart.
+# snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36;
+# the data-file names come from local_options so this and the resolver cannot drift apart.
 _DATASET_NON_PAYLOAD_FILENAMES = (
     frozenset(
         {
@@ -132,26 +131,21 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 )
 
 
-# suffixes no supported loader can turn into rows, whatever the file is called. none of them
-# appear in `datasets`' extension-to-module map, and a loading script needs `trust_remote_code`,
-# which no dataset load path here passes and which `datasets>=4` dropped outright -- so a repo
-# holding only its card, its citation and its script is metadata, not payload.
+# suffixes no loader can turn into rows: none is in `datasets`' extension map, and a script also
+# needs `trust_remote_code`, which no load path here passes and `datasets>=4` dropped.
 _DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
 
 
 def _is_payload_dir(name: str) -> bool:
-    # The only rule `datasets` applies to a directory: a dotted or `__`-prefixed one is skipped
-    # unless a pattern names it, so nothing beneath it can supply rows. That covers a `__MACOSX`
-    # tree left by a Mac zip. The metadata FILE names are deliberately not applied here -- a
-    # directory called `license/` can hold the parquet the resolver would happily load, and
+    # the only rule `datasets` applies to a directory, which also covers a Mac zip's `__MACOSX`.
+    # the metadata FILE names must not be applied here: `license/train.parquet` loads fine, and
     # pruning that subtree hid the dataset from On Device.
     return not name.startswith(".") and not name.startswith("__")
 
 
 def _is_payload_name(name: str) -> bool:
-    # As above, plus the metadata names: an AppleDouble sidecar (`._train.parquet`),
-    # `.gitignore` and every other dotfile the list does not enumerate, and the cards and
-    # licences that a cancelled download leaves behind.
+    # as above, plus the metadata names: AppleDouble sidecars, every dotfile the list does not
+    # enumerate, and the cards and licences a cancelled download leaves behind.
     if not _is_payload_dir(name):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
@@ -160,27 +154,21 @@ def _is_payload_name(name: str) -> bool:
 def _is_payload_file(name: str) -> bool:
     if not _is_payload_name(name):
         return False
-    # the resolver's own suffix rule rather than a second reading of the name: it walks the
-    # whole chain and drops a trailing compression suffix first, so `train.parquet.backup` is
-    # still parquet and `data.py.gz` is still a script.
+    # the resolver's suffix rule, which walks the whole chain and drops a trailing compression
+    # suffix: `train.parquet.backup` is still parquet, `data.py.gz` is still a script.
     suffix = local_options._data_suffix(name)
     return suffix is None or suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # the resolver's own emptiness rule rather than mere existence. `_empty_payload` is what
-    # decides whether the builder reads any bytes out of a file, and it answers True for the two
-    # shapes that look like payload and are not: a zero-byte `train.jsonl` left by a cancelled
-    # write, and a snapshot link into `blobs/` whose blob was pruned, which stats through to
-    # nothing. offering either put a row On Device that then failed to load offline.
+    # existence is not enough. `_empty_payload` covers both shapes that look like payload and
+    # are not: a zero-byte file, and a `blobs/` link whose blob was pruned.
     if not _is_payload_file(path.name):
         return False
     if local_options._empty_payload(path):
         return False
-    # bytes are not rows. `_rowless` is the resolver's probe for a csv holding only its header
-    # and a json holding `[]` or `{}`; it reads a short head and only for those two builders,
-    # so it costs nothing on parquet, arrow or media. a rowless file is not counted, but it
-    # does not condemn the snapshot either -- datasets drops that split and builds the rest.
+    # bytes are not rows: `_rowless` probes a header-only csv or a `[]` json, reading a short
+    # head for those two builders only. it drops the file, not the snapshot, as datasets does.
     module = local_options._file_module(path.name)
     return module is None or not local_options._rowless(path, path.name, module)
 
@@ -188,9 +176,8 @@ def _is_present_payload_file(path: Path) -> bool:
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
     """True/False for this snapshot, or None when a subtree could not be read.
 
-    None is not False. `os.walk` swallows `scandir` errors unless `onerror` is given, so a
-    cache written by another user or on an unavailable mount would otherwise read as an
-    empty snapshot and hide a dataset that was merely uninspectable.
+    None is not False: `os.walk` swallows `scandir` errors unless `onerror` is given, so a cache
+    on an unavailable mount would read as empty and hide a dataset that was merely uninspectable.
     """
     unreadable = False
 
@@ -198,13 +185,9 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         nonlocal unreadable
         unreadable = True
 
-    # Every directory already walked or queued, by resolved path, and the roots still to walk.
-    # A junction pointing at one of its own ancestors resolves back inside the snapshot, so
-    # containment alone does not stop it: `os.walk(followlinks = False)` keeps descending
-    # `data/loop/loop/...` until the path length gives out, and the inventory request hangs.
-    # Recording what has been visited ends that on every runtime, which matters most on the
-    # pre-3.12 Windows this supports, where neither `is_symlink()` nor a missing `is_junction()`
-    # can report the reparse point.
+    # roots still to walk, and every directory already walked or queued by resolved path. a
+    # junction pointing at its own ancestor resolves back inside the snapshot, so containment
+    # alone leaves `data/loop/loop/...` descending until the path length gives out.
     seen: set[Path] = set()
     pending: list[Path] = []
 
@@ -233,39 +216,30 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                 base = Path(directory)
                 kept = []
                 for name in dirnames:
-                    # Nothing under a hidden or `__`-prefixed dir can supply rows, by the same
-                    # rule `datasets` resolves data files with, so it is neither walked nor
-                    # counted -- a `.hidden/notes.txt` must not clear `partial`.
+                    # nothing under a hidden or `__`-prefixed dir can supply rows, so
+                    # `.hidden/notes.txt` must not clear `partial`.
                     if not _is_payload_dir(name):
                         continue
                     entry = base / name
-                    # Containment rather than a link-type test. `Path.is_symlink()` is false for
-                    # a Windows junction (only `S_IFLNK` sets it) and `Path.is_junction()` does
-                    # not exist before 3.12, which this package still supports, so
-                    # `os.walk(followlinks = False)` would descend through a junction into an
-                    # arbitrary external tree. Comparing resolved paths catches every redirect on
-                    # every runtime, with no platform branch.
+                    # containment, not a link-type test: `is_symlink()` is false for a Windows
+                    # junction and `is_junction()` postdates 3.12, which this still supports, so
+                    # only comparing resolved paths catches every redirect on every runtime.
                     try:
                         redirected = not entry.resolve(strict = True).is_relative_to(root)
                         linked = entry.is_symlink()
                     except (OSError, RuntimeError, ValueError):
                         unreadable = True
                         continue
-                    # A directory leaving this root is walked as a root of its own rather than
-                    # taken as proof. Migrated and shared caches keep their data behind one, so
-                    # pruning it hid them, but a stale redirect to an empty or metadata-only
-                    # target supplies no rows and must not clear `partial` by existing.
+                    # walked as a root of its own, not taken as proof: migrated caches keep
+                    # their data behind a redirect, and a stale one holds nothing.
                     if redirected:
                         target = _book(entry)
                         if target is not None:
                             pending.append(target)
                         continue
-                    # A POSIX symlink pointing back inside this root is skipped outright: the
-                    # walk never descends one, so it cannot loop, and booking its target's
-                    # resolved path would prune the real directory when `alias` happens to be
-                    # listed before `data` -- losing the payload under it on enumeration order.
-                    # A junction reports False here on every runtime, which is the case the
-                    # visited set is for.
+                    # a symlink back inside this root is skipped: the walk never descends one,
+                    # and booking its target would prune the real directory whenever `alias` is
+                    # listed before `data`. a junction reports False here, hence the visited set.
                     if linked:
                         continue
                     if _book(entry) is None:
@@ -282,13 +256,12 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
 def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
     """Whether the snapshot a load would actually open holds anything beyond metadata.
 
-    A cancelled download can leave the dataset card and nothing else, which every structural
-    check reads as complete, so the repo was offered On Device and then failed in load_dataset().
+    A cancelled download can leave just the card, which every structural check reads as complete,
+    so the repo was offered On Device and then failed in load_dataset().
 
-    Only the revision `dataset_snapshot_from_cache_path` selects counts, which is the one
-    `training_dataset_cache_pin` pins for the run. A payload-bearing sibling revision is not
-    a reason to clear `partial`: the pin would still open the metadata-only revision this
-    resolves to, so the row would be offered and then fail, and fail hard offline.
+    Only the revision `dataset_snapshot_from_cache_path` selects counts, since that is what
+    `training_dataset_cache_pin` pins: a payload-bearing sibling revision would still not be the
+    one the run opens.
     """
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:

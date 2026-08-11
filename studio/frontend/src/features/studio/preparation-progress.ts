@@ -63,9 +63,8 @@ function indeterminatePreparation(label: string): PreparationProgress {
 
 export type PreparationTarget = "model" | "dataset";
 
-// a repo id may only be preceded and followed by something that is not part of one, so
-// `org/foo` does not match inside `org/foo-base`. a bare `includes` routed a model status
-// to the dataset row whenever one id was a prefix of the other.
+// a repo id must not match inside another: a bare `includes` routed a model status to the
+// dataset row whenever one id was a prefix of the other.
 const ID_CHAR = /[a-z0-9._/-]/;
 
 function mentionsResource(haystack: string, name?: string): boolean {
@@ -86,10 +85,8 @@ function mentionsResource(haystack: string, name?: string): boolean {
 const DATASET_PREPARATION_RE =
   /tokenizing|dataset|standardiz|\bmap\b|\bfilter\b|generating|resolving data|casting|formatting|\bsamples\b|local files|encoding audio|preprocessing|\brows\b|slic|snac|bicodec|outetts|whisper|codec|audio|eval split|chat template|\bconverting\b/i;
 
-// checked before the dataset patterns. `Starting SNAC training...` and
-// `Starting Whisper training...` name a codec only because it names the run, and matching
-// `snac`/`whisper` sent the trainer's own start line to the dataset row while the sibling
-// `Starting CSM training...` went to the model row.
+// checked before the dataset patterns: `Starting SNAC training...` names a codec only because
+// it names the run, and matching `snac` sent the trainer's own start line to the dataset row.
 const MODEL_PREPARATION_RE = /^(?:starting|initializing|queued)\b.*\btraining\b/i;
 
 // repo ids come first because the worker reports `Loading <repo_id>...`, which matches no
@@ -106,9 +103,8 @@ export function classifyPreparation(
   const modelName = resources.modelName?.toLowerCase();
   const datasetHit = mentionsResource(haystack, datasetName);
   const modelHit = mentionsResource(haystack, modelName);
-  // the Hub allows the same owner/name as both a model and a dataset, and then the id says
-  // nothing about which row a message belongs to. fall through to the wording rather than
-  // handing every one of them to the dataset, which left the model row with no status at all.
+  // the Hub allows one owner/name as both repo types, and then the id decides nothing; fall
+  // through to the wording rather than handing every such message to the dataset.
   const ambiguous = datasetHit && modelHit && datasetName === modelName;
   // the longer id wins when both match, because one can contain the other:
   // `Loading org/foo-base` mentions the model AND the dataset `org/foo`.
