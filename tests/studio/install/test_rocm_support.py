@@ -5307,6 +5307,22 @@ class TestStrixRocm71Override:
         with patch.object(m, "IS_WINDOWS", True):
             assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
 
+    def test_amd_arch_index_url_refuses_miscomputing_arch(self):
+        """gfx1033 (Van Gogh) installs ROCm wheels fine and then computes wrong answers
+        (studio/ROCM_RDNA2_APU.md), so install.sh routes it to the cpu index. The
+        inferred-gfx repair here is exempt from the runtime gate when
+        UNSLOTH_ROCM_GFX_ARCH is set, so without this it would force-reinstall the exact
+        ROCm wheels that gate avoids. Its family neighbours must keep working (#7277)."""
+        m = stack_mod
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}),
+        ):
+            assert m._amd_arch_index_url("gfx1033") is None
+            assert m._amd_arch_index_url("GFX1033") is None
+            for _gfx in ("gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036"):
+                assert m._amd_arch_index_url(_gfx) == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+
     def test_strix_gfx_detection_in_install_sh(self):
         """install.sh must detect gfx1151 and gfx1150 for the override."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")

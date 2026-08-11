@@ -445,6 +445,11 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx908": "gfx908",  # MI200/MI100
 }
 
+# Archs that install ROCm wheels fine and then compute WRONG answers, so they must stay
+# on CPU torch rather than be routed to their family index above. Kept as a set so the
+# reason is stated once; see _amd_arch_index_url and install.sh's matching gate.
+_ROCM_MISCOMPUTING_GFX: "frozenset[str]" = frozenset({"gfx1033"})  # Van Gogh (Steam Deck)
+
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
 # PyPI 0.50.0 is the first release with the fix, so the fallback below is safe.
@@ -1136,6 +1141,13 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     """
     if IS_WINDOWS:
         return _windows_rocm_index_url(gfx_arch)
+    # gfx1033 (Van Gogh) miscomputes under ROCm: training diverges to NaN and gradcheck
+    # fails in float64, while forward math matches CPU (studio/ROCM_RDNA2_APU.md).
+    # install.sh routes it to the cpu index; without this the inferred-gfx repair below
+    # would force-reinstall the very ROCm wheels that gate exists to avoid. Linux only,
+    # matching where it was measured.
+    if (gfx_arch or "").lower() in _ROCM_MISCOMPUTING_GFX:
+        return None
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
     if arch_family is None:
         return None
