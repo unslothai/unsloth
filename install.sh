@@ -2891,10 +2891,17 @@ _kfd_gfx_targets() {
 #   * HSA_OVERRIDE_GFX_VERSION is set -- with no override there is nothing to doubt;
 #   * the product name inferred a spoofable RDNA 3.5 APU arch and the probe reported
 #     a DIFFERENT one;
-#   * the probe saw exactly ONE device;
+#   * the probe saw exactly ONE arch (rocminfo repeats the token per agent, so this
+#     counts DISTINCT tokens -- a pre-filter, not the safety property);
+#   * the variable names EXACTLY the arch that was reported: ROCr can only spoof to
+#     the target the variable names, so any other reading is real silicon;
 #   * a source the override cannot reach agrees with the product name: KFD sysfs
-#     first (the kernel), then rocminfo re-run with the variable unset, and only
-#     if neither can answer, the variable statically naming the reported arch.
+#     first (the kernel), then rocminfo re-run with the variable unset.
+# Corroboration is REQUIRED; there is deliberately no "the variable names the
+# reported arch, so assume a spoof" fallback, because that shape is identical on a
+# host telling the truth (a real gfx1100 dGPU in a Ryzen AI Max chassis whose owner
+# set the override for unrelated reasons), and rerouting a working machine to the
+# wrong wheels is worse than unslothai#7331 itself.
 # Kept in sync with _hsa_spoofed_physical_gfx in studio/install_python_stack.py.
 _hsa_spoofed_physical_gfx() {
     _hsp_inferred="${1:-}"
@@ -2904,48 +2911,49 @@ _hsa_spoofed_physical_gfx() {
         gfx1151|gfx1150|gfx1152) : ;;
         *) return 0 ;;
     esac
-    # Exactly one device, or the single-device premise fails and today's
-    # visible-mask selection must decide instead.
-    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF' | wc -l | tr -d '[:space:]')
+    # Exactly one DISTINCT arch, or the single-arch premise fails and today's
+    # visible-mask selection must decide instead. Deduplicated because the caller
+    # passes raw `rocminfo | grep -oE gfx...` output, which repeats the token once
+    # per Name/ISA line -- counting lines would see 2 or 3 for a single GPU and
+    # never fire (which is exactly what #7331's own host looks like).
+    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF && !seen[$0]++' | wc -l | tr -d '[:space:]')
     [ "${_hsp_n:-0}" -ne 1 ] && return 0
     _hsp_probed=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF { print; exit }')
     [ -n "$_hsp_probed" ] || return 0
     [ "$_hsp_probed" = "$_hsp_inferred" ] && return 0
+    # Only the arch the variable names can be a spoof of that variable's doing.
+    [ "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION")" = "$_hsp_probed" ] || return 0
 
     echo "  [WARN] HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION is set; ROCm reports" >&2
     echo "  [WARN] $_hsp_probed but this host's product name is $_hsp_inferred. Checking for a spoof." >&2
 
-    # 1. The kernel, which the override cannot reach.
+    # 1. The kernel, which the override cannot reach. Decisive either way: if it
+    # answers at all, no weaker source gets to overrule it.
     _hsp_kfd=$(_kfd_gfx_targets | awk 'NF')
     if [ -n "$_hsp_kfd" ]; then
         if [ "$_hsp_kfd" = "$_hsp_inferred" ]; then
             echo "  [WARN] KFD topology sysfs reports $_hsp_inferred -- $_hsp_probed is a spoof." >&2
             printf '%s\n' "$_hsp_inferred"
         fi
-        # Several GPU nodes: the single-device premise was wrong (the spoof
+        # Several GPU nodes: the single-arch premise was wrong (the spoof
         # collapsed a mixed host into one apparent arch). Decline.
         return 0
     fi
 
-    # 2. The runtime, asked again without the override. libhsakmt getenv()s the
-    # variable while parsing topology, so stripping it retracts the spoofed name.
+    # 2. The runtime, asked again without the override, and without the visible
+    # masks so a mask cannot hide the second GPU that would veto the correction.
+    # ROCr getenv()s the variable while building agent names, so stripping it
+    # retracts the spoofed name. A re-probe that still answers $_hsp_probed is
+    # evidence FOR the probe: the override went away and the name did not move,
+    # so the silicon really is what was reported. That is the reading that keeps
+    # a genuine gfx1100 dGPU in a Ryzen AI Max chassis on its own wheels.
     if command -v rocminfo >/dev/null 2>&1; then
         _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
                     rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
-        if [ -n "$_hsp_re" ] && [ "$_hsp_re" != "$_hsp_probed" ]; then
-            if [ "$_hsp_re" = "$_hsp_inferred" ]; then
-                echo "  [WARN] rocminfo reports $_hsp_inferred with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
-                printf '%s\n' "$_hsp_inferred"
-            fi
-            return 0
+        if [ "$_hsp_re" = "$_hsp_inferred" ]; then
+            echo "  [WARN] rocminfo reports $_hsp_inferred with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
+            printf '%s\n' "$_hsp_inferred"
         fi
-    fi
-
-    # 3. Fallback: the variable names exactly the arch that was reported, which
-    # is what a spoof looks like from the outside.
-    if [ "$(_hsa_override_gfx_arch "$HSA_OVERRIDE_GFX_VERSION")" = "$_hsp_probed" ]; then
-        echo "  [WARN] HSA_OVERRIDE_GFX_VERSION names $_hsp_probed exactly -- treating it as a spoof of $_hsp_inferred." >&2
-        printf '%s\n' "$_hsp_inferred"
     fi
     return 0
 }

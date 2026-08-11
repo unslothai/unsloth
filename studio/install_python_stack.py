@@ -1457,7 +1457,11 @@ def _has_usable_nvidia_gpu() -> bool:
 _LAST_AMD_GFX_PROBE: "str | None" = None
 
 
-def _detect_amd_gfx_codes(dedup: bool = True, ignore_hsa_override: bool = False) -> list[str]:
+def _detect_amd_gfx_codes(
+    dedup: bool = True,
+    ignore_hsa_override: bool = False,
+    ignore_visible_masks: bool = False,
+) -> list[str]:
     """Return the AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
     Probes rocminfo, then falls back to ``amd-smi list`` and ``amd-smi
@@ -1480,6 +1484,12 @@ def _detect_amd_gfx_codes(dedup: bool = True, ignore_hsa_override: bool = False)
     SPOOFED ISA to every consumer when it is set (unslothai#7331); re-probing
     without it is the one way to see the physical arch. amd-smi reads the driver
     and is unaffected either way, so stripping it there is a no-op.
+
+    ignore_visible_masks=True additionally strips ROCR_VISIBLE_DEVICES and
+    HIP_VISIBLE_DEVICES, so the re-probe sees the WHOLE machine. A mask left in
+    the caller's environment would otherwise hide the very second GPU whose
+    presence is the reason to decline the correction, and install.sh's re-probe
+    already unsets all three together.
     """
     global _LAST_AMD_GFX_PROBE
     _LAST_AMD_GFX_PROBE = None
@@ -1513,13 +1523,18 @@ def _detect_amd_gfx_codes(dedup: bool = True, ignore_hsa_override: bool = False)
         probes.append(["amd-smi", "static", "--asic"])
     for cmd in probes:
         _env = _amd_smi_env() if cmd[0] == "amd-smi" else None
-        if ignore_hsa_override and "HSA_OVERRIDE_GFX_VERSION" in os.environ:
-            # env=None means "inherit", so the variable has to be dropped from an
-            # explicit copy; _amd_smi_env() already returns a full os.environ copy.
+        _strip = set()
+        if ignore_hsa_override:
+            _strip.add("HSA_OVERRIDE_GFX_VERSION")
+        if ignore_visible_masks:
+            _strip.update(("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"))
+        if _strip & set(os.environ):
+            # env=None means "inherit", so the variables have to be dropped from
+            # an explicit copy; _amd_smi_env() already returns an os.environ copy.
             _env = {
                 k: v
                 for k, v in (_env if _env is not None else os.environ).items()
-                if k != "HSA_OVERRIDE_GFX_VERSION"
+                if k not in _strip
             }
         try:
             result = subprocess.run(
@@ -1558,13 +1573,11 @@ def _hsa_override_gfx_arch(value: "str | None") -> "str | None":
     """
     if not value:
         return None
-    parts = value.strip().split(".")
-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits
+    # ("١١.0.0" would read as 11.0.0 here and be rejected by install.sh's awk).
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
         return None
-    try:
-        major, minor, step = (int(p) for p in parts)
-    except ValueError:
-        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
     # Steppings are a single hex nibble; anything wider is not a real target.
     if not (0 <= step <= 15) or major <= 0 or minor > 9:
         return None
@@ -1628,22 +1641,30 @@ def _hsa_spoofed_physical_gfx(
       * The product name inferred an arch that people spoof, and the probe reports
         a DIFFERENT one. An override naming the arch the hardware already is masks
         nothing.
-      * The probe saw exactly ONE device. This is what keeps the mixed host safe
-        even with the override set globally: two agents means two entries, and the
-        existing visible-mask selection decides as before.
-      * The spoof is corroborated by a source the override cannot reach. Three,
-        in descending order of strength:
+      * The probe saw exactly one arch. A pre-filter, not the safety property:
+        install.sh can only count DISTINCT tokens (its probe greps rocminfo, which
+        repeats the token per agent), so counting arches here is what keeps the two
+        implementations at the same verdict.
+      * The variable names EXACTLY the arch that was reported. ROCr can only ever
+        spoof to the target the variable names, so a probe reporting anything else
+        is reporting real silicon and is not the override's doing.
+      * The spoof is corroborated by a source the override cannot reach. Two, in
+        descending order of strength:
 
         1. KFD topology sysfs (_kfd_gfx_targets). amdkfd writes gfx_target_version
            from the kernel's own IP-version table; ROCr applies the override in
            userland and never touches it. If the kernel names the inferred arch,
            the matter is settled.
         2. Re-probing rocminfo with HSA_OVERRIDE_GFX_VERSION stripped from its
-           environment: libhsakmt getenv()s it while parsing topology, so without
-           it the runtime itself retracts the spoofed name.
-        3. The variable statically naming precisely the arch that was reported.
-           Weakest, and only reached when neither source above can answer.
+           environment (and the visible-device masks with it, so the re-probe sees
+           the whole machine): ROCr getenv()s the override while building agent
+           names, so without it the runtime itself retracts the spoofed name.
 
+    Corroboration is REQUIRED. There is deliberately no "the variable names the
+    reported arch, so assume a spoof" fallback: that shape is indistinguishable
+    from a truthful host (a real gfx1100 dGPU in a Ryzen AI Max chassis whose owner
+    set the override for unrelated reasons reports exactly the same thing), and
+    rerouting a working machine to the wrong wheels is worse than #7331 itself.
     Two independent readings (kernel or unspoofed runtime, plus the product name)
     have to agree against the one spoofed reading before anything is overridden.
     """
@@ -1654,10 +1675,13 @@ def _hsa_spoofed_physical_gfx(
         return None
     if gfx_devices is None:
         gfx_devices = _detect_amd_gfx_codes(dedup = False)
-    if len(gfx_devices) != 1:
+    if len(set(gfx_devices)) != 1:
         return None
     probed = gfx_devices[0]
     if probed == inferred_gfx:
+        return None
+    # Only the arch the variable names can be a spoof of that variable's doing.
+    if _hsa_override_gfx_arch(raw) != probed:
         return None
 
     _safe_print(
@@ -1666,9 +1690,11 @@ def _hsa_spoofed_physical_gfx(
     )
 
     def _confirm(physical: "list[str]", source: str) -> "str | None":
-        """A source is decisive only when it sees ONE GPU and names the product
-        arch. Seeing several means the single-device premise was wrong -- a mixed
-        host whose second GPU the spoofed probe collapsed away -- so decline."""
+        """A source is decisive only when it names the product arch and nothing
+        else. Seeing a second arch means the single-arch premise was wrong -- a
+        mixed host whose second GPU the spoofed probe collapsed away -- so
+        decline. install.sh compares the same two strings, which is why the KFD
+        list is compared verbatim and the re-probe deduplicated."""
         if physical == [inferred_gfx]:
             _safe_print(
                 f"   {source} reports {inferred_gfx} -- {probed} is a spoof of the "
@@ -1677,33 +1703,28 @@ def _hsa_spoofed_physical_gfx(
             return inferred_gfx
         return None
 
-    # 1. The kernel, which the override cannot reach.
+    # 1. The kernel, which the override cannot reach. Decisive either way: if it
+    # answers at all, no weaker source gets to overrule it.
     kfd = _kfd_gfx_targets()
     if kfd:
         return _confirm(kfd, "KFD topology sysfs")
 
-    # 2. The runtime, asked again without the override.
+    # 2. The runtime, asked again without the override and without the visible
+    # masks, so a mask cannot hide the second GPU that would veto the correction.
     _saved_probe = _LAST_AMD_GFX_PROBE
     try:
-        reprobed = _detect_amd_gfx_codes(dedup = False, ignore_hsa_override = True)
+        reprobed = _detect_amd_gfx_codes(
+            dedup = False, ignore_hsa_override = True, ignore_visible_masks = True
+        )
     except Exception:
         reprobed = []
     finally:
         _LAST_AMD_GFX_PROBE = _saved_probe
-    if reprobed and set(reprobed) != {probed}:
-        return _confirm(reprobed, "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
-
-    # 3. Fallback: the variable names exactly the arch that was reported, which
-    # is what a spoof looks like from the outside. Reached on hosts where the
-    # kernel is silent and the re-probe still answers with the override applied
-    # (baked into a ROCr config, or a userland with no gfx1151 support at all).
-    if _hsa_override_gfx_arch(raw) != probed:
-        return None
-    _safe_print(
-        f"   HSA_OVERRIDE_GFX_VERSION={raw} names {probed} exactly -- treating it as a "
-        f"spoof of {inferred_gfx}.\n"
-    )
-    return inferred_gfx
+    # A re-probe that still answers `probed` is evidence FOR the probe, not
+    # against it: the override was removed and the name did not move, so the
+    # silicon really is what was reported. Declining here is the whole reason a
+    # genuine gfx1100 dGPU in a Ryzen AI Max chassis keeps its own wheels.
+    return _confirm(list(dict.fromkeys(reprobed)), "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
 
 
 def _first_set_visible_mask() -> "str | None":
