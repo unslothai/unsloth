@@ -619,9 +619,7 @@ class TestInstallShParity:
             "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
             "PATH": str(_bin) + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
         }
-        got = _run_sh(
-            '_hsa_spoofed_physical_gfx "gfx1151" "gfx1100\ngfx1100" 2>/dev/null', env = env
-        )
+        got = _run_sh('_hsa_spoofed_physical_gfx "gfx1151" "gfx1100\ngfx1100" 2>/dev/null', env = env)
         assert got == "gfx1151", got
 
         # The Python side, same host, so the parity claim is asserted and not assumed.

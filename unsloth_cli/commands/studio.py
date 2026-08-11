@@ -302,9 +302,10 @@ def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
             for info in sp.glob("rocm-*.dist-info"):
                 # rocm-sdk-core, rocm-sdk-libraries-* and friends all start "rocm-";
                 # only the bare `rocm` meta-package arbitrates.
-                if re.fullmatch(r"rocm-[^-]+\.dist-info", info.name) and (
-                    info / "METADATA"
-                ).is_file():
+                if (
+                    re.fullmatch(r"rocm-[^-]+\.dist-info", info.name)
+                    and (info / "METADATA").is_file()
+                ):
                     _metadata = info / "METADATA"
                     break
     if _metadata is None:

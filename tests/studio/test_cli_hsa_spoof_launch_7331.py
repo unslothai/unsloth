@@ -297,9 +297,9 @@ class TestEveryLaunchEntryPointClearsIt:
 
     def test_the_group_callback_uses_the_same_helper(self):
         source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
-        assert source.count("_clear_hsa_override_before_launch(") >= 3, (
-            "one definition plus a call from each entry point"
-        )
+        assert (
+            source.count("_clear_hsa_override_before_launch(") >= 3
+        ), "one definition plus a call from each entry point"
 
     def test_the_helper_is_idempotent(self, tmp_path, monkeypatch):
         """studio_default and run can both run in one process; the second call
@@ -316,5 +316,4 @@ class TestEveryLaunchEntryPointClearsIt:
         """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so
         anything the group callback does is skipped there."""
         import unsloth_cli
-
         assert unsloth_cli.studio_run is studio_cli.run
