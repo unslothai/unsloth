@@ -851,9 +851,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
     # NO_PROXY entry, so the opener has to carry the decision instead.
     bypassed = expected_url.startswith("https://203.0.113.7")
     empty_proxy_handlers = [
-        h
-        for h in built[0]
-        if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
+        h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
     ]
     assert bool(empty_proxy_handlers) is bypassed
 
