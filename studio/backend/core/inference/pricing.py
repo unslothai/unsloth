@@ -38,8 +38,29 @@ ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
 
 OPENAI_PRICING: dict[str, dict[str, float]] = {
     # Verified against developers.openai.com/api/docs/pricing.
-    # `long_context_*` keys apply past the threshold (gpt-5.5/5.4: 272k);
+    # `long_context_*` keys apply past the threshold (gpt-5.6/5.5/5.4: 272k);
     # families without them ship a single rate.
+    "gpt-5.6-sol": {
+        "input_per_mtok": 5.0,
+        "output_per_mtok": 30.0,
+        "long_context_threshold": 272_000,
+        "long_context_input_per_mtok": 10.0,
+        "long_context_output_per_mtok": 45.0,
+    },
+    "gpt-5.6-terra": {
+        "input_per_mtok": 2.0,
+        "output_per_mtok": 12.0,
+        "long_context_threshold": 272_000,
+        "long_context_input_per_mtok": 4.0,
+        "long_context_output_per_mtok": 18.0,
+    },
+    "gpt-5.6-luna": {
+        "input_per_mtok": 0.20,
+        "output_per_mtok": 1.20,
+        "long_context_threshold": 272_000,
+        "long_context_input_per_mtok": 0.40,
+        "long_context_output_per_mtok": 1.80,
+    },
     "gpt-5.5": {
         "input_per_mtok": 5.0,
         "output_per_mtok": 30.0,

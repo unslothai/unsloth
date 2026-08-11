@@ -622,3 +622,26 @@ def test_explicit_zero_output_tokens_wins_over_stale_completion_tokens():
     )
     assert out["billable_output_tokens"] == 0, out
     assert out["output_usd"] == 0.0, out
+
+
+def test_openai_gpt56_family_uses_verified_prices():
+    """Sol / Terra / Luna, both context tiers, from the published table."""
+    expected = {
+        "gpt-5.6-sol": (5.0, 30.0, 10.0, 45.0),
+        "gpt-5.6-terra": (2.0, 12.0, 4.0, 18.0),
+        "gpt-5.6-luna": (0.20, 1.20, 0.40, 1.80),
+    }
+    for model, (inp, out, long_in, long_out) in expected.items():
+        row = OPENAI_PRICING[model]
+        assert row["input_per_mtok"] == inp, model
+        assert row["output_per_mtok"] == out, model
+        assert row["long_context_threshold"] == 272_000, model
+        assert row["long_context_input_per_mtok"] == long_in, model
+        assert row["long_context_output_per_mtok"] == long_out, model
+        short = calculate_cost("openai", model, {"input_tokens": 1000, "output_tokens": 1000})
+        assert short["priced"] is True, model
+        assert _isclose(short["input_usd"], 1000 / 1_000_000.0 * inp), model
+        # Past the threshold the whole request reprices at the long rates.
+        long = calculate_cost("openai", model, {"input_tokens": 300_000, "output_tokens": 1000})
+        assert _isclose(long["input_usd"], 300_000 / 1_000_000.0 * long_in), model
+        assert _isclose(long["output_usd"], 1000 / 1_000_000.0 * long_out), model

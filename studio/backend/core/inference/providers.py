@@ -16,6 +16,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
         "default_models": [
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
@@ -28,7 +31,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         # Scope the picker to the current generation. /v1/models returns many
         # historical snapshots, fine-tunes, and non-chat models we don't want.
-        "model_id_allowlist": re.compile(r"^(gpt-5\.[345]|gpt-4\.5|o3)(?:[-.]|$)"),
+        "model_id_allowlist": re.compile(r"^(gpt-5\.[3456]|gpt-4\.5|o3)(?:[-.]|$)"),
         # Hide dated snapshots and the retired plain gpt-5.3 id.
         "model_id_denylist": re.compile(r"^(gpt-5\.3)$|-\d{4}-\d{2}-\d{2}$"),
     },
@@ -73,7 +76,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         #     `gemini-3.1-pro-preview`, so we surface 3.1 directly).
         "default_models": [
             "gemini-3.1-pro-preview",
+            "gemini-3.6-flash",
             "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
             "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
             "gemini-pro-latest",
@@ -101,17 +106,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # gemini-3-pro-preview was shut down 2026-03-09 and auto-aliased to
         # gemini-3.1-pro-preview; drop it so users see one canonical card.
         "model_id_deny_exact": ("gemini-3-pro-preview",),
-        # Chat-capable 3.5 / 3.1 / 3 / 2.5 families plus rolling *-latest
+        # Chat-capable 3.6 / 3.5 / 3.1 / 3 / 2.5 families plus rolling *-latest
         # aliases. Image-tier ids flow through the Nano Banana
         # `responseModalities` path in `_stream_gemini`. Retired 2.0 ids
-        # excluded (they 404 on use).
+        # excluded (they 404 on use). `-preview` is optional on the image ids
+        # so a GA rollover does not drop them from the picker.
         "model_id_allowlist": re.compile(
             r"^("
-            r"gemini-3\.5-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.6-(?:flash|pro)(?:-preview)?|"
+            r"gemini-3\.5-(?:flash|pro|flash-lite)(?:-preview)?|"
             r"gemini-3\.1-(?:flash|pro|flash-lite)(?:-preview)?(?:-customtools)?|"
-            r"gemini-3\.1-flash-image-preview|"
+            r"gemini-3\.1-flash-image(?:-preview)?|"
             r"gemini-3-(?:flash|pro)(?:-preview)?|"
-            r"gemini-3-pro-image-preview|"
+            r"gemini-3-pro-image(?:-preview)?|"
             r"nano-banana-pro-preview|"
             r"gemini-2\.5-pro|gemini-2\.5-flash|gemini-2\.5-flash-lite|"
             r"gemini-2\.5-flash-image|"
