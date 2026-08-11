@@ -257,17 +257,27 @@ export function stackGeometry(
   viewportWidth: number,
   viewportHeight: number,
   neededRoom: number = ASSUMED_STACK_HEIGHT,
+  // What the stack cannot give up, as opposed to what it would like. Defaults
+  // to `neededRoom` so a caller that knows only one number keeps the stricter
+  // reading of it.
+  floorRoom: number = neededRoom,
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
   const placed = place(list, viewportWidth, viewportHeight, neededRoom);
-  if (placed.maxHeight >= neededRoom || !list.some((f) => f.coverable)) {
+  if (placed.maxHeight >= floorRoom || !list.some((f) => f.coverable)) {
     return placed;
   }
-  // Nowhere to put the stack whole while dodging everything. Drop the boxes
-  // that said they may be covered and try again: the stack takes the corner and
-  // paints over the composer, which is what the cards being on top means.
-  // Clipping them instead is what the report was about, and a card sliced off
-  // at the rail's edge looks like it has slid behind the page.
+  // Nowhere to put the stack even at its floor while dodging everything. Drop
+  // the boxes that said they may be covered and try again: the stack takes the
+  // corner and paints over the composer, which is what the cards being on top
+  // means. Clipping them instead is what the report was about, and a card
+  // sliced off at the rail's edge looks like it has slid behind the page.
+  //
+  // Tested against the floor and not the natural height on purpose. The cards
+  // are allowed to give up their notes, so a placement 3px short of the height
+  // they would prefer is still a placement that shows all of them, and covering
+  // the composer to win those 3px is a worse answer than a slightly shorter
+  // notes preview.
   const uncoverable = list.filter((f) => !f.coverable);
   const covering = place(uncoverable, viewportWidth, viewportHeight, neededRoom);
   return covering.maxHeight > placed.maxHeight ? covering : placed;
@@ -354,6 +364,7 @@ export function useStackGeometry(): StackPlacement {
     height: typeof window === "undefined" ? 0 : window.innerHeight,
   }));
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
+  const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const onResize = () =>
@@ -368,6 +379,7 @@ export function useStackGeometry(): StackPlacement {
       // An empty stack asks for nothing, so nothing is dodged for it.
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
+        setFloorRoom((current) => (current === 0 ? current : 0));
         setOverflowing((current) => (current ? false : current));
         return;
       }
@@ -381,11 +393,19 @@ export function useStackGeometry(): StackPlacement {
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
+      // And the other end of the same measurement: squeezed to nothing, what is
+      // left is what the cards refuse to give up. The difference between the two
+      // is the height the stack can donate to a dodge, and asking a placement to
+      // hold `natural` when it only has to hold `floor` is what made a 3px
+      // shortfall at 1280x830 give up on dodging the composer entirely.
+      node.style.maxHeight = "0px";
+      const floor = node.scrollHeight;
       node.style.maxHeight = capped;
       if (node.scrollTop !== scrolled) {
         node.scrollTop = scrolled;
       }
       setNeededRoom((current) => (current === natural ? current : natural));
+      setFloorRoom((current) => (current === floor ? current : floor));
       // Whether the stack scrolls is read back from the capped box, not from
       // `natural` against the cap: under the cap the cards give up height of
       // their own, so a stack that asks for more than the cap can still fit
@@ -446,7 +466,13 @@ export function useStackGeometry(): StackPlacement {
     };
   }, []);
   return {
-    ...stackGeometry(published, viewport.width, viewport.height, neededRoom),
+    ...stackGeometry(
+      published,
+      viewport.width,
+      viewport.height,
+      neededRoom,
+      floorRoom,
+    ),
     ref,
     overflowing,
   };

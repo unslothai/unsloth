@@ -443,6 +443,33 @@ test("a coverable composer does not licence covering the monitor beside it", () 
   }
 });
 
+// The cards may give up their notes, so a placement short of the height they
+// would PREFER still shows all of them. Covering the composer to win those few
+// pixels is the worse answer, and testing the fallback against the natural
+// height rather than the floor is what did it: at 1280x830 a 3px shortfall took
+// the stack off a dodge that fitted and put it over the composer.
+test("a placement that fits the cards at their floor is not given up on", () => {
+  const H = 830;
+  const composer = { left: 416, top: 415, right: 864, bottom: 530, coverable: true };
+  const natural = 394;
+  const floor = 339;
+  const geometry = stackGeometry(composer, 1280, H, natural, floor);
+  assert.ok(
+    H - geometry.bottom <= composer.top,
+    "the stack covered a composer it could have dodged",
+  );
+  assert.ok(geometry.maxHeight >= floor, "and it still holds the cards");
+});
+
+// One number means the strict reading of it, so nothing that knows only the
+// natural height silently starts covering things.
+test("a caller that passes one height gets the stricter answer", () => {
+  const composer = { left: 416, top: 415, right: 864, bottom: 530, coverable: true };
+  const one = stackGeometry(composer, 1280, 830, 394);
+  const two = stackGeometry(composer, 1280, 830, 394, 394);
+  assert.deepEqual(one, two);
+});
+
 // Same rule, applied to the other publisher: a monitor dragged up the screen
 // leaves the corner free, so the stack belongs in it.
 test("a monitor away from the corner no longer lifts the stack", () => {
