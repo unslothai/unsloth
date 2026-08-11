@@ -2138,12 +2138,19 @@ def run_server(
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
+    # http=... is uvicorn's own h11 protocol unless we are on the plain-h11 path, where it
+    # becomes a subclass that ignores socket reads delivered after the connection was already
+    # closed. Without it every clean shutdown on Windows ends in an h11 LocalProtocolError
+    # traceback that reads as a crash; see utils/uvicorn_h11_shutdown.py for the full sequence.
+    from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
+
     config_kwargs = dict(
         host = host,
         port = port,
         log_level = "info",
         access_log = False,
         server_header = False,
+        http = uvicorn_http_protocol(),
     )
     # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
     # the real https origin. forwarded_allow_ips="*" is safe in Colab's
