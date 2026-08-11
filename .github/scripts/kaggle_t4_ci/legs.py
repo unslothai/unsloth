@@ -344,7 +344,21 @@ UNWIRED: dict[str, str] = {
 # `grpo` goes when its install works.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
-    ("gptoss", "grpo"),
+    ("gptoss",),
+    # grpo TRAVELS ALONE, and that is a measurement rather than a preference.
+    #
+    # Paired with gptoss on the two cards of one session (kernel
+    # unsloth-t4-ci-70a2f4eb) it died with `CUDA error: an illegal memory
+    # access was encountered` at exactly the same 13.60GB peak at which it
+    # PASSED alone (kernel unsloth-t4-ci-53efcc4e), same config to the flag.
+    # Same peak, different outcome, so whatever it ran out of is not GPU
+    # memory: the cards are pinned one per payload. gpt-oss offloads to host
+    # RAM and vLLM wants host RAM, and a Kaggle session has one host.
+    #
+    # A third kernel costs a queue slot, not quota: Kaggle runs two at a time
+    # and bills wall clock per session. Cheaper than a leg that fails half the
+    # time for a reason nobody can see in the report.
+    ("grpo",),
 )
 
 

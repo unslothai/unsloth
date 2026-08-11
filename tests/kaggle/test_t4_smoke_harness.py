@@ -1566,6 +1566,36 @@ def test_an_unwired_note_says_what_is_unknown():
         assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
 
 
+def test_grpo_does_not_share_a_session_with_gptoss():
+    """Measured, not stylistic.
+
+    Paired with gptoss on the two cards of one session (kernel
+    unsloth-t4-ci-70a2f4eb) grpo died with `CUDA error: an illegal memory
+    access was encountered` at exactly the 13.60GB peak at which it PASSED
+    alone (kernel unsloth-t4-ci-53efcc4e), same config to the flag. Same peak,
+    different outcome, so the constraint is not GPU memory -- the cards are
+    pinned one per payload. gpt-oss offloads to host RAM, vLLM wants host RAM,
+    and a Kaggle session has one host.
+
+    Re-pairing them to save a queue slot is the change this test exists to
+    stop."""
+    from legs import KERNELS
+
+    for kernel in KERNELS:
+        assert not ("grpo" in kernel and "gptoss" in kernel), kernel
+
+
+def test_control_and_canary_still_share_a_session():
+    """The opposite constraint, and the reason the pairing rule is not just
+    'one leg per kernel'. They are a matched pair: same image, same driver,
+    same hour, differing only in library versions. Splitting them puts an
+    uncontrolled variable between the only two legs whose comparison has to be
+    clean."""
+    from legs import KERNELS
+
+    assert any(set(k) >= {"control", "canary"} for k in KERNELS), KERNELS
+
+
 def test_the_grpo_leg_keeps_the_config_that_actually_fit():
     """Every one of these is load-bearing on a 14.56GB card.
 
