@@ -327,7 +327,9 @@ def _scope_for_owner(scope_type: str, scope_id: str) -> str:
 
 
 def _require_scope_owner(
-    scope_type: str, scope_id: str, conn: sqlite3.Connection | None = None
+    scope_type: str,
+    scope_id: str,
+    conn: sqlite3.Connection | None = None,
 ) -> None:
     """404 unless the scope's owner still exists.
 

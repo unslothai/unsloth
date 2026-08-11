@@ -158,7 +158,12 @@ def test_kb_delete_rolls_back_when_document_cleanup_fails(rag_conn, monkeypatch)
     ]
 
 
-def _link_folder(conn, folder_id, scope, path = "/tmp/linked"):
+def _link_folder(
+    conn,
+    folder_id,
+    scope,
+    path = "/tmp/linked",
+):
     conn.execute(
         "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
         "auto_sync, status, created_at, updated_at) "
@@ -218,9 +223,10 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
     """Same rows, same order, whichever form runs: the fast path is not a shortcut in
     behaviour, only in work."""
     for i in range(12):
-        _add_doc(rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}",
-                 [f"alpha bravo {'charlie ' * (i % 4)}"])
+        _add_doc(
+            rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}", [f"alpha bravo {'charlie ' * (i % 4)}"]
+        )
     fast = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
-    _link_folder(rag_conn, "f1", "kb_b")     # another scope, so nothing is excluded
+    _link_folder(rag_conn, "f1", "kb_b")  # another scope, so nothing is excluded
     filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
     assert fast == filtered
