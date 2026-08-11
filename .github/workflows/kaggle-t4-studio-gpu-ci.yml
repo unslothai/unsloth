@@ -1,0 +1,400 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Unsloth Studio on a real CUDA GPU, on free Kaggle T4 hardware.
+#
+# Why this exists: Studio has ZERO CUDA coverage. Every Studio workflow in
+# this repo runs on ubuntu-latest, macos-15 or windows-latest, and nothing
+# matches `runs-on:.*(gpu|a100|t4|nvidia|self-hosted)`. macOS gives Metal and
+# MLX some hardware; the CUDA path is exercised by nothing at all.
+# studio-inference-smoke.yml runs real GGUF inference against a 270M model
+# precisely because it has to decode on a CPU. This is the first job that can
+# tell a working GPU path from a CPU fallback.
+#
+# What runs: tests/kaggle/studio_gpu/run_studio_gpu.py, one payload per
+# kernel. It installs Studio the supported way (`install.sh --local`, which
+# builds the frontend, makes the venv and fetches a CUDA llama.cpp), starts
+# the server headless, and asserts three things.
+#
+#   A. GGUF inference is ON THE GPU, and tool calling works. Three
+#      independent probes -- process VRAM from nvidia-smi, llama.cpp's own
+#      offload line, device-wide VRAM growth -- and a rule that no evidence
+#      is a FAILURE rather than a pass. "The model returned text" is
+#      explicitly not evidence: a CPU fallback returns text too, which is why
+#      no existing Studio job can catch one. Then tool calling through
+#      /v1/chat/completions with tool_choice=required, asserting
+#      finish_reason == "tool_calls".
+#   B. A LoRA training run finishes and leaves an adapter. Tested on no
+#      platform today. Judged on the phase reaching `completed` AND a loss
+#      logged for every step AND adapter_model.safetensors existing above a
+#      size floor -- a run whose dataset formats to zero rows also reaches
+#      `completed`, and a save that no-ops still leaves a config.
+#   C. GGUF export runs against a CUDA llama.cpp build and the output loads.
+#      The install kind on disk is asserted to be a CUDA bundle, the output
+#      is checked for the GGUF magic rather than for existence, and "it
+#      loads" is asserted by loading it back into Studio and generating.
+#
+# Then the repo's existing tests/studio/playwright_chat_ui.py is driven
+# against the same server, last, because its final phase clicks "Stop server"
+# and asserts the port closes.
+#
+# ---------------------------------------------------------------------
+# BUDGET. Read this before changing any trigger.
+# ---------------------------------------------------------------------
+# The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
+# budget (60h at time of writing) shared with every other use of that
+# account, and with the notebook leg in kaggle-t4-notebook-ci.yml. CI is
+# allowed up to 50 of those 60; the last 10 are held for human use and are
+# what `--reserve-hours 10` protects.
+#
+# Studio is sampled HARDER than the notebook leg because Studio changes land
+# far more often. That comes out as MORE launches and far more GPU-hours, and
+# as a LOWER percentage, and the reason the percentage moves the other way is
+# the whole point of the arithmetic below: the eligible event stream is about
+# five times larger and each launch costs about nine times as much.
+#
+#   MEASURED, 7 days to 2026-08-11 on unslothai/unsloth:
+#     479 commits landed on main (the wider week the numbers below use is
+#     514), of which 199 -- 41.5% -- touched the GPU-relevant Studio surface
+#     this workflow filters on. 67% touched studio/ at all; the filter is
+#     narrower than that on purpose, see PATHS below.
+#     Of a 40-PR sample of pull requests opened in the same window, 13
+#     (32.5%) touched that same surface. 30 (75%) touched studio/ at all.
+#
+#   ELIGIBLE INVOCATIONS
+#     push to main       514 x 0.415              = ~213 / week
+#     pull_request       566 x 0.325 x ~3 events  = ~550 / week
+#                        (opened plus synchronize; the same multiplier the
+#                         notebook leg's measured 150-200 implies)
+#     total                                       = ~760 / week
+#
+#   COST OF ONE LAUNCH, itemised rather than guessed. A Kaggle session bills
+#   wall clock, so this is wall clock, and none of it is cached: a kernel
+#   starts from the stock image every time.
+#     git clone + install.sh --local (venv, frontend build,
+#       CUDA torch, llama.cpp prebuilt)                        ~20 min
+#     playwright chromium + system deps                         ~3 min
+#     Studio boot to healthy                                    ~1 min
+#     chat GGUF download (~1.5 GB) + assertions A               ~5 min
+#     assertion B (0.5B base download, 8 LoRA steps, save)      ~6 min
+#     assertion C (merge, GGUF convert, quantize, reload)       ~6 min
+#     tests/studio/playwright_chat_ui.py, 28 phases            ~10 min
+#     evidence bundle                                           ~1 min
+#     -------------------------------------------------------------------
+#     ~52 min, call it 0.75 GPU-h with the variance that hides in a
+#     download. The notebook leg costs 0.08 h; this is roughly 9x it, and
+#     unlike that one it is NOT dominated by pip install alone.
+#
+#   ARITHMETIC, at the current settings.
+#     eligible invocations       ~760 / week   (paths filter, measured)
+#     x sampling rate            0.04          (--percent 4)
+#     = launches                 ~30 / week
+#     x cost of one launch       0.75 h
+#     = EXPECTED SPEND           ~23 GPU-h / week
+#
+#   Against the 60 h account budget that is ~38%, and against the 50 h CI
+#   allowance ~46%. The notebook leg's ~1.4 h/week sits alongside it.
+#
+#   Worst case, if every sampled launch ran to the 70-minute kernel ceiling:
+#   30 x 1.17 = ~35 GPU-h/week. Adding the notebook leg's 15 h worst case
+#   reaches 50, which is exactly where the 10 h reserve stops both of them.
+#
+#   COMPARED WITH THE NOTEBOOK LEG, which is what "sampled higher" means:
+#     launches / week      ~30      vs 15-20
+#     GPU-h / week         ~23      vs ~1.4
+#     sampling rate        4%       vs 10%
+#   The rate is the knob, not the goal. Raising it to 10% here would mean
+#   76 launches and ~57 GPU-h/week, which is the entire account.
+#
+#   ONE PAYLOAD, NOT TWO. The notebook leg runs a payload on each T4 of a
+#   session because the second card is free. Here the second card is left
+#   idle on purpose: Studio is a server, a browser and a llama.cpp process
+#   contending for four CPU cores, and a second copy of all that on the same
+#   box measures contention rather than Studio.
+#
+# ---------------------------------------------------------------------
+# PATHS
+# ---------------------------------------------------------------------
+# Deliberately NOT `studio/**`. This leg exists to exercise CUDA, and the
+# frontend is not where CUDA lives; frontend changes are already covered on
+# every commit by studio-ui-smoke.yml, studio-frontend-ci.yml and the mac and
+# windows UI jobs. Filtering on studio/** instead would raise the eligible
+# stream from ~760 to ~1600 a week and halve the sampling rate this budget
+# can afford, buying nothing this job can see.
+#
+# The two Playwright files that ARE listed are the ones this payload drives.
+# .github/scripts/kaggle_t4_ci/** is listed because the gate and the launcher
+# are shared with the notebook leg and a change there changes this job.
+#
+# ---------------------------------------------------------------------
+# FAILURE SEMANTICS
+# ---------------------------------------------------------------------
+# Red ONLY when the payload ran on a GPU and its assertions failed. Every
+# other outcome -- not sampled, no quota, account busy, push throttled,
+# kernel died on Kaggle's side, evidence would not download -- is a SKIP or a
+# warning and exits 0. Nothing was learned about the code in those cases, so
+# nothing should block a merge.
+#
+# This job is NOT intended to be a required check. It runs on a minority of
+# commits by design, so requiring it would block every commit it declined to
+# run on.
+#
+# ---------------------------------------------------------------------
+# CREDENTIALS
+# ---------------------------------------------------------------------
+# KAGGLE_ACCESS_TOKEN_GH is passed as KAGGLE_API_TOKEN to the gate and the
+# launcher only. It is never echoed, never written to an output or an
+# artifact, and never travels to the Kaggle kernel: the kernel receives the
+# notebook and nothing else. Fork pull requests do not receive the secret and
+# the gate skips cleanly when it is absent.
+#
+# The payload mints its own Studio bootstrap password inside the kernel and
+# scrubs it out of every log that leaves the machine, because Studio's
+# startup banner prints it and those logs become an artifact.
+
+name: Kaggle T4 Studio GPU CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_python_stack.py'
+      - 'install.sh'
+      - 'unsloth_cli/commands/studio.py'
+      - 'tests/studio/playwright_chat_ui.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/kaggle/studio_gpu/**'
+      - '.github/scripts/kaggle_studio_ci/**'
+      - '.github/scripts/kaggle_t4_ci/**'
+      - '.github/workflows/kaggle-t4-studio-gpu-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_python_stack.py'
+      - 'install.sh'
+      - 'unsloth_cli/commands/studio.py'
+      - 'tests/studio/playwright_chat_ui.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/kaggle/studio_gpu/**'
+      - '.github/scripts/kaggle_studio_ci/**'
+      - '.github/scripts/kaggle_t4_ci/**'
+      - '.github/workflows/kaggle-t4-studio-gpu-ci.yml'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the sampling gate (quota and concurrency still apply)'
+        type: boolean
+        default: true
+      max_steps:
+        description: 'LoRA steps for the training assertion'
+        type: string
+        default: '8'
+      chat_model:
+        description: 'GGUF repo to load for the inference and tool-calling assertions'
+        type: string
+        default: 'unsloth/Qwen3.5-2B-GGUF'
+      train_model:
+        description: 'Base model for the training and export assertions'
+        type: string
+        default: 'unsloth/Qwen2.5-0.5B-Instruct'
+      skip_ui:
+        description: 'Do not drive playwright_chat_ui.py (API assertions only)'
+        type: boolean
+        default: false
+      unsloth_ref:
+        description: 'unslothai/unsloth ref to install and test'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Per-ref, and NOT latest-only, for the same reason the notebook leg is not:
+# a cancelled runner cannot stop the Kaggle kernel it has already pushed, and
+# an orphaned kernel bills quota to its own ceiling with nobody left to read
+# the result. Superseded runs that have not STARTED are still discarded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: gate
+    # Fork pull requests never receive KAGGLE_ACCESS_TOKEN_GH, so this job
+    # could only reach "the token is not available to this context" -- a
+    # runner spent to learn nothing.
+    if: github.event.pull_request.head.repo.fork != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+
+      # The gate itself is shared with the notebook leg, unchanged. Only the
+      # numbers differ.
+      #
+      # budget-hours is the worst case ONE invocation can cost: the 70-minute
+      # kernel ceiling set below, rounded up.
+      #
+      # reserve-hours is 10 rather than the notebook leg's 20, and that is the
+      # single knob that implements "CI may use up to 50 of the 60 hours".
+      # Raising it throttles BOTH legs, since they read the same account-wide
+      # quota. Do not raise it above roughly 45 or CI never runs at all on a
+      # week with any other usage.
+      - name: Decide
+        id: decide
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/gate.py \
+            --percent 4 \
+            --force '${{ inputs.force || 'false' }}' \
+            --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
+            --label-name kaggle-studio-gpu-ci \
+            --budget-hours 2 \
+            --reserve-hours 10
+
+  studio-gpu:
+    name: Studio GPU smoke
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    # 120 min: the kernel ceiling is 70 and collection adds a few, so this
+    # only fires if the launcher itself wedged.
+    timeout-minutes: 120
+    # The SAME group string the notebook leg uses, on purpose. Kaggle's
+    # 2-kernel cap is per ACCOUNT and is not workflow-aware, so the two GPU
+    # legs have to queue behind each other rather than race the gate's
+    # concurrency survey and lose a push to the capacity cap. Not keyed on
+    # the ref for the same reason.
+    concurrency:
+      group: kaggle-t4-notebook-ci-account
+      cancel-in-progress: false
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install the Kaggle client
+        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+
+      # The ref the kernel clones and tests. For a pull request that is the
+      # head SHA, so the kernel exercises the proposed code and not the merge
+      # base. Pinned to a SHA rather than a branch so a push landing mid-run
+      # cannot change what was tested.
+      - name: Resolve the ref under test
+        id: ref
+        run: |
+          REF='${{ inputs.unsloth_ref }}'
+          if [ -z "$REF" ]; then
+            REF='${{ github.event.pull_request.head.sha || github.sha }}'
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "testing unslothai/unsloth@$REF"
+
+      - name: Build the kernel notebook
+        env:
+          MAX_STEPS: ${{ inputs.max_steps || '8' }}
+          CHAT_MODEL: ${{ inputs.chat_model || 'unsloth/Qwen3.5-2B-GGUF' }}
+          TRAIN_MODEL: ${{ inputs.train_model || 'unsloth/Qwen2.5-0.5B-Instruct' }}
+          SKIP_UI: ${{ inputs.skip_ui }}
+        run: |
+          ARGS="--max-steps $MAX_STEPS --chat-model $CHAT_MODEL --train-model $TRAIN_MODEL"
+          if [ "$SKIP_UI" = "true" ]; then
+            ARGS="$ARGS --skip-ui"
+            echo "::warning title=UI driver disabled::this run was dispatched with skip_ui, so tests/studio/playwright_chat_ui.py did not run and the browser path is unmeasured."
+          fi
+          python .github/scripts/kaggle_studio_ci/build_kernel.py \
+            --payload-dir tests/kaggle/studio_gpu \
+            --out kernel.ipynb \
+            --unsloth-ref '${{ steps.ref.outputs.ref }}' \
+            --payload-args "$ARGS" \
+            --per-run-timeout 3900
+
+      # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
+      # kills the session at that point. A runner that is cancelled cannot
+      # clean up after itself, so the ceiling has to be enforced on Kaggle's
+      # side rather than here.
+      #
+      # The launcher is shared with the notebook leg and is used unchanged:
+      # this payload prints the same T4_SMOKE_REPORT line, so the transport
+      # needed no modification.
+      - name: Launch on Kaggle and collect
+        id: launch
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/launch.py \
+            --notebook kernel.ipynb \
+            --user danielhanchen \
+            --outdir kaggle_evidence \
+            --expect 1 \
+            --kernel-timeout-sec 4200 \
+            --max-wait 5400 \
+            --poll-every 60
+
+      # The launcher collects executed notebooks and the kernel log and
+      # nothing else, deliberately. The payload therefore encodes its
+      # screenshots and logs into its own cell output; this puts them back.
+      - name: Unpack the Playwright evidence
+        if: always()
+        run: |
+          python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+            --evidence kaggle_evidence \
+            --outdir studio_evidence
+
+      # always(): the evidence is most valuable exactly when something went
+      # wrong. Screenshots only travel on a failing run, so a passing upload
+      # is kilobytes.
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: kaggle-studio-gpu-evidence
+          path: |
+            kaggle_evidence/**
+            studio_evidence/**
+            kernel.ipynb
+          # 14 rather than the repo's usual 7. This job runs on a minority of
+          # commits, so two consecutive samples can be a fortnight apart, and
+          # comparing them is the main reason to keep the evidence at all.
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Report
+        if: always()
+        run: |
+          python .github/scripts/kaggle_studio_ci/report.py \
+            --evidence kaggle_evidence
