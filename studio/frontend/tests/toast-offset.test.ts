@@ -59,3 +59,47 @@ test("macOS desktop headers overlay the native titlebar", () => {
     });
   }
 });
+
+test("a route that merely starts with a workspace name keeps the corner inset", () => {
+  // The header routes are matched exactly, so a longer path that happens to share the
+  // prefix must not inherit their clearance and drop 40px down a page with no header.
+  for (const pathname of ["/chatty", "/images-old", "/videos", "/chatgpt"]) {
+    assert.deepEqual(getToastOffsets(pathname, false, false), {
+      default: { top: 12, right: 12 },
+      mobile: { top: 16, right: 16 },
+    });
+  }
+});
+
+test("an unrecognised pathname falls back to the corner inset", () => {
+  // The 404 shell paints no page header. This also covers a trailing-slash URL: the
+  // router does not normalise it, so "/images/" rests as its own pathname and misses
+  // the route, which is why it wants the no-header placement rather than the media one.
+  for (const pathname of ["/unknown", "/images/", "/video/", ""]) {
+    assert.deepEqual(getToastOffsets(pathname, false, false), {
+      default: { top: 12, right: 12 },
+      mobile: { top: 16, right: 16 },
+    });
+  }
+});
+
+test("a custom titlebar is ignored off the desktop app", () => {
+  // shouldUseCustomWindowTitlebar() cannot return true while isTauri is false, but the
+  // signature allows the pair, and there is no titlebar to clear in a browser.
+  for (const pathname of ["/chat", "/studio"]) {
+    assert.deepEqual(
+      getToastOffsets(pathname, false, true),
+      getToastOffsets(pathname, false, false),
+    );
+  }
+});
+
+test("offsets are pure, so a caller cannot poison the next lookup", () => {
+  const first = getToastOffsets("/chat", false, false);
+  first.default.top = -999;
+  first.mobile.right = -999;
+  assert.deepEqual(getToastOffsets("/chat", false, false), {
+    default: { top: 52, right: 12 },
+    mobile: { top: 52, right: 16 },
+  });
+});
