@@ -298,6 +298,9 @@ _ARG_FIXTURES = {
     "n": lambda text: len(text),
     "vs": lambda text: 0,
     "needle": lambda text: "[",
+    # ``_safe_cut`` is asked where the first sentinel is, so hand it the real answer
+    # rather than 0: at 0 it returns 0 for every input and pins nothing.
+    "first": lambda text: _parser_first_sentinel(text),
     "out": lambda text: [],
     "previous": lambda text: text,
     "markers": lambda text: _tool_healing_build_markers(text),
@@ -306,6 +309,7 @@ _ARG_FIXTURES = {
 }
 
 
+<<<<<<< HEAD
 # Offsets a predicate is asked about. One offset is not coverage for a function whose
 # whole job is to answer differently at different positions: driving
 # ``_inside_open_parameter`` only at the end of the text gave it two distinct values over
@@ -344,6 +348,8 @@ def _gemma_argument_body(text: str) -> str:
     return "city:Paris, n:2, tags:[a, b]"
 
 
+=======
+>>>>>>> 95975a977 (Studio: keep the bracket-scan size guard across a prefix cut)
 def _parser_first_sentinel(text: str):
     from core.inference import tool_call_parser
     return tool_call_parser._first_sentinel(text, 0)

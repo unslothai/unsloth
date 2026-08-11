@@ -822,6 +822,11 @@ def _safe_cut(text: str, first: int) -> int:
     """
     if first <= 0:
         return 0
+    if len(text) > _tool_healing._MAX_BRACKET_SCAN_CHARS:
+        # Over that length ``_strip_bracket_tag_calls`` stands down and returns the
+        # segment untouched. Cutting would bring the tail back under the limit and turn
+        # the arm back on, so a segment that has passed it is left whole.
+        return 0
     cut = first
     if text.startswith("[ARGS]", first):
         while cut > 0 and not text[cut - 1].isspace():

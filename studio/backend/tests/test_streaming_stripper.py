@@ -327,3 +327,19 @@ def test_a_real_bare_call_is_still_seen_as_a_sentinel():
         ), f"lost the call anchor at {size}: {text[:size]!r}"
     assert _first_sentinel("Please call me back tomorrow.", 0) == -1
     assert _first_sentinel("I made a call: yesterday it worked.", 0) == -1
+
+
+def test_the_bracket_scan_size_guard_survives_a_prefix_cut():
+    """``_strip_bracket_tag_calls`` stands down over ``_MAX_BRACKET_SCAN_CHARS``.
+
+    A cut shortens the segment, so a tail that fell under the limit would re-enable an
+    arm the full scan had skipped and strip text the reference keeps.
+    """
+    prose = "word " * ((tool_healing._MAX_BRACKET_SCAN_CHARS // 5) + 1)
+    text = prose + '\nsearch[ARGS]{"x": 1} tail'
+    assert len(text) > tool_healing._MAX_BRACKET_SCAN_CHARS
+
+    stripper = StreamingMarkupStripper(ENABLED)
+    stripper.strip(prose)
+
+    assert stripper.strip(text) == _reference_strip(text)
