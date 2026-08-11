@@ -314,6 +314,17 @@ def test_module_eval_is_not_read_as_the_exec_builtin():
     assert high == [], f"ordinary .eval() inference code must not be HIGH: {high}"
 
 
+def test_the_builtin_reached_through_a_dot_is_still_flagged():
+    # `builtins.exec(...)` and `__builtins__.eval(...)` ARE the builtin, reached
+    # through an attribute. Excluding every dotted form to spare `model.eval()`
+    # would hand a payload a one-line way under the HIGH finding.
+    for call in ("builtins.exec(marshal.loads(BLOB))", "__builtins__.eval(BLOB)"):
+        payload = f"import builtins, marshal, zlib\nmod = __import__('os')\n{call}\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{call} must still be flagged"
+
+
 def test_the_real_exec_builtin_is_still_flagged():
     # The narrowing must not cost a true positive: a bare builtin call beside the
     # same dynamic import is what the rule is for.
