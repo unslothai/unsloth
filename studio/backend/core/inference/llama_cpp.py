@@ -7066,7 +7066,18 @@ class LlamaCppBackend:
             kept: list = []
             for _ in range(alen):
                 n = struct.unpack("<Q", f.read(8))[0]
-                raw = f.read(n)
+                if not n:
+                    continue
+                # delimiter_shaped_tokens keeps only "<...>" / "[...]" entries, so a token
+                # whose first byte is neither can be seeked past instead of read, decoded
+                # and retained. UTF-8 is self-synchronising, so no multi-byte character
+                # begins with either byte. A six-figure vocabulary is the bulk of a header
+                # parse and only a few hundred entries survive the filter.
+                first = f.read(1)
+                if first != b"<" and first != b"[":
+                    f.seek(n - 1, 1)
+                    continue
+                raw = first + f.read(n - 1)
                 # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
                 # entries are simply not markers.
                 try:
