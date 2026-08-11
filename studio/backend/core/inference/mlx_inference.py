@@ -104,12 +104,8 @@ def _mlx_vlm_model_config(model):
 
 
 def _ascii_registry_key(value):
-    """An mlx-vlm registry key lowered within ASCII, or None when it cannot be one.
-
-    `str.casefold` is deliberately avoided: it folds non-ASCII letters onto ASCII
-    ones, so a checkpoint publishing "ſmolvlm" or "Straß" would resolve to a
-    renderer it never named.
-    """
+    """An mlx-vlm registry key lowered within ASCII, else None. Not `casefold`:
+    it folds non-ASCII onto ASCII, so "ſmolvlm" would reach `smolvlm`."""
     if not isinstance(value, str) or not value.isascii():
         return None
     return value.lower()
@@ -137,9 +133,8 @@ def _render_registered_vlm_prompt(
         return None
     model_config = getattr(prompt_utils, "MODEL_CONFIG", {})
     if model_type not in model_config:
-        # ASCII lowering, not casefold: casefold maps non-ASCII letters onto
-        # ASCII ones ("ſmolvlm" -> "smolvlm", "ß" -> "ss"), which would route a
-        # foreign model type into an unrelated renderer. Registry keys are ASCII.
+        # Registry keys are ASCII, so fold in ASCII: casefold would route
+        # "ſmolvlm" into the unrelated `smolvlm` renderer.
         folded = _ascii_registry_key(model_type)
         matches = (
             [
@@ -150,8 +145,7 @@ def _render_registered_vlm_prompt(
             if folded is not None
             else []
         )
-        # An ambiguous fold is not evidence: stay fail-closed rather than pick
-        # whichever key the registry happened to insert first.
+        # An ambiguous fold is not evidence for either key: stay fail-closed.
         if len(matches) != 1:
             return None
         canonical = matches[0]

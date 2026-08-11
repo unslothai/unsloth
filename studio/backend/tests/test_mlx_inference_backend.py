@@ -1691,8 +1691,8 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     """The official checkpoint capitalizes its model type while mlx-vlm's
     registry uses lowercase. Studio must reach the registered renderer rather
     than rejecting the checkpoint before the loader's normalization can run."""
-    # Real mlx-vlm and Zoo, like the neighbouring renderer contract test. The
-    # bare backend CI ships neither, so skip rather than error there.
+    # Real mlx-vlm and Zoo, like the renderer contract test above. Bare
+    # backend CI ships neither, so skip rather than error.
     pytest.importorskip("mlx_vlm.prompt_utils")
     loader = pytest.importorskip("unsloth_zoo.mlx.loader")
     from core.inference.mlx_inference import _render_registered_vlm_prompt
@@ -1719,8 +1719,8 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     )
 
     assert plain and marked and plain != marked
-    # The checkpoint keeps the model type it published: later capability and
-    # export logic must not observe a value the config never carried.
+    # Later capability and export logic must not see a value the config
+    # never carried.
     assert config["model_type"] == published
     assert model.config is config
 
@@ -1737,12 +1737,8 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     ],
 )
 def test_mlx_renderer_canonicalization_is_ascii_only(monkeypatch, published, resolves):
-    """Case-insensitive routing must not fold non-ASCII onto an ASCII renderer.
-
-    `str.casefold` maps U+017F LATIN SMALL LETTER LONG S onto "s" and U+1E9E onto
-    "ss", so a checkpoint publishing those would reach a renderer it never named.
-    mlx-vlm's registry keys are ASCII, so the fold is ASCII-only and fail-closed.
-    """
+    """casefold maps U+017F onto "s" and U+1E9E onto "ss", so a checkpoint
+    publishing those would reach a renderer it never named."""
     from core.inference.mlx_inference import _render_registered_vlm_prompt
 
     rendered = []
