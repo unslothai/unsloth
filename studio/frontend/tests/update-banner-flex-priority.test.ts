@@ -136,6 +136,46 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
+// Covering the composer is licensed per card, and the licence is carried on
+// the card rather than inferred in the store, so a new overlay added to the
+// rail is persistent until someone says otherwise. The loaded models indicator
+// and the download panel deliberately do not carry it: they are the last
+// children, so they are what would land on Send.
+test("only the dismissible cards licence covering the composer", () => {
+  for (const [name, source] of [...CARDS, ["llama", LLAMA] as const]) {
+    assert.match(
+      source,
+      /data-overlay-dismissible="true"/,
+      `the ${name} card lost its dismissible marker, so the stack will never cover`,
+    );
+  }
+  const indicator = read("features/loaded-models/loaded-models-indicator.tsx");
+  const downloads = read(
+    "features/hub/download-manager/download-manager-panel.tsx",
+  );
+  for (const [name, source] of [
+    ["loaded models indicator", indicator],
+    ["download panel", downloads],
+  ] as const) {
+    assert.ok(
+      !/data-overlay-dismissible/.test(source),
+      `the ${name} is persistent and must not licence covering the composer`,
+    );
+  }
+  assert.match(
+    STORE,
+    /child\.hasAttribute\("data-overlay-dismissible"\)/,
+    "the store no longer asks the cards whether it may cover",
+  );
+  // Measured up from the corner, so the run that stops a cover is the one that
+  // would land on the composer, not any persistent card anywhere in the stack.
+  assert.match(
+    STORE,
+    /for \(let i = node\.children\.length - 1; i >= 0; i -= 1\)/,
+    "the persistent run is no longer counted from the bottom of the stack",
+  );
+});
+
 test("the llama.cpp card keeps its full height in the rail", () => {
   // Nothing inside it can give up height, so squeezing it only mangles it.
   assert.match(
@@ -220,8 +260,24 @@ test("a scrolling rail takes pointer input, a fitting one stays click-through", 
     /overflowing: floorRoom > geometry\.maxHeight/,
     "the overflow flag is not derived from the placement",
   );
+  assert.ok(!/setOverflowing/.test(STORE), "a latched DOM reading is back");
+  // The probe writes max-height twice and reads scrollHeight between the
+  // writes. transition-property: all reaches the rail, so unsuppressed each
+  // write starts a transition, and a transition computes its start value
+  // until the timeline advances: the box computes 0px while its inline style
+  // reads back as the cap, and three whole cards lay out below it.
+  const suppressed = STORE.indexOf('node.style.transition = "none"');
+  const probe = STORE.slice(
+    suppressed,
+    STORE.indexOf("setNeededRoom", suppressed),
+  );
   assert.ok(
-    !/setOverflowing/.test(STORE),
-    "a latched DOM reading is back",
+    probe.length > 0 && /node\.style\.maxHeight = "none"/.test(probe),
+    "the height probe is not run with transitions suppressed",
+  );
+  assert.match(
+    STORE,
+    /void node\.scrollHeight;\s*\n\s*node\.style\.transition = eased;/,
+    "the restored cap is handed back to a transition",
   );
 });

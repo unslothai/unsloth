@@ -138,6 +138,8 @@ export function LlamaUpdateBanner({
             // stack squeezing it only prints its text over its own buttons.
             "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px] shrink-0",
       )}
+      // See the app update card: dismissible, so it may cover the composer.
+      data-overlay-dismissible="true"
       data-testid="llama-update-banner"
     >
       <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">

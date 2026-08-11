@@ -461,6 +461,40 @@ test("a placement that fits the cards at their floor is not given up on", () => 
   assert.ok(geometry.maxHeight >= floor, "and it still holds the cards");
 });
 
+// The loaded models indicator is the LAST child of the rail, so it is the one
+// that lands on the corner, and it is persistent: over Send it is #8210 again,
+// permanently rather than until a dismiss. #8346 ships it off by default, which
+// makes this whoever turned it on rather than nobody.
+test("a persistent card that would land on the composer stops the cover", () => {
+  const H = 534;
+  // Docked under a thread: it sits on the bottom edge, so the corner is where
+  // the persistent tail would go and the tail would land on Send.
+  const docked = { left: 236, top: 380, right: 684, bottom: 518, coverable: true };
+  const dodging = stackGeometry(docked, 921, H, 460, 420, 60);
+  assert.ok(
+    H - dodging.bottom <= docked.top,
+    "the persistent tail took the docked composer's corner",
+  );
+});
+
+test("a persistent card clear of the composer does not stop the cover", () => {
+  const H = 534;
+  // The welcome composer, centred. The corner underneath it is free, so the
+  // cards that reach it are the dismissible ones and there is nothing to
+  // protect: covering is still the right answer.
+  const welcome = { left: 236, top: 275, right: 684, bottom: 387, coverable: true };
+  const covering = stackGeometry(welcome, 921, H, 460, 420, 60);
+  assert.equal(covering.bottom, 16, "it gave up a cover that was safe");
+  assert.ok(covering.maxHeight >= 460, "and the cards are whole");
+});
+
+test("no persistent tail means the old answer", () => {
+  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const withZero = stackGeometry(composer, 921, 534, 420, 420, 0);
+  const withoutArg = stackGeometry(composer, 921, 534, 420, 420);
+  assert.deepEqual(withoutArg, withZero);
+});
+
 // One number means the strict reading of it, so nothing that knows only the
 // natural height silently starts covering things.
 test("a caller that passes one height gets the stricter answer", () => {

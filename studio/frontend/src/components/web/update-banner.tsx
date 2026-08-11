@@ -95,6 +95,10 @@ export function WebUpdateBanner({
                 // would yield nothing and clip the banner below it.
                 "pointer-events-auto flex min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)] w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
+          // Dismissible, so the stack may cover the composer to show it
+          // whole. See useStackGeometry: a card that cannot be got rid of
+          // does not get that licence.
+          data-overlay-dismissible="true"
           data-testid="web-update-banner"
         >
           <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">

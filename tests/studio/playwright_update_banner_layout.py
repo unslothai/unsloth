@@ -186,6 +186,83 @@ RESIZE_SWEEP = [
 # it feeds, and the reflow after that. Nothing is fetched, so this is short.
 RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
 
+# The four runtime status endpoints the loaded models card reads, shaped as
+# tests/studio/playwright_loaded_models_indicator.py has them. Only chat holds
+# anything: one loaded model is all it takes to put the card in the rail.
+CHAT_LOADED = {
+    "active_model": "unsloth/Qwen3-4B", "loaded": ["unsloth/Qwen3-4B"],
+    "is_gguf": False, "is_mlx": False, "is_vision": False, "is_audio": False,
+    "audio_type": None, "gguf_variant": None,
+}
+NOTHING_DIFFUSION = {
+    "loaded": False, "repo_id": None, "family": None, "device": None,
+    "dtype": None, "model_kind": None,
+}
+NOTHING_VIDEO = dict(NOTHING_DIFFUSION, transformer_quant = None)
+NOTHING_STT = {
+    "available": True, "loaded_model": None, "device": None,
+    "transformers": {"loaded_model": None, "device": None},
+    "mtmd": {"loaded_model": None, "device": None},
+    "gguf": {"loaded_model": None, "device": None},
+}
+
+# Where the stack is tight enough that it would cover the composer if it were
+# allowed to. Two is enough: the rule is per card, not per size.
+INDICATOR_VIEWPORTS = [(921, 534), (768, 500)]
+
+# Does anything in the rail overlap the composer? Read off the same page, since
+# the composer is not one of the boxes the cards know about.
+COMPOSER_CLEARANCE = """
+() => {
+  const card = document.querySelector('[data-testid="web-update-banner"]');
+  const composer = document.querySelector('form');
+  if (!card || !composer) return {composer: null, overlap: 0};
+  const rail = card.parentElement;
+  const a = rail.getBoundingClientRect();
+  const b = composer.getBoundingClientRect();
+  const dy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  const dx = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  return {
+    composer: {top: Math.round(b.top), bottom: Math.round(b.bottom)},
+    rail: {top: Math.round(a.top), bottom: Math.round(a.bottom)},
+    // In the RAIL, not merely on the page: the card is draggable, and one
+    // parked elsewhere would satisfy a page-wide search while telling us
+    // nothing about the stack whose placement is under test.
+    // The inline cap next to what the box actually computes: a rail whose
+    // measurement leaves a transition behind reports a healthy cap and lays
+    // its cards out below a zero-height box.
+    railStyle: {bottom: rail.style.bottom, maxHeight: rail.style.maxHeight,
+                kids: rail.childElementCount,
+                height: getComputedStyle(rail).height,
+                cappedTo: getComputedStyle(rail).maxHeight},
+    indicator: (() => {
+      const label = Array.from(document.querySelectorAll('*')).find(
+        (el) => el.childElementCount === 0
+          && el.textContent.trim() === 'Loaded models',
+      );
+      return Boolean(label && rail.contains(label));
+    })(),
+    overlap: (dy > 0.5 && dx > 0.5) ? Math.round(Math.min(dy, dx) * 10) / 10 : 0,
+    // The same question asked of the part of the stack the reader cannot get
+    // rid of. A dismissible card over Send is the trade the placement makes to
+    // show that card whole; the tail below it would be over Send for good.
+    tailOverlap: (() => {
+      let worst = 0;
+      for (let i = rail.children.length - 1; i >= 0; i -= 1) {
+        const kid = rail.children[i];
+        if (kid.hasAttribute('data-overlay-dismissible')) break;
+        const k = kid.getBoundingClientRect();
+        if (k.width < 1 || k.height < 1) continue;
+        const ky = Math.min(k.bottom, b.bottom) - Math.max(k.top, b.top);
+        const kx = Math.min(k.right, b.right) - Math.max(k.left, b.left);
+        if (ky > 0.5 && kx > 0.5) worst = Math.max(worst, Math.min(ky, kx));
+      }
+      return Math.round(worst * 10) / 10;
+    })(),
+  };
+}
+"""
+
 # A minimised window has no layout to photograph, so what is actually testable
 # is the RESTORE: the geometry is measured by a ResizeObserver and cached in
 # React state, and a window that goes away and comes back is exactly how a stale
@@ -480,6 +557,39 @@ def stub(payload: dict):
     return handler
 
 
+RAIL_BOX = """
+() => {
+  const card = document.querySelector('[data-testid="web-update-banner"]')
+            || document.querySelector('[data-testid="llama-update-banner"]');
+  if (!card) return null;
+  const r = card.parentElement.getBoundingClientRect();
+  return [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)].join(',');
+}
+"""
+
+
+def settle_stack(page, tries: int = 24, gap_ms: int = 250) -> None:
+    """Wait until the rail's box stops moving.
+
+    Waits for STABILITY, not for the answer the checks want: a card mounting
+    late changes the stack's height, which re-measures the placement, which
+    moves the rail on the frame after that. Measuring in the middle of that is
+    how the models indicator pass reported the cards below the viewport when a
+    probe watching the same page settled correctly a second later. Waiting for
+    `card.bottom <= innerHeight` instead would be waiting for the assertion,
+    and would pass on a layout that never settled at all.
+    """
+    seen = None
+    stable = 0
+    for _ in range(tries):
+        now = page.evaluate(RAIL_BOX)
+        stable = stable + 1 if now is not None and now == seen else 0
+        seen = now
+        if stable >= 2:
+            return
+        page.wait_for_timeout(gap_ms)
+
+
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
     # Both cards are on a timer, the app one at 5s and llama.cpp at 1s, so wait
@@ -494,6 +604,7 @@ def boot(page, path: str) -> None:
             pass
     # The banners animate in, and a box measured mid-transition is not the box.
     page.wait_for_timeout(SETTLED_MS)
+    settle_stack(page)
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/onboarding", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {landed}")
@@ -612,6 +723,62 @@ def main() -> int:
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
+        # The loaded models indicator, switched on. It is the last child of the
+        # rail, so it is the card that lands on the corner, and it is a
+        # persistent status card rather than a dismissible banner: over Send it
+        # is the bug the rail dodges the composer for in the first place. With
+        # it up the stack must go back to dodging, however tight the window.
+        # #8346 ships it off by default, so nothing above this point sees it.
+        for width, height in INDICATOR_VIEWPORTS:
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            context.add_init_script(
+                "localStorage.setItem('unsloth_show_loaded_models_indicator', 'true');"
+            )
+            # The card only exists when something is loaded, so the preference
+            # alone would leave the rail exactly as it was and this whole pass
+            # would agree with itself about nothing.
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/inference/status", CHAT_LOADED),
+                ("**/api/inference/images/status", NOTHING_DIFFUSION),
+                ("**/api/inference/video/status", NOTHING_VIDEO),
+                ("**/api/inference/audio/stt/status", NOTHING_STT),
+            ):
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            page.wait_for_selector("text=Loaded models", timeout = 30_000)
+            # A third card in the stack re-measures the placement, and the rail
+            # moves on the frame after that.
+            settle_stack(page)
+            measure(page, f"{width}x{height} with the models indicator")
+            seen = page.evaluate(COMPOSER_CLEARANCE)
+            check(
+                f"{width}x{height}: the rail computes the cap it was given",
+                not seen["railStyle"]["maxHeight"]
+                or seen["railStyle"]["cappedTo"] == seen["railStyle"]["maxHeight"],
+                f"{seen['railStyle']}, so the cards are laid out below a box"
+                " that is not the size the placement asked for",
+            )
+            check(
+                f"{width}x{height}: the models indicator is actually up",
+                seen["indicator"],
+                f"{seen}, so the clearance check below proves nothing",
+            )
+            check(
+                f"{width}x{height}: a persistent card in the rail keeps off the composer",
+                seen["composer"] is None or seen["tailOverlap"] == 0,
+                f"{seen}, so the models indicator is sitting on Send",
+            )
+            page.screenshot(path = str(ART / f"{width}x{height}-indicator.png"))
+            context.close()
+
         if SPOT:
             info(f"{checks[0]} checks, {len(failures)} failed")
             for failure in failures:
@@ -642,6 +809,7 @@ def main() -> int:
             # Long enough for the ResizeObserver, the placement it feeds and the
             # reflow that follows. Short because nothing is being fetched.
             page.wait_for_timeout(RESIZE_SETTLE_MS)
+            settle_stack(page)
             measure(page, f"{width}x{height} resized")
         page.set_viewport_size({"width": 1280, "height": 830})
         page.wait_for_timeout(RESIZE_SETTLE_MS)
