@@ -198,6 +198,84 @@ def resolve_prequant_source(
 _LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
 
 
+class _OpaqueGlobal:
+    """Stand-in for every class/function a probed checkpoint's pickle names.
+
+    A pickle can invoke ANY global it names (``__reduce__`` is a call), so resolving them for real
+    is what makes ``weights_only = False`` code execution. The metadata probe needs none of them:
+    ``format`` and ``metadata`` are plain str/dict/number opcodes, and the ``state_dict`` next to
+    them is the only part that needs real classes. Handing back an inert object for every global
+    leaves the metadata intact and turns the rest of the file into scenery. Accepts the shapes
+    pickle drives an object through -- construction (``REDUCE``/``NEWOBJ``), ``BUILD``, and the
+    list/dict item appends -- so a legitimate checkpoint still parses to the end."""
+
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return _OpaqueGlobal()
+
+    def __setstate__(self, state):
+        pass
+
+    def __setitem__(self, key, value):
+        pass
+
+    def append(self, value):
+        pass
+
+    def extend(self, values):
+        pass
+
+
+_METADATA_PICKLE: Any = None
+
+
+def _metadata_only_pickle():
+    """A ``pickle_module`` for ``torch.load`` that resolves no globals (see ``_OpaqueGlobal``).
+
+    torch's own ``UnpicklerWrapper`` subclasses whatever ``Unpickler`` this hands it and calls
+    ``super().find_class`` last, so storages, ``mmap`` and ``map_location`` keep working exactly as
+    they do on the trusted load path; only the global lookup is neutered.
+
+    Built once and reused: it carries no per-probe state, and a fresh ``Unpickler`` subclass per
+    call would leave a new type behind on every candidate scheme the auto ladder asks about. Also
+    nothing global -- ``pickle`` itself and the trusted ``torch.load`` path are untouched, so the
+    real load still resolves the torchao classes it needs."""
+    global _METADATA_PICKLE
+    if _METADATA_PICKLE is not None:
+        return _METADATA_PICKLE
+
+    import pickle
+    import types
+
+    class _Unpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            # The ONE exception: torch's persistent_load reads ``.dtype`` off the storage class in
+            # the record id, so a tensor whose storage type torch's own wrapper does not special
+            # case (``UntypedStorage``, i.e. every fp8 tensor) would abort the parse. These are
+            # plain types, looked up on an already-imported torch, never called by us.
+            if name.endswith("Storage") and module in ("torch", "torch.storage"):
+                import sys
+                resolved = getattr(sys.modules.get(module), name, None)
+                if isinstance(resolved, type):
+                    return resolved
+            return _OpaqueGlobal
+
+    shim = types.SimpleNamespace(
+        Unpickler = _Unpickler,
+        # The legacy (non-zip) reader reads its magic number through this.
+        load = lambda f, **kwargs: _Unpickler(f, **kwargs).load(),
+        UnpicklingError = pickle.UnpicklingError,
+    )
+    shim.__name__ = "unsloth_prequant_metadata_pickle"  # torch's dill-version check reads this
+    _METADATA_PICKLE = shim
+    return shim
+
+
 def local_prequant_scheme(path: str) -> Optional[str]:
     """The scheme a local pre-quant checkpoint records, or None when it cannot be read.
 
@@ -210,9 +288,18 @@ def local_prequant_scheme(path: str) -> Optional[str]:
 
     Cheap despite the file size: ``mmap`` plus ``map_location = "meta"`` maps the storages instead
     of reading them, so only the pickle structure is parsed (~1s on a 34 GB checkpoint). Cached on
-    (path, mtime, size) because the auto ladder asks once per candidate scheme. ``weights_only``
-    has to be False for the torchao subclasses, which is what the loader already does, and the
-    path is allowlisted before we get here, so this opens nothing new."""
+    (path, mtime, size) because the auto ladder asks once per candidate scheme.
+
+    Executes NOTHING out of the file. The load path unpickles for real because it has to build the
+    torchao subclasses, and by then the operator has committed to the checkpoint. This is only a
+    probe: it runs during PLANNING (``/images/download-plan`` reaches it through
+    ``usable_prequant_source``) on a request-supplied path, for candidate schemes the ladder is
+    still guessing at, and on files it is about to reject -- so a checkpoint that never loads must
+    not get to run code either. ``_metadata_only_pickle`` resolves no globals, which leaves the
+    ``format``/``metadata`` header (plain str/dict opcodes) readable while the weights parse to
+    inert placeholders we never look at. ``weights_only = True`` would not do: it refuses the
+    torchao subclasses outright, so every real fp8/int8 override would read as unknown and planning
+    would budget dense for a checkpoint that loads fine."""
     import os
 
     try:
@@ -229,7 +316,13 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     scheme: Optional[str] = None
     try:
         import torch
-        obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
+        obj = torch.load(
+            real,
+            map_location = "meta",
+            weights_only = False,
+            mmap = True,
+            pickle_module = _metadata_only_pickle(),
+        )
         if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None

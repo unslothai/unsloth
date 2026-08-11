@@ -219,6 +219,71 @@ def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch):
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
 
 
+def test_the_scheme_probe_runs_no_code_out_of_the_checkpoint(tmp_path, monkeypatch):
+    """The probe reads metadata; it must not execute the file's pickle.
+
+    Unlike the load, this runs during PLANNING (``/images/download-plan`` reaches it through
+    ``usable_prequant_source``) on a request-supplied path, for schemes the auto ladder is only
+    guessing at, and on checkpoints it is about to refuse. A plain
+    ``torch.load(weights_only = False)`` here would run whatever the file names before the scheme
+    is ever compared.
+    """
+    import os
+
+    import torch
+
+    class _Boom:
+        def __reduce__(self):
+            # A side effect on disk, not an exception: the probe swallows exceptions, so a raise
+            # would pass whether or not the payload ran.
+            return (os.mkdir, (str(tmp_path / "executed"),))
+
+    ckpt = tmp_path / "model.pt"
+    torch.save(
+        {
+            "format": PREQUANT_FORMAT,
+            "metadata": {"scheme": "fp8"},
+            "state_dict": {"weight": _Boom()},
+        },
+        str(ckpt),
+    )
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+
+    # The metadata still reads (the header is plain pickle data), so planning keeps working...
+    # ...and every probe answers the same, with nothing in the file ever running: the memo is what
+    # collapses the auto ladder's repeat asks, not what keeps the payload from firing a second time.
+    for _ in range(3):
+        pq._LOCAL_PREQUANT_SCHEME.clear()
+        assert pq.local_prequant_scheme(str(ckpt)) == "fp8"
+        assert not (tmp_path / "executed").exists()
+
+
+def test_the_scheme_probe_reads_a_quantized_checkpoint(tmp_path):
+    """Resolving no globals must not cost us the real artifacts.
+
+    ``weights_only = True`` would be the one-line fix, but it refuses the torchao tensor
+    subclasses a pre-quant checkpoint is made of, so every genuine fp8/int8 override would read as
+    unknown and planning would budget dense for a file that loads fine. fp8 storages are the case
+    that bites: torch's own unpickler leaves ``UntypedStorage`` to us.
+    """
+    import torch
+
+    ckpt = tmp_path / "model.pt"
+    torch.save(
+        {
+            "format": PREQUANT_FORMAT,
+            "metadata": {"scheme": "fp8", "min_features": 128, "fp8_granularity": "per_row"},
+            "state_dict": {
+                "a.weight": torch.randn(8, 8).to(torch.float8_e4m3fn),
+                "a.scale": torch.randn(8),
+                "b.weight": torch.randint(-8, 8, (8, 8), dtype = torch.int8),
+            },
+        },
+        str(ckpt),
+    )
+    assert pq.local_prequant_scheme(str(ckpt)) == "fp8"
+
+
 def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
     """Two checkpoints of one model differ only in scheme, so an atomic swap is same-size.
 
