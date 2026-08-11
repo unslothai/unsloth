@@ -33,15 +33,24 @@ function parse(text: string): MarkdownNode {
   }) as MarkdownNode;
 }
 
-// Is a rule on screen right now? Streamdown repairs incomplete Markdown with
-// remend and splits into blocks before rendering, so run both: after an
-// unclosed construct the repair alone turns this frame into a list already.
-// Splitting also keeps the parse to the trailing block rather than the response.
-function rendersTrailingThematicBreak(text: string): boolean {
-  const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
-  if (block === undefined) {
-    return false;
-  }
+// Where the trailing line's bullet marker sits, or -1 if that line is not an
+// ambiguous one.
+function ambiguousMarkerIndex(text: string): number {
+  const lineStart =
+    Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
+  const line = text.slice(lineStart);
+  const blockquotePrefix = line.match(BLOCKQUOTE_PREFIX_RE)?.[0] ?? "";
+  const content = line.slice(blockquotePrefix.length);
+  const marker = content.match(AMBIGUOUS_BREAK_ITEM_RE)?.[1];
+  return marker === undefined
+    ? -1
+    : lineStart + blockquotePrefix.length + content.indexOf(marker);
+}
+
+// Is a rule on screen right now? After an unclosed construct the repair alone
+// turns this frame into a list, so the unrepaired text is the wrong thing to
+// test.
+function rendersTrailingThematicBreak(block: string): boolean {
   let node = parse(block);
   while (node.children?.length) {
     node = node.children[node.children.length - 1];
@@ -53,10 +62,10 @@ function rendersTrailingThematicBreak(text: string): boolean {
 // what separates a nested item continuing a list from `* * *`, a break whose
 // completed form is nested lists with no paragraph of its own.
 function completesAsTrailingParagraphListItem(
-  text: string,
+  block: string,
   markerIndex: number,
 ): boolean {
-  const completedText = `${text}x`;
+  const completedText = `${block}x`;
   const pending: MarkdownNode[] = [parse(completedText)];
   while (pending.length > 0) {
     const node = pending.pop();
@@ -86,30 +95,28 @@ export function stabilizeStreamingMarkdown(
   text: string,
   isStreaming: boolean,
 ): string {
-  if (!isStreaming) {
+  if (!isStreaming || ambiguousMarkerIndex(text) < 0) {
     return text;
   }
 
-  const lineStart =
-    Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
-  const line = text.slice(lineStart);
-  const blockquotePrefix = line.match(BLOCKQUOTE_PREFIX_RE)?.[0] ?? "";
-  const content = line.slice(blockquotePrefix.length);
-  const marker = content.match(AMBIGUOUS_BREAK_ITEM_RE)?.[1];
-  if (!marker) {
-    return text;
-  }
-
-  const markerIndex =
-    lineStart + blockquotePrefix.length + content.indexOf(marker);
+  // Predicting what Streamdown shows means running what Streamdown runs: repair
+  // with remend, then split into blocks. Both checks below then read only the
+  // trailing block, so the cost does not grow with the response.
+  const block = parseMarkdownIntoBlocks(remend(text)).at(-1);
+  const markerIndex = block === undefined ? -1 : ambiguousMarkerIndex(block);
   if (
-    !rendersTrailingThematicBreak(text) ||
-    !completesAsTrailingParagraphListItem(text, markerIndex)
+    block === undefined ||
+    markerIndex < 0 ||
+    !rendersTrailingThematicBreak(block) ||
+    !completesAsTrailingParagraphListItem(block, markerIndex)
   ) {
     return text;
   }
 
   // The line is both a valid thematic break and the streaming prefix of a list
   // item. Buffer it until content arrives instead of rendering the wrong block.
-  return text.slice(0, lineStart);
+  return text.slice(
+    0,
+    Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1,
+  );
 }
