@@ -984,19 +984,20 @@ from fastapi.openapi.docs import (  # noqa: E402
     get_swagger_ui_oauth2_redirect_html,
 )
 
-_SWAGGER_INIT_MARKER = "<!-- `SwaggerUIBundle` is now available on the page -->\n    <script>"
+# fastapi is unpinned, so match the opening tag by what follows it rather than by the
+# surrounding whitespace and comment: a reflowed template must not 500 the page.
+_SWAGGER_INIT_TAG = _re.compile(r"<script>(?=\s*const ui = SwaggerUIBundle)")
+_OAUTH2_REDIRECT_TAG = _re.compile(r"<script>")
 
 
-def _nonced_docs_response(html: str, *, marker: str) -> HTMLResponse:
+def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse:
     """Hand the page's own inline script a nonce; injected script never gets one."""
     nonce = _secrets_for_docs.token_urlsafe(16)
-    if marker not in html:
-        # Upstream retemplated the page: fail loudly rather than ship a blank one.
-        raise RuntimeError(f"docs template changed, inline script marker not found: {marker!r}")
-    return HTMLResponse(
-        html.replace(marker, f'<script nonce="{nonce}">', 1),
-        headers = {_CSP_SCRIPT_NONCE_HEADER: nonce},
-    )
+    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count = 1)
+    if not replaced:
+        # Upstream retemplated the page: fail loudly rather than serve a blank one.
+        raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
+    return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
 if _DOCS_ASSETS_DIR.is_dir():
@@ -1016,13 +1017,13 @@ if _DOCS_ASSETS_DIR.is_dir():
             swagger_css_url = f"{_DOCS_ASSETS_URL}/swagger-ui.css",
             swagger_favicon_url = f"{_DOCS_ASSETS_URL}/favicon-32x32.png",
         ).body.decode()
-        return _nonced_docs_response(html, marker = _SWAGGER_INIT_MARKER)
+        return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
 
     @app.get("/docs/oauth2-redirect", include_in_schema = False)
     async def swagger_ui_redirect():
         # This page is nothing but an inline script, so it needs the nonce too.
         html = get_swagger_ui_oauth2_redirect_html().body.decode()
-        return _nonced_docs_response(html, marker = "<script>")
+        return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
 
     @app.get("/redoc", include_in_schema = False)
     async def redoc_html():

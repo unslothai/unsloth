@@ -541,6 +541,27 @@ class TestSecurityHeadersMiddleware:
             not in TestClient(main_module.app).get("/redoc").headers["content-security-policy"]
         )
 
+    def test_swagger_nonce_survives_a_reflowed_upstream_template(self, main_module):
+        # fastapi is unpinned, so the tag is matched by what follows it. A version that
+        # reflows the page or drops the comment must still get the nonce, not a 500.
+        reflowed = (
+            "<html><body><script src='/docs-assets/swagger-ui-bundle.js'></script>\n"
+            "<script>\n  const ui = SwaggerUIBundle({url: '/openapi.json'})\n</script>\n"
+            "</body></html>"
+        )
+        r = main_module._nonced_docs_response(reflowed, tag = main_module._SWAGGER_INIT_TAG)
+        nonce = r.headers[main_module._CSP_SCRIPT_NONCE_HEADER]
+        body = r.body.decode()
+        assert f'<script nonce="{nonce}">' in body
+        # The bundle's own tag keeps its src and gains nothing.
+        assert "<script src='/docs-assets/swagger-ui-bundle.js'></script>" in body
+
+        with pytest.raises(RuntimeError):
+            main_module._nonced_docs_response(
+                "<html><body>no inline script</body></html>",
+                tag = main_module._SWAGGER_INIT_TAG,
+            )
+
     def test_docs_assets_are_served_from_this_origin(self, main_module):
         c = TestClient(main_module.app)
         for name in ("swagger-ui-bundle.js", "swagger-ui.css", "redoc.standalone.js"):
