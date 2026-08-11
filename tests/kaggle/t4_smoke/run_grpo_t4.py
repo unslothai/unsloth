@@ -524,7 +524,19 @@ def main() -> int:
     ap.add_argument("--load-in-4bit", dest = "load_in_4bit", action = "store_true", default = False)
     ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit", action = "store_false")
     ap.add_argument("--probe", action = "store_true", help = "record everything, assert nothing")
+    # An illegal memory access is reported at whatever CUDA call happens to
+    # synchronise next, which on the first T4 GRPO run was `empty_cache()`
+    # inside vLLM standby -- nowhere near the kernel that faulted. This makes
+    # the traceback name the real launch site. It serialises every kernel, so
+    # it is a diagnostic switch, never a default.
+    ap.add_argument("--cuda-launch-blocking", action = "store_true")
     args = ap.parse_args()
+
+    if args.cuda_launch_blocking:
+        # Must precede any CUDA context creation, so before the first `import
+        # torch` in this process rather than merely before `train()`.
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+        os.environ["TORCH_USE_CUDA_DSA"] = "1"
 
     # Before anything imports vLLM: flashinfer JITs on first use and the link
     # step is what fails on this image. See the function's docstring.
@@ -549,6 +561,9 @@ def main() -> int:
                 "lora_rank",
                 "gpu_memory_utilization",
                 "load_in_4bit",
+                # In the report because it changes what a timing or a
+                # traceback means, so a reader must not have to guess.
+                "cuda_launch_blocking",
             )
         },
         "failures": [],
