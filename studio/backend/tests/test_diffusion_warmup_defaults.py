@@ -40,9 +40,9 @@ def test_warmup_families_advertise_a_warmup_capable_scheduler():
     for family in WARMUP_FAMILIES:
         d = FAMILY_TRAIN_DEFAULTS[family]
         assert d.get("lr_warmup_steps", 0) > 0
-        assert d.get("lr_scheduler") == "constant_with_warmup", (
-            f"{family} advertises lr_warmup_steps but not a scheduler that realizes it"
-        )
+        assert (
+            d.get("lr_scheduler") == "constant_with_warmup"
+        ), f"{family} advertises lr_warmup_steps but not a scheduler that realizes it"
 
 
 def test_no_warmup_families_are_untouched():
