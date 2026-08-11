@@ -353,6 +353,11 @@ async function reencodeImage(
   if (!blob) {
     throw new Error(`could not encode ${format}`);
   }
+  if (blob.type !== `image/${format}`) {
+    // WebKit can silently return PNG bytes when an encoder is unavailable.
+    // Treat that as a failed conversion so the caller uses a matching .png name.
+    throw new Error(`${format} encoding is unavailable`);
+  }
   return blob;
 }
 

@@ -213,6 +213,9 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 def test_media_galleries_save_natively_with_feedback():
     images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
     video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+        "\n}\n\nasync function downloadImage", 1
+    )[0]
     download = images_page.split("async function downloadImage(", 1)[1].split(
         "\n}\n\nfunction formatTimestamp", 1
     )[0]
@@ -224,6 +227,7 @@ def test_media_galleries_save_natively_with_feedback():
     assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
     assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
     assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    assert "blob.type !== `image/${format}`" in reencode
     assert "isDownloadCancelled(error)" in download
     assert "if (isTauri)" in download
     assert 'toast.success("Image saved", { description: filename });' in download
