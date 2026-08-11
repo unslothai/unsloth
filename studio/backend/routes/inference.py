@@ -4962,8 +4962,10 @@ async def _reject_unservable_model(
         raise
     except Exception as exc:
         # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
+        # A catalog-shaped id is not enough here. This path cannot tell "not downloaded" from
+        # "the scan broke", so refusing one would 404 models that are downloaded and servable.
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
-        if not quantified and not gguf_hub_repo:
+        if not quantified:
             return
         downloaded = here = switchable = False
     if still_indexing:
