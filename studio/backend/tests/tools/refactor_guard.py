@@ -804,9 +804,7 @@ def _diff(
                     problems.append(f"{label}: added {name!r}")
             elif delta < 0:
                 if new_counts[name]:
-                    problems.append(
-                        f"{label}: {old_counts[name]} -> {new_counts[name]} x {name!r}"
-                    )
+                    problems.append(f"{label}: {old_counts[name]} -> {new_counts[name]} x {name!r}")
                 else:
                     problems.append(f"{label}: REMOVED {name!r}")
     else:
