@@ -896,6 +896,11 @@ export const ar = {
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      thinking: {
+        collapseByDefault: "طيّ التفكير افتراضيًا",
+        collapseByDefaultDescription:
+          "إبقاء التفكير مطويًا أثناء تفكير النموذج بدلًا من فتحه تلقائيًا. وسّع أي كتلة لقراءتها.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "طي كتل HTML",

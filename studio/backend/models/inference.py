@@ -1033,6 +1033,13 @@ class ChatMessage(BaseModel):
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
+    reasoning_content: Optional[str] = Field(
+        None,
+        description = (
+            "Assistant reasoning from an earlier turn, replayed to local chat templates "
+            "that consume the OpenAI-compatible reasoning_content field."
+        ),
+    )
     tool_call_id: Optional[str] = Field(
         None,
         description = "OpenAI tool-result messages: id of the tool call this result belongs to.",
@@ -1053,6 +1060,14 @@ class ChatMessage(BaseModel):
             "from assistant messages to replay text-part signatures."
         ),
     )
+
+    @field_validator("reasoning_content", mode = "before")
+    @classmethod
+    def _ignore_non_string_reasoning(cls, value):
+        # This field used to be ignored as an unknown key. Some compatible
+        # gateways send structured reasoning, so declaring the string form must
+        # not turn those previously accepted requests into validation errors.
+        return value if isinstance(value, str) else None
 
     @model_validator(mode = "after")
     def _validate_role_shape(self) -> "ChatMessage":

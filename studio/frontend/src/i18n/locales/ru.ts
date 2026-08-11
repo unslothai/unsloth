@@ -906,6 +906,11 @@ export const ru = {
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      thinking: {
+        collapseByDefault: "Сворачивать размышления по умолчанию",
+        collapseByDefaultDescription:
+          "Размышления остаются свёрнутыми, пока модель думает, вместо автоматического раскрытия. Разверните блок, чтобы прочитать его.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",

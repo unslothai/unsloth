@@ -796,11 +796,26 @@ def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
 
     fam = _h3_family()
 
+    class _Weight:
+        """The released denoiser's size WITHOUT the 66.3 GB it would take to hold it.
+
+        The measurement reads numel(), element_size() and is_meta and nothing else, so a real
+        tensor buys no fidelity here and costs more RAM than a CI runner has: the allocation
+        raised, ``_h3_dense_denoiser_resident_bytes`` swallowed it as an unanswerable estimate,
+        and the test failed on a None that says nothing about the arithmetic under test.
+        """
+
+        is_meta = False
+
+        def numel(self):
+            return int(fam.bf16_components_gb[0] * 1000**3 // 2)
+
+        def element_size(self):
+            return torch.finfo(torch.bfloat16).bits // 8
+
     class _Dense:
         def parameters(self):
-            # The released denoiser, at the size the family table quotes for it.
-            n = int(fam.bf16_components_gb[0] * 1000**3 // 2)
-            return [torch.zeros(n, dtype = torch.bfloat16)]
+            return [_Weight()]
 
         def buffers(self):
             return []
