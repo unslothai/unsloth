@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from fastapi import HTTPException
@@ -132,6 +132,13 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 )
 
 
+# suffixes no supported loader can turn into rows, whatever the file is called. none of them
+# appear in `datasets`' extension-to-module map, and a loading script needs `trust_remote_code`,
+# which no dataset load path here passes and which `datasets>=4` dropped outright -- so a repo
+# holding only its card, its citation and its script is metadata, not payload.
+_DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
+
+
 def _is_payload_name(name: str) -> bool:
     # The rule `datasets` resolves data files by: a dotted name or a `__`-prefixed dir is
     # skipped unless a pattern names it, so it can never supply rows. That covers
@@ -140,6 +147,27 @@ def _is_payload_name(name: str) -> bool:
     if name.startswith(".") or name.startswith("__"):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
+
+
+def _is_payload_file(name: str) -> bool:
+    # the suffix rule is for files only: a directory keeps counting as payload whatever it is
+    # named, because the rows can be anywhere beneath it.
+    if not _is_payload_name(name):
+        return False
+    return PurePosixPath(name).suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
+
+
+def _is_present_payload_file(path: Path) -> bool:
+    # every payload file in a hub snapshot is a link into `blobs/`, and pruning a blob leaves
+    # the link behind. one that resolves to nothing cannot be opened, so it is not evidence of
+    # payload. only links are tested: a plain file was just listed by the walk, and dropping it
+    # on a stat that happened to fail would hide a dataset that loads.
+    if not _is_payload_file(path.name):
+        return False
+    try:
+        return not path.is_symlink() or path.exists()
+    except OSError:
+        return True
 
 
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
@@ -188,7 +216,7 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                     return True
                 kept.append(name)
             dirnames[:] = kept
-            if any(_is_payload_name(name) for name in filenames):
+            if any(_is_present_payload_file(base / name) for name in filenames):
                 return True
     except OSError:
         return None
