@@ -633,13 +633,13 @@ jobs:
             throw new Error('Desktop release must not target RPM packages');
           }
           if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'appimage')) {
-            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the portable AppImage packager');
+            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the thin AppImage packager');
           }
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
           if (config.bundle?.linux?.appimage) {
-            throw new Error('bundle.linux.appimage must not be configured for the portable AppImage release path');
+            throw new Error('bundle.linux.appimage must not be configured for the thin AppImage release path');
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
@@ -997,8 +997,8 @@ jobs:
             -v --bundles deb
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      # ── Linux: wrap the deb payload and bundle the GTK/WebKit stack with it ──
-      - name: Build and sign portable Linux AppImage
+      # ── Linux: wrap the deb payload without bundling the GTK/WebKit stack ──
+      - name: Build and sign thin Linux AppImage
         id: package_linux
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -1032,18 +1032,33 @@ jobs:
           output_dir="studio/src-tauri/target/release/bundle/appimage"
           appimage="$output_dir/unsloth-studio_${APP_VERSION}_amd64.AppImage"
           export APPIMAGE_PATH="$appimage"
-          # The portable bundle is the ONLY AppImage we ship.
+          # The THIN build is what ships, per #7953.
           #
-          # The thin build reuses the deb payload and takes WebKitGTK from the host,
-          # which makes it an AppImage that still depends on the distro -- and the
-          # distros with the strongest reason to want an AppImage are the immutable
-          # ones that cannot satisfy that dependency. SteamOS is the concrete case:
-          # libgtk-3 ✓, libsoup-3 ✓, libwebkit2gtk-4.1 ✗, and no apt to install it
-          # with, so the thin AppRun printed an apt command the user could not run.
-          # Shipping both meant the obvious download was the one that does not work
-          # where it is most needed. build-thin-appimage.sh is kept in-tree and still
-          # covered by its tests, but nothing in the release path calls it.
-          studio/src-tauri/linux/build-portable-appimage.sh \
+          # The portable bundle solves a real problem -- SteamOS has libgtk-3 and
+          # libsoup-3 but no libwebkit2gtk-4.1 and no apt, so the thin AppRun prints a
+          # command that cannot be run there -- but it is not ready to be the only
+          # AppImage. Measured on ubuntu-24.04 (Linux Mint 22 Wilma's base) against the
+          # portable artifact this workflow builds:
+          #
+          #   host libcurl-gnutls.so.4 under AppRun's LD_LIBRARY_PATH:
+          #     undefined symbol: nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation
+          #   host libGLX_mesa.so.0 under the same:
+          #     .../libstdc++.so.6: version `GLIBCXX_3.4.32' not found
+          #       (required by /lib/x86_64-linux-gnu/libLLVM.so.20.1)
+          #
+          # The first is #7953 verbatim. Bundling the whole DT_NEEDED closure does fix
+          # the GIO half of that bug, but AppRun puts the bundle first on
+          # LD_LIBRARY_PATH, so host libraries loaded afterwards -- including the
+          # GL/EGL/DRM stack the bundle deliberately does NOT ship -- resolve THEIR
+          # dependencies out of the 22.04 bundle. Both probes are clean on 22.04 and
+          # fail on 24.04, and the app's own launch aborts the renderer there with
+          # EGL_BAD_PARAMETER while 22.04 stays up.
+          #
+          # Mint/Ubuntu 24.04 is a far larger population than the immutable distros, and
+          # #7953 was a release blocker, so the plainly-named download stays the thin
+          # one until the portable bundle stops capturing host loads.
+          # build-portable-appimage.sh and its tests stay in the tree.
+          studio/src-tauri/linux/build-thin-appimage.sh \
             "$deb_path" \
             "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \

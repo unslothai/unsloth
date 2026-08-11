@@ -1,11 +1,21 @@
-"""Contracts for the Linux AppImage release path.
+"""Contracts for the host-integrated Linux AppImage release path.
 
-The release ships exactly one AppImage and it is the PORTABLE one. A thin
-AppImage still depends on the host for WebKitGTK, which makes it useless on the
-immutable distros that have the most reason to want an AppImage -- so shipping
-both meant the plainly-named download was the one that could not run there.
-build-thin-appimage.sh stays in the tree and keeps the contracts below; nothing
-in the release path calls it.
+The release ships exactly one AppImage and it is the THIN one, per #7953.
+
+The portable bundle carries the whole GTK/WebKit closure, which is what an
+immutable distro needs (SteamOS has no libwebkit2gtk-4.1 and no apt), but it is
+not ready to be the only AppImage: AppRun puts the bundle first on
+LD_LIBRARY_PATH, so host libraries loaded afterwards resolve their own
+dependencies out of the 22.04 bundle. Measured on ubuntu-24.04, which is Linux
+Mint 22 Wilma's base, against the real artifact:
+
+    host libcurl-gnutls.so.4 -> undefined symbol:
+        nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation
+    host libGLX_mesa.so.0    -> libstdc++.so.6: version `GLIBCXX_3.4.32' not found
+        (required by libLLVM.so.20.1)
+
+The first is #7953 verbatim. build-portable-appimage.sh stays in the tree with
+its own tests; nothing in the release path calls it.
 """
 
 import os
@@ -45,20 +55,20 @@ def test_release_pins_the_appimage_builder_and_runtime_by_digest():
 
 def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
     build = _step("Build Linux deb")
-    package = _step("Build and sign portable Linux AppImage")
+    package = _step("Build and sign thin Linux AppImage")
     stage = _step("Stage release assets")
 
     assert "--bundles deb" in build["with"]["args"]
     assert '"createUpdaterArtifacts":false' in build["with"]["args"]
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build.get("env", {})
-    # Exactly one AppImage is built, and it is the portable one. Compare against
-    # the commands only: the step explains in a comment why the thin builder is no
-    # longer called, and a naive substring check would match that explanation.
+    # Exactly one AppImage is built, and it is the thin one. Compare against the
+    # commands only: the step explains in a comment why the portable builder is not
+    # called, and a naive substring check would match that explanation.
     commands = "\n".join(
         line for line in package["run"].splitlines() if not line.strip().startswith("#")
     )
-    assert commands.count("build-portable-appimage.sh") == 1
-    assert "build-thin-appimage.sh" not in commands
+    assert commands.count("build-thin-appimage.sh") == 1
+    assert "build-portable-appimage.sh" not in commands
     assert 'tauri signer sign "$appimage"' in package["run"]
     assert 'tauri signer sign "$appimage" > "$signature"' not in package["run"]
     assert "base64.b64decode(signature_value, validate=True)" in package["run"]
@@ -97,6 +107,36 @@ def test_thin_appimage_never_injects_a_partial_desktop_runtime():
     assert "libayatana-appindicator3.so libappindicator3.so" in script
     assert "zenity --error" in script
     assert "xmessage -center" in script
+
+
+def test_release_appimage_passes_the_bundled_host_library_guard():
+    """The #7953 guard must cover what SHIPS, not merely a script in the tree.
+
+    assert_thin_appdir lives in build-thin-appimage.sh, so routing the release at a
+    different packager silently removes it: the tests below still pass because they
+    read that script's text, while the artifact users download is no longer checked.
+    Tie the two together -- whatever the release step invokes must be the packager
+    carrying the guard."""
+    package = _step("Build and sign thin Linux AppImage")
+    commands = "\n".join(
+        line for line in package["run"].splitlines() if not line.strip().startswith("#")
+    )
+    invoked = [
+        name for name in ("build-thin-appimage.sh", "build-portable-appimage.sh")
+        if name in commands
+    ]
+    assert invoked == ["build-thin-appimage.sh"], (
+        f"the release invokes {invoked}; only the packager that runs assert_thin_appdir "
+        "may build the shipped AppImage (#7953)"
+    )
+    packager = (REPO_ROOT / "studio" / "src-tauri" / "linux" / invoked[0]).read_text(
+        encoding = "utf-8"
+    )
+    assert "assert_thin_appdir" in packager
+    # The specific pairing measured to break on Ubuntu 24.04 / Linux Mint 22: a
+    # bundled nghttp2 with no bundled curl, against the host's newer libcurl-gnutls.
+    for library in ("libnghttp2.so", "libcurl-gnutls.so", "libwebkit2gtk-4.1.so"):
+        assert library in packager
 
 
 def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
