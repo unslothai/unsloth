@@ -853,59 +853,88 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      # `cargo install` builds this from source: 241s and 248s on the last two
-      # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
-      # happened to restore `~/.cargo/bin` too, and that entry is the first
-      # thing evicted under repo cache pressure, which is why Windows swung
-      # between 8.8 min and 20.9 min. A dedicated single-binary cache keeps the
-      # compile off the critical path independently of the big Rust cache.
-      - name: Restore trusted-signing-cli
-        id: cache_trusted_signing_cli
-        if: matrix.platform == 'windows-latest'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: ~/.cargo/bin/trusted-signing-cli.exe
-          # The version is in the key, so a bump invalidates the cache instead
-          # of silently reusing the old binary.
-          key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
-
+      # This binary runs in the steps holding the Azure Trusted Signing and
+      # Tauri signing secrets, so where it comes from is a signing-key question,
+      # not a build-speed one. Caching the `cargo install` build (241s and 248s
+      # on the last two runs) made the cache the source of truth: a hit skipped
+      # the install, and the restored executable went on PATH gated only by a
+      # `--version` probe, which any binary can print.
+      #
+      # Upstream publishes the same tool prebuilt, so pin it instead. The URL is
+      # reproducibility, the SHA-256 is the integrity gate: a release asset can
+      # be replaced after upload, and a replaced one now fails the release
+      # rather than signing with an unknown binary. Same shape as the AppImage
+      # toolchain below, and faster than the cache it replaces. Bump the URL and
+      # the digest together when moving off 0.10.0.
       - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
-        run: |
-          cargo install trusted-signing-cli --version 0.10.0 --locked
-
-      # Unconditional: on a cache hit the install step above is skipped, and the
-      # cargo bin dir still has to reach PATH or signing fails.
-      - name: Add cargo bin to PATH
         if: matrix.platform == 'windows-latest'
+        # Explicit, like every other Windows step here. The retry parameters
+        # below are PowerShell 6+ only, so under 5.1 the download fails with "A
+        # parameter cannot be found that matches parameter name
+        # 'MaximumRetryCount'". Naming the shell keeps that deliberate.
+        shell: pwsh
+        env:
+          TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
+          TRUSTED_SIGNING_CLI_SHA256: "8c9d750ca582891a7433925dcf302d5d3761fbed757b46c4bf5b417562dccb0e"
         run: |
-          echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $ErrorActionPreference = "Stop"
+          $dir = Join-Path $env:RUNNER_TEMP "trusted-signing-cli"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $dest = Join-Path $dir "trusted-signing-cli.exe"
+
+          Invoke-WebRequest -Uri $env:TRUSTED_SIGNING_CLI_URL -OutFile $dest -MaximumRetryCount 3 -RetryIntervalSec 5
+
+          $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+          $expected = $env:TRUSTED_SIGNING_CLI_SHA256.ToLower()
+          if ($actual -ne $expected) {
+            # Delete it first: a later step resolving this name off PATH must
+            # not find the rejected download still sitting there.
+            Remove-Item -Force $dest
+            Write-Output "::error::trusted-signing-cli digest mismatch, refusing to sign with an unverified binary. Expected $expected, got $actual. Re-pin TRUSTED_SIGNING_CLI_SHA256 deliberately if upstream republished the asset."
+            exit 1
+          }
+          Write-Output "verified trusted-signing-cli sha256=$actual"
+
+          # $GITHUB_PATH prepends, which is what this needs: swatinem/rust-cache
+          # restores ~/.cargo/bin, already on PATH, and a stale entry there can
+          # carry its own unverified copy of this binary. The verified one has
+          # to win the name lookup.
+          $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
       # Fails closed. This used to print a message and exit 0 on both branches,
       # so a missing or broken binary reported success and the failure only
       # surfaced later, inside the Tauri bundling step, as a signing error with
-      # no obvious cause. It matters more now that the binary comes from a
-      # cache: a truncated or corrupt cache entry restores, skips the install
-      # above, and would otherwise sail through this check.
+      # no obvious cause.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
 
           $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
           if (-not $cli) {
-            Write-Output "::error::trusted-signing-cli is not on PATH. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            Write-Output "::error::trusted-signing-cli is not on PATH. Check the 'Install trusted-signing-cli' step above."
             exit 1
           }
           Write-Output "resolved: $($cli.Source)"
 
+          # The signing script invokes this by bare name, so whatever PATH
+          # resolves is what signs. Only the digest-verified copy installed
+          # above may do that; anything else on PATH under the same name (a
+          # leftover in ~/.cargo/bin, say) is unverified by definition.
+          $verified = [IO.Path]::GetFullPath((Join-Path (Join-Path $env:RUNNER_TEMP "trusted-signing-cli") "trusted-signing-cli.exe"))
+          if ([IO.Path]::GetFullPath($cli.Source) -ne $verified) {
+            Write-Output "::error::trusted-signing-cli resolved to $($cli.Source), not the verified $verified. Refusing to sign with a binary that was never digest checked."
+            exit 1
+          }
+
           # Two different failure modes, and neither one covers the other:
-          #   * the binary cannot be started at all (a truncated cache entry
-          #     gives "Exec format error"). That raises a terminating error
-          #     under $ErrorActionPreference = "Stop", so it has to be caught
-          #     or the step dies here, before the recovery message below.
+          #   * the binary cannot be started at all (a truncated download gives
+          #     "Exec format error"). That raises a terminating error under
+          #     $ErrorActionPreference = "Stop", so it has to be caught or the
+          #     step dies here, before the message below.
           #   * the binary starts and exits non-zero. That does NOT raise, so
           #     $LASTEXITCODE has to be read explicitly.
           try {
@@ -917,11 +946,11 @@ jobs:
             # it, and put the recovery ahead of the detail so it survives even if
             # the annotation is clipped for length.
             $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
-            Write-Output "::error::trusted-signing-cli could not be started. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild. Underlying error: $detail"
+            Write-Output "::error::trusted-signing-cli could not be started. Re-run to fetch it again; if it persists the pinned asset is bad. Underlying error: $detail"
             exit 1
           }
           if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE."
             exit 1
           }
 
