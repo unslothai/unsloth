@@ -26,9 +26,7 @@ WARMUP_FAMILIES = [
     for family, defaults in FAMILY_TRAIN_DEFAULTS.items()
     if int(defaults.get("lr_warmup_steps", 0) or 0) > 0
 ]
-NO_WARMUP_FAMILIES = [
-    family for family in FAMILY_TRAIN_DEFAULTS if family not in WARMUP_FAMILIES
-]
+NO_WARMUP_FAMILIES = [family for family in FAMILY_TRAIN_DEFAULTS if family not in WARMUP_FAMILIES]
 
 
 def _cfg(family, **overrides):
