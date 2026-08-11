@@ -267,6 +267,43 @@ _ARG_FIXTURES = {
 }
 
 
+# Offsets a predicate is asked about. One offset is not coverage for a function whose
+# whole job is to answer differently at different positions: driving
+# ``_inside_open_parameter`` only at the end of the text gave it two distinct values over
+# the entire corpus, and it is one of the functions this refactor rewrites.
+_SWEEP_PARAMS = frozenset({"pos"})
+
+# Function name -> what to hand it in place of the raw corpus entry.
+_TEXT_ADAPTERS = {"_gemma_arguments_to_json": lambda text: _gemma_argument_body(text)}
+
+
+def _sweep_offsets(text: str):
+    n = len(text)
+    return sorted({0, n // 4, n // 2, (3 * n) // 4, n})
+
+
+def _gemma_argument_body(text: str) -> str:
+    """A raw Gemma argument body out of ``text``, which is what this parser takes.
+
+    Handed a whole corpus entry it raises ``JSONDecodeError`` on all but one of them, so
+    its digest pinned the exception rather than any of the key quoting, bare value or
+    array normalization behaviour it exists for.
+    """
+    from core import tool_healing
+
+    brace = text.find("{")
+    if brace >= 0:
+        end = tool_healing._balanced_brace_end(text, brace)
+        if end is not None:
+            return text[brace + 1 : end]
+    return "city:Paris, n:2, tags:[a, b]"
+
+
+def _parser_first_sentinel(text: str):
+    from core.inference import tool_call_parser
+    return tool_call_parser._first_sentinel(text, 0)
+
+
 def _tool_healing_build_markers(text: str):
     from core import tool_healing
     return tool_healing._build_markers(text)
@@ -299,7 +336,11 @@ def _drive(func, text: str):
     if "id_offset" in params:
         kwargs["id_offset"] = 0
 
-    args = [text]
+    # A few functions take something derived from the text rather than the text: handing
+    # them a whole corpus entry only pins the exception it raises.
+    adapter = _TEXT_ADAPTERS.get(getattr(func, "__name__", ""))
+    args = [adapter(text) if adapter else text]
+    sweep = None
     # Positional index arguments (``brace_start``, ``start``, ``pos``, ``brace_pos``)
     # are driven from the first plausible offset in the text rather than 0, so the
     # balanced scanners are exercised on a real opening delimiter.
@@ -311,7 +352,21 @@ def _drive(func, text: str):
         fixture = _ARG_FIXTURES.get(extra)
         if fixture is None:
             return "<undrivable>"
+        if extra in _SWEEP_PARAMS:
+            sweep = extra
+            args.append(None)
+            continue
         args.append(fixture(text))
+    if sweep is not None:
+        slot = names.index(sweep)
+        results = []
+        for offset in _sweep_offsets(text):
+            args[slot] = offset
+            try:
+                results.append(_jsonable(func(*args, **kwargs)))
+            except Exception as exc:  # noqa: BLE001
+                results.append(f"<raised {type(exc).__name__}>")
+        return results
     try:
         result = func(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - the exception type is the pinned value
