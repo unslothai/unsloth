@@ -170,9 +170,9 @@ def test_rollback_restores_native_lease_expiry_with_token():
     (which would look non-expiring and skip the expiry guard)."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "previousActiveNativePathExpiresAtMs" in src
-    assert re.search(r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src), (
-        "rollback must restore the expiry alongside the token"
-    )
+    assert re.search(
+        r"activeNativePathExpiresAtMs:\s*previousActiveNativePathToken", src
+    ), "rollback must restore the expiry alongside the token"
 
 
 def test_default_caches_keyed_on_inventory_version():
@@ -448,9 +448,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
-    assert "...(localSource ? { localPath: localSource } : {})" in call.group(0), (
-        "the expander drops the row's own cache directory"
-    )
+    assert "...(localSource ? { localPath: localSource } : {})" in call.group(
+        0
+    ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
     assert "cachePath={c.cache_path}" in picker
 
@@ -470,9 +470,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # Auto-load keys identity off the backend, so the pin is recorded beside it, not in place of it.
     adapter = _read("features/chat/api/chat-adapter.ts")
     assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
-    assert '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime, (
-        "loadPath must fall back to the id, so an unpinned pick is unchanged"
-    )
+    assert (
+        '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
+    ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
     # Staged metadata, validate and load: all three read the copy that loads.
     assert runtime.count("model_path: loadPath,") == 3
     assert "model_path: modelId," not in runtime
@@ -950,9 +950,9 @@ def test_chat_load_prepares_hf_token_before_gguf_metadata_preflight():
     assert prepare < metadata
     # The raw store token must not be handed to the preflight.
     assert "hf_token: preparedToken.token" in runtime
-    assert "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime, (
-        "GGUF metadata preflight must not send the unprepared stored token"
-    )
+    assert (
+        "hf_token: useChatRuntimeStore.getState().hfToken" not in runtime
+    ), "GGUF metadata preflight must not send the unprepared stored token"
     assert 'throw new Error("Model load cancelled.")' in runtime
 
 
@@ -1098,9 +1098,9 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         # curated single-file artifacts load as GGUF.
         args = _split_args(call.group(1))
         assert len(args) >= 2, f"{rel}: the routed pick passes no spec argument"
-        assert f"loadSpecFor(wanted, {catalog})" in args[1], (
-            f"{rel}: the routed pick passes no catalog spec"
-        )
+        assert (
+            f"loadSpecFor(wanted, {catalog})" in args[1]
+        ), f"{rel}: the routed pick passes no catalog spec"
 
 
 def test_a_quantized_load_drops_a_lora_selection_it_cannot_bake():
@@ -1132,9 +1132,9 @@ def test_diffusion_pages_never_drop_a_gguf_pick_silently():
         )
         assert branch, f"{rel}: gguf extension guard not found"
         body = branch.group(0)
-        assert "toast.error(" in body or "loadGgufRepoPick(" in body, (
-            f"{rel}: guard returns silently"
-        )
+        assert (
+            "toast.error(" in body or "loadGgufRepoPick(" in body
+        ), f"{rel}: guard returns silently"
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
@@ -1154,9 +1154,9 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         # pages because both planners filter against the cache: a fully cached pick returns no
         # entries. Flipping this on a planner that does not filter would re-stage a whole model.
         assert 'source !== "hub"' in body, f"{rel}: local picks would be planned"
-        assert "isDownloaded !== false" not in body, (
-            f"{rel}: cached checkpoint would hide missing companion assets"
-        )
+        assert (
+            "isDownloaded !== false" not in body
+        ), f"{rel}: cached checkpoint would hide missing companion assets"
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
 
@@ -1174,9 +1174,9 @@ def test_every_diffusion_planner_filters_the_cache_before_staging():
         assert plan, f"{name}: download_plan not found"
         # Either probe: `_hub_file_is_loadable` is the stricter one, adding the stale-live-copy
         # check on top, and a planner may reasonably use it instead.
-        assert "_hub_file_is_cached" in plan.group(0) or "_hub_file_is_loadable" in plan.group(0), (
-            f"{name}: download_plan stages files without checking the cache"
-        )
+        assert "_hub_file_is_cached" in plan.group(0) or "_hub_file_is_loadable" in plan.group(
+            0
+        ), f"{name}: download_plan stages files without checking the cache"
 
 
 def test_image_load_fallback_names_requirements_instead_of_only_the_model():
@@ -1233,9 +1233,9 @@ def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
         # The pick itself still has to go, or a late completion loads a model nobody asked for.
         assert "pendingStagedLoad.current = null" in region, f"{rel}: the dead pick is kept"
         assert "quantRevert.current" in region, f"{rel}: the pending quant rollback is ignored"
-        assert re.search(r"revertPick\(quantRevert\.current\)", region), (
-            f"{rel}: the optimistic quant outlives the download that was supposed to justify it"
-        )
+        assert re.search(
+            r"revertPick\(quantRevert\.current\)", region
+        ), f"{rel}: the optimistic quant outlives the download that was supposed to justify it"
         assert "quantRevert.current = null" in region, f"{rel}: the rollback is never consumed"
 
 
@@ -1253,12 +1253,12 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
         own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
         assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
-        assert "await" not in own.group(1), (
-            f"{rel}: ownRevert is read after an await, so it can be the newer pick's"
-        )
-        assert "stagedQuantRevert.current = ownRevert" in src, (
-            f"{rel}: the staged job records no owner"
-        )
+        assert "await" not in own.group(
+            1
+        ), f"{rel}: ownRevert is read after an await, so it can be the newer pick's"
+        assert (
+            "stagedQuantRevert.current = ownRevert" in src
+        ), f"{rel}: the staged job records no owner"
 
         cancelled = re.search(r"onCancelled: \(\) => \{.*?\n    \},", src, re.S)
         assert cancelled, f"{rel}: staged-download onCancelled not found"
@@ -1268,9 +1268,9 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
             region,
         ), f"{rel}: a dead job can roll back a newer pick's quant label"
         # Cleared either way, or a later job inherits this one's owner and reverts on its behalf.
-        assert "stagedQuantRevert.current = null" in region, (
-            f"{rel}: the staged owner is never released"
-        )
+        assert (
+            "stagedQuantRevert.current = null" in region
+        ), f"{rel}: the staged owner is never released"
 
 
 def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
@@ -1301,16 +1301,16 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         )
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
-        assert seq < text.index('if (source !== "hub")'), (
-            f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
-        )
+        assert seq < text.index(
+            'if (source !== "hub")'
+        ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
             r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
-        assert set(guards) == {"true"}, (
-            f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
-        )
+        assert (
+            set(guards) == {"true"}
+        ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
         tail = text[text.rindex("} catch {") :]
         assert re.search(
@@ -1340,9 +1340,9 @@ def test_a_pick_that_never_loads_restores_its_generation_recipe():
         for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
             assert setter in body, f"{rel}: rollback does not restore {setter}"
         # No rollback path may still put back the label alone.
-        assert "setQuant(quantRevert.current.prev)" not in src, (
-            f"{rel}: a rollback path restores the label without its recipe"
-        )
+        assert (
+            "setQuant(quantRevert.current.prev)" not in src
+        ), f"{rel}: a rollback path restores the label without its recipe"
 
 
 def test_every_pick_replaces_the_rollback_it_leaves_behind():
@@ -1395,9 +1395,9 @@ def test_every_pick_route_invalidates_the_staged_intent():
             for tok in ("const spec = loadSpecFor(", "if (meta.ggufVariant")
             if tok in pick
         )
-        assert pick.index("beginPick();") < first_branch, (
-            f"{rel}: the invalidation runs after a branch that can already have returned"
-        )
+        assert (
+            pick.index("beginPick();") < first_branch
+        ), f"{rel}: the invalidation runs after a branch that can already have returned"
 
 
 def test_a_rejected_pick_hands_the_resident_state_back():
@@ -1421,9 +1421,9 @@ def test_a_rejected_pick_hands_the_resident_state_back():
         rejects = re.findall(r"toast\.error\([^;]*\);\n(\s*)([^\n]*)\n", pick)
         assert rejects, f"{rel}: no rejecting early return found; this guard has gone stale"
         for _indent, following in rejects:
-            assert "abandonPick();" in following, (
-                f"{rel}: a rejected pick returns without restoring the state it superseded"
-            )
+            assert (
+                "abandonPick();" in following
+            ), f"{rel}: a rejected pick returns without restoring the state it superseded"
 
 
 def test_a_new_pick_drops_the_previous_staged_intent():
@@ -1441,18 +1441,18 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
-        assert cleared < text.index('if (source !== "hub")'), (
-            f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
-        )
+        assert cleared < text.index(
+            'if (source !== "hub")'
+        ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
         head = text[: text.index('if (source !== "hub")')]
-        assert "stagedLoadDeferred.current = false;" in head, (
-            f"{rel}: a deferred staged load can still fire for the abandoned pick"
-        )
-        assert "stagedQuantRevert.current = null;" in head, (
-            f"{rel}: the dead intent keeps ownership of the rollback"
-        )
+        assert (
+            "stagedLoadDeferred.current = false;" in head
+        ), f"{rel}: a deferred staged load can still fire for the abandoned pick"
+        assert (
+            "stagedQuantRevert.current = null;" in head
+        ), f"{rel}: the dead intent keeps ownership of the rollback"
 
 
 def test_a_local_gguf_still_shows_its_remote_companion_footprint():
@@ -1470,12 +1470,12 @@ def test_a_local_gguf_still_shows_its_remote_companion_footprint():
     body = effect.group(1)
     guard = re.search(r"if \(!resolveDownloadFootprint([^)]*)\) \{", body)
     assert guard, "the footprint effect has no bail-out guard"
-    assert "isLocalPath" not in guard.group(1), (
-        "a local pick skips the footprint request, hiding its remote companion set"
-    )
-    assert re.search(r"const checkpoint = checkpointIsLocal\n?\s*\? 0", body), (
-        "a local checkpoint is subtracted from a total it was never part of"
-    )
+    assert "isLocalPath" not in guard.group(
+        1
+    ), "a local pick skips the footprint request, hiding its remote companion set"
+    assert re.search(
+        r"const checkpoint = checkpointIsLocal\n?\s*\? 0", body
+    ), "a local checkpoint is subtracted from a total it was never part of"
 
 
 def test_staged_downloads_always_scope_their_files():
@@ -1522,16 +1522,16 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
         src = _read(f"features/{page}")
         entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
         assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(0), (
-            f"{page} does not mark the picked repo's entry as the checkpoint"
-        )
+        assert "e.files.includes(opts.filename)" in entries.group(
+            0
+        ), f"{page} does not mark the picked repo's entry as the checkpoint"
         # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
         # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
         # reads the whole selected model as "Required assets". Only the planner knows about the
         # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(0), (
-            f"{page} ignores the checkpoint flag the plan carried"
-        )
+        assert "e.checkpoint ??" in entries.group(
+            0
+        ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
@@ -1564,9 +1564,9 @@ def test_local_model_sections_respect_the_task_filter():
     for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
         block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
         assert block, f"{memo} not found"
-        assert re.search(r"passesTaskGate\(\s*m\.task", block.group(0)), (
-            f"{memo} does not apply the task gate"
-        )
+        assert re.search(
+            r"passesTaskGate\(\s*m\.task", block.group(0)
+        ), f"{memo} does not apply the task gate"
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
@@ -1823,9 +1823,9 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     """The baseline is what a rollback re-sends and what preset capture reads, so a model
     that cannot have slots must not inherit the previous GGUF's count."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    assert "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src, (
-        "the slotless clear must key on is_gguf or an explicit null echo"
-    )
+    assert (
+        "(status.is_gguf === false || status.requested_parallel_slots === null) && {" in src
+    ), "the slotless clear must key on is_gguf or an explicit null echo"
     clear = src.index("status.is_gguf === false || status.requested_parallel_slots === null")
     assert "loadedNParallel: null," in src[clear : clear + 200]
     # Never `!= null`: that also matches the absent field an older backend sends.
@@ -1897,19 +1897,19 @@ def test_hydration_restores_a_remembered_slot_override():
     GGUF."""
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
-    assert "resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status, (
-        "the remembered override comes from per-model storage, not the echo"
-    )
+    assert (
+        "resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the remembered override comes from per-model storage, not the echo"
     assert (
         "const slotsUnseeded = prevState.loadedNParallel === null && "
         "prevState.nParallel === null;" in status
     )
-    assert "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status, (
-        "storage is read on a fresh store or a model change, never on a steady poll"
-    )
-    assert "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status, (
-        "the seed fires in both cases the clear leaves the control blank"
-    )
+    assert (
+        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status
+    ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
+    ), "the seed fires in both cases the clear leaves the control blank"
     assert (
         "rememberedNParallel != null && rememberedNParallel === "
         "status.requested_parallel_slots && { nParallel: rememberedNParallel, }" in status
@@ -2245,9 +2245,9 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
 
     inference = _read_backend("routes/inference.py")
     # /api/inference/status and the checkpoint helper share _llama_status_model_ids.
-    assert "return display_model_id, (None if native_grant_backed else model_id)" in inference, (
-        "why the checkpoint is only a display name"
-    )
+    assert (
+        "return display_model_id, (None if native_grant_backed else model_id)" in inference
+    ), "why the checkpoint is only a display name"
     models = _read_backend("routes/models.py")
     assert "display_name = gguf_file.stem," in models, "why the name is never an index key"
 
@@ -2389,9 +2389,9 @@ def test_ollama_models_are_not_advertised_as_api_loadable():
     assert "row.source !== LOCAL_MODEL_SOURCE.OLLAMA" in hub
     assert "apiLoadable:" in hub
     backend = _read_backend("core/inference/local_model_resolver.py")
-    assert "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend, (
-        "the rule this mirrors"
-    )
+    assert (
+        "Ollama's\n    scanner is skipped" in backend or "scanner is skipped" in backend
+    ), "the rule this mirrors"
 
 
 def test_cached_repo_settings_are_keyed_by_the_repo_id():
@@ -2648,9 +2648,9 @@ def test_a_standalone_gguf_is_resident_despite_its_derived_quant():
         in hub
     )
     backend = _read_backend("core/inference/llama_cpp.py")
-    assert "self._hf_variant = _extract_quant_label(gguf_path)" in backend, (
-        "the derived label this accounts for"
-    )
+    assert (
+        "self._hf_variant = _extract_quant_label(gguf_path)" in backend
+    ), "the derived label this accounts for"
 
 
 def test_a_standalone_gguf_has_one_settings_identity_everywhere():
@@ -2873,9 +2873,9 @@ def test_picker_rows_keep_their_automation_attributes():
     # driver fails.
     row_button = re.search(r"const content = \(\s*<button\b(.*?)>", pickers, re.S)
     assert row_button, "ModelRow no longer renders its content as a <button>"
-    assert "{...optionProps}" in row_button.group(1), (
-        "ModelRow stopped spreading optionProps onto the row button"
-    )
+    assert "{...optionProps}" in row_button.group(
+        1
+    ), "ModelRow stopped spreading optionProps onto the row button"
 
 
 def test_picker_popover_and_trigger_keep_their_tour_hooks():
@@ -2897,9 +2897,9 @@ def test_run_settings_gear_label_names_its_model():
     # string at five sites, so a file-wide match stays green while the one the
     # driver depends on drops its repo or its quant. That is the only label with
     # both, and naming the quant is how the driver tells one variant from another.
-    assert "ariaLabel={`Inference settings for ${repoId} ${v.quant}`}" in pickers, (
-        "the variant gear label no longer names both the repo and the quant"
-    )
+    assert (
+        "ariaLabel={`Inference settings for ${repoId} ${v.quant}`}" in pickers
+    ), "the variant gear label no longer names both the repo and the quant"
     action = _read("features/model-picker/components/model-selector/model-load-settings-action.tsx")
     assert "aria-label={ariaLabel}" in action
 
@@ -2920,9 +2920,9 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     # which is the same spacer doing the same job, and this assertion would have
     # failed the moment the two met -- reporting a lost spacer that is still there.
     gutter = "ROW_ACTIONS_CLASS" in parent_row or re.search(r"w-\[\d+px\]", parent_row)
-    assert 'aria-hidden="true"' in parent_row and gutter, (
-        "the multi-quant parent row lost the spacer that stands in for a gear"
-    )
+    assert (
+        'aria-hidden="true"' in parent_row and gutter
+    ), "the multi-quant parent row lost the spacer that stands in for a gear"
     assert "ModelLoadSettingsAction" not in parent_row, (
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
         "this row expands rather than loads' inference is now wrong"
