@@ -14,6 +14,11 @@ from typing import Any, Optional
 # Per-MTok base USD. Cache multipliers apply to `input_per_mtok`
 # (not absolute prices), per Anthropic docs.
 ANTHROPIC_PRICING: dict[str, dict[str, float]] = {
+    "claude-fable-5": {"input_per_mtok": 10.0, "output_per_mtok": 50.0},
+    "claude-mythos-5": {"input_per_mtok": 10.0, "output_per_mtok": 50.0},
+    "claude-opus-5": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+    "claude-sonnet-5": {"input_per_mtok": 3.0, "output_per_mtok": 15.0},
+    "claude-opus-4-8": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     "claude-opus-4-7": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     "claude-opus-4-6": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
     # Alias bare + dated id: backend defaults use the bare form, which
@@ -65,9 +70,13 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
 ANTHROPIC_CACHE_5M_WRITE_MULT = 1.25
 ANTHROPIC_CACHE_1H_WRITE_MULT = 2.0
 ANTHROPIC_CACHE_READ_MULT = 0.1
-# Anthropic fast-mode (Opus 4.6/4.7 only): 6x on input + output.
+# Anthropic fast-mode: 6x on input + output for Opus 4.6, 2x for Opus 4.8 / 5.
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing
 ANTHROPIC_FAST_MODE_MULT = 6.0
+ANTHROPIC_FAST_MODE_MULT_BY_MODEL = {
+    "claude-opus-5": 2.0,
+    "claude-opus-4-8": 2.0,
+}
 
 # OpenAI: cache reads 0.1x; cache writes pay input price.
 OPENAI_CACHE_READ_MULT = 0.1
@@ -192,12 +201,16 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         base = prices["input_per_mtok"]
         out_per = prices["output_per_mtok"]
 
-    # Anthropic fast-mode: 6x on input + output. Cache multipliers stack
+    # Anthropic fast-mode multiplier on input + output. Cache multipliers stack
     # on top, so applying once to (base, out_per) flows into the
     # cache_*_usd buckets below.
     if provider == "anthropic" and usage.get("speed") == "fast":
-        base *= ANTHROPIC_FAST_MODE_MULT
-        out_per *= ANTHROPIC_FAST_MODE_MULT
+        fast_mult = next(
+            (m for k, m in ANTHROPIC_FAST_MODE_MULT_BY_MODEL.items() if model.startswith(k)),
+            ANTHROPIC_FAST_MODE_MULT,
+        )
+        base *= fast_mult
+        out_per *= fast_mult
         if out["model_priced"]:
             out["model_priced"] = f"{out['model_priced']} (fast)"
 

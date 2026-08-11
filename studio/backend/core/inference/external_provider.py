@@ -70,8 +70,10 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
 # Mythos Preview has the same restriction. The API 400s with "<param> is
 # deprecated for this model" on a non-default value. Ref:
 #   https://platform.claude.com/docs/en/about-claude/model-deprecations
+# `[a-z]+` family (not `[a-z0-9]+`) so legacy version-first ids like
+# `claude-3-5-sonnet-...` don't parse as major=5. Minor accepts `-` or `.`.
 _ANTHROPIC_MODEL_VERSION = re.compile(
-    r"^claude-(?P<family>[a-z0-9]+)-(?P<major>\d+)(?:-(?P<minor>\d+))?(?:[-.]|$)",
+    r"^claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[-.](?P<minor>\d+))?(?:[-.]|$)",
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
@@ -376,11 +378,28 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
+    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an
+    # explicit disable. Fable/Mythos 5 400 on it (thinking is always on).
+    thinking_default_on: bool = False
+    can_disable: bool = True
 
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes = ("claude-opus-4-7",),
+        prefixes = ("claude-fable-5", "claude-mythos-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+        can_disable = False,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-5", "claude-sonnet-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-4-8", "claude-opus-4-7"),
         kind = "adaptive",
         efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
@@ -410,15 +429,19 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
 # filtering and free-with-search pricing. Pick the newest combo the model
 # accepts, else the GA `_20250305`/`_20250910`/`_20250825` defaults. Ref:
 # https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference
-_ANTHROPIC_NEW_WEB_PREFIXES = (
+_ANTHROPIC_5_PREFIXES = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-opus-4-8",
+)
+_ANTHROPIC_NEW_WEB_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
 )
-_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
+_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = _ANTHROPIC_NEW_WEB_PREFIXES + (
     "claude-opus-4-5",
     "claude-sonnet-4-5",
 )
@@ -455,10 +478,11 @@ _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
 # Anthropic server-side context compaction (beta compact-2026-01-12), supported
-# on Opus 4.6/4.7, Sonnet 4.6 and Mythos Preview. Same beta header for all; the
-# dated `compact_20260112` type lives in body `context_management.edits`. Models
-# outside the prefix list are silently ignored so we don't 400 upstream.
-_ANTHROPIC_COMPACTION_PREFIXES = (
+# on Claude 5, Opus 4.6/4.7/4.8, Sonnet 4.6 and Mythos Preview. Same beta header
+# for all; the dated `compact_20260112` type lives in body
+# `context_management.edits`. Models outside the prefix list are silently
+# ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
@@ -471,12 +495,14 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
+# Anthropic fast-mode beta (Opus 4.6 / 4.8 / 5 only, per
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Opus 4.7 dropped it and now 400s on `speed`; Sonnet 5 never had it.
 # Mutually exclusive with the Priority service tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
-    "claude-opus-4-7",
+    "claude-opus-5",
+    "claude-opus-4-8",
     "claude-opus-4-6",
 )
 
@@ -2159,8 +2185,18 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
+        # Models that think by default need an explicit disable; omitting the
+        # field leaves thinking on. Anthropic only accepts it at effort <= high,
+        # so send it alone (server default effort is high).
+        if (
+            effort == "none"
+            and thinking_spec
+            and thinking_spec.thinking_default_on
+            and thinking_spec.can_disable
+        ):
+            body["thinking"] = {"type": "disabled"}
         # Normalize one semantic Thinking control into Anthropic's two model-era
-        # APIs: adaptive effort on Claude 4.6/4.7, manual budget_tokens on 4.5.
+        # APIs: adaptive effort on Claude 4.6+, manual budget_tokens on 4.5.
         if effort and effort != "none":
             # Anthropic rejects top_k whenever thinking is enabled.
             body.pop("top_k", None)

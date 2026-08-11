@@ -447,3 +447,92 @@ def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
         if isinstance(p, dict) and p["choices"][0]["delta"]
     )
     assert combined == "<think>internal</think>"
+
+
+def _capture_body(monkeypatch, **kwargs) -> dict:
+    """Drive one streamed call and return the outbound Anthropic body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "hi"}],
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+            **kwargs,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+@pytest.mark.parametrize(
+    "model",
+    ("claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8"),
+)
+def test_claude_5_uses_adaptive_thinking_and_effort(monkeypatch, model):
+    """Claude 5 / Opus 4.8 must get adaptive thinking, not a bare request."""
+    body = _capture_body(
+        monkeypatch, model = model, enable_thinking = True, reasoning_effort = "xhigh",
+    )
+    assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert body["output_config"] == {"effort": "xhigh"}
+
+
+def test_thinking_off_disables_explicitly_on_opus_5(monkeypatch):
+    """Opus 5 thinks by default, so "off" must send an explicit disable."""
+    body = _capture_body(monkeypatch, model = "claude-opus-5", enable_thinking = False)
+    assert body["thinking"] == {"type": "disabled"}
+    assert "output_config" not in body
+
+
+def test_thinking_off_omits_disable_on_fable_5(monkeypatch):
+    """Fable 5 thinking is always on and 400s on an explicit disable."""
+    body = _capture_body(monkeypatch, model = "claude-fable-5", enable_thinking = False)
+    assert "thinking" not in body
+
+
+@pytest.mark.parametrize(
+    ("model", "web", "code", "compaction", "fast"),
+    (
+        ("claude-opus-5", "web_search_20260209", "code_execution_20260120", True, True),
+        ("claude-sonnet-5", "web_search_20260209", "code_execution_20260120", True, False),
+        ("claude-opus-4-8", "web_search_20260209", "code_execution_20260120", True, True),
+        # 4.7 keeps the new tool versions but dropped fast mode upstream.
+        ("claude-opus-4-7", "web_search_20260209", "code_execution_20260120", True, False),
+        ("claude-opus-4-5", "web_search_20250305", "code_execution_20260120", False, False),
+    ),
+)
+def test_model_capability_tables_cover_claude_5(model, web, code, compaction, fast):
+    assert ep_mod._anthropic_web_search_version(model) == web
+    assert ep_mod._anthropic_code_execution_version(model) == code
+    assert ep_mod._anthropic_supports_compaction(model) is compaction
+    assert ep_mod._anthropic_supports_fast_mode(model) is fast
+
+
+@pytest.mark.parametrize(
+    ("model", "sampling_removed"),
+    (
+        # Dotted minor versions and legacy version-first ids.
+        ("claude-opus-4.8", True),
+        ("claude-opus-4.7", True),
+        ("claude-sonnet-4.6", False),
+        ("claude-3-5-sonnet-20241022", False),
+        ("claude-3-7-sonnet-20250219", False),
+    ),
+)
+def test_sampling_capability_handles_alternate_id_spellings(model, sampling_removed):
+    assert ep_mod._anthropic_sampling_params_removed(model) is sampling_removed

@@ -36,6 +36,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "display_name": "Anthropic",
         "base_url": "https://api.anthropic.com/v1",
         "default_models": [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-fable-5",
+            "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-6",
