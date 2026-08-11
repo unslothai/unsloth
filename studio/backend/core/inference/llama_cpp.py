@@ -10051,6 +10051,9 @@ class LlamaCppBackend:
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
+                # Auto dropped the drafter because only the target fit. Bound before
+                # the try for the same reason: the launch below reads it either way.
+                _spec_dropped_no_vram = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -10456,6 +10459,104 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
+                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
+
+                    # When the target pins on GPU but the drafter's reserve is what tips
+                    # it over, Auto drops the drafter: it only buys speed, and paying
+                    # for it with a smaller context (or a --fit offload, where decode
+                    # collapses ~3x) is the worse trade. An explicit dropdown / CLI /
+                    # extras choice is honored and keeps the shrink behaviour below.
+                    # Priced over the WHOLE GPU set, the ceiling for any subset the fit
+                    # then picks, at the context the target alone would get: so it drops
+                    # only when no placement could have held both. Carried to the launch
+                    # as drafter_no_vram, which downgrades the Auto emit to ngram-mod.
+                    # The gate reads the user's choice, not _mtp_effective, which by
+                    # here is the kind Auto resolved and can no longer tell the two apart.
+                    if (
+                        _mtp_will_engage
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        and not _draft_cpu_no_embedded
+                        and gpus
+                        and effective_ctx > 0
+                        and self._can_estimate_kv()
+                    ):
+                        _probe_gpus = len(gpus)
+
+                        def _probe_base(drafter: bool) -> int:
+                            # model_size_fit's terms, before it is built below.
+                            _soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                            if effective_is_vision and mmproj_size > 0:
+                                _soft += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            if drafter:
+                                _soft += self._MTP_DRAFT_COMPUTE_BYTES
+                            return (
+                                model_size
+                                + _compute_buffer_pipeline
+                                + _soft
+                                + max(0, _probe_gpus - 1) * _pipeline_overhead_bytes
+                            )
+
+                        def _probe_budget(drafter: bool) -> float:
+                            # The flat fraction is the reserve whenever _mtp_bytes is 0.
+                            return _pool_budget_mib(
+                                gpus,
+                                self._GPU_PIN_VRAM_FRACTION
+                                - (
+                                    _MTP_VRAM_RESERVE_FRAC
+                                    if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                                    else 0.0
+                                ),
+                            )
+
+                        def _probe_cc(ctx: int) -> int:
+                            return _cc_bytes(ctx, _probe_gpus)
+
+                        _base_wo, _budget_wo = _probe_base(False), _probe_budget(False)
+                        # Explicit context is honored verbatim, so that is what the
+                        # drafter has to fit alongside; Auto gets its own best cap.
+                        _ctx_wo = (
+                            effective_ctx
+                            if explicit_ctx
+                            else self._fit_context_to_vram(
+                                effective_ctx,
+                                _budget_wo,
+                                _base_wo,
+                                cache_type_kv,
+                                swa_full = swa_full,
+                                n_parallel = n_parallel,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = _effective_ubatch,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = False,
+                                mtp_overhead_fn = None,
+                                compute_ctx_bytes_fn = _probe_cc,
+                                budget_frac = 1.0,
+                                total_mib = None,
+                            )
+                        )
+                        if _ctx_wo > 0:
+                            _shared = _kv_bytes(_ctx_wo) + _probe_cc(_ctx_wo)
+                            _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                            _foot_w = (
+                                _probe_base(True) + _shared + _mtp_bytes(_ctx_wo)
+                            ) / (1024 * 1024)
+                            if _foot_wo <= _budget_wo and _foot_w > _probe_budget(True):
+                                _spec_dropped_no_vram = True
+                                _mtp_will_engage = False
+                                logger.warning(
+                                    "Speculative decoding disabled for this load: the model "
+                                    "fits in VRAM at context %d but its drafter does not "
+                                    "(needs %.1f GB of a %.1f GB budget). Auto keeps the "
+                                    "context rather than shrink it for a speed option. "
+                                    "Select the drafter in Settings to force it.",
+                                    _ctx_wo,
+                                    _foot_w / 1024,
+                                    _probe_budget(True) / 1024,
+                                )
+
                     # Flat MTP reserve fraction: used only as the fallback when the
                     # byte-accurate mtp_overhead_fn can't size the draft KV (dims
                     # unavailable, or _mtp_kv_unsized = weights-only). A separate
@@ -10464,7 +10565,6 @@ class LlamaCppBackend:
                     _flat_mtp_engages = _mtp_will_engage and (
                         mtp_overhead_fn is None or _mtp_kv_unsized
                     )
-                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
                     # MTP reserves GPU VRAM unless its only drafter is a separate
                     # CPU-offloaded one (an embedded head stays on GPU). The tensor
                     # path reserves like the layer path; gate both on this.
@@ -11428,6 +11528,7 @@ class LlamaCppBackend:
                     mtp_draft_path = (None if _spec_canon == "dspark" else launch_mtp_draft_path),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
                     dspark_fit_sized = not use_fit,
+                    drafter_no_vram = _spec_dropped_no_vram,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -12787,6 +12888,7 @@ class LlamaCppBackend:
         mtp_draft_path: Optional[str] = None,
         dspark_draft_path: Optional[str] = None,
         dspark_fit_sized: bool = True,
+        drafter_no_vram: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -13094,7 +13196,20 @@ class LlamaCppBackend:
 
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
-        if dspark_draft_path and caps.get("supports_dspark"):
+        if drafter_no_vram:
+            # The fit found room for the target but not for the drafter's reserve,
+            # and reserved nothing for it, so emitting one now would OOM the load.
+            # Same downgrade as the MLA branch below: ngram-mod costs no VRAM, and
+            # spec-off when the build lacks it. The drafter paths stay recorded, so
+            # the UI still names the kind and a repeat Apply still dedupes.
+            self._spec_fallback_reason = "drafter_no_vram"
+            logger.info(
+                "Auto: the drafter does not fit in VRAM alongside the model at this "
+                "context, so it is dropped. Choose it in the Speculative Decoding "
+                "dropdown to force it at a smaller context."
+            )
+            _emit_ngram_mod()
+        elif dspark_draft_path and caps.get("supports_dspark"):
             # DSpark first: load_model only hands a sidecar down once it has one
             # this binary can launch, and it beats every other Auto outcome for
             # this architecture (1.84x on 4x B200, 1.91x on one). Without it these

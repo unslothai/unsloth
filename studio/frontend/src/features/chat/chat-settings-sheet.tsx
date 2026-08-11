@@ -425,6 +425,8 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "drafter_no_vram":
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and is running without speculative decoding. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_not_found":

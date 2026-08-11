@@ -356,3 +356,123 @@ def test_diffusion_does_not_reinterpret_vulkan_ordinals(tmp_path):
                 gpu_ids = [1],
             )
         )
+
+
+# ── Auto drops a drafter the VRAM cannot hold ─────────────────────────
+
+
+def _tight_vram_backend(tmp_path: Path, *, drafter_gb: float):
+    """One 24 GB card, a 16 GB target and a drafter of the caller's size.
+
+    The fit terms are stubbed to constants so the only variable is whether the
+    drafter's reserve clears the pin budget.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (
+        int(drafter_gb * gb) if str(path) == str(sidecar) else 16 * gb
+    )
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: 1 * gb
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    # Positive, or the fit swaps in its 5 GB flat reserve and swamps the numbers.
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = lambda *args, **kwargs: int(drafter_gb * gb)
+    backend._fit_context_to_vram = lambda requested, *args, **kwargs: requested
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend._select_gpus_split_aware = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    return backend, gguf, sidecar
+
+
+def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
+    """Model fits, drafter does not: Auto keeps the context and runs without it.
+
+    The alternative today is a silently smaller context (or --fit offload, where
+    decode collapses), paid for a speed option the user never asked for.
+    """
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert "--model-draft" not in cmd
+    assert "draft-dspark" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    # Names the drafter Auto had resolved, so the notice does not read "MTP", and
+    # keeps the resolved path so a repeat Apply dedupes instead of relaunching.
+    assert backend.spec_drafter_kind == "dspark"
+    assert backend.mtp_draft_path == str(sidecar)
+
+
+def test_auto_keeps_a_drafter_that_fits(tmp_path):
+    """The drop is scoped to the shortfall: with room for both, nothing changes."""
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 1.5)
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+def test_forcing_the_drafter_overrides_the_vram_drop(tmp_path):
+    """Only Auto is second-guessed. An explicit choice launches the drafter and
+    lets the existing context reduction pay for it."""
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+def test_an_embedded_mtp_head_is_dropped_too(tmp_path):
+    """No sidecar file to blank, so the drop has to reach the flags themselves.
+
+    An embedded head still costs a draft KV and a verify graph, and the fit
+    reserved neither; emitting --spec-type draft-mtp anyway would OOM the load.
+    """
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_nextn_predict_layers", 1)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(backend, gguf, speculative_type = "auto", n_ctx = 8192)
+
+    cmd = result["cmd"]
+    assert "draft-mtp" not in cmd
+    assert cmd[cmd.index("--spec-type") + 1] == "ngram-mod"
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
