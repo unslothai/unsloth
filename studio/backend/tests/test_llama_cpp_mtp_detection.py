@@ -3262,9 +3262,8 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     from core.inference.llama_cpp import LlamaCppBackend
 
     signature = inspect.signature(LlamaCppBackend._download_dspark)
-    assert signature.parameters["caps_probe"].default is None, (
-        "caps_probe must stay optional; _download_dspark has callers that do not accumulate"
-    )
+    default = signature.parameters["caps_probe"].default
+    assert default is None, "caps_probe must stay optional for the standalone callers"
 
     seen = []
 
