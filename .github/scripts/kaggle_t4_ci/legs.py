@@ -316,19 +316,28 @@ MAX_LEGS_PER_KERNEL = 2
 # install, and deleting it would mean rediscovering the install problem from
 # scratch. Every entry must say what was measured.
 UNWIRED: dict[str, str] = {
-    # Empty on purpose. Every leg in LEGS is in KERNELS.
-    #
-    # `grpo` was the last entry here and came out on 2026-08-11 after kernel
-    # unsloth-t4-ci-53efcc4e passed on a real Tesla T4: reward_std 0.707 and
-    # grad_norm 0.772 at step 2, peak 13.60GB of 14.56GB, three steps in 192s.
-    # The four blockers it cleared on the way are recorded where each fix
-    # lives -- the vLLM/torch pin and the attention backend in the leg's
-    # install comment, the flashinfer link shim and the base-model chat
-    # template in run_grpo_t4.py, and the T4-sized training config in the
-    # leg's args.
-    #
     # A leg belongs here only while there is a specific unanswered question
     # about it that a session would answer. "Not tried yet" is not that.
+    "grpo": (
+        "vLLM standby sleep hits an illegal memory access on Turing, and it is "
+        "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "
+        "flag and identical in every recorded version (torch 2.10.0+cu128, "
+        "transformers 5.5.0, trl 0.24.0, peft 0.19.1, vllm 0.19.1, unsloth "
+        "2026.8.15, zoo 2026.8.10) and at the same 13.8GB/13.6GB peak of "
+        "14.56GB: unsloth-t4-ci-53efcc4e PASSED (engine_built true, reward_std "
+        "0.707 and grad_norm 0.772 at step 2, three steps in 192s), then "
+        "unsloth-t4-ci-70a2f4eb and unsloth-t4-ci-c98f14be both FAILED with "
+        "engine_built false and\n"
+        "  unsloth_zoo/vllm_utils.py:601 sleep() -> torch.cuda.empty_cache()\n"
+        "  torch.AcceleratorError: CUDA error: an illegal memory access was "
+        "encountered\n"
+        "UNSLOTH_VLLM_STANDBY=1 is set in all three. One pass in three is not "
+        "a leg CI can spend a session on: it would go red for a reason no "
+        "reader could act on. STILL UNKNOWN: whether the IMA is the standby "
+        "wake/sleep cycle itself on sm_75. Run the leg with "
+        "--cuda-launch-blocking so the fault reports at its real call site, "
+        "and with standby off as the control."
+    ),
 }
 
 # Which legs travel in which kernel. One entry per kernel, and a kernel runs
@@ -341,24 +350,20 @@ UNWIRED: dict[str, str] = {
 #
 # The second kernel carries one leg and has a free T4, which costs nothing:
 # a session bills its wall clock once, not per card. That card is where
-# `grpo` goes when its install works.
+# `grpo` goes once the illegal memory access in UNWIRED is understood.
+#
+# `grpo` briefly had a third kernel of its own, on the reasoning that pairing
+# it with gpt-oss was what broke it: it failed paired and had passed alone,
+# so the pairing looked like the variable. Running it ALONE again
+# (unsloth-t4-ci-c98f14be) reproduced the paired failure exactly -- same
+# stack, same 13.8GB peak, same engine_built false. So the pairing was never
+# the variable and that reasoning was wrong; one contrasting observation was
+# not enough to blame a shared host. The leg is unwired rather than
+# re-paired, because a leg that passes one session in three cannot tell CI
+# anything either way.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
     ("gptoss",),
-    # grpo TRAVELS ALONE, and that is a measurement rather than a preference.
-    #
-    # Paired with gptoss on the two cards of one session (kernel
-    # unsloth-t4-ci-70a2f4eb) it died with `CUDA error: an illegal memory
-    # access was encountered` at exactly the same 13.60GB peak at which it
-    # PASSED alone (kernel unsloth-t4-ci-53efcc4e), same config to the flag.
-    # Same peak, different outcome, so whatever it ran out of is not GPU
-    # memory: the cards are pinned one per payload. gpt-oss offloads to host
-    # RAM and vLLM wants host RAM, and a Kaggle session has one host.
-    #
-    # A third kernel costs a queue slot, not quota: Kaggle runs two at a time
-    # and bills wall clock per session. Cheaper than a leg that fails half the
-    # time for a reason nobody can see in the report.
-    ("grpo",),
 )
 
 

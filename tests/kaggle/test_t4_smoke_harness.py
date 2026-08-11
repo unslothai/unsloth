@@ -1566,22 +1566,31 @@ def test_an_unwired_note_says_what_is_unknown():
         assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
 
 
-def test_grpo_does_not_share_a_session_with_gptoss():
-    """Measured, not stylistic.
+def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
+    """This test replaces one that asserted the opposite thing for a wrong reason.
 
-    Paired with gptoss on the two cards of one session (kernel
-    unsloth-t4-ci-70a2f4eb) grpo died with `CUDA error: an illegal memory
-    access was encountered` at exactly the 13.60GB peak at which it PASSED
-    alone (kernel unsloth-t4-ci-53efcc4e), same config to the flag. Same peak,
-    different outcome, so the constraint is not GPU memory -- the cards are
-    pinned one per payload. gpt-oss offloads to host RAM, vLLM wants host RAM,
-    and a Kaggle session has one host.
+    grpo was given a kernel of its own on the reasoning that sharing a session
+    with gptoss was what broke it: it failed paired (unsloth-t4-ci-70a2f4eb)
+    and had passed alone (unsloth-t4-ci-53efcc4e), so the pairing looked like
+    the variable. Running it ALONE again (unsloth-t4-ci-c98f14be) reproduced
+    the paired failure exactly -- same stack at unsloth_zoo/vllm_utils.py:601
+    sleep(), same 13.8GB peak, same engine_built false. One contrasting
+    observation was never enough to blame a shared host, and the pairing was
+    not the variable.
 
-    Re-pairing them to save a queue slot is the change this test exists to
-    stop."""
-    from legs import KERNELS
-    for kernel in KERNELS:
-        assert not ("grpo" in kernel and "gptoss" in kernel), kernel
+    What the three sessions actually show is an INTERMITTENT illegal memory
+    access: one pass, two failures, identical in every recorded version and at
+    the same peak. A leg that passes one session in three cannot tell CI
+    anything, so it is unwired until the IMA is understood -- and wiring it
+    back without that is the change this test exists to stop."""
+    from legs import KERNELS, UNWIRED
+
+    assert "grpo" not in {name for kernel in KERNELS for name in kernel}
+    note = UNWIRED["grpo"]
+    assert "illegal memory access" in note
+    # The evidence, so re-wiring means answering it rather than deleting it.
+    for kernel_id in ("53efcc4e", "70a2f4eb", "c98f14be"):
+        assert kernel_id in note, f"the note drops session {kernel_id}"
 
 
 def test_control_and_canary_still_share_a_session():
