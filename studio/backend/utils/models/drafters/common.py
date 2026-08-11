@@ -168,7 +168,5 @@ def split_listing_is_complete(names: Iterable[str], name: str) -> bool:
         re.IGNORECASE,
     )
     return sum(
-        1
-        for other in names
-        if Path(other).parent == parent and sibling.match(Path(other).name)
+        1 for other in names if Path(other).parent == parent and sibling.match(Path(other).name)
     ) == int(total)

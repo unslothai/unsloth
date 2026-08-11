@@ -2015,9 +2015,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         the fetch refuses all of them, so no draft weights become resident. Turning
         that into the unreadable-listing reserve 409s a load for VRAM nothing takes."""
         partial = SimpleNamespace(
-            siblings = [
-                SimpleNamespace(rfilename = "drafter-00001-of-00002.gguf", size = 4 * 1024**3)
-            ]
+            siblings = [SimpleNamespace(rfilename = "drafter-00001-of-00002.gguf", size = 4 * 1024**3)]
         )
         with patch("huggingface_hub.model_info", return_value = partial):
             charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
