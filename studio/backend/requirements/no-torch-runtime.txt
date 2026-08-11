@@ -83,8 +83,10 @@ trl>=0.18.2,!=0.19.0,<=0.24.0
 # Matches extras-no-deps.txt rather than the newest release: that file installs
 # --no-deps too and runs after this one, so whatever it names wins. Pinning a
 # higher version here would record a number no install ever ends up with. Bump
-# both together.
-sentence-transformers==5.2.0
+# both together. 5.2 requires >=3.10, so 3.9 keeps the newest release it can take,
+# which is what a bare entry resolved to here before.
+sentence-transformers==5.2.0; python_version >= "3.10"
+sentence-transformers==5.1.2; python_version < "3.10"
 cut_cross_entropy==25.1.1
 pillow==12.3.0; python_version >= "3.10"
 pillow==11.3.0; python_version < "3.10"
