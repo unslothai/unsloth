@@ -443,15 +443,22 @@ Check "the check sits inside the interpreter-present arm" (
 Check "it does not delete that venv either" (-not ($_reuse -match 'Remove-Item'))
 
 Write-Host ""
-Write-Host "=== an installer-managed repair never downgrades a GPU wheel to CPU ==="
+Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
 # install.ps1 resolves the index and installs the torch trio ITSELF, minutes before it invokes
 # setup, and hands over no record of which family it chose -- setup probes the hardware again
 # from scratch. When that second probe fails (a Get-CimInstance that throws, an nvidia-smi that
-# does not answer, the single-Radeon unroll at the top of this file) setup lands on "cpu",
+# does not answer, the single-Radeon unroll at the top of this file) setup lands somewhere else,
 # reads the +cu / +rocm / +xpu wheel install.ps1 just placed as stale, and the in-place repair
-# --force-reinstalls CPU torch over it. Then setup exits 0, install.ps1 counts the run a success
-# and drops the rollback copy. The abort this repair replaced at least failed loudly; this would
-# commit a CPU-only install on a GPU box, silently, which is a worse trade.
+# --force-reinstalls the other family over it. Then setup exits 0, install.ps1 counts the run a
+# success and drops the rollback copy. The abort this repair replaced at least failed loudly;
+# this commits a wrong install silently, which is a worse trade.
+#
+# "cpu" was only the first direction. The same disagreement runs GPU-to-GPU on any box holding
+# two vendors' cards -- a Radeon plus a GeForce, an Arc plus a GeForce -- where one scan answers
+# in install.ps1 and the other in setup: +rocm read as cu128, +cu128 read as rocm, +xpu read as
+# either. install.ps1's own flavor repair has already reconciled the venv against the index it
+# chose before it calls setup, so a GPU wheel sitting here IS its answer, and setup's second
+# opinion is not better evidence than the first.
 $_guardPat = '(?s)(if \(\$shouldRebuild -and \$InstallerManagedSetup -and\n.*?\n    \}\n)'
 $_guard = if ($setupText -match $_guardPat) { $Matches[1] } else { "" }
 Check "the downgrade guard was found"       ($_guard -ne "")
@@ -462,49 +469,161 @@ Check "CRLF is normalised, not tolerated"   (-not (($setupText -replace "`n", "`
 # never created, and reading it under a caller's Set-StrictMode is fatal.
 Check "it only fires under the installer"   ($_guard -match '\$InstallerManagedSetup')
 Check "it only fires on a GPU wheel"        ($_guard -match '\$installedTorchTag -and \$installedTorchTag -ne "cpu"')
-Check "it only fires when the rescan said cpu" ($_guard -match '\$expectedTorchTag -eq "cpu"')
-Check "the installed tag is tested before the expected one" (
-    $_guard.IndexOf('$installedTorchTag -and') -ge 0 -and
-    $_guard.IndexOf('$installedTorchTag -and') -lt $_guard.IndexOf('$expectedTorchTag -eq "cpu"'))
+# The condition must NOT narrow to a cpu rescan: that spelling left every GPU-to-GPU direction
+# running straight into the in-place repair below.
+Check "it is not narrowed to a cpu rescan"  (-not ($_guard -match '\$expectedTorchTag -eq "cpu"'))
+# $expectedTorchTag is assigned only inside the `if (-not $shouldRebuild)` block above, so on a
+# venv whose torch would not import it was never created. Reading it in the CONDITION would be
+# fatal under a caller's Set-StrictMode, and -and short-circuits it away only if it is not there
+# at all -- inside the body it is reached only once $installedTorchTag has already answered.
+Check "the condition never reads the expected tag" (
+    -not (($_guard -split '\{', 2)[0] -match '\$expectedTorchTag'))
 Check "it clears the rebuild flag"          ($_guard -match '\$shouldRebuild = \$false')
-# The whole point: no --force-reinstall is raised, so the CPU arm below leaves the GPU wheel in
-# place (a +cu / +rocm / +xpu build already satisfies its torch>= range).
+# The whole point: no --force-reinstall is raised, so the arm below leaves the GPU wheel in
+# place (a +cu / +rocm / +xpu build already satisfies a bare torch>= range).
 Check "it does not raise force-reinstall"   (-not ($_guard -match 'PinChangedForceReinstall = \$true'))
 Check "it does not wipe the venv"           (-not ($_guard -match 'Remove-Item'))
 # An xpu venv kept here needs the same index lock the direct-update escape takes, or the pass
 # installs triton-windows over torch's XPU triton with nothing to swap it back.
 Check "a kept xpu venv still locks the xpu index" (
     $_guard -match 'if \(\$installedTorchTag -eq "xpu"\) \{ \$script:PreservedXpuVenv = \$true \}')
+# Keeping the wheel is not enough on its own: two install arms a thousand lines below force
+# torch back regardless of $script:PinChangedForceReinstall, so the kept family has to reach the
+# index selection. Same treatment as $script:PreservedXpuVenv, including the declaration outside
+# the venv block that a fresh install never enters.
+Check "the kept family is recorded for the index selection" (
+    $_guard -match '\$script:PreservedInstallerTorchTag = \$installedTorchTag')
+Check "that flag is declared outside the venv block" (
+    $setupText -match '(?m)^\$script:PreservedInstallerTorchTag = \$null$')
+Check "the declaration precedes the stale check" (
+    $setupText.IndexOf('$script:PreservedInstallerTorchTag = $null') -ge 0 -and
+    $setupText.IndexOf('$script:PreservedInstallerTorchTag = $null') -lt
+    $setupText.IndexOf('$script:PreservedInstallerTorchTag = $installedTorchTag'))
 # ...and it has to run BEFORE the repair, or the repair has already fired.
 Check "the guard precedes the in-place repair" (
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -ge 0 -and
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -lt
     $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup) {'))
-# The repair itself must survive: an unimportable torch ($installedTorchTag $null) and a
-# GPU-to-different-GPU family move are exactly what it is for, and the guard must not swallow
-# them. Driven, not asserted as a shape, over the four combinations that reach it.
-function Test-DowngradeGuard {
-    param($Installed, $Expected)
-    $shouldRebuild = $true
-    $InstallerManagedSetup = $true
-    $installedTorchTag = $Installed
-    $expectedTorchTag = $Expected
-    $force = $false
-    if ($shouldRebuild -and $InstallerManagedSetup -and
-        $installedTorchTag -and $installedTorchTag -ne "cpu" -and $expectedTorchTag -eq "cpu") {
-        $shouldRebuild = $false
-    }
-    if ($shouldRebuild -and $InstallerManagedSetup) { $force = $true; $shouldRebuild = $false }
-    return [pscustomobject]@{ Force = $force; Rebuild = $shouldRebuild }
+Write-Host ""
+Write-Host "--- driven end to end, over setup.ps1's own source"
+# A hand-copy of the cascade would keep passing after the file it claims to test changed, which
+# is exactly how the cpu-only spelling survived review. So the WHOLE decision -- the pin escape,
+# the cu*-to-cu* escape, the direct-update xpu escape, this guard and the in-place repair -- is
+# lifted out of setup.ps1 verbatim and executed, and so is the index selection that the kept
+# family has to survive. Nothing below is retyped.
+$_cascadePat = '(?s)(    if \(\$shouldRebuild -and \$_pinnedIdx -and \$installedTorchTag\) \{.*?\n    if \(\$shouldRebuild -and \$InstallerManagedSetup\) \{.*?\n    \}\n)'
+$_cascade = if ($setupText -match $_cascadePat) { $Matches[1] } else { "" }
+Check "the decision cascade was found"     ($_cascade -ne "")
+Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cascadePat))
+# Ends on the closing brace of the `else { $CuTag = "cpu" }` arm, so a truncated match cannot
+# leave a region that still assigns $CuTag.
+$_cuTagPat = '(?s)(if \(\$PinnedTorchIndexUrl\) \{\n    \$CuTag = Get-TorchIndexLeaf.*?\n\} else \{\n    \$CuTag = "cpu"\n\}\n)'
+$_cuTag = if ($setupText -match $_cuTagPat) { $Matches[1] } else { "" }
+Check "the index selection was found"      ($_cuTag -ne "")
+Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_cuTagPat))
+# The two install arms that force torch back on their own. Their CONDITIONS are extracted and
+# evaluated below, so "the kept wheel survives" is answered by the shipped gates, not by a claim
+# about them. The AMD arm's --force-reinstall is unconditional inside its block; the XPU arm's
+# is keyed off the installed tag. Both are asserted here so a change to either is caught.
+Check "the AMD arm still force-reinstalls unconditionally" (
+    $setupText -match 'Fast-Install @_rocmTrio --force-reinstall --index-url \$ROCmIndexUrl')
+Check "the XPU arm forces on any non-xpu tag" (
+    $setupText -match 'if \(\$installedTorchTag -ne "xpu"\) \{ \$xpuForce = @\("--force-reinstall"\) \}')
+$_amdGate = if ($setupText -match '(?m)^if \((-not \$TorchIndexPinned -and \(\$HasROCm -or \$ROCmGfxArch\) -and \$CuTag -eq "cpu")\) \{$') { $Matches[1] } else { "" }
+$_xpuGate = if ($setupText -match '(?m)^if \((-not \$ROCmIndexUrl -and \$CuTag -eq "xpu")\) \{ \$XpuIndexUrl') { $Matches[1] } else { "" }
+Check "the AMD reroute gate was found"     ($_amdGate -ne "")
+Check "the XPU arm gate was found"         ($_xpuGate -ne "")
+
+# The real Test-CudaFamilyLeaf, because the index selection calls it on the preserved tag.
+foreach ($srcText in (Get-HelperSources $setup @("Test-CudaFamilyLeaf"))) { Invoke-Expression $srcText }
+Check "Test-CudaFamilyLeaf came across"    ((Test-CudaFamilyLeaf "cu128") -and -not (Test-CudaFamilyLeaf "rocm"))
+function Get-PytorchCudaTag { return "cu128" }
+
+# One case = one host. Installed is what install.ps1 left in the venv; Expected is what setup's
+# rescan concluded; the Has* values are that same rescan, and they have to agree with Expected or
+# the case is not a real host. Run at script scope (Invoke-Expression inside a function would put
+# the extracted `$script:` writes and the reads in different scopes).
+$_cases = @(
+    # +rocm venv, rescan found the GeForce in the same box and not the Radeon.
+    @{ Name = "rocm wheel, rescan says cu128"; Installed = "rocm";  Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
+    # +cu128 venv, nvidia-smi did not answer this time and the Radeon did.
+    @{ Name = "cu128 wheel, rescan says rocm";  Installed = "cu128"; Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
+       Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
+    # +xpu venv on an Arc + GeForce box: the promotion above is gated on -not $HasNvidiaSmi.
+    @{ Name = "xpu wheel, rescan says cu128";   Installed = "xpu";   Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "xpu";   Amd = $false; XpuArm = $true }
+    # The direction round one closed, kept as a regression: no GPU found at all.
+    @{ Name = "rocm wheel, rescan says cpu";    Installed = "rocm";  Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "cpu";   Amd = $false; XpuArm = $false }
+    @{ Name = "cu128 wheel, rescan says cpu";   Installed = "cu128"; Expected = "cpu";   Nvidia = $false; Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $true;  CuTag = "cu128"; Amd = $false; XpuArm = $false }
+    # ...and the repairs that MUST still happen, or this guard has reintroduced the loop.
+    @{ Name = "cpu wheel on a ROCm host";       Installed = "cpu";   Expected = "rocm";  Nvidia = $false; Xpu = $false; Rocm = $true;  Gfx = "gfx1151"
+       Keep = $false; CuTag = "cpu";   Amd = $true;  XpuArm = $false }
+    @{ Name = "cpu wheel on a CUDA host";       Installed = "cpu";   Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
+    # A cu* family move is a repair, not a family change, and escapes before the guard.
+    @{ Name = "cu126 wheel on a cu128 host";    Installed = "cu126"; Expected = "cu128"; Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
+    # Torch does not import at all: the venv is broken, not a family disagreement.
+    @{ Name = "torch that will not import";     Installed = $null;   Expected = $null;   Nvidia = $true;  Xpu = $false; Rocm = $false; Gfx = $null
+       Keep = $false; CuTag = "cu128"; Amd = $false; XpuArm = $false }
+)
+foreach ($case in $_cases) {
+    $script:shouldRebuild = $true
+    $script:InstallerManagedSetup = $true
+    $script:installedTorchTag = $case.Installed
+    # Left UNASSIGNED when the probe failed, exactly as setup.ps1 leaves it, so a condition that
+    # reads it before $installedTorchTag has answered is caught here rather than on a user's box.
+    if ($null -ne $case.Expected) { $script:expectedTorchTag = $case.Expected }
+    else { Remove-Variable -Name expectedTorchTag -Scope Script -ErrorAction SilentlyContinue }
+    $script:_pinnedIdx = $null
+    $script:_verProbe = $null
+    $script:PinChangedForceReinstall = $false
+    $script:PreservedXpuVenv = $false
+    $script:PreservedInstallerTorchTag = $null
+    $script:reason = $null
+    Invoke-Expression $_cascade
+
+    $script:PinnedTorchIndexUrl = $null
+    $script:TorchIndexPinned = $false
+    $script:HasNvidiaSmi = $case.Nvidia
+    $script:IsIntelXpu = $case.Xpu
+    $script:HasROCm = $case.Rocm
+    $script:ROCmGfxArch = $case.Gfx
+    Invoke-Expression $_cuTag
+    $script:ROCmIndexUrl = $null
+    $_amdRuns = [bool](Invoke-Expression $_amdGate)
+    # The AMD arm sets $ROCmIndexUrl, and the XPU gate reads it.
+    if ($_amdRuns) { $script:ROCmIndexUrl = "https://repo.amd.com/rocm/whl/gfx1151/" }
+    $_xpuRuns = [bool](Invoke-Expression $_xpuGate)
+    # The three arms' force decisions, as the file spells them.
+    $_forced = $script:PinChangedForceReinstall -or $_amdRuns -or ($_xpuRuns -and $installedTorchTag -ne "xpu")
+
+    Write-Host "  case: $($case.Name)"
+    Check "    it is not rebuilt from scratch"  (-not $script:shouldRebuild)
+    Check "    in-place repair = $(-not $case.Keep)" ($script:PinChangedForceReinstall -eq (-not $case.Keep))
+    Check "    index family = $($case.CuTag)"   ($script:CuTag -eq $case.CuTag)
+    Check "    AMD arm runs = $($case.Amd)"     ($_amdRuns -eq $case.Amd)
+    Check "    XPU arm runs = $($case.XpuArm)"  ($_xpuRuns -eq $case.XpuArm)
+    # The claim the whole guard rests on: no arm re-lands torch over the kept wheel.
+    Check "    torch is force-reinstalled = $(-not $case.Keep)" ($_forced -eq (-not $case.Keep))
 }
-Check "rocm wheel + cpu rescan is kept, not reinstalled" (-not (Test-DowngradeGuard "rocm" "cpu").Force)
-Check "cu128 wheel + cpu rescan is kept, not reinstalled" (-not (Test-DowngradeGuard "cu128" "cpu").Force)
-Check "xpu wheel + cpu rescan is kept, not reinstalled"  (-not (Test-DowngradeGuard "xpu" "cpu").Force)
-Check "an unimportable torch still repairs in place"     ((Test-DowngradeGuard $null "cpu").Force)
-Check "a cpu wheel on a CUDA host still repairs in place" ((Test-DowngradeGuard "cpu" "cu128").Force)
-Check "a rocm wheel on a CUDA host still repairs in place" ((Test-DowngradeGuard "rocm" "cu128").Force)
-Check "nothing reaches the wipe under the installer"      (
-    -not (Test-DowngradeGuard "rocm" "cpu").Rebuild -and -not (Test-DowngradeGuard $null "cpu").Rebuild)
+
+# The guard must not read $expectedTorchTag before $installedTorchTag has answered, and the case
+# above proves the cascade survives it. Prove the hazard is real rather than taking it on trust:
+# under a caller's Set-StrictMode -- studio/setup.bat launches setup WITHOUT -NoProfile, so a
+# profile can set one -- reading a variable that was never assigned throws.
+$_strictUnassignedThrew = $false
+try {
+    & {
+        Set-StrictMode -Version Latest
+        $installedTorchTag = $null
+        $null = ($installedTorchTag -eq "cpu" -or $expectedTorchTag -eq "cpu")
+    }
+} catch { $script:_strictUnassignedThrew = $true }
+Check "reading the unassigned expected tag really does throw" $_strictUnassignedThrew
 
 Write-Host ""
 Write-Host "=== the AMD fast-path probe is bounded too ==="

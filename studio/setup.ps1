@@ -2519,6 +2519,11 @@ $script:IsIntelXpu = $false
 # $script:IsIntelXpu on purpose: it steers the INSTALL, not the hardware report, which must stay
 # honest about the NVIDIA GPU that is also in the machine.
 $script:PreservedXpuVenv = $false
+# The flavour tag ("rocm" / "cu128" / "xpu") of a GPU wheel the stale check below kept because
+# install.ps1 put it there in this same run and setup's rescan disagreed. Declared here, like the
+# flag above it, because the index selection reads it on every run and a fresh install never
+# reaches the assignment -- so under a caller's Set-StrictMode the read would otherwise be fatal.
+$script:PreservedInstallerTorchTag = $null
 $IntelGpuLabel = $null
 if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
@@ -4009,24 +4014,45 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedXpuVenv = $true
     }
 
-    # A GPU wheel is never force-reinstalled down to CPU on the strength of a rescan. Under
-    # $InstallerManagedSetup install.ps1 resolved the index and installed this trio minutes ago
-    # in this same run, off its own probe -- so when setup's second, independent probe lands on
-    # "cpu" while the venv holds +cu / +rocm / +xpu, the disagreement is setup's, not the host's:
-    # a Get-CimInstance that threw, an nvidia-smi that did not answer, the single-Radeon unroll
-    # of #8335. The in-place repair below would then --force-reinstall CPU torch over a working
-    # GPU environment and exit 0, at which point install.ps1 discards the rollback copy and the
-    # downgrade is permanent -- a loud failure traded for a silently wrong install, which is
-    # worse than the loop this whole block exists to end. Keep the wheel: with no
-    # --force-reinstall the CPU arm below leaves it alone, because a +cu / +rocm / +xpu build
-    # already satisfies the CPU torch>= range.
+    # A GPU wheel is never force-reinstalled onto a DIFFERENT family on the strength of a rescan.
+    # Under $InstallerManagedSetup install.ps1 resolved the index and installed this trio minutes
+    # ago in this same run, off its own probe, and its flavor repair re-lands the trio whenever the
+    # venv disagrees with the index it chose -- so by the time setup runs, a GPU wheel here IS
+    # install.ps1's answer for this host. When setup's second, independent probe then lands
+    # somewhere else, the disagreement is between the two probes, not with the hardware: a
+    # Get-CimInstance that threw, an nvidia-smi that did not answer, the single-Radeon unroll of
+    # #8335, a ROCm scan that failed on a box that also holds an NVIDIA card. Setup has no better
+    # claim than the installer that just ran, and the in-place repair below would --force-reinstall
+    # the other family over a working GPU environment and exit 0, at which point install.ps1
+    # discards the rollback copy and the damage is permanent -- a loud failure traded for a
+    # silently wrong install, which is worse than the loop this whole block exists to end.
+    #
+    # This covers cpu rescans (+rocm -> cpu, the downgrade) and family-to-family ones alike
+    # (+rocm -> cu128, +cu128 -> rocm, +xpu -> cu128). Nothing legitimate is suppressed: a venv
+    # whose torch does not import at all leaves $installedTorchTag $null and still repairs, a CPU
+    # wheel that has to become a GPU one still repairs, a cu* -> cu* move already repaired in
+    # place a few lines above, and an explicit index pin escaped before that. A genuine GPU swap
+    # is install.ps1's job and it does it before calling here.
+    #
+    # $expectedTorchTag is read in the MESSAGE, never in the condition: it is assigned only inside
+    # the `if (-not $shouldRebuild)` block above, so on a venv whose torch would not import at all
+    # it was never created, and reading it under a caller's Set-StrictMode is fatal. The body is
+    # reached only once $installedTorchTag has answered, which is only true on the path that
+    # assigned it.
     if ($shouldRebuild -and $InstallerManagedSetup -and
-        $installedTorchTag -and $installedTorchTag -ne "cpu" -and $expectedTorchTag -eq "cpu") {
-        substep "This host scanned as CPU-only but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
-        substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto CPU torch on purpose." "DarkGray"
+        $installedTorchTag -and $installedTorchTag -ne "cpu") {
+        substep "This host rescanned as $expectedTorchTag but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
+        substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto another PyTorch build on purpose." "DarkGray"
         $shouldRebuild = $false
-        # Same reason as the direct-update escape above: the pass has to stay on the xpu index,
-        # or triton-windows lands over torch's XPU triton with nothing to swap it back.
+        # Keeping the wheel is only half the job. The index selection below re-runs the same
+        # rescan, so without this the pass would install the OTHER family's companions over the
+        # wheel we just kept -- and two of those arms force-reinstall torch itself regardless of
+        # $script:PinChangedForceReinstall (the AMD arm always, the XPU arm whenever the installed
+        # tag is not xpu), which would undo this guard from a thousand lines further down.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
+        # Same reason as the direct-update escape above, and it needs its own flag: the pass has
+        # to stay on the xpu index, or triton-windows lands over torch's XPU triton with nothing
+        # to swap it back.
         if ($installedTorchTag -eq "xpu") { $script:PreservedXpuVenv = $true }
     }
 
@@ -4461,6 +4487,19 @@ if ($PinnedTorchIndexUrl) {
     # NVIDIA + Arc host reaches. Ahead of the NVIDIA arm deliberately: converting halfway leaves
     # +xpu torch under triton-windows and no XPU index to swap it back. install.ps1 converts.
     $CuTag = "xpu"
+} elseif ($script:PreservedInstallerTorchTag) {
+    # The stale check kept the GPU wheel install.ps1 placed here minutes ago rather than letting
+    # the rescan force a different family over it. That decision has to reach the install arms
+    # below or it is undone there: the AMD arm force-reinstalls unconditionally, and the XPU arm
+    # force-reinstalls whenever the installed tag is not xpu, so neither one is held off by
+    # $script:PinChangedForceReinstall staying false. Selecting the family that is already
+    # installed keeps both of them out of the way -- a cu* tag skips the AMD reroute below (it
+    # needs $CuTag -eq "cpu") and the XPU arm (it needs "xpu"), and lands on the CUDA arm, which
+    # forces nothing; a kept +rocm venv reads as "cpu" here and lands on the CPU arm, which also
+    # forces nothing and whose bare torch range a +rocm build already satisfies. The +xpu case is
+    # the branch above. Behind the pin check, like every other arm: an explicit pin never gets
+    # this far anyway (it repairs in place before the guard runs).
+    $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } elseif ($script:IsIntelXpu) {
