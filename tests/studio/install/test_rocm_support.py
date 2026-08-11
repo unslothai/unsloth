@@ -78,12 +78,11 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
-# A dpkg-query -W stand-in faithful enough to test how install.sh ASKS for the
-# version, not only how it parses the answer: it renders whichever showformat
-# string it is handed, and it answers for a package in ANY state, because the
-# real tool does too (man dpkg-query, --list: packages are listed "regardless of
-# their status", and only purged ones are left out). A rocm-core removed with
-# `apt remove` and never purged therefore keeps reporting the version it had.
+# A dpkg-query -W stand-in that renders whichever showformat string it is handed,
+# so this tests how install.sh ASKS for the version, not only how it parses the
+# answer. It answers for a package in ANY state because the real tool does: only
+# purged ones are left out, so a rocm-core removed with `apt remove` and never
+# purged keeps reporting the version it had.
 _DPKG_QUERY_STUB = r"""#!/bin/sh
 _status='__STATUS__'
 _ver='__VERSION__'
@@ -2068,7 +2067,6 @@ class TestInstallShStructure:
             '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
         ), "the gpu summary must not claim no usable ROCm for a pinned index"
 
-    # The helpers _detect_rocm_version_tag consults, in source order.
     _ROCM_VERSION_SOURCES = (
         "_rocm_tag_from_amd_smi",
         "_rocm_tag_from_version_file",
@@ -2086,8 +2084,8 @@ class TestInstallShStructure:
         probes and make the assertions machine-dependent."""
         parts = []
         # _run_bounded first: _rocm_tag_from_rpm routes its query through it, so
-        # leaving it out would make the rpm source silently answer nothing and
-        # the per-position assertions below pass for the wrong reason.
+        # omitting it makes that source answer nothing and the per-position
+        # assertions below pass for the wrong reason.
         for name in (
             "_run_bounded",
             *self._ROCM_VERSION_SOURCES,
@@ -2117,8 +2115,7 @@ class TestInstallShStructure:
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
         with tempfile.TemporaryDirectory() as d:
-            # Nothing is created under this prefix, so the version file is
-            # missing too: every source comes up empty.
+            # Nothing is created under this prefix, so every source comes up empty.
             script_body = self._rocm_version_detection_script(source, os.path.join(d, "rocm"))
             # Tools exist on PATH but yield nothing usable, like a box with the
             # probe tools installed and no rocm-core package.
@@ -2146,8 +2143,7 @@ class TestInstallShStructure:
         if not shell:
             pytest.skip("bash needed to execute the version chain")
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
-        # Each source answers, one of them higher than the rest. Whichever
-        # position holds the 6.4 reading, that is the one that must win.
+        # Each source answers; whichever position holds the 6.4 reading must win.
         # "version-file" is /opt/rocm/.info/version rather than a PATH tool.
         outputs = {
             "amd-smi": "AMDSMI Tool: 25.0.1 | ROCm version: {v}",
@@ -2210,8 +2206,7 @@ class TestInstallShStructure:
                 ) as f:
                     f.write("6.1.2-98\n")
                 _write_dpkg_query_stub(os.path.join(d, "dpkg-query"), "1:7.0.0-1", status)
-                # Silence the other sources so a real ROCm on the test host
-                # cannot answer and make this machine-dependent.
+                # Silence the rest so a real ROCm on the test host cannot answer.
                 for name in ("amd-smi", "hipconfig", "rpm"):
                     p = os.path.join(d, name)
                     with open(p, "w", encoding = "utf-8") as f:
@@ -2644,12 +2639,10 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
-        # The version chain lives in its own helpers, so they have to be extracted
-        # too. Without them get_torch_index_url calls a command that does not
-        # exist, the guarded assignment swallows the 127, and the no-version
-        # endpoint is reached for the wrong reason -- the test would then pass no
-        # matter what the resolver did. Verified by mutation: making
-        # _detect_rocm_version_tag return a real tag left this test green.
+        # The version helpers must be extracted too: without them get_torch_index_url
+        # calls a missing command, the guarded assignment swallows the 127, and the
+        # no-version endpoint is reached for the wrong reason. Verified by mutation
+        # (making _detect_rocm_version_tag return a real tag left this test green).
         version_fns = [
             _extract_sh_function_body(source, name)
             for name in (
@@ -2669,8 +2662,8 @@ class TestInstallShStructure:
             # /opt/rocm/.info/version directly (no tool to shim), which resolves
             # a tag on a real ROCm box and skips the no-version endpoint under
             # test. Same path-substitution technique as the KFD topology tests.
-            # The read lives in _rocm_tag_from_version_file, so the rewrite has to
-            # land on the helper text; applying it to fn alone became a no-op.
+            # The read moved into _rocm_tag_from_version_file, so the rewrite has to
+            # land on the helper text; applying it to fn alone is a no-op.
             version_fns = [
                 body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
                 for body in version_fns

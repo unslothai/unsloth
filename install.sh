@@ -2910,20 +2910,16 @@ _cap_cuda_family_for_pre_turing() {
 }
 
 # ── ROCm version sources ──
-# One helper per source. Each prints at most one "rocmX.Y" line and nothing when
-# its source is absent or unparseable.
-#
-# CONTRACT: none of these may fail its caller. install.sh runs under set -e, and
-# the case where EVERY source is missing (a real AMD GPU with no ROCm userspace)
-# has to reach the actionable warning at the end of the ROCm branch rather than
-# kill the installer, so every helper returns 0 no matter what its source does.
+# One helper per source, each printing at most one "rocmX.Y" line, and each
+# returning 0 unconditionally: install.sh runs under set -e, so a real AMD GPU
+# with no ROCm userspace at all has to reach the actionable warning at the end of
+# the ROCm branch rather than have a failing source kill the installer.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
-    # Stop at the field separator and require digits. amd-smi prints one pipe-delimited line
-    # ("... | ROCm version: N/A | amdgpu version: 6.10.10 | ..."), so stripping every non-digit
-    # glued the amdgpu driver version onto the ROCm one and reported the driver as ROCm. That
-    # was harmless while this source was shadowed by position; under highest-wins a fabricated
-    # reading can outvote a correct one, so an unparseable field must yield nothing instead.
+    # Cut at the field separator and require digits: the line is pipe-delimited
+    # ("... | ROCm version: N/A | amdgpu version: 6.10.10 | ..."), so stripping every
+    # non-digit fabricated rocm6.10 out of the amdgpu driver version. Position used to
+    # hide that; under highest-wins a fabricated reading outvotes a real 6.1.
     amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
         'NF>1{v=$2; sub(/[ \t|].*$/, "", v); if (v ~ /^[0-9]+\.[0-9]+/) {split(v,a,"."); print "rocm"a[1]"."a[2]} exit}' || return 0
 }
@@ -2941,19 +2937,14 @@ _rocm_tag_from_hipconfig() {
 
 _rocm_tag_from_dpkg() {
     command -v dpkg-query >/dev/null 2>&1 || return 0
-    # ${Status}, not ${Version} alone. dpkg-query -W lists every package in the
-    # status database except purged ones (man dpkg-query, --list: "regardless of
-    # their status ... excluding the ones marked as not-installed"), so a
-    # rocm-core taken out with `apt remove` and not purged stays queryable in
-    # state "deinstall ok config-files" and still reports the version it had.
-    # Under highest-wins that dead entry would outrank every live source: a host
-    # that ran ROCm 7.0, downgraded to 6.1 and never purged would resolve rocm7.0
-    # off a package that is not there. Every other source at least describes a
-    # tree that exists, so this one has to require the status word "installed".
-    # ${Status} is a documented showformat field with no dpkg
-    # version floor, and dpkg-query renders an unrecognised field as empty rather
-    # than failing, so on any dpkg that somehow lacks it this source goes silent
-    # instead of over-reporting.
+    # Require the status word "installed". dpkg-query -W lists every package in the
+    # status database except purged ones, so a rocm-core taken out with `apt remove`
+    # stays queryable in state "deinstall ok config-files" still reporting the version
+    # it had, and under highest-wins that dead entry outranks every live source (ran
+    # 7.0, downgraded to 6.1, never purged -> rocm7.0 off a tree that is gone).
+    # ${Status} over ${db:Status-Status}: documented showformat field with no dpkg
+    # version floor, and dpkg renders an unrecognised field as empty rather than
+    # failing, so a dpkg lacking it goes silent instead of over-reporting.
     _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' rocm-core 2>/dev/null \
         | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
     [ -n "$_rt_ver" ] || return 0
@@ -2963,19 +2954,16 @@ _rocm_tag_from_dpkg() {
 
 _rocm_tag_from_rpm() {
     command -v rpm >/dev/null 2>&1 || return 0
-    # Bounded: this is the one source highest-wins newly made unconditional that
-    # can block forever. It used to be LAST in a first-answer-wins `||` chain, so
-    # on any RHEL/SLES host with a normal ROCm install /opt/rocm/.info/version
-    # answered at position two and rpm was never invoked; now every source runs.
-    # `rpm -q` is not a lock-free read: on the BerkeleyDB backend (rpm < 4.16,
-    # i.e. RHEL 8 / SLES 15 -- both supported ROCm platforms) a leftover
-    # /var/lib/rpm/__db.00* from any killed rpm/yum leaves plain queries wedged
-    # in futex until the files are deleted (rhbz#485780, rhbz#73097), and rpm
-    # 6.0.x reintroduced a read lock that deadlocks `rpm --query` against a
-    # running dnf transaction (rhbz#2463435). A version probe must not be able to
-    # hang the installer, and a timed-out probe is just a source that declined to
-    # answer. _run_bounded no-ops where `timeout` is absent, so this adds no
-    # dependency the file did not already have.
+    # Bounded, alone among the five, because this is the one source highest-wins
+    # newly made unconditional that can block forever: it used to be LAST in a
+    # first-answer-wins `||` chain, so /opt/rocm/.info/version answered at position
+    # two and rpm was never invoked on a normal RHEL/SLES install. `rpm -q` is not a
+    # lock-free read -- a leftover /var/lib/rpm/__db.00* from a killed rpm/yum wedges
+    # plain queries in futex on the BerkeleyDB backend (rpm < 4.16, i.e. RHEL 8 /
+    # SLES 15; rhbz#485780, rhbz#73097), and rpm 6.0.x deadlocks `rpm --query`
+    # against a running dnf (rhbz#2463435). A version probe must not hang the
+    # installer, and a timed-out probe is just a source that declined to answer.
+    # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
     _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
     [ -n "$_rt_ver" ] || return 0
     printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
@@ -2996,27 +2984,17 @@ _highest_rocm_tag() {
     '
 }
 
-# Resolve the host ROCm version by consulting EVERY source and taking the
-# highest, rather than the first that answers. Distros with split ROCm packaging
-# ship one component well behind the runtime the GPU actually uses: Debian 13
-# (and Linux Mint on top of it) packages hipconfig at 5.7.x next to a 6.1.x
-# rocminfo/HSA, so first-answer resolution reported rocm5.7 on a working gfx1100
-# and the 6.0+ gate below sent it to CPU-only wheels (issue #8402). A source
-# reporting lower than another on the same host is stale packaging, not a
-# downgrade, so the highest reading is the one that describes the runtime.
-#
-# The symmetric risk of highest-wins is overshoot: a source reading HIGHER than
-# the host now picks the wheel family instead of being shadowed by its position.
-# Two things bound it. PyTorch's ROCm wheels vendor their own ROCm userspace
-# into torch/lib, so what they need from the host is the amdgpu/KFD driver, and
-# AMD documents that as compatible +/- 2 releases (a year's span from 6.4), not
-# pinned to the userspace these sources report. And the normalisation below can
-# only emit a leaf PyTorch publishes. What is NOT bounded is a reading taken off
-# something that is not installed at all, so the one source that can produce one
-# -- a removed-but-not-purged dpkg rocm-core -- is filtered above. Past that,
-# disagreement is named on stderr: when overshoot does bite it surfaces as an
-# HSA error at the first HIP call, or a GPU that is simply absent from torch,
-# and neither points back here without the readings in the log.
+# Consult EVERY source and take the highest, not the first that answers. Distros
+# with split ROCm packaging ship one component well behind the runtime the GPU
+# actually uses: Debian 13 (and Linux Mint on top of it) packages hipconfig at
+# 5.7.x next to a 6.1.x rocminfo/HSA, so first-answer resolution reported rocm5.7
+# on a working gfx1100 and the 6.0+ gate below sent it to CPU-only wheels (issue
+# #8402). A source reading lower than another on the same host is stale packaging,
+# not a downgrade. The symmetric risk, overshoot, is bounded: PyTorch's ROCm wheels
+# vendor their own userspace and need only an amdgpu/KFD driver AMD documents as
+# compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
+# publishes, the one source that can report a tree that is not installed is
+# filtered above, and any disagreement is named on stderr for the install log.
 _detect_rocm_version_tag() {
     _rt_readings=$({
         _rocm_tag_from_amd_smi
@@ -3027,8 +3005,8 @@ _detect_rocm_version_tag() {
     } 2>/dev/null) || _rt_readings=""
     _rt_best=$(printf '%s\n' "$_rt_readings" | _highest_rocm_tag) || _rt_best=""
     if [ -n "$_rt_best" ]; then
-        # Same shape gate as _highest_rocm_tag, so a garbage or major-0 reading
-        # is not named as a dissenting opinion when it never was a candidate.
+        # Same shape gate as _highest_rocm_tag: a reading that was never a candidate
+        # must not be named as a dissenting opinion.
         _rt_seen=$(printf '%s\n' "$_rt_readings" \
             | grep '^rocm[1-9][0-9]*\.[0-9][0-9]*$' | sort -u | tr '\n' ' ') || _rt_seen=""
         case "$_rt_seen" in
@@ -3118,19 +3096,13 @@ get_torch_index_url() {
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
-        # ^ || guard: when EVERY version source is missing (e.g. rocminfo present
-        # but rocm-core not installed, so dpkg-query/rpm exit 1), detection must
-        # still return empty-and-successful rather than let set -e kill the
-        # installer BEFORE the actionable no-version WARN below -- exactly the
-        # fresh-install case it exists for. _detect_rocm_version_tag holds that
-        # contract internally; the guard here is belt and braces. stderr is NOT
-        # redirected: every source's own noise is already suppressed inside the
-        # resolver, so the only thing left on stderr is its deliberate
-        # sources-disagree breadcrumb, which belongs in the install log.
-        # Validate _rocm_tag: must match "rocmX.Y" with major >= 1.
-        # _highest_rocm_tag already enforces this shape; kept as a second gate so
-        # a future source added to _detect_rocm_version_tag cannot leak garbage
-        # into the wheel-index cases below.
+        # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
+        # fresh AMD host with no version source at all still reaches the actionable
+        # no-version WARN below. stderr is deliberately not redirected: each source
+        # already silences its own noise, leaving only the sources-disagree
+        # breadcrumb, which belongs in the install log.
+        # Shape gate on "rocmX.Y" with major >= 1: _highest_rocm_tag enforces it too,
+        # kept so a future source cannot leak garbage into the cases below.
         case "$_rocm_tag" in
             rocm[1-9]*.[0-9]*) : ;;  # valid (major >= 1)
             *) _rocm_tag="" ;;        # reject malformed (empty, garbled, or major=0)

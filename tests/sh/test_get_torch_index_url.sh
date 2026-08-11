@@ -53,9 +53,8 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
     echo ""
-    # ROCm version sources + the highest-wins resolver they feed. Same sync rule
-    # as the gfx helpers above: miss one and the ROCm branch silently returns the
-    # CPU index instead of a rocm one.
+    # Same sync rule as the gfx helpers above: miss one of the version sources or
+    # the resolver they feed and the ROCm branch silently returns the CPU index.
     sed -n '/^_rocm_tag_from_amd_smi()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_rocm_tag_from_version_file()/,/^}/p' "$INSTALL_SH"

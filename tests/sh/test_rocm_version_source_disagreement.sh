@@ -5,16 +5,12 @@
 #
 # Debian 13 (and Linux Mint on top of it) packages hipconfig at 5.7.x next to a
 # 6.1.x rocminfo/HSA runtime. install.sh used to take the FIRST version source
-# that answered, so on that packaging it resolved rocm5.7, the "PyTorch ROCm
-# wheels require ROCm 6.0+" gate fired, and a working RX 7900 XTX (gfx1100) got
-# CPU-only torch. Detection now reads EVERY source and takes the highest.
-#
-# The properties pinned here:
-#   1. a stale low source never shadows a higher one, from any source position
-#   2. a genuine ROCm 5.x host with nothing higher still falls back to CPU
-#   3. the sub-6.0 warning names the documented override
-#   4. every source missing still warns and does NOT kill the installer (set -e)
-#   5. supported-tag normalisation (patch levels, 6.5+ clip, 7.3+ cap) unchanged
+# that answered, so it resolved rocm5.7, the "requires ROCm 6.0+" gate fired, and
+# a working RX 7900 XTX (gfx1100) got CPU-only torch. Detection now reads EVERY
+# source and takes the highest. Pinned here: a stale low source never shadows a
+# higher one from any position; a genuine 5.x host still falls back to CPU; the
+# sub-6.0 warning names the documented override; every source missing still warns
+# without killing the installer (set -e); tag normalisation is unchanged.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,12 +20,10 @@ FAIL=0
 
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
-# The version sources read absolute host paths: /opt/rocm/.info/version for the
-# version file, and _ensure_rocm_probe_env appends /opt/rocm/bin to PATH. On a
-# real ROCm host that would leak the host's ROCm into every assertion. The
-# NVIDIA fallback reads /proc/driver/nvidia/gpus by absolute path too, and this
-# suite must behave the same on an NVIDIA box as on a bare one. Redirect all
-# three prefixes into empty temp dirs so the harness is hermetic.
+# The version sources, _ensure_rocm_probe_env's PATH append and the NVIDIA
+# fallback all read absolute host paths, which would leak the test host's own
+# ROCm or NVIDIA into every assertion. Redirect all three prefixes into empty
+# temp dirs so the suite is hermetic on a ROCm, NVIDIA or bare box alike.
 _FAKE_ROCM_DIR=$(mktemp -d)
 _FAKE_PROC_NV_DIR=$(mktemp -d)
 {
@@ -79,8 +73,8 @@ _FAKE_PROC_NV_DIR=$(mktemp -d)
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \
   > "$_FUNC_FILE"
 
-# Guard the extraction itself: a renamed helper would otherwise make every ROCm
-# assertion below fail as a plain "cpu" with no hint why.
+# Guard the extraction: a renamed helper would otherwise make every ROCm assertion
+# below fail as a plain "cpu" with no hint why.
 for _fn in _rocm_tag_from_amd_smi _rocm_tag_from_version_file _rocm_tag_from_hipconfig \
            _rocm_tag_from_dpkg _rocm_tag_from_rpm _highest_rocm_tag \
            _detect_rocm_version_tag get_torch_index_url; do
@@ -92,10 +86,10 @@ done
 
 # Minimal tool set: no amd-smi, hipconfig, dpkg-query, rpm or rocminfo unless a
 # scenario supplies one, so an unrelated host package cannot answer a probe.
+# `timeout` and `sleep` must stay in it for case 14: _run_bounded looks up
+# `timeout` on PATH, so dropping it silently turns the bounded probe back into an
+# unbounded one and that case passes for the wrong reason.
 _TOOLS_DIR=$(mktemp -d)
-# `timeout` and `sleep` are here for case 14: _run_bounded looks up `timeout` on
-# PATH, so leaving it out of this minimal set would silently turn the bounded
-# probe back into an unbounded one and make that case pass for the wrong reason.
 for _cmd in uname grep sed head sh bash cat awk printf tr ls sort timeout sleep; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
@@ -132,15 +126,13 @@ assert_contains() {
 }
 
 # ── Scenario builders ───────────────────────────────────────────────────────
-# Every scenario starts from a clean mock dir and an empty fake /opt/rocm, then
-# adds only the sources it wants to exist.
+# Every scenario starts from a clean mock dir and an empty fake /opt/rocm.
 _MOCK_DIR=$(mktemp -d)
 
 reset_sources() {
     rm -rf "$_MOCK_DIR" "$_FAKE_ROCM_DIR/.info"
     _MOCK_DIR=$(mktemp -d)
-    # rocminfo is what makes this an AMD host at all: _has_amd_rocm_gpu needs a
-    # gfx name and _probe_amd_gfx_arch needs a readable arch, otherwise the ROCm
+    # rocminfo is what makes this an AMD host at all: without a gfx name the ROCm
     # branch bails before any version source is consulted. gfx1100 = RX 7900 XTX,
     # the card in the report.
     cat > "$_MOCK_DIR/rocminfo" <<'MOCK'
@@ -184,10 +176,9 @@ MOCK
     chmod +x "$_MOCK_DIR/amd-smi"
 }
 
-# $1 = the raw value of the "ROCm version:" field, e.g. "6.4.0" or "N/A".
-# Unlike add_amd_smi this reproduces the WHOLE line amd-smi really prints, with
-# the amdgpu driver version following the ROCm one, so a parser that runs past
-# the field separator is caught.
+# $1 = the raw value of the "ROCm version:" field, e.g. "6.4.0" or "N/A". Unlike
+# add_amd_smi this reproduces the WHOLE line, amdgpu driver version and all, so a
+# parser that runs past the field separator is caught.
 add_amd_smi_line() {
     cat > "$_MOCK_DIR/amd-smi" <<MOCK
 #!/bin/sh
@@ -200,15 +191,11 @@ MOCK
 }
 
 # $1 = rocm-core version as dpkg reports it (epoch prefixes allowed, e.g. 1:6.2.4-1)
-# $2 = dpkg status word, default "installed". "config-files" is the state a
-#      package left behind by `apt remove` without `apt purge` sits in: still in
-#      /var/lib/dpkg/status, still carrying its old version, and still reported
-#      by `dpkg-query -W`, which per man dpkg-query lists packages "regardless of
-#      their status" and skips only purged ones.
-#
-# The mock renders the showformat string it is given rather than printing a bare
-# version, so these assertions test how install.sh ASKS dpkg for the version,
-# not just how it parses the answer.
+# $2 = dpkg status word, default "installed". "config-files" is where `apt remove`
+#      without `apt purge` leaves a package: still in /var/lib/dpkg/status, still
+#      carrying its old version, and still reported by `dpkg-query -W`.
+# The mock renders the showformat string it is given rather than a bare version, so
+# these assertions test how install.sh ASKS dpkg, not just how it parses the answer.
 add_dpkg_rocm_core() {
     printf '%s\n' "$1" > "$_MOCK_DIR/.dpkg-version"
     printf '%s\n' "${2:-installed}" > "$_MOCK_DIR/.dpkg-status"
@@ -217,8 +204,7 @@ add_dpkg_rocm_core() {
 _d=${0%/*}
 _ver=$(cat "$_d/.dpkg-version")
 _status=$(cat "$_d/.dpkg-status")
-# dpkg's Status field is "<want> <error-flag> <status>"; a package removed but
-# not purged reads "deinstall ok config-files".
+# Status is "<want> <error-flag> <status>": removed but not purged reads "deinstall ok config-files".
 case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
 _fmt=''
 _found=''
@@ -232,7 +218,6 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-# Anything other than rocm-core is genuinely unknown to this box.
 [ -n "$_found" ] || exit 1
 [ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
 # Unknown fields render empty, which is what real dpkg-query does.
@@ -261,13 +246,10 @@ MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
 
-# Run get_torch_index_url against the current scenario. stdout only.
 add_wedged_rpm() {
-    # Stands in for `rpm -q` wedged on the rpmdb: a leftover /var/lib/rpm/__db.00*
-    # from a killed rpm/yum leaves plain queries stuck in futex on the BerkeleyDB
-    # backend (rpm < 4.16, i.e. RHEL 8 / SLES 15), and rpm 6.0.x deadlocks
-    # `rpm --query` against a running dnf transaction. Sleeps rather than really
-    # wedging so the suite stays hermetic and killable.
+    # Stands in for `rpm -q` wedged on the rpmdb (stale BerkeleyDB __db locks on
+    # rpm < 4.16, i.e. RHEL 8 / SLES 15; the rpm 6.0.x deadlock against dnf).
+    # Sleeps rather than really wedging so the suite stays hermetic and killable.
     cat > "$_MOCK_DIR/rpm" <<MOCK
 #!/bin/sh
 sleep 30
@@ -275,8 +257,8 @@ MOCK
     chmod +x "$_MOCK_DIR/rpm"
 }
 
-# run_index under an OUTER bound, so if the probe is ever unbounded again this
-# case fails in $1 seconds instead of hanging the whole suite.
+# run_index under an OUTER bound: an unbounded probe fails this in $1 seconds
+# instead of hanging the suite.
 run_index_outer_bounded() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" timeout "$1" bash -c \
         "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY
@@ -296,10 +278,9 @@ run_warnings() {
          _ARCH=x86_64; . '$_FUNC_FILE'; get_torch_index_url" 2>&1 >/dev/null | tr '\n' ' '
 }
 
-# Same, under `set -e` like the real installer, reporting only the exit status.
-# This is the property the || guard in install.sh exists for: with every version
-# source missing the detection must return empty AND succeed, or the installer
-# dies before it can print the actionable warning.
+# Same, under `set -e` like the real installer, reporting only the exit status:
+# with every source missing, detection must return empty AND succeed or the
+# installer dies before the actionable warning.
 run_status_under_set_e() {
     PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
         "set -e
@@ -313,10 +294,8 @@ _BASE="https://download.pytorch.org/whl"
 echo "=== test_rocm_version_source_disagreement ==="
 
 # ── 1. The reported host ────────────────────────────────────────────────────
-# ROCm present under /opt/rocm but with no .info/version file (the reporter's
-# log fell through to hipconfig), hipconfig from the distro's 5.7 packaging, and
-# rocm-core at 6.1 in dpkg. Before the fix this resolved rocm5.7 and returned the
-# cpu index; hipconfig answers third, ahead of dpkg.
+# No /opt/rocm/.info/version, hipconfig from the distro's 5.7 packaging, rocm-core
+# at 6.1 in dpkg. Before the fix hipconfig answered first and this returned cpu.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_rocm_core "1:6.1.2-1"
@@ -326,14 +305,12 @@ case "$_warn" in
     *"require ROCm 6.0+"*) assert_eq "the same host emits no 6.0+ gate warning" "" "$_warn" ;;
     *) assert_eq "the same host emits no 6.0+ gate warning" "ok" "ok" ;;
 esac
-# The readings disagreed, so the log has to say which ones and which won. This is
-# the breadcrumb that makes a wrong-HIGH reading diagnosable from an install log.
+# The breadcrumb that makes a wrong-HIGH reading diagnosable from an install log.
 assert_contains "disagreeing sources are named" "sources disagree (rocm5.7 rocm6.1)" "$_warn"
 assert_contains "the winning reading is named" "using the highest, rocm6.1" "$_warn"
 
-# 2. Same shape when the 6.x reading comes from /opt/rocm/.info/version. This one
-#    already worked (the version file outranks hipconfig by position), so it is
-#    here to pin that the reordering did not lose it.
+# 2. Same shape from /opt/rocm/.info/version. This one already worked by position,
+#    so it is here to pin that the rewrite did not lose it.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_version_file "6.1.2-98"
@@ -345,8 +322,8 @@ add_hipconfig "5.7.31921-0"
 add_rpm_rocm_core "6.3.0"
 assert_eq "hipconfig 5.7 + rocm-core 6.3 (rpm) -> rocm6.3" "$_BASE/rocm6.3" "$(run_index)"
 
-# 4. First-answer resolution was not only a floor problem: amd-smi answering
-#    first with a lower version must not shadow a newer runtime either.
+# 4. Not only a floor problem: amd-smi answering first with a lower version must
+#    not shadow a newer runtime either.
 reset_sources
 add_amd_smi "6.1.0"
 add_dpkg_rocm_core "6.4.1-1"
@@ -361,17 +338,11 @@ assert_eq "all sources agree on 6.4 -> rocm6.4" "$_BASE/rocm6.4" "$(run_index)"
 assert_eq "agreeing sources emit no disagreement breadcrumb" "" "$(run_warnings)"
 
 # ── 5b. Overshoot: highest-wins must not let a DEAD source pick the wheels ──
-# Highest-wins fixes the undershoot in issue #8402, and creates the symmetric
-# risk that a source reading HIGHER than the runtime now wins outright. The two
-# directions are not equally bad: undershoot lands on CPU wheels, which are slow
-# but work, while overshoot installs wheels the runtime cannot load and the
-# install fails later, at torch import or first kernel launch. So the one host
-# state that can manufacture a wrong-HIGH reading has to be excluded.
-#
-# That state is dpkg's. `dpkg-query -W` reports packages in "deinstall ok
-# config-files" -- removed with `apt remove`, never purged -- and they still
-# carry the version they had. A box that ran ROCm 7.0, went back to 6.1 and
-# never purged therefore offers dpkg a 7.0 that outranks every honest source.
+# Undershoot lands on CPU wheels, which work; overshoot installs wheels the runtime
+# cannot load. The one host state that can manufacture a wrong-HIGH reading is
+# dpkg's: `dpkg-query -W` reports packages left in "deinstall ok config-files" by
+# `apt remove` without a purge, still carrying the version they had, so a box that
+# ran ROCm 7.0 and went back to 6.1 offers a 7.0 that outranks every honest source.
 # Detection must require the status word "installed".
 reset_sources
 add_hipconfig "6.1.40093-0"
@@ -380,18 +351,16 @@ assert_eq "config-files rocm-core 7.0 on a 6.1 host -> rocm6.1, not rocm7.0" \
     "$_BASE/rocm6.1" "$(run_index)"
 assert_eq "the dead dpkg entry is not even named as a disagreement" "" "$(run_warnings)"
 
-# 5c. And the live entry still has to win, or the fix for the reported bug is
-#     gone. This is the pair that makes 5b non-vacuous: same versions, same
-#     sources, only the dpkg status word differs.
+# 5c. The live entry still has to win, or the fix for the reported bug is gone.
+#     This is what makes 5b non-vacuous: only the dpkg status word differs.
 reset_sources
 add_hipconfig "5.7.31921-0"
 add_dpkg_rocm_core "1:6.1.2-1" installed
 assert_eq "installed rocm-core 6.1 still beats hipconfig 5.7 -> rocm6.1" \
     "$_BASE/rocm6.1" "$(run_index)"
 
-# 5d. The other dpkg states a half-finished or interrupted operation leaves
-#     behind are not "installed" either, and none of them describes a runtime
-#     the GPU can use.
+# 5d. The states an interrupted dpkg operation leaves behind are not "installed"
+#     either, and none of them describes a runtime the GPU can use.
 for _dead in config-files half-installed unpacked half-configured; do
     reset_sources
     add_hipconfig "6.1.40093-0"
@@ -401,14 +370,11 @@ for _dead in config-files half-installed unpacked half-configured; do
 done
 
 # ── 5e. A stale-HIGH reading in each source position, one at a time ─────────
-# The audit behind 5b found exactly one source with a documented over-reporting
-# state (dpkg's, fixed above). The other four have no equivalent: rpm drops a
-# package's version on erase, /opt/rocm's .info/version belongs to whichever
-# tree /opt/rocm resolves to, and amd-smi and hipconfig report the userspace
-# they were run from. So for those four, a HIGH reading is treated as the truth
-# on purpose, and what bounds it is the tag normalisation: the resolver can
-# never emit an index leaf PyTorch does not publish, and the install log names
-# every reading so the choice is auditable. These cases pin both halves.
+# dpkg's was the only source with a documented over-reporting state: rpm drops a
+# version on erase, .info/version belongs to whichever tree /opt/rocm resolves to,
+# and amd-smi and hipconfig report the userspace they were run from. For those four
+# a HIGH reading is deliberately taken as truth, bounded by the tag normalisation
+# (never an index leaf PyTorch does not publish) and auditable from the log.
 for _pos in amd-smi version-file hipconfig rpm; do
     reset_sources
     add_hipconfig "6.1.40093-0"
@@ -427,9 +393,8 @@ for _pos in amd-smi version-file hipconfig rpm; do
     fi
 done
 
-# 5f. dpkg in that same position: an INSTALLED high reading behaves like the
-#     other four (it is the runtime, and the host is simply newer than the
-#     wheels), so the cap applies rather than a rejection.
+# 5f. dpkg in that same position: an INSTALLED high reading is the runtime, so the
+#     cap applies rather than a rejection.
 reset_sources
 add_hipconfig "6.1.40093-0"
 add_dpkg_rocm_core "1:9.9.0-1" installed
@@ -445,8 +410,8 @@ assert_contains "5.x host warns about the 6.0+ requirement" "require ROCm 6.0+" 
 assert_contains "5.x warning names the resolved tag" "ROCm rocm5.7 detected" "$_warn"
 assert_contains "5.x warning says it took the highest reading" "HIGHEST version" "$_warn"
 
-# 7. The warning must name a documented way forward. Both overrides return early
-#    from get_torch_index_url, before any GPU probing, so naming them is honest.
+# 7. Both overrides return early from get_torch_index_url, before any GPU probing,
+#    so naming them in the warning is honest.
 assert_contains "5.x warning names UNSLOTH_TORCH_INDEX_FAMILY" \
     "UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4" "$_warn"
 assert_contains "5.x warning names UNSLOTH_TORCH_INDEX_URL" \
@@ -463,8 +428,8 @@ _result=$(PATH="$_MOCK_DIR:$_TOOLS_DIR" bash -c \
 assert_eq "the named override reaches this path -> rocm6.4" "$_BASE/rocm6.4" "$_result"
 
 # ── 9. Every source missing: warn, do not die ───────────────────────────────
-# rocminfo alone (fresh AMD host with no ROCm userspace): no version source
-# answers at all. Under set -e the whole detection must still succeed.
+# rocminfo alone, a fresh AMD host with no ROCm userspace. Under set -e the whole
+# detection must still succeed.
 reset_sources
 assert_eq "no version source at all -> cpu" "$_BASE/cpu" "$(run_index)"
 assert_eq "no version source at all -> exit 0 under set -e" "0" "$(run_status_under_set_e)"
@@ -504,12 +469,10 @@ for _case in "6.0.2:rocm6.0" "6.1.3:rocm6.1" "6.2.4:rocm6.2" "6.3.1:rocm6.3" \
 done
 
 # ── 13. amd-smi reports one pipe-delimited line, and the ROCm field can be N/A ──
-# Real output carries the amdgpu driver version AFTER the ROCm one on the same
-# line, and prints "ROCm version: N/A" when no ROCm userspace is detectable.
-# Reading the field without stopping at the separator glued the two together and
-# reported the driver version as ROCm (N/A + amdgpu 6.10.10 -> "rocm6.10").
-# Position used to hide that; under highest-wins a fabricated reading can outvote
-# a correct source, so an unparseable field has to yield nothing at all.
+# The amdgpu driver version follows the ROCm one on the same line, so reading the
+# field without stopping at the separator glued them together (N/A + amdgpu 6.10.10
+# -> "rocm6.10"). Position used to hide that; under highest-wins a fabricated
+# reading outvotes a correct source, so an unparseable field must yield nothing.
 for _case in "N/A:" "6.4.0:rocm6.4" "7.0.2:rocm7.0" ":"; do
     _field="${_case%%:*}"
     _want="${_case##*:}"
@@ -519,8 +482,7 @@ for _case in "N/A:" "6.4.0:rocm6.4" "7.0.2:rocm7.0" ":"; do
         assert_eq "amd-smi full line, ROCm field '$_field' -> $_want" \
             "$_BASE/$_want" "$(run_index)"
     else
-        # Nothing else answers, so an unusable field must reach the CPU fallback
-        # rather than contribute a number.
+        # Nothing else answers, so an unusable field must reach the CPU fallback.
         assert_eq "amd-smi full line, ROCm field '$_field' -> no reading" \
             "$_BASE/cpu" "$(run_index)"
     fi
@@ -534,26 +496,22 @@ assert_eq "amd-smi N/A beside amdgpu 6.10 does not outvote a real 6.1" \
     "$_BASE/rocm6.1" "$(run_index)"
 
 # ── 14. A wedged rpmdb must not hang the installer ─────────────────────────
-# Highest-wins needs every source's answer, so no source can be short-circuited
-# any more and reordering them cannot help. That makes blast radius the thing to
-# check: `rpm -q` used to be LAST in a first-answer-wins chain, so on any RHEL /
-# SLES host with a normal ROCm install /opt/rocm/.info/version answered at
-# position two and rpm was never invoked at all. Now it always runs, and unlike
-# the other sources it can block indefinitely on the rpmdb (stale BerkeleyDB
-# __db locks on rpm < 4.16; the rpm 6.0.x read-lock deadlock against dnf). An
-# installer that hangs forever is worse than one that mis-detects, so the probe
-# is bounded and a timed-out source simply declines to answer.
+# Highest-wins short-circuits nothing, so `rpm -q` now always runs where it used to
+# be LAST in a first-answer chain and /opt/rocm/.info/version answered ahead of it
+# on any normal RHEL/SLES install. Alone among the sources it can block forever on
+# the rpmdb (stale BerkeleyDB __db locks on rpm < 4.16; the rpm 6.0.x read-lock
+# deadlock against dnf), and an installer that hangs is worse than one that
+# mis-detects, so this probe is bounded and a timed-out source declines to answer.
 reset_sources
 add_version_file "6.4.0-1"
 add_wedged_rpm
 _t0=$(date +%s)
-# `|| _res=""` so the outer bound firing is reported as a FAIL below rather than
-# taking the suite down through set -e with no verdict printed.
+# `|| _res=""` so the outer bound firing is a FAIL below rather than taking the
+# suite down through set -e with no verdict printed.
 _res=$(run_index_outer_bounded 20) || _res=""
 _t1=$(date +%s)
-# The wedged source must not take the answer down with it: the version file
-# still resolves the host. Empty here means the outer bound fired, i.e. the
-# rpm probe ran unbounded.
+# The wedged source must not take the answer down with it. Empty here means the
+# outer bound fired, i.e. the rpm probe ran unbounded.
 assert_eq "a wedged rpm does not stop the version file resolving the host" \
     "$_BASE/rocm6.4" "$_res"
 if [ "$((_t1 - _t0))" -lt 20 ]; then
