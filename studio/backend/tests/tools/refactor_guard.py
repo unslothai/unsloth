@@ -65,6 +65,32 @@ BEHAVIOUR_MODULES = ("core.tool_healing", "core.inference.tool_call_parser")
 # ─────────────────────────── 1. AST inventory ───────────────────────────
 
 
+# Every ``re`` entry point that carries a pattern, not just ``compile``. An inline
+# ``re.match(r"...")`` is as load-bearing as a compiled constant and was invisible here.
+_RE_CALLS = frozenset(
+    {"compile", "match", "search", "fullmatch", "sub", "subn", "split", "findall", "finditer"}
+)
+
+
+def _compiled_patterns(mod_name: str) -> dict:
+    """Every compiled pattern reachable in the module's namespace, by its actual text.
+
+    The AST half records the *source* of each ``re.compile`` call, so a pattern built by
+    interpolating a constant (``re.compile(_DEEPSEEK_OPEN_RE_SRC + "...")``) pins only
+    the constant's name. Reading ``.pattern`` off the live objects pins what was actually
+    compiled, which is the thing that decides behaviour.
+    """
+    module = importlib.import_module(mod_name)
+    out = {}
+    for name in dir(module):
+        obj = getattr(module, name, None)
+        for index, item in enumerate(obj if isinstance(obj, (list, tuple)) else [obj]):
+            if isinstance(item, re.Pattern):
+                key = name if not isinstance(obj, (list, tuple)) else f"{name}[{index}]"
+                out[key] = f"{item.pattern!r} flags={item.flags}"
+    return out
+
+
 def _pattern_literals(tree: ast.Module) -> dict:
     """Every ``re.compile(...)`` call in the module, as a sorted multiset of its source.
 
@@ -78,7 +104,7 @@ def _pattern_literals(tree: ast.Module) -> dict:
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "compile"
+            and node.func.attr in _RE_CALLS
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id == "re"
         ):
@@ -149,6 +175,7 @@ def ast_inventory() -> dict:
         entry = {"symbols": symbols}
         if detailed:
             entry["regexes"] = _pattern_literals(tree)
+            entry["compiled"] = _compiled_patterns(mod_name)
         inventory[mod_name] = entry
     return inventory
 
@@ -204,6 +231,18 @@ _FRAGMENTS = (
     '<|tool_call_argument_begin|>{"city": "Paris"}<|tool_call_end|>'
     "<|tool_calls_section_end|>",
     "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>",
+    # One format's markup sitting inside another format's argument value. Concatenating
+    # whole calls never reaches the arm-order question: which scan runs first only shows
+    # up when an earlier arm can consume a later arm's opener. A swap of two arms inside
+    # ``strip_segment`` is invisible without these.
+    "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>",
+    '<tool_call>{"name": "search", "arguments": {"q": "<function=get_weather>"}}</tool_call>',
+    '<tool_call>{"name": "search", "arguments": {"q": "[TOOL_CALLS]other[ARGS]{}"}}</tool_call>',
+    "<function=get_weather><parameter=city><|tool_call>call:search{q:1}<tool_call|></parameter></function>",
+    '[TOOL_CALLS]search[ARGS]{"q": "<tool_call>{}</tool_call>"}',
+    '<|tool_call>call:search{q:<|"|><think>x</think><|"|>}<tool_call|>',
+    '<function=x><parameter=p>get_weather[ARGS]{"a": 1}</parameter></function> tail',
+    "<tool_call>get_weather\n<arg_key>c</arg_key>\n<arg_value><function=y></arg_value>\n</tool_call>",
     "<think>I should call get_weather[ARGS]{} but not really</think>",
     "<think>unclosed reasoning",
     '```\nget_weather[ARGS]{"city": "Paris"}\n```',
@@ -273,6 +312,9 @@ _ARG_FIXTURES = {
 # the entire corpus, and it is one of the functions this refactor rewrites.
 _SWEEP_PARAMS = frozenset({"pos"})
 
+# Boolean parameters driven at both values rather than at one.
+_BOTH_WAYS = ("final", "seg_final", "with_spans", "allow_incomplete", "gemma_quotes")
+
 # Function name -> what to hand it in place of the raw corpus entry.
 _TEXT_ADAPTERS = {"_gemma_arguments_to_json": lambda text: _gemma_argument_body(text)}
 
@@ -326,13 +368,16 @@ def _drive(func, text: str):
     kwargs = {}
     if "enabled_tool_names" in params:
         kwargs["enabled_tool_names"] = set(_ENABLED_NAMES)
-    # ``final`` / ``seg_final`` / ``id_offset`` are keyword-only and mostly required, so
-    # the positional loop below skips them. Supplying them here is what keeps the strip
-    # and parse entry points drivable: without it they raise ``TypeError`` on every
-    # input, and a digest over one constant pins nothing.
-    for flag in ("final", "seg_final"):
+    # These are keyword-only and mostly required, so the positional loop below skips
+    # them. Supplying them is what keeps the strip and parse entry points drivable at
+    # all: without it they raise ``TypeError`` on every input. Each is driven at BOTH
+    # values, because half a boolean contract is not a contract -- pinning ``final =
+    # True`` says nothing about what the streaming path (``final = False``) does, and
+    # the streaming path is most of what these functions are for.
+    combos = [{}]
+    for flag in _BOTH_WAYS:
         if flag in params:
-            kwargs[flag] = True
+            combos = [dict(combo, **{flag: value}) for combo in combos for value in (True, False)]
     if "id_offset" in params:
         kwargs["id_offset"] = 0
 
@@ -357,25 +402,30 @@ def _drive(func, text: str):
             args.append(None)
             continue
         args.append(fixture(text))
-    if sweep is not None:
-        slot = names.index(sweep)
-        results = []
-        for offset in _sweep_offsets(text):
-            args[slot] = offset
-            try:
-                results.append(_jsonable(func(*args, **kwargs)))
-            except Exception as exc:  # noqa: BLE001
-                results.append(f"<raised {type(exc).__name__}>")
-        return results
-    try:
-        result = func(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 - the exception type is the pinned value
-        return f"<raised {type(exc).__name__}>"
-    # A function whose real output is an accumulator it was handed returns None, so the
-    # accumulator has to be recorded or the digest pins nothing.
-    if "out" in names and args[names.index("out")]:
-        return [_jsonable(result), _jsonable(args[names.index("out")])]
-    return _jsonable(result)
+
+    def _call(extra):
+        merged = dict(kwargs, **extra)
+        if sweep is not None:
+            slot = names.index(sweep)
+            results = []
+            for offset in _sweep_offsets(text):
+                args[slot] = offset
+                try:
+                    results.append(_jsonable(func(*args, **merged)))
+                except Exception as exc:  # noqa: BLE001
+                    results.append(f"<raised {type(exc).__name__}>")
+            return results
+        try:
+            outcome = func(*args, **merged)
+        except Exception as exc:  # noqa: BLE001 - the exception type is the pinned value
+            return f"<raised {type(exc).__name__}>"
+        if "out" in names and args[names.index("out")]:
+            return [_jsonable(outcome), _jsonable(args[names.index("out")])]
+        return _jsonable(outcome)
+
+    if len(combos) > 1:
+        return {json.dumps(combo, sort_keys = True): _call(combo) for combo in combos}
+    return _call(combos[0])
 
 
 def _jsonable(value):
@@ -645,29 +695,48 @@ def _read(name):
     return json.loads((BASELINE_DIR / name).read_text(encoding = "utf-8"))
 
 
-def _diff(label, old, new):
-    """Report the first differing JSON path, which is enough to locate the change."""
+def _diff(
+    label,
+    old,
+    new,
+    *,
+    additions_matter = True,
+):
+    """Report the first differing JSON path, which is enough to locate the change.
+
+    ``additions_matter = False`` reports only what changed or disappeared. That is the
+    right rule for the surfaces this guard pins across a moving repo: the question asked
+    of them is "did this refactor drop or alter something", and a later, unrelated commit
+    adding a symbol or a test adding a patch is not a regression. Replicating this branch
+    onto a staging repo and running the org CI there is what surfaced it: an unrelated
+    ``_DRAFTER_DISPLAY_LABELS`` in ``llama_cpp.py`` and one new patch target failed the
+    guard, which merged as-is would have failed most later PRs and trained everyone to
+    re-snapshot without reading.
+    """
     if old == new:
         return []
     problems = []
     if isinstance(old, dict) and isinstance(new, dict):
         for key in sorted(set(old) | set(new)):
             if key not in old:
-                problems.append(f"{label}.{key}: added")
+                if additions_matter:
+                    problems.append(f"{label}.{key}: added")
             elif key not in new:
                 problems.append(f"{label}.{key}: REMOVED")
             else:
-                problems.extend(_diff(f"{label}.{key}", old[key], new[key]))
+                problems.extend(
+                    _diff(f"{label}.{key}", old[key], new[key], additions_matter = additions_matter)
+                )
     elif isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
         for index, (a, b) in enumerate(zip(old, new)):
-            problems.extend(_diff(f"{label}[{index}]", a, b))
+            problems.extend(_diff(f"{label}[{index}]", a, b, additions_matter = additions_matter))
     elif (
         isinstance(old, list)
         and isinstance(new, list)
         and all(isinstance(v, str) for v in old + new)
     ):
         # A name list (``dir()``): report what joined or left, not both full lists.
-        for name in sorted(set(new) - set(old)):
+        for name in sorted(set(new) - set(old)) if additions_matter else ():
             problems.append(f"{label}: added {name!r}")
         for name in sorted(set(old) - set(new)):
             problems.append(f"{label}: REMOVED {name!r}")
@@ -692,10 +761,25 @@ def snapshot():
         print(f"    {failure['module']}.{failure['function']}")
 
 
+def _ast_problems() -> list:
+    """AST diff, strict for the modules this branch owns and additive-tolerant elsewhere."""
+    recorded = _read("ast_inventory.json")
+    live = ast_inventory()
+    problems = []
+    for mod_name in sorted(set(recorded) | set(live)):
+        problems += _diff(
+            f"ast.{mod_name}",
+            recorded.get(mod_name, {}),
+            live.get(mod_name, {}),
+            additions_matter = mod_name in BEHAVIOUR_MODULES,
+        )
+    return problems
+
+
 def verify() -> int:
     corpus = build_corpus()
     problems = []
-    problems += _diff("ast", _read("ast_inventory.json"), ast_inventory())
+    problems += _ast_problems()
     problems += _diff("runtime", _read("runtime_inventory.json"), runtime_inventory())
     problems += _diff("golden", _read("golden_outputs.json"), golden_outputs(corpus))
 
@@ -714,12 +798,16 @@ def verify() -> int:
     # resolves fine and would otherwise pass while the routing silently moved.
     recorded = {target: sorted(tests) for target, tests in _read("patch_targets.json").items()}
     live = {target: sorted(tests) for target, tests in patch_targets().items()}
-    problems += _diff("patch-targets", recorded, live)
+    problems += _diff("patch-targets", recorded, live, additions_matter = False)
 
     for broken in unresolvable_patch_targets(live):
-        problems.append(
-            f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"
-        )
+        # An optional backend that is not installed here is not a broken target, and the
+        # documented ``verify`` command has to stay usable in a slim environment. The
+        # pytest check filters these the same way.
+        if not broken.get("environment"):
+            problems.append(
+                f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"
+            )
 
     if problems:
         print(f"FAIL: {len(problems)} difference(s)")

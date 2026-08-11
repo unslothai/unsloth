@@ -176,3 +176,52 @@ def test_a_dropped_lazy_export_is_not_written_off_as_environmental():
 
     assert [entry["target"] for entry in broken] == ["core.inference.no_such_lazy_export"]
     assert not any(entry.get("environment") for entry in broken)
+
+
+def test_the_scan_order_inside_strip_segment_is_pinned():
+    """The arm order in ``strip_segment`` is what this branch unified.
+
+    Swapping the function-XML and GLM arms passed the guard, because the corpus only
+    ever concatenated whole calls and the order question only shows up when an earlier
+    arm can consume a later arm's opener.
+    """
+    from core.inference.tool_call_parser import strip_segment
+
+    text = "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>"
+
+    assert strip_segment(text, seg_final = True, enabled_tool_names = {"x"}) == "<parameter=p>"
+
+
+def test_strip_tool_markup_is_pinned_at_both_final_values():
+    """``final = False`` is the streaming path, and it was driven at one value only."""
+    from core.inference.tool_call_parser import strip_tool_markup
+
+    text = (
+        '<function=get_weather><parameter=q><tool_call>{"a":1}</tool_call>'
+        "</parameter></function> tail"
+    )
+    names = {"get_weather"}
+
+    assert strip_tool_markup(text, final = False, enabled_tool_names = names) == " tail"
+    assert strip_tool_markup(text, final = True, enabled_tool_names = names) == "tail"
+
+
+def test_an_unrelated_addition_elsewhere_does_not_fail_the_guard():
+    """Additions are not regressions, and a guard that cries on them gets re-snapshotted blind.
+
+    Running this branch through the org CI on a staging repo is what showed it: an
+    unrelated new global in ``llama_cpp.py`` and one new patch target failed the guard.
+    A dropped symbol still has to fail.
+    """
+    import copy
+
+    base = refactor_guard.ast_inventory()
+    wide = "core.inference.llama_cpp"
+
+    added = copy.deepcopy(base[wide])
+    added["symbols"]["_SOMETHING_A_LATER_PR_ADDS"] = {"kind": "assign"}
+    assert not refactor_guard._diff("ast", base[wide], added, additions_matter = False)
+
+    dropped = copy.deepcopy(base[wide])
+    dropped["symbols"].pop(next(iter(dropped["symbols"])))
+    assert refactor_guard._diff("ast", base[wide], dropped, additions_matter = False)
