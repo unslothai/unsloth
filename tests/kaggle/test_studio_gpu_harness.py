@@ -1045,3 +1045,34 @@ def test_the_session_remembers_which_password_is_current():
     untouched = _RecordingStudio([_login_ok(False)])
     untouched.login("already-changed")
     assert untouched.password == "already-changed"
+
+
+def test_the_ui_driver_gets_a_freshly_seeded_account():
+    """The API path and the UI driver want OPPOSITE auth states, so the payload
+    has to re-seed between them.
+
+    authenticate() retires the bootstrap password to get past Studio's forced
+    change; the driver's first UI step waits for #new-password on that very
+    form. Three hardware runs walked the whole cycle -- 412345d2 failed the API
+    assertions on the gate, 9ddd8ae4 fixed those and failed the driver on a
+    stale password, the next failed the driver on the form being gone. The fix
+    is a restart, because start_server() removes $STUDIO_HOME/auth and that is
+    what re-seeds the bootstrap password.
+
+    Asserted on the source rather than by running it: the restart is the whole
+    fix, and a refactor that drops it would put the payload straight back to a
+    driver that cannot find the form."""
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    body = source[source.index("def assert_chat_ui") :]
+    body = body[: body.index("\n    def ")] if "\n    def " in body else body
+    assert "self.stop_server()" in body and "self.start_server()" in body, (
+        "the driver needs a re-seeded account, which only a restart provides"
+    )
+    # And it must hand over the RE-SEEDED value, not the retired session's.
+    assert "self.remember_bootstrap()" in body
+    assert "self.studio.password" not in body, (
+        "the retired password is exactly what the driver cannot use"
+    )
+    assert body.index("self.start_server()") < body.index('"STUDIO_OLD_PW"'), (
+        "the password must be read after the restart, or it is the old one"
+    )

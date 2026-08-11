@@ -795,15 +795,31 @@ class Payload:
         failures: list[str] = []
         detail: dict = {"driver": str(driver)}
 
-        # The CURRENT password, not the seeded one. authenticate() has to
-        # retire the bootstrap value to get past Studio's forced password
-        # change, so the file on disk is stale by the time the driver runs --
-        # reading it here is what failed the driver with "the bootstrap
-        # password is gone" on kernel unsloth-t4-ci-9ddd8ae4, in the same run
-        # that the retirement fixed inference, tool calling and training.
-        current = self.studio.password or self.remember_bootstrap() or ""
+        # RE-SEED the account before handing over. The driver's first UI step is
+        # "change-password through UI (Setup your account)", which waits for
+        # #new-password on the forced-change form -- and authenticate() has to
+        # retire the bootstrap password over the API to get past that same gate,
+        # so by now Studio shows an ordinary login and the field never appears.
+        # Kernel unsloth-t4-ci-412345d2 failed the API assertions on the gate;
+        # 9ddd8ae4 fixed those and failed the driver on a stale password;
+        # 9c1a3b (this run) fixed the password and failed the driver on the form
+        # being gone. The two needs are opposites -- the API wants the change
+        # DONE, the driver wants it PENDING -- so they cannot share one account.
+        #
+        # A restart is the cheap way to give the driver what it expects:
+        # start_server() removes $STUDIO_HOME/auth, which is what re-seeds the
+        # bootstrap password, and this assertion runs last and stops the server
+        # anyway, so nothing after it needs the API session.
+        self.stop_server()
+        if not self.start_server():
+            failures.append("Studio did not come back after the restart that re-seeds the account")
+            detail["failures"] = failures
+            return self.record("chat_ui_driver", False, detail)
+        detail["reseeded"] = True
+
+        current = self.remember_bootstrap() or ""
         if not current:
-            failures.append("no password is known for this session, so the driver cannot log in")
+            failures.append("no bootstrap password was re-seeded, so the driver cannot log in")
             detail["failures"] = failures
             return self.record("chat_ui_driver", False, detail)
         self.secrets.add(current)
@@ -815,10 +831,9 @@ class Payload:
         env.update(
             {
                 "BASE_URL": self.base_url,
-                # The driver's first phase rotates the password itself and then
-                # asserts the old one stops working, so it needs the value the
-                # session is CURRENTLY authenticated by. It is passed through
-                # the environment of one child and is not written anywhere.
+                # The freshly re-seeded bootstrap password: the driver rotates
+                # it through the UI and then asserts the old one stops working.
+                # Passed through the environment of one child, written nowhere.
                 "STUDIO_OLD_PW": current,
                 "STUDIO_NEW_PW": rotated,
                 "PW_ART_DIR": str(self.art_dir),
