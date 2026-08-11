@@ -138,15 +138,12 @@ def preferred_dflash_sibling(
 ) -> Optional[object]:
     """The DFlash sidecar to fetch alongside ``weight_name``.
 
-    Root level only, like preferred_mtp_sibling above and for the same reason
-    the loader's remote discovery is: the local contract in detect_dflash_file
-    never offers a nested ``quants/dflash-*.gguf``, and a listing cannot read a
-    header, so going by basename would put a whole ordinary weight in the plan
-    before anything could reject it.
+    Root level only, like preferred_mtp_sibling: detect_dflash_file never offers a
+    nested ``quants/dflash-*.gguf``, and a listing cannot read a header, so matching
+    the basename would plan a whole ordinary weight nothing could reject in time.
 
-    Ordered by dflash_repo_preference_key, the same key the download, the
-    snapshot reuse and the offline cache use, so the file the manifest promises
-    is the file the loader ends up launching.
+    Ordered by dflash_repo_preference_key, as the download, snapshot reuse and offline
+    cache are, so the manifest promises the file the loader launches.
     """
     from utils.models.drafters import dflash_repo_preference_key
 
@@ -202,8 +199,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}
-    # Every weight in the listing, so the DFlash ranking can tell a sidecar that
-    # names a neighbouring family from one that names this variant's.
+    # Every weight in the listing, so the ranking can tell a sidecar naming a
+    # neighbouring family from one naming this variant's.
     all_weight_names = [
         name.rsplit("/", 1)[-1]
         for quant_siblings in main.values()
@@ -216,9 +213,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        # The DFlash sidecar is per variant, unlike mmproj and the MTP drafter:
-        # its ranking is relative to the weight being fetched, so a multi-family
-        # repo does not hand variant B the drafter that names variant A.
+        # Per variant, unlike mmproj and the MTP drafter: ranked against the weight
+        # being fetched, so a multi-family repo does not hand B the drafter naming A.
         target_weight = _gguf_rfilename(target_main_siblings[0])
         target_weight_name = target_weight.rsplit("/", 1)[-1] if target_weight else None
         dflash_sibling = preferred_dflash_sibling(

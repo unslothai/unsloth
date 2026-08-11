@@ -1656,14 +1656,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-# Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so
-# one rule serves the local scan, the download, the snapshot reuse and the
-# offline cache alike. Only the names this module still calls are imported here;
-# everything else is imported from utils.models.drafters directly at its use
-# site. A re-export shim would be the friendlier move, but scripts/
-# verify_import_hoist.py scopes its __all__ exemption to package __init__.py and
-# blocks unused imports in an ordinary module on purpose -- see its
-# reexport_in_ordinary_module_is_still_blocked self-test.
+# Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so one
+# rule serves the local scan, the download, the snapshot reuse and the offline cache.
+# Only the names this module calls are imported here; the rest import from drafters at
+# their use site. A re-export shim would read better, but verify_import_hoist.py scopes
+# its __all__ exemption to package __init__.py on purpose (see its
+# reexport_in_ordinary_module_is_still_blocked self-test).
 from utils.models.drafters import (  # noqa: E402
     _drafter_launch_path,
     _drafter_matches_weight,
@@ -1681,11 +1679,9 @@ from utils.models.drafters import (  # noqa: E402
 def dspark_preference_key(name: str) -> Tuple[int, str]:
     """Sort key picking the preferred DSpark sidecar by name alone.
 
-    Delegates rather than re-exports: routes/inference.py has imported this from
-    model_config since #7968, and repointing that call site would trip
-    scripts/verify_import_hoist.py's TARGET-CHANGED rule, whose relocation
-    exemption only covers module-level imports. One implementation still, in
-    utils.models.drafters.
+    Delegates rather than re-exports: routes/inference.py has imported this from here
+    since #7968, and repointing that function-local import trips verify_import_hoist.py's
+    TARGET-CHANGED rule, whose relocation exemption only covers module-level imports.
     """
     return _drafters_dspark_preference_key(name)
 
