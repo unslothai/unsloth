@@ -1408,23 +1408,6 @@ export const it = {
     loadingRuntime: "Caricamento del runtime di addestramento...",
     checkingSupport: "Verifica del supporto all'addestramento su questa macchina...",
     backToHistory: "Torna alla cronologia",
-    sections: {
-      model: "Modello",
-      dataset: "Dataset",
-      params: "Parametri",
-      training: "Addestramento",
-      charts: "Grafici",
-      progress: "Avanzamento dell'addestramento",
-    },
-    configure: {
-      title: "Configura",
-      description: "Scegli modello, dataset e impostazioni di addestramento.",
-      startTraining: "Avvia l'addestramento",
-      starting: "Avvio...",
-      loadingModel: "Caricamento del modello...",
-      checkingDataset: "Verifica del dataset...",
-      trainingConfig: "Configurazione di addestramento",
-    },
     dataset: {
       selectors: {
         subset: "Sottoinsieme",
@@ -1448,7 +1431,6 @@ export const it = {
         manualTooLong: "Usa al massimo 128 caratteri.",
         manualInvalid: "Questo valore contiene caratteri non supportati.",
       },
-      source: "Origine del dataset",
       sourceAriaLabel: "Origine del dataset",
       streamingInfoAriaLabel: "Informazioni sullo streaming del dataset",
       uploadDetails: "Dettagli del caricamento",
@@ -1457,8 +1439,6 @@ export const it = {
       fileTooLarge: "File troppo grande",
       fileTooLargeDescription:
         "{file} occupa {size}. I caricamenti per l'addestramento supportano fino a {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · fino a {limit}; PDF/DOCX/TXT → Ricette di apprendimento",
       documentRedirect: {
         title: "Questo file deve prima essere convertito",
         genericFile: "Questo file",
@@ -1529,9 +1509,6 @@ export const it = {
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:
         "Puoi caricare un solo file come dataset di addestramento.",
-      preview: "Anteprima del dataset",
-      split: "Split",
-      subset: "Sottoinsieme",
       streaming: {
         label: "Attiva lo streaming",
         description:
@@ -1586,21 +1563,11 @@ export const it = {
         regionPlaceholder: "us-east-1",
         prefix: "Prefisso del percorso",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Percorso facoltativo dei file del dataset all'interno del bucket",
         accessKeyId: "ID chiave di accesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chiave di accesso segreta",
         secretAccessKeyPlaceholder: "La tua chiave di accesso segreta AWS",
         useIamRole: "Usa un ruolo IAM",
-        useIamRoleTooltip:
-          "Usa le credenziali di un ruolo IAM invece delle chiavi di accesso (consigliato su EC2/SageMaker)",
-        testConnection: "Prova la connessione",
-        connectionSuccess: "Connessione al bucket S3 riuscita",
-        connectionFailed: "Connessione al bucket S3 non riuscita",
-        comingSoon: "Integrazione S3 in arrivo",
-        comingSoonDescription:
-          "Il caricamento dei dataset da S3 richiede boto3. La funzione è in fase di sviluppo.",
       },
     },
     params: {
@@ -1805,7 +1772,6 @@ export const it = {
       deleteArtifactsRetainedError:
         "Non è stato possibile rimuovere i file dell’adattatore, quindi il run è stato mantenuto nella cronologia.",
       title: "Cronologia",
-      emptyTitle: "Nessun run di addestramento",
       emptyDescription:
         "Nessun run di addestramento. Avvia il tuo primo run nella scheda Configura.",
       loadError: "Impossibile caricare i run di addestramento",
@@ -1818,9 +1784,6 @@ export const it = {
       deleteTitle: "Eliminare il run di addestramento?",
       deleteDescription:
         "Questo run di addestramento e tutte le sue metriche verranno eliminati definitivamente. L'operazione è irreversibile.",
-      runCount: "{count} run",
-      oneRun: "1 run",
-      resume: "Riprendi",
       resumeTraining: "Riprendi l'addestramento",
       resuming: "Ripresa in corso...",
       deleteRun: "Elimina il run",
@@ -1958,9 +1921,6 @@ export const it = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: in streaming (nessun download completo)",
       modelWeights: "Pesi del modello",
-    },
-    tour: {
-      guidedTour: "Tour guidato",
     },
   },
 } as const;

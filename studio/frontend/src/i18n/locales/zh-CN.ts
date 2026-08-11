@@ -1316,23 +1316,6 @@ export const zhCN = {
     loadingRuntime: "正在加载训练运行时...",
     checkingSupport: "正在检查此设备是否支持训练...",
     backToHistory: "返回历史",
-    sections: {
-      model: "模型",
-      dataset: "数据集",
-      params: "参数",
-      training: "训练",
-      charts: "图表",
-      progress: "训练进度",
-    },
-    configure: {
-      title: "配置",
-      description: "选择模型、数据集和训练设置。",
-      startTraining: "开始训练",
-      starting: "启动中...",
-      loadingModel: "正在加载模型...",
-      checkingDataset: "正在检查数据集...",
-      trainingConfig: "训练配置",
-    },
     dataset: {
       selectors: {
         subset: "子集",
@@ -1353,7 +1336,6 @@ export const zhCN = {
         manualTooLong: "请使用不超过 128 个字符。",
         manualInvalid: "此值包含不支持的字符。",
       },
-      source: "数据集来源",
       sourceAriaLabel: "数据集来源",
       localDataset: "本地数据集",
       localDatasetRows: " / {count} 行",
@@ -1370,8 +1352,6 @@ export const zhCN = {
       fileTooLarge: "文件过大",
       fileTooLargeDescription:
         "{file} 大小为 {size}。训练上传最大支持 {limit}。",
-      uploadLimitsHint:
-        "CSV、JSONL、JSON、Parquet · 最大 {limit}；PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "此文件需要先转换",
         genericFile: "此文件",
@@ -1450,7 +1430,6 @@ export const zhCN = {
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",
-      preview: "预览数据集",
       previewLoadingHuggingFace: "正在从 Hugging Face 获取数据集预览...",
       previewLoading: "正在加载预览...",
       mappingRequirements: {
@@ -1470,8 +1449,6 @@ export const zhCN = {
         requiredDescription:
           "使用标题中的下拉菜单为列分配角色。至少需要分配 {required}。",
       },
-      split: "切分",
-      subset: "子集",
       s3: {
         title: "S3 配置",
         description: "从 Amazon S3 加载 .parquet、.json、.jsonl 或 .csv 数据集",
@@ -1481,18 +1458,11 @@ export const zhCN = {
         regionPlaceholder: "us-east-1",
         prefix: "路径前缀",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "存储桶中数据集文件的可选路径",
         accessKeyId: "访问密钥 ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "秘密访问密钥",
         secretAccessKeyPlaceholder: "你的 AWS 秘密访问密钥",
         useIamRole: "使用 IAM 角色",
-        useIamRoleTooltip: "使用 IAM 角色凭证而非访问密钥（推荐用于 EC2/SageMaker）",
-        testConnection: "测试连接",
-        connectionSuccess: "成功连接到 S3 存储桶",
-        connectionFailed: "无法连接到 S3 存储桶",
-        comingSoon: "S3 集成即将推出",
-        comingSoonDescription: "S3 数据集加载需要 boto3。此功能正在开发中。",
       },
     },
     params: {
@@ -1676,7 +1646,6 @@ export const zhCN = {
       deleteArtifactsFailed: "运行已删除，但无法移除其文件。",
       deleteArtifactsRetainedError:
         "无法移除适配器文件，因此训练运行已保留在历史记录中。",
-      emptyTitle: "还没有训练运行",
       emptyDescription: "还没有训练运行。请在配置标签页开始第一次训练。",
       loadError: "加载训练运行失败",
       deleteError: "删除训练运行失败。请重试。",
@@ -1687,9 +1656,6 @@ export const zhCN = {
       runNotFound: "未找到运行",
       deleteTitle: "删除训练运行？",
       deleteDescription: "这会永久删除该训练运行及其所有指标。此操作无法撤销。",
-      runCount: "{count} 次运行",
-      oneRun: "1 次运行",
-      resume: "继续",
       resumeTraining: "继续训练",
       resuming: "正在恢复训练...",
       deleteRun: "删除运行",
@@ -1820,9 +1786,6 @@ export const zhCN = {
       dataset: "数据集",
       datasetStreaming: "数据集：流式传输（无需完整下载）",
       modelWeights: "模型权重",
-    },
-    tour: {
-      guidedTour: "引导教程",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

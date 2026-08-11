@@ -1337,23 +1337,6 @@ export const ja = {
     loadingRuntime: "トレーニングランタイムを読み込み中...",
     checkingSupport: "このマシンのトレーニング対応を確認しています...",
     backToHistory: "履歴に戻る",
-    sections: {
-      model: "モデル",
-      dataset: "データセット",
-      params: "パラメーター",
-      training: "トレーニング",
-      charts: "チャート",
-      progress: "トレーニング進捗",
-    },
-    configure: {
-      title: "設定",
-      description: "モデル、データセット、およびトレーニング設定を選択します。",
-      startTraining: "トレーニング開始",
-      starting: "開始中...",
-      loadingModel: "モデルを読み込み中...",
-      checkingDataset: "データセットを確認中...",
-      trainingConfig: "トレーニング構成",
-    },
     dataset: {
       selectors: {
         subset: "サブセット",
@@ -1375,7 +1358,6 @@ export const ja = {
         manualTooLong: "128 文字以内で入力してください。",
         manualInvalid: "この値には未対応の文字が含まれています。",
       },
-      source: "データセットのソース",
       sourceAriaLabel: "データセットのソース",
       localDataset: "ローカルデータセット",
       localDatasetRows: " / {count} 行",
@@ -1392,8 +1374,6 @@ export const ja = {
       fileTooLarge: "ファイルが大きすぎます",
       fileTooLargeDescription:
         "{file} のサイズは {size} です。トレーニング用アップロードの上限は {limit} です。",
-      uploadLimitsHint:
-        "CSV、JSONL、JSON、Parquet · 上限 {limit}、PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "このファイルは先に変換する必要があります",
         genericFile: "このファイル",
@@ -1473,7 +1453,6 @@ export const ja = {
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",
-      preview: "データセットのプレビュー",
       previewLoadingHuggingFace:
         "Hugging Face からデータセットのプレビューを取得しています...",
       previewLoading: "プレビューを読み込んでいます...",
@@ -1495,8 +1474,6 @@ export const ja = {
         requiredDescription:
           "ヘッダーのドロップダウンを使用して列にロールを割り当ててください。少なくとも {required} を割り当てる必要があります。",
       },
-      split: "分割",
-      subset: "サブセット",
       s3: {
         title: "S3 構成",
         description: "Amazon S3 から .parquet, .json, .jsonl, または .csv データセットを読み込みます",
@@ -1506,18 +1483,11 @@ export const ja = {
         regionPlaceholder: "us-east-1",
         prefix: "パスプレフィックス",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "オプション。バケット内のデータセットファイルへのパス",
         accessKeyId: "アクセスキー ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "シークレットアクセスキー",
         secretAccessKeyPlaceholder: "AWS シークレットアクセスキーを入力してください",
         useIamRole: "IAM ロールを使用",
-        useIamRoleTooltip: "アクセスキーの代わりに IAM ロールの資格情報を使用します（EC2/SageMaker で推奨）",
-        testConnection: "接続をテスト",
-        connectionSuccess: "S3 バケットへの接続に成功しました",
-        connectionFailed: "S3 バケットへの接続に失敗しました",
-        comingSoon: "S3 統合は近日公開予定",
-        comingSoonDescription: "S3 データセットの読み込みには boto3 が必要です。この機能は現在開発中です。",
       },
     },
     params: {
@@ -1703,7 +1673,6 @@ export const ja = {
         "実行は削除されましたが、関連ファイルを削除できませんでした。",
       deleteArtifactsRetainedError:
         "アダプターファイルを削除できなかったため、トレーニング実行は履歴に保持されました。",
-      emptyTitle: "トレーニング実行がまだありません",
       emptyDescription: "トレーニング実行がまだありません。「設定」タブで最初のトレーニングを開始してください。",
       loadError: "トレーニング実行の読み込みに失敗しました",
       deleteError: "トレーニング実行の削除に失敗しました。もう一度お試しください。",
@@ -1714,9 +1683,6 @@ export const ja = {
       runNotFound: "実行が見つかりません",
       deleteTitle: "トレーニング実行を削除しますか？",
       deleteDescription: "これにより、このトレーニング実行とすべてのメトリクスが永久に削除されます。この操作は取り消せません。",
-      runCount: "{count} 件の実行",
-      oneRun: "1 件の実行",
-      resume: "再開",
       resumeTraining: "トレーニングを再開",
       resuming: "再開中...",
       deleteRun: "実行を削除",
@@ -1847,9 +1813,6 @@ export const ja = {
       dataset: "データセット",
       datasetStreaming: "データセット: ストリーミング（完全なダウンロードなし）",
       modelWeights: "モデルの重み",
-    },
-    tour: {
-      guidedTour: "ガイドツアー",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

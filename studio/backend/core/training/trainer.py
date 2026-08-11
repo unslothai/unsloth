@@ -237,12 +237,6 @@ class UnslothTrainer:
 
         self._lock = threading.Lock()
 
-        self.training_context = {
-            "base_model_name": None,
-            "output_dir": None,
-            "is_lora": True,
-        }
-
     def pre_detect_and_load_tokenizer(
         self,
         model_name: str,

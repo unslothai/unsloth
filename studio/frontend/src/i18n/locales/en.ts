@@ -1349,23 +1349,6 @@ export const en = {
     loadingRuntime: "Loading training runtime...",
     checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
-    sections: {
-      model: "Model",
-      dataset: "Dataset",
-      params: "Parameters",
-      training: "Training",
-      charts: "Charts",
-      progress: "Training Progress",
-    },
-    configure: {
-      title: "Configure",
-      description: "Choose a model, dataset, and training settings.",
-      startTraining: "Start Training",
-      starting: "Starting...",
-      loadingModel: "Loading model...",
-      checkingDataset: "Checking dataset...",
-      trainingConfig: "Training Config",
-    },
     dataset: {
       selectors: {
         subset: "Subset",
@@ -1387,7 +1370,6 @@ export const en = {
         manualTooLong: "Use 128 characters or fewer.",
         manualInvalid: "This value contains unsupported characters.",
       },
-      source: "Dataset source",
       sourceAriaLabel: "Dataset source",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
@@ -1404,8 +1386,6 @@ export const en = {
       fileTooLarge: "File too large",
       fileTooLargeDescription:
         "{file} is {size}. Training uploads support up to {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · up to {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "This file needs conversion first",
         genericFile: "This file",
@@ -1487,7 +1467,6 @@ export const en = {
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
-      preview: "Preview dataset",
       previewLoadingHuggingFace:
         "Fetching dataset preview from Hugging Face...",
       previewLoading: "Loading preview...",
@@ -1509,8 +1488,6 @@ export const en = {
         requiredDescription:
           "Assign roles to columns using the dropdowns in the headers. At minimum, assign {required}.",
       },
-      split: "Split",
-      subset: "Subset",
       s3: {
         title: "S3 Configuration",
         description:
@@ -1521,20 +1498,11 @@ export const en = {
         regionPlaceholder: "us-east-1",
         prefix: "Path Prefix",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Optional path within the bucket to your dataset files",
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Your AWS secret access key",
         useIamRole: "Use IAM Role",
-        useIamRoleTooltip:
-          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
-        testConnection: "Test Connection",
-        connectionSuccess: "Successfully connected to S3 bucket",
-        connectionFailed: "Failed to connect to S3 bucket",
-        comingSoon: "S3 integration coming soon",
-        comingSoonDescription:
-          "S3 dataset loading requires boto3. This feature is under development.",
       },
     },
     params: {
@@ -1730,7 +1698,6 @@ export const en = {
         "The run was deleted but its files could not be removed.",
       deleteArtifactsRetainedError:
         "The adapter files could not be removed, so the training run was kept in history.",
-      emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",
       loadError: "Failed to load training runs",
@@ -1743,9 +1710,6 @@ export const en = {
       deleteTitle: "Delete training run?",
       deleteDescription:
         "This will permanently delete this training run and all its metrics. This action cannot be undone.",
-      runCount: "{count} runs",
-      oneRun: "1 run",
-      resume: "Resume",
       resumeTraining: "Resume training",
       resuming: "Resuming...",
       deleteRun: "Delete run",
@@ -1878,9 +1842,6 @@ export const en = {
       dataset: "Dataset",
       datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
-    },
-    tour: {
-      guidedTour: "Guided Tour",
     },
   },
 } as const;

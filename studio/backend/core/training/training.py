@@ -3449,19 +3449,6 @@ class TrainingBackend:
         fig.tight_layout()
         return fig
 
-    def _transfer_to_inference_backend(self) -> bool:
-        """Transfer model to inference backend.
-
-        No-op: with subprocess training the model is freed on exit, so inference
-        must load from the saved checkpoint on disk.
-        """
-        logger.info(
-            "_transfer_to_inference_backend: subprocess training — "
-            "model must be loaded from disk (output_dir=%s)",
-            self._output_dir,
-        )
-        return False
-
 
 # ========== GLOBAL INSTANCE ==========
 _training_backend = None

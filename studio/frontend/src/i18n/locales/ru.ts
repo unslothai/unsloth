@@ -1380,23 +1380,6 @@ export const ru = {
     loadingRuntime: "Загрузка среды обучения...",
     checkingSupport: "Проверка поддержки обучения на этой машине...",
     backToHistory: "Назад к истории",
-    sections: {
-      model: "Модель",
-      dataset: "Датасет",
-      params: "Параметры",
-      training: "Обучение",
-      charts: "Графики",
-      progress: "Прогресс обучения",
-    },
-    configure: {
-      title: "Настройка",
-      description: "Выберите модель, датасет и параметры обучения.",
-      startTraining: "Начать обучение",
-      starting: "Запуск...",
-      loadingModel: "Загрузка модели...",
-      checkingDataset: "Проверка датасета...",
-      trainingConfig: "Конфигурация обучения",
-    },
     dataset: {
       selectors: {
         subset: "Поднабор",
@@ -1419,7 +1402,6 @@ export const ru = {
         manualTooLong: "Используйте не более 128 символов.",
         manualInvalid: "Это значение содержит неподдерживаемые символы.",
       },
-      source: "Источник датасета",
       sourceAriaLabel: "Источник датасета",
       localDataset: "Локальный датасет",
       localDatasetRows: " / {count} строк",
@@ -1436,8 +1418,6 @@ export const ru = {
       fileTooLarge: "Файл слишком большой",
       fileTooLargeDescription:
         "Размер файла {file} — {size}. Для загрузки обучающих данных поддерживается размер до {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · до {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Сначала преобразуйте этот файл",
         genericFile: "Этот файл",
@@ -1525,7 +1505,6 @@ export const ru = {
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:
         "Загрузка датасета для обучения принимает один файл.",
-      preview: "Предпросмотр датасета",
       previewLoadingHuggingFace:
         "Получение предпросмотра датасета из Hugging Face...",
       previewLoading: "Загрузка предпросмотра...",
@@ -1547,8 +1526,6 @@ export const ru = {
         requiredDescription:
           "Назначьте роли столбцам с помощью выпадающих списков в заголовках. Как минимум назначьте {required}.",
       },
-      split: "Выборка",
-      subset: "Подмножество",
       s3: {
         title: "Конфигурация S3",
         description:
@@ -1559,20 +1536,11 @@ export const ru = {
         regionPlaceholder: "us-east-1",
         prefix: "Префикс пути",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Необязательный путь в бакете к файлам вашего датасета",
         accessKeyId: "Access Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Ваш AWS secret access key",
         useIamRole: "Использовать роль IAM",
-        useIamRoleTooltip:
-          "Использовать учётные данные роли IAM вместо ключей доступа (рекомендуется для EC2/SageMaker)",
-        testConnection: "Проверить подключение",
-        connectionSuccess: "Успешное подключение к бакету S3",
-        connectionFailed: "Не удалось подключиться к бакету S3",
-        comingSoon: "Интеграция с S3 скоро появится",
-        comingSoonDescription:
-          "Загрузка датасетов из S3 требует boto3. Эта функция в разработке.",
       },
     },
     params: {
@@ -1772,7 +1740,6 @@ export const ru = {
         "Запуск удалён, но удалить его файлы не удалось.",
       deleteArtifactsRetainedError:
         "Не удалось удалить файлы адаптера, поэтому запуск обучения сохранён в истории.",
-      emptyTitle: "Пока нет запусков обучения",
       emptyDescription:
         "Пока нет запусков обучения. Запустите первое обучение на вкладке «Настройка».",
       loadError: "Не удалось загрузить запуски обучения",
@@ -1785,9 +1752,6 @@ export const ru = {
       deleteTitle: "Удалить запуск обучения?",
       deleteDescription:
         "Это безвозвратно удалит этот запуск обучения и все его метрики. Это действие нельзя отменить.",
-      runCount: "{count} запусков",
-      oneRun: "1 запуск",
-      resume: "Продолжить",
       resumeTraining: "Продолжить обучение",
       resuming: "Продолжение...",
       deleteRun: "Удалить запуск",
@@ -1920,9 +1884,6 @@ export const ru = {
       dataset: "Датасет",
       datasetStreaming: "Датасет: потоковая передача (без полной загрузки)",
       modelWeights: "Веса модели",
-    },
-    tour: {
-      guidedTour: "Обзорный тур",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
