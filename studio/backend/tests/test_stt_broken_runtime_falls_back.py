@@ -70,7 +70,7 @@ def test_an_amd_box_does_not_report_its_dictation_device_as_cuda(monkeypatch):
     """Torch's ROCm build keeps the "cuda" device name for HIP, which is correct for the
     API and misleading on screen: the Loaded models entry read "Transformers - cuda" on a
     Radeon card (reported on Windows against PR 7984)."""
-    import torch
+    torch = pytest.importorskip("torch")
 
     from core.inference.stt_sidecar import _reported_device
 

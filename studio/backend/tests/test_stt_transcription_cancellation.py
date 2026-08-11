@@ -24,6 +24,9 @@ from core.inference.stt_sidecar import (
 
 
 def test_transformers_load_inherits_disconnect_before_registration(monkeypatch):
+    # The load reaches `import torch` before it registers, so a runner without torch
+    # cannot exercise this at all (the cross-platform jobs have no torch wheel).
+    pytest.importorskip("torch")
     owner = threading.Event()
     sidecar = WhisperSttSidecar()
     resident = object()
