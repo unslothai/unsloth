@@ -1152,6 +1152,35 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
+function collectAssistantCodexReasoning(message: RunMessage): unknown[] | undefined {
+  const metadata = (message as { metadata?: unknown }).metadata;
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const custom = (metadata as { custom?: unknown }).custom;
+  if (!custom || typeof custom !== "object") return undefined;
+  const reasoning = (custom as Record<string, unknown>).openaiCodexReasoning;
+  return Array.isArray(reasoning) && reasoning.length > 0 ? reasoning : undefined;
+}
+
+function attachAssistantCodexReasoning(
+  messages: SerializedMessage[],
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const extra =
+      message.extra_content &&
+      typeof message.extra_content === "object" &&
+      !Array.isArray(message.extra_content)
+        ? (message.extra_content as Record<string, unknown>)
+        : {};
+    message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
+    return;
+  }
+}
+
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1296,6 +1325,11 @@ function serializeAssistantReplayMessages(
   attachAssistantThoughtSignature(
     messages,
     collectAssistantTextThoughtSignature(message),
+  );
+
+  attachAssistantCodexReasoning(
+    messages,
+    collectAssistantCodexReasoning(message),
   );
   return messages;
 }
@@ -4477,6 +4511,8 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
+      let latestCodexReasoning: unknown[] | undefined;
+
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason on every streamed yield: an abort skips the terminal yields
@@ -4484,6 +4520,7 @@ export function createOpenAIStreamAdapter(
       // lose why it was short. The terminal yields overwrite or clear it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        openaiCodexReasoning: latestCodexReasoning,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -4966,6 +5003,10 @@ export function createOpenAIStreamAdapter(
                   externalSelection?.modelId,
                 ),
               ),
+
+              ...(codexUsesStudioTools && resolvedThreadId
+                ? { thread_id: resolvedThreadId }
+                : {}),
               // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
@@ -5749,15 +5790,16 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // OpenAI-standard usage chunk: choices=[], usage populated.
-              if (chunk.choices?.length === 0 && chunk.usage) {
+              // OpenAI usage may arrive either in an empty trailing chunk or on
+              // the terminal Codex chunk that also carries reasoning metadata.
+              if (chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
                   timings: (chunk as Record<string, unknown>).timings as
                     | ServerTimings
                     | undefined,
                 };
-                continue;
+                if (chunk.choices?.length === 0) continue;
               }
 
               totalChunks += 1;
@@ -5800,14 +5842,17 @@ export function createOpenAIStreamAdapter(
                   | undefined
               )?.extra_content;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const eGoogle = (deltaExtraContent as Record<string, unknown>)
-                  .google;
+                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
                     latestTextThoughtSignature = sig;
                   }
+                }
+                const codexReasoning = extraRecord.openai_codex_reasoning;
+                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                  latestCodexReasoning = codexReasoning;
                 }
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
@@ -5860,11 +5905,18 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Match an existing fragment by id first (canonical), then
+                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // tool_start/tool_end events. Resolve the backend id now so all three
+                  // event shapes update one run-unique card instead of leaving the raw
+                  // provisional card beside a second execution card.
+                  const stablePartId = stableId
+                    ? resolveToolPartId(stableId)
+                    : undefined;
+                  // Match an existing fragment by resolved id first (canonical), then
                   // by index slot; fall back to a minted tool_call_<n> id
                   // for streams that send neither.
-                  let existing = stableId
-                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                  let existing = stablePartId
+                    ? toolCallParts.find((p) => p.toolCallId === stablePartId)
                     : undefined;
                   if (!existing && idx !== undefined) {
                     existing = toolCallParts.find(
@@ -5909,7 +5961,7 @@ export function createOpenAIStreamAdapter(
                     }
                   } else {
                     const callId =
-                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -6153,6 +6205,8 @@ export function createOpenAIStreamAdapter(
             custom: {
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
+
+              openaiCodexReasoning: latestCodexReasoning,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,

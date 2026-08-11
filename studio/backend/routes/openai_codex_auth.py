@@ -122,9 +122,10 @@ async def delete_oauth(
     _provider(provider_id)
     codex_auth.credential_secrets.get_or_create_credential_encryption_key()
 
-    # Never hold SQLite's credential-generation write lock across an await.
-    # Active callback/listener work is cancelled first; only the synchronous
-    # credential deletion runs inside the guard.
+    # Serialize against refresh, then take the short credential-generation guard
+    # only for the synchronous delete. This prevents a completed refresh from
+    # restoring credentials after Disconnect returns.
     await codex_auth.cancel_provider_flows(provider_id)
-    with current_credential_write(credential):
-        codex_auth.delete_oauth_bundle(provider_id)
+    async with codex_auth.provider_oauth_write_guard(provider_id):
+        with current_credential_write(credential):
+            codex_auth.delete_oauth_bundle(provider_id)

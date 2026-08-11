@@ -31,6 +31,9 @@ const serializeAssistantReplayMessages = new Function(
   "shouldFlushCompletedLocalToolPair",
   "attachAssistantThoughtSignature",
   "collectAssistantTextThoughtSignature",
+
+  "attachAssistantCodexReasoning",
+  "collectAssistantCodexReasoning",
   "readIncompleteInfo",
   `${
     ts.transpileModule(declaration, {
@@ -75,6 +78,9 @@ const serializeAssistantReplayMessages = new Function(
   () => false,
   (part: { type?: string; result?: unknown }) =>
     part.type === "tool-call" && part.result !== undefined,
+  () => undefined,
+  () => undefined,
+
   () => undefined,
   () => undefined,
   (metadata: unknown) => {

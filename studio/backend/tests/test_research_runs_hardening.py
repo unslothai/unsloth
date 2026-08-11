@@ -807,6 +807,30 @@ def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
     assert sent[0]["json"]["tool_choice"] == "none"
     assert sent[0]["json"]["enabled_tools"] == []
 
+    assert sent[0]["json"]["thread_id"] == "research:run-1"
+
+
+def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypatch):
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+    run["config"]["inferenceRequest"] = {
+        "model": "gpt-5.6-sol",
+        "providerId": "provider-1",
+        "providerType": "openai_codex",
+        "externalModel": "gpt-5.6-sol",
+    }
+
+    assert asyncio.run(
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+    ) == ("report", "", "stop", None)
+    body = sent[0]["json"]
+    assert body["provider_id"] == "provider-1"
+    assert body["provider_type"] == "openai_codex"
+    assert body["external_model"] == "gpt-5.6-sol"
+    assert body["thread_id"] == "research:run-1"
+    assert body["tool_choice"] == "none" and body["enabled_tools"] == []
+
 
 def _capture_backoff(monkeypatch) -> list:
     """Record the delays the retry loop asks for and return control immediately."""

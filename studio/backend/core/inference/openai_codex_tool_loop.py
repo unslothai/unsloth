@@ -22,6 +22,11 @@ from state.tool_approvals import (
 )
 
 
+_TOOL_BUDGET_EXHAUSTED = (
+    "Studio did not execute this tool call because the per-message tool-call limit was reached. "
+    "Continue with the available results and answer without calling another tool."
+)
+
 def _sse(payload: dict[str, Any]) -> str:
     return "data: " + json.dumps(payload, separators=(",", ":"))
 
@@ -93,6 +98,7 @@ async def stream_codex_with_studio_tools(
         reasoning_extra: dict[str, Any] | None = None
         finish_reason: str | None = None
 
+        tools_available = unlimited or remaining > 0
         generator = client.stream(
             provider_id=provider_id,
             thread_id=thread_id,
@@ -100,8 +106,8 @@ async def stream_codex_with_studio_tools(
             model=model,
             max_tokens=None,
             reasoning_effort=reasoning_effort,
-            tools=tools,
-            tool_choice="auto",
+            tools=tools if tools_available else None,
+            tool_choice="auto" if tools_available else "none",
             cancel_event=cancel_event,
         )
         async for line in generator:
@@ -147,7 +153,7 @@ async def stream_codex_with_studio_tools(
             for _, call in sorted(by_index.items())
             if (normalized := _normalized_call(call)) is not None
         ]
-        if finish_reason != "tool_calls" or not calls or (not unlimited and remaining <= 0):
+        if finish_reason != "tool_calls" or not calls:
             return
 
         assistant_message: dict[str, Any] = {
@@ -163,9 +169,8 @@ async def stream_codex_with_studio_tools(
         conversation.append(assistant_message)
 
         for call in calls:
-            if not unlimited and remaining <= 0:
-                break
-            if not unlimited:
+            within_budget = unlimited or remaining > 0
+            if within_budget and not unlimited:
                 remaining -= 1
             call_id = call["id"]
             name = call["function"]["name"]
@@ -179,7 +184,9 @@ async def stream_codex_with_studio_tools(
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
-                begin_tool_decision(session_id, approval_id) if needs_confirmation else None
+                begin_tool_decision(session_id, approval_id)
+                if needs_confirmation and within_budget
+                else None
             )
             yield _sse(
                 {
@@ -187,41 +194,44 @@ async def stream_codex_with_studio_tools(
                     "tool_name": name,
                     "tool_call_id": call_id,
                     "arguments": arguments,
-                    "approval_id": approval_id,
-                    "awaiting_confirmation": needs_confirmation,
+                    "approval_id": approval_id if within_budget else "",
+                    "awaiting_confirmation": needs_confirmation and within_budget,
                 }
             )
-            try:
-                decision = (
-                    await asyncio.to_thread(
-                        wait_tool_decision,
-                        decision_slot,
-                        approval_id,
-                        cancel_event=cancel_event,
+            if not within_budget:
+                result = _TOOL_BUDGET_EXHAUSTED
+            else:
+                try:
+                    decision = (
+                        await asyncio.to_thread(
+                            wait_tool_decision,
+                            decision_slot,
+                            approval_id,
+                            cancel_event=cancel_event,
+                        )
+                        if decision_slot is not None
+                        else None
                     )
-                    if decision_slot is not None
-                    else None
-                )
-                if decision == "deny":
-                    decision_slot = None
-                    result = TOOL_REJECTED_MESSAGE
-                else:
-                    decision_slot = None
-                    timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                    result = await asyncio.to_thread(
-                        execute_tool,
-                        name,
-                        arguments,
-                        cancel_event=cancel_event,
-                        timeout=timeout,
-                        session_id=session_id,
-                        thread_id=thread_id,
-                        rag_scope=rag_scope,
-                        disable_sandbox=bypass_permissions,
-                    )
-            finally:
-                if decision_slot is not None:
-                    abort_tool_decision(decision_slot, approval_id)
+                    if decision == "deny":
+                        decision_slot = None
+                        result = TOOL_REJECTED_MESSAGE
+                    else:
+                        decision_slot = None
+                        timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
+                        result = await asyncio.to_thread(
+                            execute_tool,
+                            name,
+                            arguments,
+                            cancel_event=cancel_event,
+                            timeout=timeout,
+                            session_id=session_id,
+                            thread_id=thread_id,
+                            rag_scope=rag_scope,
+                            disable_sandbox=bypass_permissions,
+                        )
+                finally:
+                    if decision_slot is not None:
+                        abort_tool_decision(decision_slot, approval_id)
             result_text = result if isinstance(result, str) else json.dumps(result)
             yield _sse(
                 {

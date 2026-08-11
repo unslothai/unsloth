@@ -34,9 +34,10 @@ from core.inference.openai_codex_auth import (
 from core.inference.openai_codex_client import (
     CodexTransportError,
     OpenAICodexClient,
-    _normalize_schema,
     _responses_input,
 )
+
+from core.inference.openai_responses_shared import normalize_function_schema
 from core.inference.providers import get_provider_info, list_available_providers
 
 
@@ -130,7 +131,9 @@ def test_responses_conversion_replays_only_opaque_reasoning_and_normalizes_tools
     assert assistant_item["content"] == [
         {"type": "output_text", "text": "visible", "annotations": []}
     ]
-    schema = _normalize_schema({"type": "object", "properties": {"nested": {"type": "object"}}})
+    schema = normalize_function_schema(
+        {"type": "object", "properties": {"nested": {"type": "object"}}}
+    )
     assert schema["properties"]["nested"]["properties"] == {}
 
 
@@ -157,6 +160,28 @@ def test_responses_conversion_stably_shortens_oversized_tool_call_ids():
     assert call["call_id"] == output["call_id"]
     assert call["call_id"].startswith(oversized[:31] + "_")
 
+
+
+def test_cancelled_oauth_exchange_cannot_persist_credentials(monkeypatch):
+    persisted = []
+    flow = OAuthFlow(
+        id="flow-cancelled",
+        provider_id="provider",
+        method="browser",
+        created_at=time.time(),
+        expires_at=time.time() + 60,
+        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
+    )
+    token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
+
+    async def token_request(_data):
+        flow.status = "cancelled"
+        return {"access_token": token, "refresh_token": "refresh", "expires_in": 600}
+
+    monkeypatch.setattr(codex_auth, "_token_request", token_request)
+    with pytest.raises(codex_auth.CodexAuthError, match="cancelled"):
+        asyncio.run(codex_auth._exchange_code(flow, "code"))
+    assert persisted == []
 
 
 
@@ -198,7 +223,7 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
                 messages=[{"role": "user", "content": "hello"}],
                 model="gpt-5.4",
                 max_tokens=100,
-                reasoning_effort="medium",
+                reasoning_effort="none",
                 tools=None,
                 tool_choice=None,
             )
@@ -214,6 +239,8 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
     assert captured["headers"]["session-id"]
     assert captured["json"]["store"] is False
     assert "max_output_tokens" not in captured["json"]
+
+    assert captured["json"]["reasoning"] == {"effort": "none", "summary": "auto"}
     assert captured["json"]["include"] == ["reasoning.encrypted_content"]
     assert any("hello" in line for line in lines)
     assert not any("secret-token" in line for line in lines)
@@ -713,3 +740,61 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
         "name": "python",
         "content": "42",
     }
+
+
+
+def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monkeypatch):
+    from core.inference import openai_codex_tool_loop as tool_loop
+
+    class FakeCodexClient:
+        def __init__(self):
+            self.requests = []
+
+        async def stream(self, **kwargs):
+            self.requests.append(kwargs)
+            if len(self.requests) == 1:
+                yield 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"python","arguments":"{}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"terminal","arguments":"{}"}}]},"finish_reason":null}]}'
+                yield 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'
+            else:
+                yield 'data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}'
+                yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+
+    executed = []
+    monkeypatch.setattr(
+        tool_loop,
+        "execute_tool",
+        lambda name, arguments, **kwargs: executed.append(name) or "ok",
+    )
+    client = FakeCodexClient()
+
+    async def run():
+        return [
+            line
+            async for line in tool_loop.stream_codex_with_studio_tools(
+                client,
+                provider_id="provider",
+                thread_id="thread",
+                session_id="session",
+                messages=[{"role": "user", "content": "go"}],
+                model="gpt-5.6-sol",
+                reasoning_effort="medium",
+                tools=[{"type": "function", "function": {"name": "python"}}],
+                max_tool_calls=1,
+                tool_call_timeout=30,
+                permission_mode="off",
+                confirm_tool_calls=False,
+                bypass_permissions=False,
+                rag_scope=None,
+                cancel_event=threading.Event(),
+            )
+        ]
+
+    lines = asyncio.run(run())
+    assert executed == ["python"]
+    assert any("per-message tool-call limit" in line and "call_2" in line for line in lines)
+    assert client.requests[1]["tools"] is None
+    assert client.requests[1]["tool_choice"] == "none"
+    assert [message["tool_call_id"] for message in client.requests[1]["messages"][-2:]] == [
+        "call_1",
+        "call_2",
+    ]

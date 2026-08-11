@@ -116,6 +116,18 @@ export function providerTypeSupportsVision(
   return null;
 }
 
+
+export function providerModelSupportsVision(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+  if (providerType === "openai_codex") {
+    if (!modelId) return null;
+    return modelId !== "gpt-5.3-codex-spark";
+  }
+  return providerTypeSupportsVision(providerType);
+}
+
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";

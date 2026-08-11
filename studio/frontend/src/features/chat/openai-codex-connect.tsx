@@ -53,7 +53,12 @@ export function OpenAICodexConnect({
   const [locallyDisconnected, setLocallyDisconnected] = useState(false);
   const mounted = useRef(true);
 
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (providerId) setActiveProviderId(providerId);
   }, [providerId]);

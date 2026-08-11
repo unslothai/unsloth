@@ -17,6 +17,10 @@ const {
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
+const { providerModelSupportsVision } = await import(
+  "../src/features/chat/external-providers.ts"
+);
+
 // The picker's default_models list (backend core/inference/providers.py) grew a
 // Claude 5 / gpt-5.6 / gemini-3.6 generation. Every table here is prefix-based,
 // so an un-widened prefix silently drops the control instead of failing loudly:
@@ -82,6 +86,15 @@ test("ChatGPT subscription models expose Studio-owned search and code tools", ()
     assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
     assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
   }
+});
+
+
+test("ChatGPT subscription vision gating follows the curated model", () => {
+  assert.equal(
+    providerModelSupportsVision("openai_codex", "gpt-5.3-codex-spark"),
+    false,
+  );
+  assert.equal(providerModelSupportsVision("openai_codex", "gpt-5.6-sol"), true);
 });
 
 

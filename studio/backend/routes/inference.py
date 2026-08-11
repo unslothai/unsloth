@@ -11053,7 +11053,14 @@ async def _proxy_to_external_provider(
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
         async def _codex_stream():
-            client = OpenAICodexClient(access_token, account_id)
+            async def _refresh_codex_access() -> tuple[str, str]:
+                return await resolve_access(payload.provider_id, force_refresh=True)
+
+            client = OpenAICodexClient(
+                access_token,
+                account_id,
+                refresh_access=_refresh_codex_access,
+            )
             should_cancel = False
             with _CANCEL_LOCK:
                 now = time.monotonic()
@@ -11128,9 +11135,13 @@ async def _proxy_to_external_provider(
             except asyncio.CancelledError:
                 raise
             except CodexReauthorizationError as exc:
-                from core.inference.openai_codex_auth import mark_reauthorization_required
+                from core.inference.openai_codex_auth import (
+                    mark_reauthorization_required,
+                    provider_oauth_write_guard,
+                )
 
-                mark_reauthorization_required(payload.provider_id)
+                async with provider_oauth_write_guard(payload.provider_id):
+                    mark_reauthorization_required(payload.provider_id)
                 yield "data: " + json.dumps({"error": {"message": str(exc), "type": "authentication_error"}}) + "\n\n"
                 yield "data: [DONE]\n\n"
             except CodexQuotaError as exc:

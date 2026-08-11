@@ -10,9 +10,10 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import json
+import secrets
 import threading
 import time
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -45,8 +46,6 @@ class CodexQuotaError(CodexTransportError):
     pass
 
 
-def _normalize_schema(schema: Any) -> dict[str, Any]:
-    return normalize_function_schema(schema)
 
 
 def _codex_call_id(value: Any) -> str | None:
@@ -228,10 +227,159 @@ async def _stream_response(
         await context.__aexit__(None, None, None)
 
 
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+_MAX_TRANSIENT_RETRIES = 2
+
+
+def _is_terminal_quota(detail: str | None) -> bool:
+    if not detail:
+        return False
+    lowered = detail.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "usage limit",
+            "insufficient_quota",
+            "out of budget",
+            "quota exceeded",
+            "available balance",
+            "billing",
+        )
+    )
+
+
+def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    raw = response.headers.get("retry-after-ms")
+    if raw:
+        try:
+            return min(60.0, max(0.0, float(raw) / 1000.0))
+        except ValueError:
+            pass
+    raw = response.headers.get("retry-after")
+    if raw:
+        try:
+            return min(60.0, max(0.0, float(raw)))
+        except ValueError:
+            pass
+    return float(2 ** attempt)
+
+
+async def _retry_pause(delay: float, cancel_event: threading.Event | None) -> None:
+    deadline = asyncio.get_running_loop().time() + delay
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(0.1, remaining))
+
+
+@asynccontextmanager
+async def _validated_stream_response(
+    client: httpx.AsyncClient,
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any],
+    cancel_event: threading.Event | None,
+    refresh_access: Callable[[], Awaitable[tuple[str, str]]] | None,
+):
+    refreshed = False
+    for attempt in range(_MAX_TRANSIENT_RETRIES + 1):
+        yielded = False
+        try:
+            async with _stream_response(
+                client,
+                url=url,
+                headers=headers,
+                body=body,
+                cancel_event=cancel_event,
+            ) as response:
+                if response is None:
+                    yield None
+                    return
+                if 200 <= response.status_code < 300:
+                    yielded = True
+                    yield response
+                    return
+                if 300 <= response.status_code < 400:
+                    raise CodexTransportError(
+                        "ChatGPT Codex endpoint returned a forbidden redirect."
+                    )
+                detail = await _upstream_error_detail(response)
+                if response.status_code == 401 and refresh_access is not None and not refreshed:
+                    try:
+                        token, account_id = await refresh_access()
+                    except Exception as exc:
+                        raise CodexReauthorizationError(
+                            "ChatGPT authorization expired. Reconnect this connection.",
+                            status=401,
+                        ) from exc
+                    headers["Authorization"] = f"Bearer {token}"
+                    headers["chatgpt-account-id"] = account_id
+                    refreshed = True
+                    continue
+                if response.status_code == 401:
+                    raise CodexReauthorizationError(
+                        "ChatGPT authorization expired. Reconnect this connection.",
+                        status=401,
+                    )
+                retryable = (
+                    response.status_code in _RETRYABLE_STATUSES
+                    and not _is_terminal_quota(detail)
+                )
+                if retryable and attempt < _MAX_TRANSIENT_RETRIES:
+                    await _retry_pause(_retry_delay_seconds(response, attempt), cancel_event)
+                    if cancel_event is not None and cancel_event.is_set():
+                        yield None
+                        return
+                    continue
+                if response.status_code == 429:
+                    raise CodexQuotaError(
+                        "ChatGPT subscription quota is temporarily unavailable.",
+                        status=429,
+                        metadata=_quota_metadata(response),
+                    )
+                suffix = f" {detail}" if detail else ""
+                raise CodexTransportError(
+                    f"ChatGPT Codex request failed ({response.status_code}).{suffix}",
+                    status=response.status_code,
+                )
+        except httpx.HTTPError as exc:
+            if yielded:
+                raise
+            if attempt >= _MAX_TRANSIENT_RETRIES:
+                raise CodexTransportError("Could not reach ChatGPT Codex.") from exc
+            await _retry_pause(float(2 ** attempt), cancel_event)
+            if cancel_event is not None and cancel_event.is_set():
+                yield None
+                return
+    raise CodexTransportError("Could not reach ChatGPT Codex.")
+
+
 class OpenAICodexClient:
-    def __init__(self, access_token: str, account_id: str) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        account_id: str,
+        *,
+        refresh_access: Callable[[], Awaitable[tuple[str, str]]] | None = None,
+    ) -> None:
         self._token, self._account_id = access_token, account_id
+        self._refresh_access = refresh_access
         self._client = _create_http_client()
+
+
+    async def _refresh_credentials(self) -> tuple[str, str]:
+        if self._refresh_access is None:
+            raise CodexReauthorizationError(
+                "ChatGPT authorization expired. Reconnect this connection.",
+                status=401,
+            )
+        token, account_id = await self._refresh_access()
+        self._token, self._account_id = token, account_id
+        return token, account_id
 
     async def close(self) -> None:
         self._token = ""
@@ -239,12 +387,15 @@ class OpenAICodexClient:
 
     async def stream(self, *, provider_id: str, thread_id: str | None, messages: list[dict[str, Any]], model: str, max_tokens: int | None, reasoning_effort: str | None, tools: list[dict[str, Any]] | None, tool_choice: Any, cancel_event: threading.Event | None = None) -> AsyncGenerator[str, None]:
         instructions, input_items = _responses_input(messages)
-        affinity = hashlib.sha256(f"{provider_id}\0{self._account_id}\0{thread_id or 'default'}".encode()).hexdigest()[:48]
+        conversation_id = thread_id or secrets.token_urlsafe(24)
+        affinity = hashlib.sha256(
+            f"{provider_id}\0{self._account_id}\0{conversation_id}".encode()
+        ).hexdigest()[:48]
         body: dict[str, Any] = {"model": model, "instructions": instructions, "input": input_items, "store": False, "stream": True, "text": {"verbosity": "low"}, "include": ["reasoning.encrypted_content"], "prompt_cache_key": affinity, "tool_choice": "auto", "parallel_tool_calls": True}
         # Pi intentionally does not forward a token cap here. ChatGPT's Codex
         # Responses endpoint rejects max_output_tokens even though the public
         # Responses API accepts it; the subscription service applies its own cap.
-        if reasoning_effort and reasoning_effort != "none":
+        if reasoning_effort:
             body["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
         if tools:
             converted = []
@@ -267,28 +418,18 @@ class OpenAICodexClient:
         reasoning_items: list[dict[str, Any]] = []
         cancel_task: asyncio.Task | None = None
         try:
-            async with _stream_response(
+            async with _validated_stream_response(
                 self._client,
                 url=_validated_responses_url(),
                 headers=headers,
                 body=body,
                 cancel_event=cancel_event,
+                refresh_access=(
+                    self._refresh_credentials if self._refresh_access is not None else None
+                ),
             ) as response:
                 if response is None:
                     return
-                if 300 <= response.status_code < 400:
-                    raise CodexTransportError("ChatGPT Codex endpoint returned a forbidden redirect.")
-                if response.status_code in (401, 403):
-                    raise CodexReauthorizationError("ChatGPT authorization expired. Reconnect this connection.", status=response.status_code)
-                if response.status_code == 429:
-                    raise CodexQuotaError("ChatGPT subscription quota is temporarily unavailable.", status=429, metadata=_quota_metadata(response))
-                if response.status_code >= 400:
-                    detail = await _upstream_error_detail(response)
-                    suffix = f" {detail}" if detail else ""
-                    raise CodexTransportError(
-                        f"ChatGPT Codex request failed ({response.status_code}).{suffix}",
-                        status=response.status_code,
-                    )
                 if cancel_event is not None:
                     async def _close_on_cancel() -> None:
                         await _wait_for_cancel(cancel_event)

@@ -15,6 +15,7 @@ import hashlib
 import json
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -92,6 +93,28 @@ class OAuthFlow:
 _flows: dict[str, OAuthFlow] = {}
 _flows_lock = asyncio.Lock()
 _refresh_locks: dict[str, asyncio.Lock] = {}
+
+
+def _provider_file_lock(provider_id: str) -> FileLock:
+    lock_name = hashlib.sha256(provider_id.encode()).hexdigest()[:24]
+    return FileLock(
+        str(studio_db_path().parent / f".openai-codex-refresh-{lock_name}.lock"),
+        timeout = 30,
+    )
+
+
+@asynccontextmanager
+async def provider_oauth_write_guard(provider_id: str):
+    """Serialize refresh and deletion across Studio workers without blocking the event loop."""
+    file_lock = _provider_file_lock(provider_id)
+    try:
+        await asyncio.to_thread(file_lock.acquire)
+    except FileLockTimeout as exc:
+        raise CodexAuthError("ChatGPT credential update is busy. Please retry.") from exc
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(file_lock.release)
 
 
 def _flow_is_stale(flow: OAuthFlow, now: float) -> bool:
@@ -264,8 +287,10 @@ async def _exchange_code(
             "code_verifier": verifier or flow.verifier,
         })
         bundle = _validate_token_payload(body)
-        if flow.persist_bundle is None:
-            raise CodexAuthError("Authorization flow can no longer save credentials.")
+        if flow.persist_bundle is None or flow.status != "pending":
+            raise CodexAuthError("Authorization flow was cancelled before credentials were saved.")
+        # No await between the cancellation check and this synchronous write: a
+        # disconnect in this worker cannot interleave and resurrect credentials.
         flow.persist_bundle(flow.provider_id, bundle)
     except Exception:
         flow.status = "error"
@@ -553,13 +578,13 @@ def delete_oauth_bundle(provider_id: str) -> None:
     )
 
 
-async def disconnect(provider_id: str) -> None:
-    """Compatibility wrapper for callers without an external write guard."""
-    await cancel_provider_flows(provider_id)
-    delete_oauth_bundle(provider_id)
 
 
-async def resolve_access(provider_id: str) -> tuple[str, str]:
+async def resolve_access(
+    provider_id: str,
+    *,
+    force_refresh: bool = False,
+) -> tuple[str, str]:
     lock = _refresh_locks.setdefault(provider_id, asyncio.Lock())
     async with lock:
         bundle = load_oauth_bundle(provider_id)
@@ -568,39 +593,38 @@ async def resolve_access(provider_id: str) -> tuple[str, str]:
 
         if bundle.get("reauthorization_required"):
             raise CodexAuthError("ChatGPT authorization is no longer valid. Please reconnect.")
-        if bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
+        if not force_refresh and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
             return bundle["access_token"], bundle["account_id"]
 
-        # Multiple Studio workers may share the installation DB. Take a
-        # provider-scoped filesystem lock off the event loop, then re-read so a
-        # refresh completed by another worker is reused rather than duplicated.
-        lock_name = hashlib.sha256(provider_id.encode()).hexdigest()[:24]
-        file_lock = FileLock(
-            str(studio_db_path().parent / f".openai-codex-refresh-{lock_name}.lock"),
-            timeout = 30,
-        )
-        try:
-            await asyncio.to_thread(file_lock.acquire)
-        except FileLockTimeout as exc:
-            raise CodexAuthError("ChatGPT credential refresh is busy. Please retry.") from exc
-        try:
+        # Multiple Studio workers may share the installation DB. Serialize with
+        # disconnect/delete and re-read so a completed refresh is reused.
+        async with provider_oauth_write_guard(provider_id):
             bundle = load_oauth_bundle(provider_id)
             if not bundle:
                 raise CodexAuthError("ChatGPT connection requires authorization.")
-            if bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS:
+            if (
+                not force_refresh
+                and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS
+            ):
                 return bundle["access_token"], bundle["account_id"]
+            previous_refresh_token = bundle["refresh_token"]
             try:
                 body = await _token_request({
                     "grant_type": "refresh_token",
                     "client_id": OPENAI_CODEX_CLIENT_ID,
-                    "refresh_token": bundle["refresh_token"],
+                    "refresh_token": previous_refresh_token,
                 })
             except CodexReauthorizationRequired:
-                bundle["reauthorization_required"] = True
-                save_oauth_bundle(provider_id, bundle)
+                current = load_oauth_bundle(provider_id)
+                if current and current.get("refresh_token") == previous_refresh_token:
+                    current["reauthorization_required"] = True
+                    save_oauth_bundle(provider_id, current)
                 raise
-            refreshed = _validate_token_payload(body, bundle["refresh_token"])
+            refreshed = _validate_token_payload(body, previous_refresh_token)
+            current = load_oauth_bundle(provider_id)
+            if not current:
+                raise CodexAuthError("ChatGPT connection was disconnected during refresh.")
+            if current.get("refresh_token") != previous_refresh_token:
+                return current["access_token"], current["account_id"]
             save_oauth_bundle(provider_id, refreshed)
             return refreshed["access_token"], refreshed["account_id"]
-        finally:
-            await asyncio.to_thread(file_lock.release)

@@ -1143,6 +1143,10 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
+
+            # Keep every model hop in this durable run on one isolated Codex
+            # prompt-cache session rather than sharing the transport fallback.
+            "thread_id": f"research:{run['id']}",
             # Gathered page text lands in these prompts and research never reads tool calls
             # back, so this hop must stay out of the tool loop. Both opt-outs are needed:
             # --enable-tools overrides a per-request enable_tools, and an omitted
