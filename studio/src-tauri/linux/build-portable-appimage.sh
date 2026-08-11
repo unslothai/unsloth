@@ -94,10 +94,23 @@ HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libnghttp2)\.so'
 # Names the app dlopens, so they never appear in ldd output and must be pulled in
 # by hand. The tray crate looks these up at runtime; WebKit loads its own
 # helpers. Missing them is how a bundle "builds fine" and then fails to start.
+#
+# libGLESv2 is here rather than on HOST_LIBS_RE, which is the one exception to
+# "the GPU stack comes from the host". It is not a driver: glvnd's libGLESv2.so.2
+# is a dispatch shim whose only real dependency is libGLdispatch.so.0, it talks
+# to no kernel interface, and libGLdispatch STAYS on the host -- so the vendor
+# dispatch, and with it the hardware path, is still entirely the host's. Bundling
+# the shim costs nothing and removes a host requirement that a lean system does
+# not meet: Ubuntu and Mint ship libgles2 as a Mesa dependency, but a host with
+# the GPU stack and no desktop stack does not, and there WebKit aborted with
+# "Couldn't open libGLESv2.so.2". Measured across ubuntu 22.04/24.04, Mint 22,
+# Debian 12, Arch and a host carrying only what HOST_LIBS_RE requires: bundling
+# it fixes the lean host and changes nothing on any of the others.
 DLOPEN_LIBS=(
   libayatana-appindicator3.so.1
   libappindicator3.so.1
   librsvg-2.so.2
+  libGLESv2.so.2
 )
 
 stamp_appimage_bundle_type() {
@@ -837,6 +850,62 @@ missing=$(
   ldd "$binary" 2>/dev/null |
     sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p'
 )
+
+# ── libGLESv2: the packaged one, or no DMA-BUF renderer ──────────────────────
+# libepoxy opens libGLESv2.so.2 by NAME, so it appears in no DT_NEEDED and the
+# ldd check above is blind to it. The build bundles it (see DLOPEN_LIBS) and
+# libepoxy's own $ORIGIN RUNPATH finds that copy first, so the packaged one is
+# what runs -- deliberately, and not the host's: taking a glvnd shim from the
+# host is the same version-skew bet that produced the GLIBCXX capture, and this
+# bundle exists to stop making that bet.
+#
+# Two ways the packaged copy can still not be usable:
+#   - it was never bundled, because the BUILD host had no libgles2 and an
+#     unresolvable dlopened library is a warning there, not an error
+#   - it is present but cannot be opened on THIS host, e.g. libGLdispatch.so.0
+#     is absent (it stays on the host by design) or does not satisfy it
+#
+# The file test only catches the first. So actually load it, with the real
+# loader, and treat either outcome the same way. Without this the failure is a
+# SIGABRT and a bare "Couldn't open libGLESv2.so.2".
+#
+# The fallback is not a refusal to start: WebKit reaches GLES through its
+# DMA-BUF renderer, and with that renderer off it renders without ever opening
+# the library. Measured on a host with libGLESv2 in neither the bundle nor the
+# system:
+#   nothing set                        -> SIGABRT, "Couldn't open libGLESv2.so.2"
+#   WEBKIT_DISABLE_COMPOSITING_MODE=1  -> SIGABRT (composited or not, GLES is opened)
+#   UNSLOTH_SOFTWARE_RENDER=1          -> SIGABRT (llvmpipe still goes through GLES)
+#   WEBKIT_DISABLE_DMABUF_RENDERER=1   -> runs
+#
+# Telling the user to install libgles2 instead would be useless on exactly the
+# hosts this bundle is for: a Deck's /usr is read-only and has no apt.
+_gles="$libdir/libGLESv2.so.2"
+# Resolve it with the loader, the same way this script already checks the main
+# binary. A file test cannot tell whether the object is usable HERE, and
+# LD_PRELOAD is no good either: glibc reports an unloadable preload as a warning
+# and still exits 0, so a corrupt or unsatisfiable library reads as fine and the
+# SIGABRT arrives later anyway. ldd fails outright on a non-ELF and prints
+# "not found" when a dependency (libGLdispatch.so.0, which stays on the host by
+# design) is absent.
+_gles_ok=0
+if [ -e "$_gles" ]; then
+  _gles_ldd=$(ldd "$_gles" 2>&1) && case "$_gles_ldd" in
+    *"not found"*|*"not a dynamic"*) ;;
+    *) _gles_ok=1 ;;
+  esac
+fi
+if [ "$_gles_ok" != 1 ]; then
+  if [ -e "$_gles" ]; then
+    _why="the packaged libGLESv2.so.2 could not be loaded on this system"
+  else
+    _why="this AppImage was built without a packaged libGLESv2.so.2"
+  fi
+  printf '%s\n' \
+    "Unsloth: $_why, so WebKit's DMA-BUF renderer is being disabled." \
+    "The app runs; rendering takes the slower path." >&2
+  export WEBKIT_DISABLE_DMABUF_RENDERER=1
+fi
 
 if [ -n "$missing" ]; then
   message="Unsloth cannot start because these libraries are missing from the host:
