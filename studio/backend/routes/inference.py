@@ -5785,11 +5785,26 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         for cached_repo in scan_cache_dir().repos:
             if (cached_repo.repo_id or "").lower() != repo.lower():
                 continue
-            for revision in cached_repo.revisions:
-                for f in revision.files:
-                    name = str(f.file_name)
-                    if name.lower().endswith(".gguf"):
-                        sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
+            # One revision, not every snapshot on disk. llama-server resolves the
+            # cached ref it was asked for (main by default), so merging stale
+            # snapshots -- and taking the largest historical size per filename --
+            # charges a quant that was replaced months ago and 409s a load the
+            # current drafter fits inside. Prefer the ref, else the newest.
+            revisions = list(cached_repo.revisions)
+            chosen = next(
+                (
+                    r
+                    for r in revisions
+                    if "main" in {str(x) for x in (getattr(r, "refs", None) or ())}
+                ),
+                None,
+            ) or max(
+                revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None
+            )
+            for f in getattr(chosen, "files", ()) or ():
+                name = str(f.file_name)
+                if name.lower().endswith(".gguf"):
+                    sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
         if hint:
             sizes = {n: b for n, b in sizes.items() if hint in n.lower()} or sizes
         return dflash_budget_bytes(sizes, _gguf_extra_shards)

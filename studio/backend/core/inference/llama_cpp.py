@@ -10987,6 +10987,12 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
+                    # The same three sources, kept before the CPU nulling below, as the
+                    # answer to "will a SEPARATE drafter be emitted at all". Not
+                    # mtp_draft_path: extras owning --spec-type return from
+                    # _build_speculative_flags before Studio's resolved sidecar becomes
+                    # --model-draft, and _studio_draft_for_budget already encodes that.
+                    _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
@@ -11162,9 +11168,7 @@ class LlamaCppBackend:
                     # has_dft()), so an unused head must not keep the reserve alive;
                     # a head with no sidecar is still GPU-resident and still reserved.
                     _draft_cpu_no_embedded = _draft_on_cpu and (
-                        bool(mtp_draft_path)
-                        or _spec_canon in ("dspark", "dflash")
-                        or not self._nextn_predict_layers
+                        _separate_draft_launches or not self._nextn_predict_layers
                     )
 
                     # The two tensor -> layer downgrades that depend on nothing the
@@ -11435,8 +11439,6 @@ class LlamaCppBackend:
                             )
                             _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
                             if not _target_fits_somewhere:
-                                # The placement this reports on: the first subset that
-                                # holds the target, which is the one the loop would pick.
                                 _target_fits_somewhere = True
                                 _probe_ctx, _probe_need, _probe_have = (
                                     _ctx_wo,
@@ -11445,6 +11447,40 @@ class LlamaCppBackend:
                                 )
                             if _foot_w <= _budget_w:
                                 _both_fit_somewhere = True
+                                break
+                            # Both do not fit at the target's own context. The placement
+                            # loop does not simply move on: it re-caps the context WITH
+                            # the drafter charged and accepts this subset at whatever
+                            # that leaves. So if a smaller context would hold both here,
+                            # this is the placement the load takes and the drafter is
+                            # paid for in context, which is the trade being refused. It
+                            # only moves to a larger subset when no context fits both.
+                            _ctx_w = (
+                                0
+                                if explicit_ctx
+                                else self._fit_context_to_vram(
+                                    _ctx_wo,
+                                    _budget_w,
+                                    _probe_base(True, _n),
+                                    cache_type_kv,
+                                    swa_full = swa_full,
+                                    n_parallel = n_parallel,
+                                    kv_unified = planned_kv_unified,
+                                    n_ubatch = _effective_ubatch,
+                                    flash_attn = planned_flash_attn,
+                                    mtp_engaged = True,
+                                    mtp_overhead_fn = mtp_overhead_fn,
+                                    compute_ctx_bytes_fn = _cc_n,
+                                    budget_frac = 1.0,
+                                    total_mib = None,
+                                )
+                            )
+                            if _ctx_w > 0 and (
+                                _probe_base(True, _n)
+                                + _kv_bytes(_ctx_w)
+                                + _cc_n(_ctx_w)
+                                + _mtp_bytes(_ctx_w)
+                            ) / (1024 * 1024) <= _budget_w:
                                 break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True

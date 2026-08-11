@@ -773,3 +773,47 @@ def test_a_cpu_offloaded_sidecar_reserves_no_gpu_despite_an_embedded_head(tmp_pa
 
     assert reserved, "the fit never ran"
     assert not any(reserved), f"mtp_engaged should be False throughout, got {reserved}"
+
+
+def test_a_subset_that_can_shrink_to_hold_both_is_where_the_decision_lands(tmp_path):
+    """The placement loop does not walk past a subset that fails with the drafter.
+
+    It re-caps the context WITH the drafter charged and accepts that subset at
+    whatever is left, so a smaller context holding both here IS the placement the
+    load takes, and the drafter gets paid for in context. Believing a later,
+    larger subset would rescue it keeps the drafter and shrinks the context, which
+    is the trade this exists to refuse.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._get_gguf_size_bytes = lambda path: (8 * gb if str(path) == str(sidecar) else 16 * gb)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
+    backend._can_estimate_kv = lambda: True
+    # Context-linear throughout, so GPU0 alone can shrink its way to holding both.
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx * 0.5 * 1024**2)
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx * 0.75 * 1024**2)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 0,
+    )
+
+    cmd = result["cmd"]
+    assert "--model-draft" not in cmd
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+    assert cmd[cmd.index("-c") + 1] == "8192"

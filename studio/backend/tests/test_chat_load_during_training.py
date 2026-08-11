@@ -1836,6 +1836,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             repo_id = "org/drafter",
             revisions = [
                 SimpleNamespace(
+                    refs = {"main"},
+                    last_modified = 2.0,
                     files = [
                         SimpleNamespace(
                             file_name = "big-00001-of-00002.gguf", size_on_disk = 16 * 1024**3
@@ -1844,8 +1846,17 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                             file_name = "big-00002-of-00002.gguf", size_on_disk = 14 * 1024**3
                         ),
                         SimpleNamespace(file_name = "notes.txt", size_on_disk = 10),
-                    ]
-                )
+                    ],
+                ),
+                # A stale snapshot still on disk. llama-server resolves the cached
+                # ref it was asked for, so this relic must not become the bound.
+                SimpleNamespace(
+                    refs = set(),
+                    last_modified = 1.0,
+                    files = [
+                        SimpleNamespace(file_name = "old-F16.gguf", size_on_disk = 60 * 1024**3)
+                    ],
+                ),
             ],
         )
         with (
