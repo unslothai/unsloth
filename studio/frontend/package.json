@@ -66,6 +66,7 @@
     "katex": "^0.16.28",
     "lucide-react": "^1.7.0",
     "mammoth": "^1.11.0",
+    "mdast-util-from-markdown": "2.0.3",
     "motion": "^12.34.0",
     "node-forge": "^1.4.0",
     "radix-ui": "^1.4.3",

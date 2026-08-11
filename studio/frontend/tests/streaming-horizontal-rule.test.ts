@@ -54,6 +54,51 @@ test("buffers only the ambiguous trailing line", () => {
   );
 });
 
+test("buffers ambiguous items relative to their blockquote container", () => {
+  for (const markdown of ["> * **", "> > * **", "   > * **"]) {
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), "");
+  }
+
+  const markdown = "> * **Heading";
+  const stabilized = stabilizeStreamingMarkdown(markdown, true);
+  const html = render(stabilized);
+  assert.equal(stabilized, markdown);
+  assert.ok(html.includes(UNORDERED_LIST));
+  assert.ok(html.includes(STRONG));
+  assert.ok(!html.includes(HORIZONTAL_RULE));
+});
+
+test("preserves ambiguous-looking content in list-contained fences", () => {
+  const unchanged = [
+    "- ~~~markdown\n  * **",
+    "1. ```markdown\n   * **",
+    "> - ~~~markdown\n>   * **",
+  ];
+
+  for (const markdown of unchanged) {
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  }
+});
+
+test("preserves ambiguous-looking content in raw HTML blocks", () => {
+  const unchanged = [
+    "<pre>\n* **",
+    "<SCRIPT>\n* **",
+    "<!-- example\n* **",
+    "<div>\n* **",
+  ];
+
+  for (const markdown of unchanged) {
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  }
+
+  assert.equal(
+    stabilizeStreamingMarkdown("<div>\ntext\n\n* **", true),
+    "<div>\ntext\n\n",
+  );
+});
+
 test("does not reinterpret adjacent Markdown constructs", () => {
   const unchanged = [
     "- **",
@@ -64,7 +109,6 @@ test("does not reinterpret adjacent Markdown constructs", () => {
     "* __",
     "released in\n1976.",
     "    * **",
-    "> * **",
     "```markdown\n* **",
     "~~~markdown\n* **",
     "$$\n* **",

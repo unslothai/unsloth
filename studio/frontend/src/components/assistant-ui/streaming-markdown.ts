@@ -1,29 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { isWithinCodeBlock, isWithinMathBlock } from "remend";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { isWithinMathBlock } from "remend";
 
 const AMBIGUOUS_BOLD_ASTERISK_ITEM_RE = /^ {0,3}\* {1,4}\*\*[ \t]*$/;
-const TILDE_FENCE_RE = /^ {0,3}(~{3,})(.*)$/;
+const BLOCKQUOTE_PREFIX_RE = /^(?: {0,3}>[ \t]?)+/;
 
-function isWithinTildeFence(text: string, lineStart: number): boolean {
-  let fenceLength = 0;
-  for (const line of text.slice(0, lineStart).split("\n")) {
-    const fence = line.match(TILDE_FENCE_RE);
-    if (!fence) {
-      continue;
-    }
+type MarkdownNode = {
+  readonly type: string;
+  readonly position?: {
+    readonly start: { readonly offset?: number };
+    readonly end: { readonly offset?: number };
+  };
+  readonly children?: readonly MarkdownNode[];
+};
 
-    if (fenceLength === 0) {
-      fenceLength = fence[1].length;
-      continue;
+function isTrailingThematicBreak(text: string, markerIndex: number): boolean {
+  const pending: MarkdownNode[] = [fromMarkdown(text) as MarkdownNode];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node) continue;
+    if (
+      node.type === "thematicBreak" &&
+      node.position?.start.offset === markerIndex &&
+      node.position.end.offset === text.length
+    ) {
+      return true;
     }
-
-    if (fence[1].length >= fenceLength && fence[2].trim().length === 0) {
-      fenceLength = 0;
-    }
+    if (node.children) pending.push(...node.children);
   }
-  return fenceLength > 0;
+  return false;
 }
 
 export function stabilizeStreamingMarkdown(
@@ -36,15 +43,16 @@ export function stabilizeStreamingMarkdown(
 
   const lineStart = text.lastIndexOf("\n") + 1;
   const line = text.slice(lineStart);
-  if (!AMBIGUOUS_BOLD_ASTERISK_ITEM_RE.test(line)) {
+  const blockquotePrefix = line.match(BLOCKQUOTE_PREFIX_RE)?.[0] ?? "";
+  const content = line.slice(blockquotePrefix.length);
+  if (!AMBIGUOUS_BOLD_ASTERISK_ITEM_RE.test(content)) {
     return text;
   }
 
-  const markerIndex = lineStart + line.indexOf("*");
+  const markerIndex = lineStart + blockquotePrefix.length + content.indexOf("*");
   if (
-    isWithinCodeBlock(text, markerIndex) ||
-    isWithinTildeFence(text, lineStart) ||
-    isWithinMathBlock(text, markerIndex)
+    isWithinMathBlock(text, markerIndex) ||
+    !isTrailingThematicBreak(text, markerIndex)
   ) {
     return text;
   }
