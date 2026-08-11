@@ -117,6 +117,7 @@ RE_BASE64 = re.compile(
 #   4. aliased function  `from builtins import exec as run` ... `run(payload)`
 #   5. dynamic module    `__import__('builtins').exec(payload)`
 #   6. parked module     `b = __import__('builtins')` ... `b.exec(payload)`
+#   7. computed name     `__import__(name).exec(payload)`
 # Telling those apart from `model.eval()` is a question about the *structure* of
 # the call, and raw text cannot answer it. `model . eval()` and `model. eval()`
 # are legal Python, so a fixed-width lookbehind for the dot reads them as the
@@ -139,9 +140,17 @@ RE_BASE64 = re.compile(
 # general dataflow with no bound, so a chain of aliases is not tracked; the
 # first link is what the pre-token scan happened to catch, because its bare
 # `exec\\s*\\(` also matched the `b.exec(` at the end of the chain.
+#
+# Route 7 is not that dataflow wearing a different hat: the receiver *is* the
+# loader call, so what it is handed never has to be traced, and a call on one is
+# taken as the module whatever the argument says. `name = 'builtins'` first and
+# then `b = __import__(name)` is the untracked chain again, and stays a limit.
 
 _EXEC_NAMES = frozenset(("exec", "eval"))
 _BUILTINS_NAMES = frozenset(("builtins", "__builtins__"))
+# The loader calls a receiver can be: `__import__(...)` is a builtin and
+# `import_module(...)` needs only `from importlib import import_module`.
+_DEFAULT_LOADER_FUNCS = frozenset(("__import__", "import_module"))
 _OPENERS = frozenset(("(", "[", "{"))
 _CLOSERS = frozenset((")", "]", "}"))
 _COMPARISON_OPS = frozenset(("==", "!=", "<=", ">="))
@@ -210,6 +219,25 @@ class _Offsets:
         if not 1 <= row <= len(starts):
             return 0
         return starts[row - 1] + col
+
+
+_RE_WORD = re.compile(r"\w+")
+
+
+def _mentions_name(text: str, names) -> bool:
+    """Whether any name in `names` occurs in `text` as a whole identifier.
+
+    One pass over the text, not one substring search per name. `_extract_evidence`
+    re-searches every line of the file, so testing each alias against each line
+    is quadratic: a hostile member declaring N function aliases beside N other
+    lines costs N*N searches, on members allowed up to 64 MiB.
+    """
+    if not names:
+        return False
+    for m in _RE_WORD.finditer(text):
+        if m.group() in names:
+            return True
+    return False
 
 
 def _statements(text: str, failed: list):
@@ -602,7 +630,9 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
         _add_assignment_targets(group, rebound)
 
 
-def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "tuple":
+def _receiver_start(
+    stmt: list, dot_at: int, receivers: frozenset, loaders: frozenset = frozenset()
+) -> "tuple":
     """Where the receiver of `stmt[dot_at]` starts, and the alias that made it one.
 
     Walks the primary expression left of the dot - names, subscripts, calls and
@@ -610,6 +640,13 @@ def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "tuple":
     or by string. That covers `(builtins).exec`, `b.exec` for an alias `b`, and
     `__import__('builtins').exec`, and rejects `model.eval` regardless of how
     much whitespace sits around the dot, because whitespace is not a token.
+
+    A receiver that is itself a call to a module loader (`__import__(name)`,
+    `import_module(name)`, `importlib.import_module(name)`) is accepted whatever
+    its argument, so a computed module name does not hide the call: the module
+    a loader returns is not something `model.eval()` can be, and the argument is
+    exactly the part a payload can compute. The name it loads is not tracked, so
+    this is a syntactic test on the receiver, not dataflow.
 
     Returns `(start_index, alias)`, or `(None, None)` when the receiver is not
     `builtins`. `alias` is the local name the receiver was reached through, or
@@ -665,6 +702,14 @@ def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "tuple":
                         hard = True
                     else:
                         alias = tok.string
+                elif (
+                    tok.string in loaders
+                    and k + 1 < len(stmt)
+                    and stmt[k + 1].type == tokenize.OP
+                    and stmt[k + 1].string == "("
+                ):
+                    found = True  # `__import__(name).exec(...)`: the receiver is the call
+                    hard = True
             elif tok.type == tokenize.STRING and _string_body(tok.string) == "builtins":
                 found = True
                 hard = True
@@ -683,7 +728,7 @@ class _Aliases:
     """The local names one file binds to `builtins`, and where each stops being one.
 
     `live_*` are every alias the file ever binds; `cancel` maps the ones the file
-    also rebinds to the offset of that rebinding, and `safe_*` are the aliases
+    also rebinds to where those rebindings are, and `safe_*` are the aliases
     with no rebinding at all. A call before its alias's rebinding still reaches
     the builtin - module-level code runs top to bottom - so the cutoff is
     per-call-site rather than a set difference over the whole file. Scans that
@@ -692,14 +737,49 @@ class _Aliases:
     them) use `safe_*` and so stay exactly as conservative as before.
     """
 
-    __slots__ = ("live_receivers", "live_funcs", "cancel", "safe_receivers", "safe_funcs")
+    __slots__ = (
+        "live_receivers",
+        "live_funcs",
+        "cancel",
+        "safe_receivers",
+        "safe_funcs",
+        "loaders",
+    )
 
-    def __init__(self, modules: set, funcs: set, cancel: dict):
+    def __init__(self, modules: set, funcs: set, cancel: dict, loader_funcs: "set | None" = None):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
         self.cancel = cancel
         self.safe_receivers = frozenset(self.live_receivers - set(cancel))
         self.safe_funcs = frozenset(self.live_funcs - set(cancel))
+        # `__import__` is a builtin and `import_module` needs no alias of its
+        # own, so both are meaningful in any file; a local alias adds to them.
+        self.loaders = frozenset(_DEFAULT_LOADER_FUNCS | (loader_funcs or set()))
+
+
+def _cancel_add(cancel: dict, name: str, at: int, col: int) -> None:
+    """Record that `name` stops being the module at offset `at`, indent `col`.
+
+    A rebinding only reaches a call that is at least as deeply indented as it
+    is: `def f(): b = model` cannot change what a module-level `b.exec(...)`
+    below it calls, and neither can a branch body. So the cutoff keeps the
+    indent alongside the offset, and a rebinding that is both later and no
+    shallower than one already recorded is dropped - it can never decide a call
+    the recorded one does not already decide. That keeps the record to one entry
+    per indent level however many times a hostile file rebinds the name.
+    """
+    frontier = cancel.get(name)
+    if frontier is None:
+        cancel[name] = [(at, col)]
+    elif col < frontier[-1][1]:
+        frontier.append((at, col))
+
+
+def _is_cancelled(frontier: list, start: int, col: int) -> bool:
+    for at, at_col in frontier:
+        if at <= start and at_col <= col:
+            return True
+    return False
 
 
 def _fstring_code(literal: str, nesting: int = 2) -> "str | None":
@@ -781,12 +861,8 @@ def _fstring_spans(tok, aliases: _Aliases, offsets: _Offsets, out: list) -> None
     text = tok.string
     if "{" not in text:
         return  # no interpolation: an f-string without a replacement field
-    if "exec" not in text and "eval" not in text:
-        for name in aliases.safe_funcs:
-            if name in text:
-                break
-        else:
-            return
+    if "exec" not in text and "eval" not in text and not _mentions_name(text, aliases.safe_funcs):
+        return
     code = _fstring_code(text)
     if code is None:
         return
@@ -825,7 +901,7 @@ def _statement_spans(
             # way; `run` aliases the function, so `obj.run(...)` is not it.
             if not direct:
                 continue
-            at, alias = _receiver_start(stmt, j - 1, receivers)
+            at, alias = _receiver_start(stmt, j - 1, receivers, aliases.loaders)
             if at is None:
                 continue
         elif prev is not None and prev.type == tokenize.NAME and prev.string in ("def", "class"):
@@ -840,10 +916,13 @@ def _statement_spans(
                 alias = tok.string
         start = offsets.of(*stmt[at].start)
         if cancel and alias is not None:
-            limit = cancel.get(alias)
-            if limit is not None and start >= limit:
-                # `import builtins as m` ... `m = load_model()` ... `m.eval()`:
-                # past the rebinding the name is the model, not the module.
+            frontier = cancel.get(alias)
+            # `import builtins as m` ... `m = load_model()` ... `m.eval()`: past
+            # a rebinding that reaches this call the name is the model, not the
+            # module. A rebinding indented deeper than the call does not reach
+            # it, so a local `m = model` in some function above cannot silence a
+            # module-level call.
+            if frontier is not None and _is_cancelled(frontier, start, stmt[0].start[1]):
                 continue
         out.append(_Span(start, offsets.of(*nxt.end)))
 
@@ -861,6 +940,10 @@ _EXEC_EVAL_PATTERN_TEXT = (
 )
 RE_FALLBACK_QUALIFIED = re.compile(r"(?<![\w.])(\w+)\s*\)*\s*\.\s*(?:exec|eval)\s*\(")
 RE_FALLBACK_STR_RECEIVER = re.compile(r"""(['"])builtins\1\s*\)\s*\.\s*(?:exec|eval)\s*\(""")
+# `__import__(name).exec(`: a loader call is the receiver whatever it is handed.
+RE_FALLBACK_LOADER_RECEIVER = re.compile(
+    r"(?<![\w.])(?:__import__|(?:\w+\s*\.\s*)?import_module)\s*\([^()]*\)\s*\.\s*(?:exec|eval)\s*\("
+)
 RE_FALLBACK_BARE = re.compile(r"(?<![\w.])(exec|eval)\s*\(")
 RE_FALLBACK_CALL = re.compile(r"(?<![\w.])(\w+)\s*\(")
 # `import os, builtins as b` binds `b` too, so take the whole import list and
@@ -937,6 +1020,8 @@ def _regex_spans(text: str, receivers: frozenset, funcs: frozenset) -> list:
             out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_STR_RECEIVER.finditer(text):
         out.append(_Span(m.start(), m.end()))
+    for m in RE_FALLBACK_LOADER_RECEIVER.finditer(text):
+        out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_BARE.finditer(text):
         if not _preceded_by_dot(text, m.start()):
             out.append(_Span(m.start(), m.end()))
@@ -975,8 +1060,15 @@ class _ExecEvalMatcher:
 
     _MEMO_CAP = 4096
 
-    def __init__(self, modules: set, funcs: set, cancel: "dict | None" = None, bound = None):
-        self.aliases = _Aliases(modules, funcs, cancel or {})
+    def __init__(
+        self,
+        modules: set,
+        funcs: set,
+        cancel: "dict | None" = None,
+        bound = None,
+        loader_funcs: "set | None" = None,
+    ):
+        self.aliases = _Aliases(modules, funcs, cancel or {}, loader_funcs)
         self.receivers = self.aliases.live_receivers
         self.funcs = self.aliases.live_funcs
         self.pattern = _EXEC_EVAL_PATTERN_TEXT
@@ -1006,12 +1098,8 @@ class _ExecEvalMatcher:
         # alias (`from builtins import exec as run`) spells neither at the call
         # site, so those names have to be part of the test or `run(payload)`
         # never reaches the tokenizer at all.
-        if "exec" not in text and "eval" not in text:
-            for name in self.funcs:
-                if name in text:
-                    break
-            else:
-                return []
+        if "exec" not in text and "eval" not in text and not _mentions_name(text, self.funcs):
+            return []
         failed: list = []
         offsets = _Offsets(text)
         out: list = []
@@ -1167,16 +1255,17 @@ class _ExecEvalPattern:
                     at = offsets.of(*head.start)
                     for name in rebound:
                         # Statements arrive in source order, so the first
-                        # rebinding seen is the earliest one.
-                        cancel.setdefault(name, at)
+                        # rebinding seen at a given indent is the earliest one.
+                        _cancel_add(cancel, name, at, head.start[1])
                     rebound.clear()
                 if failed:
-                    # The tokenizer gave up, so there is no reliable order to
-                    # compare against; cancel from the top of the file, which is
-                    # the whole-file subtraction this path always did.
+                    # The tokenizer gave up, so there is no reliable order or
+                    # indent to compare against; cancel from the top of the file
+                    # at column 0, which is the whole-file subtraction this path
+                    # always did.
                     for name in _regex_rebindings(content) & candidates:
-                        cancel[name] = 0
-        matcher = _ExecEvalMatcher(modules, funcs, cancel, content)
+                        cancel[name] = [(0, 0)]
+        matcher = _ExecEvalMatcher(modules, funcs, cancel, content, loaders.funcs)
         self._cached = (content, matcher)
         return matcher
 

@@ -452,6 +452,101 @@ def test_a_call_above_the_rebinding_of_its_alias_is_still_flagged():
     assert high == [], f"a call below the rebinding must stay clean: {high}"
 
 
+def test_a_rebinding_the_call_cannot_see_does_not_cancel_the_alias():
+    # The cutoff is by offset, so any earlier assignment to the spelling silenced
+    # every call below it whatever scope or branch it sat in. That is a free
+    # suppression: a local `b = model` in some helper, or a branch body that
+    # never runs, cancels a module-level payload underneath. A rebinding only
+    # reaches a call at least as deeply indented as itself, so neither does now.
+    for label, guard in (
+        ("a branch body", "if False:\n    b = model\n"),
+        ("a function local", "def f():\n    b = model\n    return b\n"),
+        ("a class attribute", "class C:\n    b = model\n"),
+    ):
+        payload = "import builtins as b\nimport marshal\n" + guard + "b.exec(marshal.loads(BLOB))\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{label} must not cancel a module-level call: {payload!r}"
+
+    # A rebinding that does reach the call still cancels it, at its own indent
+    # as well as at column 0 - that is the false positive the cutoff exists for.
+    local = (
+        "import builtins as m\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "def infer():\n"
+        "    m = load_model()\n"
+        "    m.eval()\n"
+    )
+    findings = sp.check_py_file(local, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebinding in the call's own scope must cancel it: {high}"
+
+
+def test_a_loader_call_receiver_is_the_builtins_module_whatever_it_is_handed():
+    # `__import__('builtins').exec(...)` is only recognised because the literal
+    # says `builtins`, so putting the name in a variable first hid the call
+    # while the pre-token scan caught it. The receiver here is the loader call
+    # itself, not a name to be traced, so accepting it needs no dataflow - and
+    # `model.eval()` can never be one.
+    for receiver in (
+        "__import__(name)",
+        "importlib.import_module(name)",
+        "import_module(name)",
+    ):
+        payload = (
+            "import importlib, marshal\n"
+            "from importlib import import_module\n"
+            "name = 'buil' + 'tins'\n"
+            f"{receiver}.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"{receiver}.exec must stay flagged: {high}"
+
+    # The receiver has to be the call. An attribute of the same spelling is not
+    # one, so an ordinary object keeps its own `eval`.
+    clean = "import marshal\nmodel = registry.import_module\nmodel.eval()\n"
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"an attribute of that name is not a loader call: {high}"
+
+
+def test_evidence_extraction_does_not_rescan_every_alias_per_line():
+    # `_extract_evidence` re-searches the pattern line by line, and the alias
+    # pre-filter tested every collected function alias against every line as a
+    # substring: N aliases beside N other lines is N*N searches, on members
+    # allowed up to 64 MiB. Measured on this file shape before the fix: 2.0 s at
+    # N=4,000 and 7.2 s at N=8,000 (4x per doubling); after, 0.58 s and 1.19 s.
+    # The assertion is the growth rate, not the absolute time, so a slow or
+    # contended runner moves both measurements together.
+    def hostile(n):
+        return (
+            "import marshal\n"
+            + "".join(f"from builtins import eval as f{i}\n" for i in range(n))
+            + "".join(f"value_{i} = compute_{i}(payload_{i})\n" for i in range(n))
+            + "f0(marshal.loads(BLOB))\n"
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+            out.append(time.monotonic() - start)
+        assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)], (
+            "the aliased call must still be flagged"
+        )
+        return min(out)
+
+    small = best_of(hostile(2_000))
+    large = best_of(hostile(4_000))
+    assert large < 3.0 * small, (
+        f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
+    )
+
+
 def test_alias_matching_stays_linear_on_hostile_source():
     # Archive members are allowed up to 64 MiB and check_py_file searches this
     # pattern more than once, so pairing each candidate import with a call by
