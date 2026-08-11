@@ -97,7 +97,8 @@ def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
     started: list[tuple] = []
     monkeypatch.setattr(
-        stt_sidecar, "start_model_download",
+        stt_sidecar,
+        "start_model_download",
         lambda model, token = None, revision = None: started.append((model, token)),
     )
 
@@ -118,7 +119,8 @@ def test_an_already_downloaded_snapshot_is_not_fetched_again(monkeypatch):
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: True)
     started: list[tuple] = []
     monkeypatch.setattr(
-        stt_sidecar, "start_model_download",
+        stt_sidecar,
+        "start_model_download",
         lambda model, token = None, revision = None: started.append((model, token)),
     )
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
@@ -135,7 +137,8 @@ def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
     monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
     started: list[tuple] = []
     monkeypatch.setattr(
-        stt_sidecar, "start_model_download",
+        stt_sidecar,
+        "start_model_download",
         lambda model, token = None, revision = None: started.append((model, token)),
     )
     stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
@@ -145,7 +148,11 @@ def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
 
     # And a download that cannot start (another model is in flight) is not fatal: the
     # caller still reports "not downloaded" rather than a 500.
-    def refuse(model, token = None, revision = None):
+    def refuse(
+        model,
+        token = None,
+        revision = None,
+    ):
         from core.inference.stt_sidecar import SttModelIdError
         raise SttModelIdError("Another dictation model is still downloading; wait for it.")
 

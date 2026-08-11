@@ -46,7 +46,8 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
     # A chained URL ("zip://inner::https://outer") names its host in the last segment.
     source_url = path.split("::")[-1]
     pattern = (
-        config.HUB_DATASETS_URL if source_url.startswith(config.HF_ENDPOINT)
+        config.HUB_DATASETS_URL
+        if source_url.startswith(config.HF_ENDPOINT)
         else config.HUB_DATASETS_HFFS_URL
     )
     try:
@@ -91,7 +92,8 @@ def _decode_with_soundfile(
         source = path
     else:
         source = xopen(
-            path, "rb",
+            path,
+            "rb",
             download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
         )
 

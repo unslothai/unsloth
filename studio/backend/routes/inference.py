@@ -9612,7 +9612,8 @@ def _prepare_runtime_fallback_checkpoint(
         # is about to report "not downloaded" anyway.
         logger.info(
             "Could not start the Transformers fallback download for STT model %r: %s",
-            model, exc,
+            model,
+            exc,
         )
 
 
@@ -9819,7 +9820,10 @@ async def stt_load(
 
     engine = _resolve_serving_stt_engine(payload.engine)
     await asyncio.to_thread(
-        _prepare_runtime_fallback_checkpoint, payload.engine, engine, payload.model,
+        _prepare_runtime_fallback_checkpoint,
+        payload.engine,
+        engine,
+        payload.model,
     )
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
@@ -9941,7 +9945,10 @@ async def _transcribe_audio_result(
 
     serving_engine = _resolve_serving_stt_engine(engine)
     await asyncio.to_thread(
-        _prepare_runtime_fallback_checkpoint, engine, serving_engine, model,
+        _prepare_runtime_fallback_checkpoint,
+        engine,
+        serving_engine,
+        model,
     )
     sidecar = _stt_sidecar_for(serving_engine)
     cancel_event = threading.Event() if request is not None else None

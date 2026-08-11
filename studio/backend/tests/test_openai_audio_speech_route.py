@@ -212,11 +212,13 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
 
     source = inspect.getsource(routes_module._generate_tts_wav)
     guards = [
-        i for i, line in enumerate(source.splitlines())
+        i
+        for i, line in enumerate(source.splitlines())
         if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
     ]
     restore = next(
-        i for i, line in enumerate(source.splitlines())
+        i
+        for i, line in enumerate(source.splitlines())
         if "_maybe_auto_switch_model(_RELOAD_ONLY_MODEL" in line
     )
     assert len(guards) == 2, "one check before the restore, one after"

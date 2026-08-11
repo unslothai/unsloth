@@ -815,6 +815,7 @@ def test_download_status_idle_shape():
 # of the chat pickers, the status accessors never block behind a transcription, and a
 # "gguf" unload on a host without whisper-server targets the fallback that served it.
 
+
 # 1. Hidden-model GGUF companions ------------------------------------------------
 def test_curated_gguf_dictation_repos_are_hidden():
     from utils.hidden_models import (

@@ -372,7 +372,12 @@ def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
     acquires = []
 
     class _RacingLock:
-        def acquire(self, blocking = True, *args, **kwargs):
+        def acquire(
+            self,
+            blocking = True,
+            *args,
+            **kwargs,
+        ):
             acquires.append(True)
             if len(acquires) == 1:
                 # Claimed after the unlocked drain has already passed.
