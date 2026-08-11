@@ -58,6 +58,6 @@ async def test_the_scan_does_not_stall_other_requests(monkeypatch, tmp_path):
         pass
 
     longest_gap = max(b - a for a, b in zip(ticks, ticks[1:]))
-    assert longest_gap < scan_seconds / 2, (
-        f"event loop blocked for {longest_gap:.3f}s during the scan"
-    )
+    assert (
+        longest_gap < scan_seconds / 2
+    ), f"event loop blocked for {longest_gap:.3f}s during the scan"
