@@ -2970,3 +2970,83 @@ def test_the_probe_marker_is_committed_only_once_the_runtime_is_replaced():
         "the marker is written before the diffusion early return, so a diffusion runner "
         "would carry it and be reloaded once the probe recovers"
     )
+
+
+def test_a_diffusion_runtime_is_never_reloaded_by_the_capability_recovery(monkeypatch):
+    # A diffusion runner consumes no llama-server capability, so it cannot be degraded by
+    # one. A marker left over from an earlier llama-server load must not make every
+    # otherwise identical diffusion Apply tear it down and start it again.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        mtp_probe_inconclusive = False,
+    )
+    diffusion = _mtp_backend(
+        _speculative_type = "default",
+        _capability_probe_inconclusive = True,
+        _is_diffusion = True,
+        _gguf_path = None,
+    )
+    assert _matches(diffusion, **_same_settings_apply()) is True
+    # The same stale marker on a llama-server runtime still earns its reload.
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+
+
+def test_unload_clears_the_capability_marker():
+    # Otherwise it outlives the runtime it describes and follows the next load in.
+    backend = _mtp_backend(_capability_probe_inconclusive = True)
+    backend._process = None
+    backend.unload_model()
+    assert backend._capability_probe_inconclusive is False
+
+
+def test_a_diffusion_load_never_pays_for_the_capability_probe():
+    # The probe is read at the snapshot commit, which a diffusion load returns long
+    # before. Reading it beside the capability gates instead made an independent
+    # diffusion launch wait out the full --help timeout this change exists to bound.
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    probe_calls = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "probe_server_capabilities"
+    ]
+    diffusion_return = max(
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "_start_diffusion_server"
+    )
+    # The probes that legitimately sit above the diffusion return are the pre-existing
+    # ones, and every one of them is guarded by the feature that needs it (the
+    # --kv-unified clamp behind n_parallel > 1, the DSpark lookup behind its own request),
+    # so a diffusion load short-circuits past them. An unconditional probe added up there
+    # would make an independent diffusion launch wait out the full --help timeout.
+    guarded = {
+        node.lineno
+        for branch in ast.walk(load_model)
+        if isinstance(branch, ast.If)
+        for node in ast.walk(branch)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "probe_server_capabilities"
+    }
+    unconditional = [ln for ln in probe_calls if ln < diffusion_return and ln not in guarded]
+    assert unconditional == [], (
+        f"unguarded probe calls above the diffusion return: {unconditional}; a diffusion "
+        "load must not pay for a capability it never consumes"
+    )

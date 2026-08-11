@@ -3998,8 +3998,10 @@ class LlamaCppBackend:
         # this flag, so a build that really lacks these capabilities re-derives the same
         # degraded runtime and dedupes from then on. Cheap: the probe is cached, and this
         # only runs after an inconclusive one.
-        if self._capability_probe_inconclusive and not self.probe_server_capabilities().get(
-            "mtp_probe_inconclusive"
+        if (
+            self._capability_probe_inconclusive
+            and not self._is_diffusion
+            and not self.probe_server_capabilities().get("mtp_probe_inconclusive")
         ):
             return False
 
@@ -9495,19 +9497,6 @@ class LlamaCppBackend:
                 bool(gpu_ids) and not is_vulkan_backend and self._backend_lacks_gpu_lib(binary)
             )
 
-            # Whether the probe behind every capability gate below actually answered.
-            # Captured here, next to the gates it explains, because the retry window can
-            # expire mid-load and a later re-read would describe a different probe than
-            # the one that shaped this launch. Kept LOCAL until the launch is committed:
-            # the instance flag describes the RUNNING runtime, and the preflights between
-            # here and there can bail while deliberately leaving the old server up, which
-            # would otherwise clear a marker the still-degraded runtime needs.
-            _launch_probe_inconclusive = bool(
-                self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
-                if binary
-                else False
-            )
-
             # Without --kv-unified an explicit --parallel N splits -c into windows of -c/N, so on a
             # build lacking the flag the default of 4 would quarter every context window for a
             # feature it cannot serve: fall back to one slot. Ahead of the KV estimates so the
@@ -12664,11 +12653,17 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
-                # Commit the probe state with the rest of the snapshot. Only a launch that
-                # got this far replaced the runtime, so a rejected preflight leaves the old
-                # marker intact, and the diffusion runner -- which returns long before this
-                # and uses no llama-server capability -- never carries one at all.
-                self._capability_probe_inconclusive = _launch_probe_inconclusive
+                # Whether the probe behind this launch's capability gates actually
+                # answered. Read here rather than beside the gates so that only a launch
+                # which got this far records it: a rejected preflight leaves the old
+                # marker intact for a runtime that is still degraded, and the diffusion
+                # runner returns long before this without consuming -- or paying for --
+                # any llama-server capability. The result is already cached from the
+                # gates themselves, so this costs nothing on the path that reaches it.
+                self._capability_probe_inconclusive = bool(
+                    binary
+                    and self.probe_server_capabilities(binary).get("mtp_probe_inconclusive")
+                )
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
@@ -13315,6 +13310,7 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
+            self._capability_probe_inconclusive = False
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
             self._cpu_fallback_reason = None
