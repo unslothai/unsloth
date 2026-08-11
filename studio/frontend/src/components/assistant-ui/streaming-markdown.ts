@@ -4,8 +4,8 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { isWithinMathBlock } from "remend";
 
-const AMBIGUOUS_BOLD_ASTERISK_ITEM_RE = /^ {0,3}\* {1,4}\*\*[ \t]*$/;
-const BLOCKQUOTE_PREFIX_RE = /^(?: {0,3}>[ \t]?)+/;
+const AMBIGUOUS_BOLD_ASTERISK_ITEM_RE = /^[ \t]*\* {1,4}\*{2,}[ \t]*$/;
+const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
 
 type MarkdownNode = {
   readonly type: string;
@@ -20,7 +20,9 @@ function isTrailingThematicBreak(text: string, markerIndex: number): boolean {
   const pending: MarkdownNode[] = [fromMarkdown(text) as MarkdownNode];
   while (pending.length > 0) {
     const node = pending.pop();
-    if (!node) continue;
+    if (!node) {
+      continue;
+    }
     if (
       node.type === "thematicBreak" &&
       node.position?.start.offset === markerIndex &&
@@ -28,7 +30,9 @@ function isTrailingThematicBreak(text: string, markerIndex: number): boolean {
     ) {
       return true;
     }
-    if (node.children) pending.push(...node.children);
+    if (node.children) {
+      pending.push(...node.children);
+    }
   }
   return false;
 }
@@ -41,7 +45,8 @@ export function stabilizeStreamingMarkdown(
     return text;
   }
 
-  const lineStart = text.lastIndexOf("\n") + 1;
+  const lineStart =
+    Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1;
   const line = text.slice(lineStart);
   const blockquotePrefix = line.match(BLOCKQUOTE_PREFIX_RE)?.[0] ?? "";
   const content = line.slice(blockquotePrefix.length);
@@ -49,7 +54,8 @@ export function stabilizeStreamingMarkdown(
     return text;
   }
 
-  const markerIndex = lineStart + blockquotePrefix.length + content.indexOf("*");
+  const markerIndex =
+    lineStart + blockquotePrefix.length + content.indexOf("*");
   if (
     isWithinMathBlock(text, markerIndex) ||
     !isTrailingThematicBreak(text, markerIndex)

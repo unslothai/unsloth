@@ -29,6 +29,19 @@ test("buffers the thematic-break prefix of a bold asterisk list item", () => {
   assert.ok(!render(stabilized).includes(HORIZONTAL_RULE));
 });
 
+test("buffers triple-emphasis list prefixes", () => {
+  for (const markdown of ["* ***", "* ****", "* *****"]) {
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), "");
+  }
+
+  const markdown = "* ***Heading***";
+  const stabilized = stabilizeStreamingMarkdown(markdown, true);
+  assert.equal(stabilized, markdown);
+  assert.ok(render(stabilized).includes(UNORDERED_LIST));
+  assert.ok(!render(stabilized).includes(HORIZONTAL_RULE));
+});
+
 test("reveals the list as soon as bold content arrives", () => {
   const markdown = "* **Heading";
   const stabilized = stabilizeStreamingMarkdown(markdown, true);
@@ -52,12 +65,28 @@ test("buffers only the ambiguous trailing line", () => {
     stabilizeStreamingMarkdown("* Parent\n  * **", true),
     "* Parent\n",
   );
+  assert.equal(
+    stabilizeStreamingMarkdown("- Parent\n    * **", true),
+    "- Parent\n",
+  );
+  assert.equal(
+    stabilizeStreamingMarkdown("- Parent\n        * **", true),
+    "- Parent\n        * **",
+  );
 });
 
 test("buffers ambiguous items relative to their blockquote container", () => {
-  for (const markdown of ["> * **", "> > * **", "   > * **"]) {
+  for (const markdown of [
+    "> * **",
+    "> > * **",
+    "   > * **",
+    "- Parent\n    > * **",
+  ]) {
     assert.ok(render(markdown).includes(HORIZONTAL_RULE));
-    assert.equal(stabilizeStreamingMarkdown(markdown, true), "");
+    assert.equal(
+      stabilizeStreamingMarkdown(markdown, true),
+      markdown.includes("\n") ? "- Parent\n" : "",
+    );
   }
 
   const markdown = "> * **Heading";
@@ -67,6 +96,17 @@ test("buffers ambiguous items relative to their blockquote container", () => {
   assert.ok(html.includes(UNORDERED_LIST));
   assert.ok(html.includes(STRONG));
   assert.ok(!html.includes(HORIZONTAL_RULE));
+});
+
+test("recognizes CommonMark line endings", () => {
+  for (const [markdown, expected] of [
+    ["First\r* **", "First\r"],
+    ["First\r\n* **", "First\r\n"],
+    ["First\n* **", "First\n"],
+  ] as const) {
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), expected);
+  }
 });
 
 test("preserves ambiguous-looking content in list-contained fences", () => {
