@@ -40,7 +40,10 @@ def _verify_step():
 
 def test_the_signing_cli_is_pinned_by_url_and_digest():
     step = _step("Install trusted-signing-cli")
-    assert "/releases/download/0.10.0/trusted-signing-cli.exe" in step["env"]["TRUSTED_SIGNING_CLI_URL"]
+    assert (
+        "/releases/download/0.10.0/trusted-signing-cli.exe"
+        in step["env"]["TRUSTED_SIGNING_CLI_URL"]
+    )
     assert len(step["env"]["TRUSTED_SIGNING_CLI_SHA256"]) == 64
 
 
