@@ -141,7 +141,6 @@ def _tuple_safe_globals_supported() -> bool:
     ours. Nothing is registered unless the answer here is yes."""
     try:
         import torch
-
         parts = str(torch.__version__).split("+")[0].split(".")
         return (int(parts[0]), int(parts[1])) >= (2, 6)
     except Exception:  # noqa: BLE001 -- an unreadable version is not a supported one
@@ -182,6 +181,7 @@ def _register_prequant_safe_globals() -> bool:
             from core._torchao_stub import is_stubbed
 
             import torch
+
             add = getattr(torch.serialization, "add_safe_globals", None)
             # A STUBBED torchao (Windows ROCm, where the real one cannot import) fabricates a
             # class for every name asked of it, so the allowlist would register fakes and this
