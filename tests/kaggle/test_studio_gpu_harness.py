@@ -1065,14 +1065,14 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     body = source[source.index("def assert_chat_ui") :]
     body = body[: body.index("\n    def ")] if "\n    def " in body else body
-    assert "self.stop_server()" in body and "self.start_server()" in body, (
-        "the driver needs a re-seeded account, which only a restart provides"
-    )
+    assert (
+        "self.stop_server()" in body and "self.start_server()" in body
+    ), "the driver needs a re-seeded account, which only a restart provides"
     # And it must hand over the RE-SEEDED value, not the retired session's.
     assert "self.remember_bootstrap()" in body
-    assert "self.studio.password" not in body, (
-        "the retired password is exactly what the driver cannot use"
-    )
-    assert body.index("self.start_server()") < body.index('"STUDIO_OLD_PW"'), (
-        "the password must be read after the restart, or it is the old one"
-    )
+    assert (
+        "self.studio.password" not in body
+    ), "the retired password is exactly what the driver cannot use"
+    assert body.index("self.start_server()") < body.index(
+        '"STUDIO_OLD_PW"'
+    ), "the password must be read after the restart, or it is the old one"
