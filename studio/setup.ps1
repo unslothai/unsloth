@@ -1523,7 +1523,7 @@ function Ensure-VCRedist {
             $sig = Get-AuthenticodeSignature -LiteralPath $dst
             if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
                 $null -eq $sig.SignerCertificate -or
-                $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+                $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Microsoft Corporation"?(,|$)') {
                 throw "the downloaded VC++ runtime is not validly signed by Microsoft (signature status: $($sig.Status))"
             }
             $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru

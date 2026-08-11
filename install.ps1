@@ -2228,11 +2228,19 @@ exit 0
         # Verify the publisher instead: this executable is about to run with this process's
         # privileges, and HTTPS only vouches for the transfer, not for what arrived. Status
         # alone would accept any trusted CA's code-signing cert, including an attacker's.
-        $sig = Get-AuthenticodeSignature -LiteralPath $dest
-        if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        # Inspecting the file can itself fail (antivirus quarantines the download before we
+        # look at it, the path becomes unreadable), and the script-wide 'Stop' at the top
+        # would turn that into a terminating error that escapes the function, skipping the
+        # $null fallback and leaving the executable behind. Unreadable is unverified, so it
+        # takes the same route as a bad signature.
+        $sig = $null
+        try { $sig = Get-AuthenticodeSignature -LiteralPath $dest } catch { $sig = $null }
+        if ($null -eq $sig -or
+            $sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
             $null -eq $sig.SignerCertificate -or
-            $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O=Python Software Foundation(,|$)') {
-            substep "python.org installer is not validly signed by the Python Software Foundation (signature status: $($sig.Status)); not running it." "Yellow"
+            $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Python Software Foundation"?(,|$)') {
+            $sigStatus = if ($null -eq $sig) { "could not be read" } else { $sig.Status }
+            substep "python.org installer is not validly signed by the Python Software Foundation (signature status: $sigStatus); not running it." "Yellow"
             Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
             return $null
         }
