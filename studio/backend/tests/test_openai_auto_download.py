@@ -224,21 +224,17 @@ def _run(model, hf_token = None):
         # A backslash-qualified variant key still parses behind a real Hub repo.
         ("org/repo:build\\model.gguf", ("org/repo", "build\\model.gguf")),
         ("D:\\models\\repo:build\\llama-13b", ("D:\\models\\repo:build\\llama-13b", None)),
-        # The rest of the shapes a Windows model path really arrives in. Each one leaves a
-        # drive letter that is no repo id, so each has to survive the colon split whole.
-        # Extended-length and device-namespace prefixes: the "\\?\" that Windows uses past
-        # MAX_PATH, which Studio hits on deep .lmstudio trees.
+        # Extended-length and device-namespace prefixes, used past MAX_PATH.
         ("\\\\?\\C:\\models\\qwen.gguf", ("\\\\?\\C:\\models\\qwen.gguf", None)),
         ("\\\\.\\C:\\models\\qwen.gguf", ("\\\\.\\C:\\models\\qwen.gguf", None)),
         ("\\\\?\\C:\\models\\qwen.gguf:UD-Q4_K_XL", ("\\\\?\\C:\\models\\qwen.gguf", "UD-Q4_K_XL")),
-        # Drive-relative: legal on Windows and has no separator after the colon at all.
+        # Drive-relative: no separator after the colon at all.
         ("C:models\\x.gguf", ("C:models\\x.gguf", None)),
-        # Mixed separators, which Windows accepts and users paste.
+        # Mixed separators, and the bare drive root.
         ("C:/models\\x.gguf", ("C:/models\\x.gguf", None)),
         ("C:\\models/x.gguf", ("C:\\models/x.gguf", None)),
-        # Bare drive root.
         ("C:\\", ("C:\\", None)),
-        # A UNC share whose name ends in the admin "$".
+        # An admin UNC share.
         ("\\\\server\\share$\\qwen.gguf", ("\\\\server\\share$\\qwen.gguf", None)),
         # An Ollama tag must still split, or a foreign id starts being served locally.
         ("name:latest", ("name", "latest")),
