@@ -423,9 +423,7 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
     context_length = _monitor_context_length()
     if not context_length:
         return
-    remaining = (
-        context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
-    )
+    remaining = context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE
     if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
         raise HTTPException(
             status_code = 400,
