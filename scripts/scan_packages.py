@@ -111,8 +111,7 @@ RE_BASE64 = re.compile(
 # two spellings that are the builtin, `builtins.exec(...)` and `__builtins__.eval(...)`,
 # which a payload can use to reach it through a dot and must stay detectable.
 RE_EXEC_EVAL = re.compile(
-    r"(?<![\w.])(?:__builtins__|builtins)\s*\.\s*(exec|eval)\s*\("
-    r"|(?<![\w.])(exec|eval)\s*\("
+    r"(?<![\w.])(?:__builtins__|builtins)\s*\.\s*(exec|eval)\s*\(|(?<![\w.])(exec|eval)\s*\("
 )
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
