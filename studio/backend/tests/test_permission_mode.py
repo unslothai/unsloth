@@ -1946,6 +1946,18 @@ def test_high_risk_dispatcher_non_terminal():
             "f(s, Loader=L)",
             True,
         ),
+        # The exemption trusts a name only while it still means PyYAML.
+        ("import yaml as y\nfrom yaml import load\ny = custom\nload(s, Loader=y.SafeLoader)", True),
+        ("import yaml as y\nprint(y.load(open('c.yml'), Loader=y.SafeLoader))", False),
+        ("import helper as torch\nfrom yaml import load\nload(s, Loader=torch.SafeLoader)", True),
+        ("import yaml, os\nyaml.safe_load = os.system\nyaml.safe_load('x')", True),
+        ("from yaml import safe_load\nsafe_load = evil\nsafe_load(s)", True),
+        (
+            "import yaml, os\nfrom yaml import SafeLoader as SL\n"
+            "r = type.__getattribute__(SL, 'yaml_constructors')\nr['!e'] = os.system\n"
+            "yaml.safe_load('!e x')",
+            True,
+        ),  # an aliased loader is still a loader
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

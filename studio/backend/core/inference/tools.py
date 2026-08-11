@@ -3763,7 +3763,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and node.attr not in assigned_attr_names
                 and not uses_setattr
                 and isinstance(_root, ast.Name)
-                and _root.id in load_module_aliases
+                and _root.id in yaml_module_aliases
+                # item 1: an alias the snippet rebinds is not PyYAML any more
+                and not _rebindable(_root.id)
             )
         # Membership already encodes the rebinding rule: a name only enters
         # safe_loader_aliases if nothing can point it elsewhere later.
@@ -3939,6 +3941,18 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         {"getattr", "setattr", "vars", "__getattribute__", "__getattr__", "__setattr__"}
     )
 
+    _loader_import_aliases: "set[str]" = set()
+    for _n in ast.walk(tree):
+        if isinstance(_n, (ast.Import, ast.ImportFrom)):
+            _root_mod = (_n.module or "") if isinstance(_n, ast.ImportFrom) else ""
+            for _al in _n.names:
+                if _al.name in _AUTO_SAFE_PY_LOAD_CLASSES or _al.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
+                    _loader_import_aliases.add(_al.asname or _al.name)
+                elif _root_mod.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _loader_import_aliases.add(_al.asname or _al.name)
+                elif _al.name.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _loader_import_aliases.add(_al.asname or _al.name.split(".")[0])
+
     def _mentions_loader_literal(node) -> bool:
         # A loader named anywhere in this expression, by module, class or
         # function. Literal names only, so this holds before aliases are known.
@@ -3953,6 +3967,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 sub.id in _AUTO_UNSAFE_PY_LOAD_MODULES
                 or sub.id in _AUTO_SAFE_PY_LOAD_CLASSES
                 or sub.id in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                # from yaml import SafeLoader as SL
+                or sub.id in _loader_import_aliases
             ):
                 return True
         return False
@@ -3975,7 +3991,27 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 return any(_mentions_loader_literal(a) for a in node.args)
         return False
 
-    registers_constructor = any(_is_loader_registration(n) for n in ast.walk(tree))
+    def _rebinds_safe_reader(node) -> bool:
+        # yaml.safe_load = os.system, or the same through a bare alias: the name
+        # the exemption trusts no longer holds the function it trusted.
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        for t in targets:
+            for sub in ast.walk(t):
+                if isinstance(sub, ast.Attribute) and sub.attr in _AUTO_SAFE_PY_LOAD_FUNCS:
+                    return True
+                if isinstance(sub, ast.Name) and (
+                    sub.id in _AUTO_SAFE_PY_LOAD_FUNCS or sub.id in _loader_import_aliases
+                ):
+                    return True
+        return False
+
+    registers_constructor = any(
+        _is_loader_registration(n) or _rebinds_safe_reader(n) for n in ast.walk(tree)
+    )
     # Kept separate only because the messages below distinguish them; both mean
     # the loader may not be the stock one any more.
     uses_setattr = registers_constructor
