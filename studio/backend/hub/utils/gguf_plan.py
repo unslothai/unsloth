@@ -150,9 +150,7 @@ def preferred_dflash_sibling(
     candidates = [
         s
         for s in siblings
-        if (name := _gguf_rfilename(s))
-        and "/" not in name
-        and name.lower().startswith("dflash-")
+        if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("dflash-")
     ]
     if not candidates:
         return None
