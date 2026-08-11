@@ -6,6 +6,7 @@ import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
+  Cancel01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
@@ -3910,29 +3911,46 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 </div>
               )}
               {images.map((image) => (
-                <button
+                <div
                   key={image.id}
-                  type="button"
                   data-image-id={image.id}
-                  onClick={() => setSelectedId(image.id)}
-                  className="relative size-16 shrink-0 overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="group/thumb relative size-16 shrink-0"
                 >
-                  {srcById[image.id] ? (
-                    <img
-                      src={srcById[image.id]}
-                      alt={image.prompt}
-                      className="size-full object-cover"
-                    />
-                  ) : (
-                    <span className="flex size-full items-center justify-center">
-                      <Spinner className="size-4 text-muted-foreground" />
-                    </span>
-                  )}
-                  {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
-                  {image.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(image.id)}
+                    className="size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {srcById[image.id] ? (
+                      <img
+                        src={srcById[image.id]}
+                        alt={image.prompt}
+                        className="size-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex size-full items-center justify-center">
+                        <Spinner className="size-4 text-muted-foreground" />
+                      </span>
+                    )}
+                    {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
+                    {image.id === selected?.id && (
+                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    )}
+                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        aria-label={`Delete image created ${formatTimestamp(image.created_at)}`}
+                        onClick={() => void handleDelete(image.id)}
+                        className="pointer-events-none absolute right-0.5 top-0.5 z-10 flex size-5 items-center justify-center rounded-full bg-background/90 text-muted-foreground opacity-0 shadow-sm ring-1 ring-border backdrop-blur-sm transition-[opacity,color,background-color] hover:bg-background hover:text-destructive focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/thumb:pointer-events-auto group-hover/thumb:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
+                      >
+                        <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Delete image</TooltipContent>
+                  </Tooltip>
+                </div>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (
