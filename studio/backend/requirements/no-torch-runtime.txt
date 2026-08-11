@@ -62,9 +62,13 @@ filelock==3.32.2; python_version >= "3.10"
 filelock==3.19.1; python_version < "3.10"
 httpx==0.28.1
 httpcore==1.0.9
+# certifi is the CA trust store, not an ordinary library: an exact pin freezes it,
+# so distrusted roots stay trusted and newly added ones never arrive. It is pinned
+# here for the same reason as everything else in this file, but treat a bump as a
+# security update rather than routine churn, and refresh it on its own schedule.
 certifi==2026.7.22
 idna==3.18
-anyio>=3.0,<4.14.0  # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
+anyio>=3.0,<4.14.0               # 4.14 asyncio cancel-scope RuntimeError on Py3.13 streaming (#6483); 4.13 unaffected
 sniffio==1.3.1
 h11==0.16.0
 

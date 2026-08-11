@@ -11,7 +11,7 @@ peft==0.18.1
 
 # TRL and related packages
 trl==0.23.1
-# executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
+# executorch>=1.0.1              # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext==0.1.5
 sentence_transformers==5.2.0
 transformers==5.5.0; python_version >= "3.10"
