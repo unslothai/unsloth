@@ -162,6 +162,20 @@ test("preserves ambiguous-looking content in raw HTML blocks", () => {
   );
 });
 
+test("preserves GFM footnote content that does not render a rule", () => {
+  const markdown = "See[^1]\n\n[^1]:\n    * **";
+  const html = render(markdown);
+
+  assert.ok(!html.includes(HORIZONTAL_RULE));
+  assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+
+  const completed = `${markdown}Heading**`;
+  const completedHtml = render(completed);
+  assert.ok(completedHtml.includes(UNORDERED_LIST));
+  assert.ok(completedHtml.includes(STRONG));
+  assert.ok(!completedHtml.includes(HORIZONTAL_RULE));
+});
+
 test("does not reinterpret adjacent Markdown constructs", () => {
   const unchanged = [
     "- **",
