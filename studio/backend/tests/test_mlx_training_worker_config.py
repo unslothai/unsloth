@@ -19,6 +19,7 @@ def _load_worker_module():
         "utils.child_stdio",
         "utils.hardware",
         "utils.hf_dataset_options",
+        "utils.native_tls",
         "utils.training_runs",
         "utils.wheel_utils",
     )
@@ -46,6 +47,13 @@ def _load_worker_module():
         hf_dataset_options = types.ModuleType("utils.hf_dataset_options")
         hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
         sys.modules["utils.hf_dataset_options"] = hf_dataset_options
+
+        # worker.py calls this at import time. Without the stub the module only loads when
+        # some other test happened to import the real utils.native_tls first, so this file
+        # passed in a full run and failed on its own.
+        native_tls = types.ModuleType("utils.native_tls")
+        native_tls.activate_native_tls = lambda *_args, **_kwargs: None
+        sys.modules["utils.native_tls"] = native_tls
 
         training_runs = types.ModuleType("utils.training_runs")
         training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "training-run"
