@@ -852,6 +852,10 @@
             "decorators": [],
             "signature": "self, text: str"
           },
+          "_note": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
           "_reset": {
             "decorators": [],
             "signature": "self"

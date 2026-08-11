@@ -376,3 +376,48 @@ def test_a_real_call_arriving_a_character_at_a_time_is_still_caught():
     stripper = StreamingMarkupStripper(ENABLED)
     for size in range(1, len(text) + 1):
         assert stripper.strip(text[:size]) == _reference_strip(text[:size])
+
+
+def test_the_caller_can_still_grow_its_buffer_in_place():
+    """The stripper must not hold a reference to the buffer it is handed.
+
+    The streaming loop grows it with ``cumulative_display += token``, and CPython only
+    resizes a string in place while nothing else refers to it. One extra reference turns
+    every append into a full copy, so the concatenation goes quadratic even though the
+    scanning does not, and that cost lands on the caller rather than here.
+    """
+    import time
+
+    def elapsed(count):
+        stripper = StreamingMarkupStripper(ENABLED)
+        text = ""
+        start = time.perf_counter()
+        for _ in range(count):
+            text += "word "
+            stripper.strip(text)
+        return time.perf_counter() - start
+
+    short = elapsed(8000)
+    long = elapsed(32000)
+
+    # 4x the tokens. Linear in place, ~16x if every append copies the answer so far.
+    assert long < short * 8 + 0.05, (
+        f"4x the tokens cost {long / max(short, 1e-9):.1f}x the time "
+        f"({short:.3f}s -> {long:.3f}s); the buffer is being copied per token"
+    )
+
+
+def test_no_reference_to_the_buffer_is_retained():
+    """The property the timing above measures, asserted directly."""
+    import gc
+
+    stripper = StreamingMarkupStripper(ENABLED)
+    text = "some plain prose with no markup in it at all" * 4
+    stripper.strip(text)
+
+    assert not [
+        holder for holder in gc.get_referrers(text) if holder is stripper.__class__ or holder is stripper
+    ]
+    assert all(
+        getattr(stripper, slot) is not text for slot in StreamingMarkupStripper.__slots__
+    )

@@ -310,7 +310,6 @@ _ARG_FIXTURES = {
 }
 
 
-<<<<<<< HEAD
 # Offsets a predicate is asked about. One offset is not coverage for a function whose
 # whole job is to answer differently at different positions: driving
 # ``_inside_open_parameter`` only at the end of the text gave it two distinct values over
@@ -349,8 +348,6 @@ def _gemma_argument_body(text: str) -> str:
     return "city:Paris, n:2, tags:[a, b]"
 
 
-=======
->>>>>>> 95975a977 (Studio: keep the bracket-scan size guard across a prefix cut)
 def _parser_first_sentinel(text: str):
     from core.inference import tool_call_parser
     return tool_call_parser._first_sentinel(text, 0)

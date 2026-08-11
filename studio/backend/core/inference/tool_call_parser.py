@@ -883,8 +883,9 @@ class StreamingMarkupStripper:
         "_floor_out",
         "_floor_identity",
         "_degenerate",
-        "_last_in",
-        "_last_out",
+        "_seen_len",
+        "_seen_head",
+        "_seen_tail",
     )
 
     def __init__(self, enabled_tool_names: Optional[set] = None):
@@ -905,8 +906,11 @@ class StreamingMarkupStripper:
         # bookkeeping is pure overhead on top of a strip that has to run in full anyway;
         # this flag skips straight to it, keeping the worst case no slower than before.
         self._degenerate = False
-        self._last_in = None
-        self._last_out = None
+        # Length and both end samples of the buffer this instance last saw, never the
+        # buffer itself: see ``_note``.
+        self._seen_len = -1
+        self._seen_head = ""
+        self._seen_tail = ""
 
     def _think_block(self, text: str, first: int) -> str:
         """Classify the reasoning block opening at absolute offset ``first``.
@@ -983,6 +987,20 @@ class StreamingMarkupStripper:
 
         return _tool_healing.strip_outside_think(text, _seg)
 
+    def _note(self, text: str):
+        """Record what this call saw, as measurements rather than as the buffer.
+
+        Holding a reference to the caller's string is what makes this expensive: the
+        streaming loop grows it with ``cumulative_display += token``, and CPython can
+        only resize a string in place while nothing else refers to it. One extra
+        reference turns every append into a full copy, so the concatenation goes
+        quadratic even though the scanning here does not. Measured over an append-only
+        loop at 64k tokens: 1.14s holding the buffer, 0.003s holding these three.
+        """
+        self._seen_len = len(text)
+        self._seen_head = text[:_EXTENSION_SAMPLE]
+        self._seen_tail = text[-_EXTENSION_SAMPLE:]
+
     def _is_extension(self, text: str) -> bool:
         """Cheap check that ``text`` continues the previous call's buffer.
 
@@ -991,21 +1009,15 @@ class StreamingMarkupStripper:
         only has to catch a caller that clearly is not: a shorter buffer, or one whose
         head or previous tail no longer matches. Sampling both ends is O(1).
         """
-        previous = self._last_in
-        if previous is None:
+        end = self._seen_len
+        if end < 0:
             return True
-        end = len(previous)
         if len(text) < end:
             return False
         sample = _EXTENSION_SAMPLE
-        return text[:sample] == previous[:sample] and text[end - sample : end] == previous[-sample:]
+        return text[:sample] == self._seen_head and text[end - sample : end] == self._seen_tail
 
     def strip(self, text: str) -> str:
-        previous = self._last_in
-        if text is previous or (
-            previous is not None and len(text) == len(previous) and text == previous
-        ):
-            return self._last_out
         if not self._is_extension(text):
             # Not an extension of what we saw: the cached prefix no longer applies.
             self._reset()
@@ -1016,8 +1028,7 @@ class StreamingMarkupStripper:
                 if self._needs_whole_buffer(text)
                 else self._floor_out + self._full_strip(text[self._floor :])
             )
-            self._last_in = text
-            self._last_out = out
+            self._note(text)
             return out
 
         # Offsets stay absolute through the scan so the buffer is never sliced just to
@@ -1051,8 +1062,7 @@ class StreamingMarkupStripper:
 
         if self._needs_whole_buffer(text):
             out = self._full_strip(text)
-            self._last_in = text
-            self._last_out = out
+            self._note(text)
             return out
 
         tail = text[self._floor :]
@@ -1065,17 +1075,17 @@ class StreamingMarkupStripper:
         cut = _safe_cut(tail, self._first)
         stripped = tail[:cut] + self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
         out = self._floor_out + stripped if self._floor else stripped
-        self._last_in = text
-        self._last_out = out
+        self._note(text)
         return out
 
     def _unchanged(self, text: str) -> str:
         """Result when nothing after the settled prefix needs stripping."""
-        self._last_in = text
+        self._note(text)
         # With nothing removed so far the answer is the caller's own string, so hand it
-        # straight back rather than rebuilding it a token at a time.
-        self._last_out = text if self._floor_identity else self._floor_out + text[self._floor :]
-        return self._last_out
+        # straight back rather than rebuilding it a token at a time. It is returned, not
+        # kept: this is the path a plain prose answer takes on every token, and keeping
+        # it is exactly what would stop the caller growing it in place.
+        return text if self._floor_identity else self._floor_out + text[self._floor :]
 
 
 def has_tool_signal(text: str) -> bool:
