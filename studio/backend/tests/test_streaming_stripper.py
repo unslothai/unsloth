@@ -471,3 +471,51 @@ def test_early_markup_is_not_slower_than_the_code_it_replaces():
     assert (
         incremental <= reference * 1.10
     ), f"early markup cost {incremental:.3f}s against the reference's {reference:.3f}s"
+
+
+def test_an_open_reasoning_block_is_scanned_incrementally():
+    """A reasoning body is most of a reasoning model's answer.
+
+    The open-block branch restarted at the opener on every token, so the body was
+    rescanned in full each time: the same quadratic this class exists to remove, with a
+    smaller constant. 16k tokens cost 7.4s before this and 0.05s after.
+    """
+    import time
+
+    def elapsed(count):
+        stripper = StreamingMarkupStripper(ENABLED)
+        text = "<think>"
+        start = time.perf_counter()
+        for _ in range(count):
+            text += "reasoning "
+            stripper.strip(text)
+        return time.perf_counter() - start
+
+    short = elapsed(2000)
+    long = elapsed(8000)
+
+    # 4x the tokens. Linear resumes at ~4x; restarting at the opener is ~16x.
+    assert long < short * 8 + 0.05, (
+        f"4x the tokens cost {long / max(short, 1e-9):.1f}x the time "
+        f"({short:.4f}s -> {long:.4f}s); the reasoning body is being rescanned"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<think>reasoning goes here</think>the answer",
+        "<think>reasoning with get_weather[ARGS]{} inside</think>answer",
+        "[THINK]other family[/THINK]answer",
+        "<think>unclosed to the end",
+        "<think>a</think>b<think>c</think>d",
+        "<think>mentions </think> early</think>tail",
+    ],
+)
+def test_open_block_resume_does_not_change_the_result(text):
+    """The resume must not miss a closer or a sentinel arriving mid-body."""
+    stripper = StreamingMarkupStripper(ENABLED)
+    for size in range(1, len(text) + 1):
+        assert stripper.strip(text[:size]) == _reference_strip(
+            text[:size]
+        ), f"diverged at {size} for {text!r}"

@@ -883,6 +883,8 @@ class StreamingMarkupStripper:
         "_floor_out",
         "_floor_identity",
         "_degenerate",
+        "_open_at",
+        "_open_scanned",
         "_seen_len",
         "_seen_head",
         "_seen_tail",
@@ -906,6 +908,10 @@ class StreamingMarkupStripper:
         # bookkeeping is pure overhead on top of a strip that has to run in full anyway;
         # this flag skips straight to it, keeping the worst case no slower than before.
         self._degenerate = False
+        # Offset of the reasoning opener currently streaming, and how far into its body
+        # the scan has already got.
+        self._open_at = -1
+        self._open_scanned = 0
         # Length and both end samples of the buffer this instance last saw, never the
         # buffer itself: see ``_note``.
         self._seen_len = -1
@@ -935,13 +941,27 @@ class StreamingMarkupStripper:
                 break
         else:
             return ""
-        end = text.find(closer, first + len(opener))
+        body_start = first + len(opener)
+        # Resume inside the body rather than restarting at the opener, overlapping by
+        # enough that a closer or a sentinel split across two appends is still seen.
+        resume = body_start
+        if self._open_at == first and self._open_scanned > body_start:
+            resume = max(body_start, self._open_scanned - _SENTINEL_MAX_LEN + 1)
+        end = text.find(closer, resume)
         if end < 0:
-            # Still streaming. An unclosed block runs to EOF and is preserved verbatim, and
-            # the text before it is markup-free by construction, so the buffer is untouched
-            # -- as long as nothing else in it needs stripping.
-            body_start = first + len(opener)
-            return "open" if _first_sentinel(text, body_start) < 0 else ""
+            # Still streaming. An unclosed block runs to EOF and is preserved verbatim,
+            # and the text before it is markup-free by construction, so the buffer is
+            # untouched -- as long as nothing else in it needs stripping. Everything
+            # below ``resume`` was checked on an earlier token and cannot change, and a
+            # reasoning body is most of a reasoning model's answer, so restarting at the
+            # opener every token is the same quadratic this class exists to remove.
+            if _first_sentinel(text, resume) >= 0:
+                self._open_at = -1
+                return ""
+            self._open_at = first
+            self._open_scanned = len(text)
+            return "open"
+        self._open_at = -1
         end += len(closer)
         body = text[self._floor : end]
         if _first_sentinel(body.replace(opener, "").replace(closer, ""), 0) >= 0:
