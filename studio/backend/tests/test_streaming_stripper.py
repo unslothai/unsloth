@@ -571,3 +571,28 @@ def test_the_final_answer_loop_is_not_quadratic():
     assert (
         after < before / 10
     ), f"final-answer strip cost {after:.4f}s against the full rescan's {before:.4f}s"
+
+
+def test_a_cut_never_crosses_an_open_parameter_block():
+    """``_strip_function_xml_calls`` treats a ``<function>`` opener inside an unclosed
+    ``<parameter>`` as a literal in an argument value, and decides that from the text
+    before it. Cutting there used to lose the context and leak the nested markup."""
+    names = {"a"}
+    for text in (
+        "Visible <parameter=x>\n<function=a></function>TEXT</function>",
+        'Visible <param name="x">\n<function=a></function>TEXT</function>',
+    ):
+        expected = _reference_strip(text, names)
+        stripper = StreamingMarkupStripper(names)
+        got = None
+        for i in range(1, len(text) + 1):
+            got = stripper.strip(text[:i])
+        assert got == expected
+        assert "TEXT</function>" not in got
+
+    # A closed parameter block still gets cut, so the guard is not blanket.
+    closed = "Visible <parameter=x>v</parameter>\n<function=a></function>TEXT</function>"
+    stripper = StreamingMarkupStripper(names)
+    for i in range(1, len(closed) + 1):
+        got = stripper.strip(closed[:i])
+    assert got == _reference_strip(closed, names)

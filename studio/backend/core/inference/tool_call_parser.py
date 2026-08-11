@@ -839,13 +839,20 @@ def _safe_cut(text: str, first: int) -> int:
         while cut > 0 and not text[cut - 1].isspace():
             cut -= 1
     cut = text.rfind("\n", 0, cut) + 1
-    if "`" in text[:cut] or "~" in text[:cut]:
+    head = text[:cut]
+    if "`" in head or "~" in head:
         return 0
     # A closer with no opener makes everything before it reasoning, which
     # ``_think_spans_outside_tool_markup`` decides from offset 0 of the segment. Trimming
     # moves offset 0, so cut only when there is nothing before that closer.
     close_at = _unmatched_think_closer(text)
     if 0 <= close_at and first < close_at:
+        return 0
+    # ``_strip_function_xml_calls`` treats a ``<function>`` opener inside an unclosed
+    # ``<parameter>`` as a literal in an argument value, and decides that from the text
+    # before it. Cutting there loses the context and the nested markup leaks into the
+    # display. The literal test keeps the common case off the scan.
+    if "<param" in head and _inside_open_parameter(text, cut):
         return 0
     return cut
 
