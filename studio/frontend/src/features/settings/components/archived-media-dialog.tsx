@@ -186,6 +186,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             const { url, bytes } = await fetchGalleryObjectUrl(row.url);
             if (cancelled) {
               URL.revokeObjectURL(url);
+              // `requested` outlives this effect, so abandoning the id here would make every later
+              // pass skip the row as already fetched and leave its thumbnail blank for good.
+              requested.current.delete(row.id);
               return;
             }
             blobs.current.set(row.id, url, bytes);
@@ -205,7 +208,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
           }
           // A clip is a short-lived signed link, not a blob: nothing to budget or revoke.
           const src = await fetchGalleryVideoSignedUrl(row.id);
-          if (cancelled) return;
+          if (cancelled) {
+            requested.current.delete(row.id);
+            return;
+          }
           setThumbs((prev) => ({ ...prev, [row.id]: src }));
         } catch {
           // A missing thumbnail still leaves a usable, actionable row. Allow a retry on the next

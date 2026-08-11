@@ -1558,6 +1558,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [loadGallery]);
 
 
+  // Bumped by every local change to the strip (pin, archive, delete). A resync started before a
+  // change cannot tell that its snapshot is now behind, so it compares this instead of applying a
+  // window the user has already moved off.
+  const stripEpoch = useRef(0);
+
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
   // archived image keeps both, since the archived view shows the same thumbnail.
@@ -1572,6 +1577,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       });
     }
     visibleIds.current.delete(id);
+    stripEpoch.current += 1;
     // Read the list from the cache (kept in sync with state every render) rather than nesting a
     // setSelectedId inside a setImages updater, which would run a side effect during dispatch.
     const at = galleryCache.images.findIndex((i) => i.id === id);
@@ -1603,7 +1609,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
    * a reload. Re-reading the window is the only way to see it.
    */
   const resyncWindow = useCallback(
-    async (count: number) => {
+    async (count: number, stillFresh?: () => boolean) => {
       const wanted = Math.max(count, PAGE_SIZE);
       const collected: GalleryImage[] = [];
       let more = false;
@@ -1613,6 +1619,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         more = page.has_more;
         if (!page.has_more || page.images.length === 0) break;
       }
+      // Checked here, not by the caller: by the time this returns the window is already applied,
+      // so a stale snapshot has to be dropped before it overwrites a newer local change.
+      if (stillFresh && !stillFresh()) return;
       galleryCache.images = collected;
       galleryCache.hasMore = more;
       setImages(collected);
@@ -1644,6 +1653,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.images.length;
       pinIntent.current.set(id, pinned);
+      stripEpoch.current += 1;
+      const epoch = stripEpoch.current;
       // Optimistic: the reorder should land on the click, not a round trip later.
       setImages((prev) => {
         const next = applyPin(prev, id, pinned);
@@ -1660,6 +1671,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // while this is still what the user last asked for.
         if (pinIntent.current.get(id) === pinned) {
           pinIntent.current.delete(id);
+          stripEpoch.current += 1;
           setImages((prev) => {
             const next = applyPin(prev, id, !pinned);
             galleryCache.images = next;
@@ -1674,7 +1686,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // front), so only unpinning can open a gap.
       if (!pinned && loadedCount > 0) {
         try {
-          await resyncWindow(loadedCount);
+          // Fenced: a pin clicked while this GET is in flight would otherwise be overwritten by a
+          // snapshot taken before it, leaving the strip unpinned while the server is pinned.
+          await resyncWindow(loadedCount, () => stripEpoch.current === epoch);
         } catch {
           // Best-effort: the strip is still usable, just possibly short one image until a reload.
         }

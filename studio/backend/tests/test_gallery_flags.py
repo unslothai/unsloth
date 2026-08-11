@@ -245,3 +245,52 @@ def test_a_write_repairs_a_store_with_a_malformed_entry(gdir):
     # The readable flags survived the repair.
     assert flags.is_archived(items, "good") is True
     assert flags.flags_for(items, "new")["pinned"] is True
+
+
+@pytest.mark.parametrize("archived", [None, 1, "yes", []])
+def test_a_non_bool_archived_is_refused_rather_than_read_as_active(gdir, archived):
+    # Every reader turns a non-bool into "not archived", which is what clear() deletes on, so the
+    # store has to refuse instead of handing the file over.
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"archived": archived}}}), encoding = "utf-8"
+    )
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
+
+
+def test_an_unusable_pin_time_also_costs_the_store_its_trust(gdir):
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400}}}), encoding = "utf-8"
+    )
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
+
+
+def test_a_write_repairs_a_bad_field_without_dropping_the_archive(gdir):
+    # Dropping the whole entry over its pin time would hand an archived item to the next clear().
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400, "archived": True}}}),
+        encoding = "utf-8",
+    )
+    flags.set_flags(gdir, "b", pinned = True)
+    items = flags.read_trusted(gdir)
+    assert flags.is_archived(items, "a") is True
+    assert flags.flags_for(items, "a")["pinned"] is False
+
+
+def test_a_write_repairs_a_non_bool_archived(gdir):
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"archived": None}}}), encoding = "utf-8"
+    )
+    flags.set_flags(gdir, "b", pinned = True)
+    # The entry had nothing readable left, so it goes; "b" is trusted from here on.
+    assert set(flags.read_trusted(gdir)) == {"b"}
+
+
+def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"a": {"archived": False, "pinned_at": 1.0}}}),
+        encoding = "utf-8",
+    )
+    items = flags.read_trusted(gdir)
+    assert flags.flags_for(items, "a") == {"pinned": True, "archived": False}

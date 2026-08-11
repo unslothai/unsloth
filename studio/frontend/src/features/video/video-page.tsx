@@ -1290,6 +1290,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Drop a clip from the strip. `discardLink` is for a real delete: the bytes are gone, so the
   // cached link must go and any mint in flight must throw its result away. An archived clip keeps
   // both, since the archived view plays the same file.
+  // Bumped by every local change to the strip (pin, archive, delete). A resync started before a
+  // change cannot tell that its snapshot is now behind, so it compares this instead of applying a
+  // window the user has already moved off.
+  const stripEpoch = useRef(0);
+
   const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
     if (discardLink) {
       galleryCache.srcById.delete(id);
@@ -1301,6 +1306,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         return next;
       });
     }
+    stripEpoch.current += 1;
     // Read the list from the cache (kept in sync with state every render) rather than nesting a
     // setSelectedId inside a setVideos updater, which would run a side effect during dispatch.
     const at = galleryCache.videos.findIndex((v) => v.id === id);
@@ -1331,7 +1337,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
    * still pages from the unchanged length, so that clip would be skipped until a reload.
    */
   const resyncWindow = useCallback(
-    async (count: number) => {
+    async (count: number, stillFresh?: () => boolean) => {
       const wanted = Math.max(count, PAGE_SIZE);
       const collected: GalleryVideo[] = [];
       let more = false;
@@ -1341,6 +1347,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         more = page.has_more;
         if (!page.has_more || page.videos.length === 0) break;
       }
+      // Checked here, not by the caller: by the time this returns the window is already applied,
+      // so a stale snapshot has to be dropped before it overwrites a newer local change.
+      if (stillFresh && !stillFresh()) return;
       galleryCache.videos = collected;
       galleryCache.hasMore = more;
       setVideos(collected);
@@ -1372,6 +1381,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.videos.length;
       pinIntent.current.set(id, pinned);
+      stripEpoch.current += 1;
+      const epoch = stripEpoch.current;
       // Optimistic: the reorder should land on the click, not a round trip later.
       setVideos((prev) => {
         const next = applyPin(prev, id, pinned);
@@ -1388,6 +1399,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // while this is still what the user last asked for.
         if (pinIntent.current.get(id) === pinned) {
           pinIntent.current.delete(id);
+          stripEpoch.current += 1;
           setVideos((prev) => {
             const next = applyPin(prev, id, !pinned);
             galleryCache.videos = next;
@@ -1402,7 +1414,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // front), so only unpinning can open a gap.
       if (!pinned && loadedCount > 0) {
         try {
-          await resyncWindow(loadedCount);
+          // Fenced: a pin clicked while this GET is in flight would otherwise be overwritten by a
+          // snapshot taken before it, leaving the strip unpinned while the server is pinned.
+          await resyncWindow(loadedCount, () => stripEpoch.current === epoch);
         } catch {
           // Best-effort: the strip is still usable, just possibly short one clip until a reload.
         }

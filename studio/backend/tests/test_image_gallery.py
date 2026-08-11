@@ -367,6 +367,21 @@ def test_clear_refuses_when_a_single_flag_entry_is_malformed():
     assert gallery.image_path(record["id"]) is not None
 
 
+def test_clear_refuses_when_an_archived_flag_is_not_a_boolean():
+    # `{"archived": null}` is still a dict, so a container-only check trusted it, and every reader
+    # turns it into "not archived" -- enough for the default clear to delete the archived image.
+    import json as _json
+
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        _json.dumps({"version": 1, "items": {record["id"]: {"archived": None}}}), encoding = "utf-8"
+    )
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.image_path(record["id"]) is not None
+
+
 def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
     # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
     # landing in that window returned success for a file the same clear went on to delete.

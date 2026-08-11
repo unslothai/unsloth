@@ -54,6 +54,37 @@ class FlagsUnavailable(RuntimeError):
     """
 
 
+def _valid_entry(entry: Any) -> bool:
+    """Whether an entry is exactly the shape this module writes.
+
+    The container being a dict is not enough. ``{"archived": null}`` is a dict, and every reader
+    turns it into "not archived", which is what ``clear`` deletes on. Nothing here ever writes a
+    non-bool ``archived`` or an unusable ``pinned_at``, so either one means the file was edited or
+    damaged and no field in it can be taken at face value."""
+    if not isinstance(entry, dict):
+        return False
+    if "archived" in entry and not isinstance(entry["archived"], bool):
+        return False
+    if "pinned_at" in entry and _pinned_at(entry) is None:
+        return False
+    return True
+
+
+def _sanitize_entry(entry: Any) -> Optional[dict[str, Any]]:
+    """The entry with unreadable fields dropped, or None when nothing usable is left.
+
+    Repairs rather than discards: a bad ``pinned_at`` must not take an ``archived`` flag down with
+    it, since dropping that would hand the item to the next ``clear``."""
+    if not isinstance(entry, dict):
+        return None
+    clean = dict(entry)
+    if "archived" in clean and not isinstance(clean["archived"], bool):
+        clean.pop("archived")
+    if "pinned_at" in clean and _pinned_at(clean) is None:
+        clean.pop("pinned_at")
+    return clean or None
+
+
 def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     """``(data, trusted)``. ``trusted`` is False when a store is present but unusable, so a caller
     can tell "nothing is flagged" apart from "we cannot say what is flagged"."""
@@ -67,12 +98,12 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
-            # Every ENTRY has to be a mapping too, not just the container. A single malformed value
-            # is dropped by the readers below, which reads as "this id is not archived" -- enough
-            # for clear() to delete an archived file. So one bad entry costs the store its trust,
-            # but the surviving entries are still returned: listing should keep the flags it can
-            # read, and only destructive callers need to refuse.
-            if all(isinstance(v, dict) for v in data["items"].values()):
+            # Every ENTRY has to be readable too, not just the container. A malformed value is
+            # dropped by the readers below, which reads as "this id is not archived" -- enough for
+            # clear() to delete an archived file. So one bad entry costs the store its trust, but
+            # the surviving entries are still returned: listing should keep the flags it can read,
+            # and only destructive callers need to refuse.
+            if all(_valid_entry(v) for v in data["items"].values()):
                 return data, True
             logger.warning(
                 "gallery_flags.unreadable: %s has a malformed entry", _store_path(directory)
@@ -255,7 +286,11 @@ def set_flags_locked(
     # hand, and refusing here instead would leave the user unable to pin anything at all. Dropping
     # only the unreadable entries keeps the flags that still mean something.
     data = _load(directory)[0]
-    items = {k: v for k, v in data.get("items", {}).items() if isinstance(v, dict)}
+    items: dict[str, Any] = {}
+    for key, value in data.get("items", {}).items():
+        clean = _sanitize_entry(value)
+        if clean is not None:
+            items[key] = clean
     data["items"] = items
     entry = dict(_entry(items, item_id))
     if pinned is not None:
