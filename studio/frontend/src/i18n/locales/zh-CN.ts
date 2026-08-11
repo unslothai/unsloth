@@ -870,6 +870,11 @@ export const zhCN = {
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      thinking: {
+        collapseByDefault: "默认折叠思考过程",
+        collapseByDefaultDescription:
+          "模型思考时保持折叠，而不是自动展开。需要阅读时展开对应区块。",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "折叠 HTML 块",

@@ -895,6 +895,11 @@ export const it = {
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      thinking: {
+        collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
+        collapseByDefaultDescription:
+          "Mantieni il ragionamento compresso mentre il modello pensa, invece di aprirlo automaticamente. Espandi un blocco per leggerlo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Comprimi i blocchi HTML",

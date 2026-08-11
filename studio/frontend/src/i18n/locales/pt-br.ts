@@ -907,6 +907,11 @@ export const ptBR = {
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      thinking: {
+        collapseByDefault: "Recolher o raciocínio por padrão",
+        collapseByDefaultDescription:
+          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
