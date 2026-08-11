@@ -16,11 +16,7 @@ def _setting_key(kind: MediaGenerationKind) -> str:
     return f"{kind}_generation_presets"
 
 
-def _accept_write(
-    kind: MediaGenerationKind,
-    scope: str,
-    write: PresetWriteOrder,
-) -> bool:
+def _accept_write(kind: MediaGenerationKind, scope: str, write: PresetWriteOrder) -> bool:
     writer, sequence = write
     if writer is None or sequence is None:
         return True
@@ -36,7 +32,6 @@ def _accept_write(
 
 def get_media_generation_preset_settings(kind: MediaGenerationKind) -> dict:
     from storage.studio_db import get_app_setting
-
     with _settings_lock:
         stored = get_app_setting(_setting_key(kind), {})
         return stored if isinstance(stored, dict) else {}
@@ -48,7 +43,6 @@ def set_media_generation_preset_settings(
     write: PresetWriteOrder = (None, None),
 ) -> dict:
     from storage.studio_db import upsert_app_settings
-
     with _settings_lock:
         stored = get_media_generation_preset_settings(kind)
         if not _accept_write(kind, "settings", write):
@@ -64,7 +58,6 @@ def upsert_media_generation_preset(
     write: PresetWriteOrder = (None, None),
 ) -> None:
     from storage.studio_db import upsert_app_settings
-
     with _settings_lock:
         if not _accept_write(kind, "custom", write):
             return
@@ -85,7 +78,6 @@ def delete_media_generation_preset(
     write: PresetWriteOrder = (None, None),
 ) -> None:
     from storage.studio_db import upsert_app_settings
-
     with _settings_lock:
         if not _accept_write(kind, "custom", write):
             return

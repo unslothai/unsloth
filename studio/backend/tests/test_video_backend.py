@@ -1596,6 +1596,7 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
 
 def test_video_status_response_carries_gguf_variant():
     from models.inference import VideoStatusResponse
+
     response = VideoStatusResponse(
         loaded = True,
         gguf_filename = "ltx-Q4_K_M.gguf",

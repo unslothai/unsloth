@@ -197,14 +197,25 @@ def test_stale_settings_writes_cannot_add_or_remove_named_presets(monkeypatch):
     preset_y = {"name": "Y", "params": {**params, "steps": 24}}
 
     assert client.put("/api/settings/generation-presets/image", json = settings).status_code == 200
-    assert client.put("/api/settings/generation-presets/image/custom", json = preset_x).status_code == 200
+    assert (
+        client.put("/api/settings/generation-presets/image/custom", json = preset_x).status_code
+        == 200
+    )
     stale = {**settings, "customPresets": [preset_x]}
-    assert client.put("/api/settings/generation-presets/image/custom", json = preset_y).status_code == 200
+    assert (
+        client.put("/api/settings/generation-presets/image/custom", json = preset_y).status_code
+        == 200
+    )
     assert client.put("/api/settings/generation-presets/image", json = stale).status_code == 200
     saved = client.get("/api/settings/generation-presets/image").json()
     assert {preset["name"] for preset in saved["customPresets"]} == {"X", "Y"}
 
-    assert client.delete("/api/settings/generation-presets/image/custom", params = {"name": "X"}).status_code == 200
+    assert (
+        client.delete(
+            "/api/settings/generation-presets/image/custom", params = {"name": "X"}
+        ).status_code
+        == 200
+    )
     assert client.put("/api/settings/generation-presets/image", json = stale).status_code == 200
     saved = client.get("/api/settings/generation-presets/image").json()
     assert [preset["name"] for preset in saved["customPresets"]] == ["Y"]
@@ -218,34 +229,47 @@ def test_out_of_order_writes_keep_the_latest_browser_operation(monkeypatch):
         "activePreset": "Default",
         "activePresetSource": "builtin-default",
     }
+
     def ordered(sequence: int) -> dict[str, str]:
         return {
             "Preset-Writer": "out-of-order-test",
             "Preset-Sequence": str(sequence),
         }
 
-    assert client.put(
-        "/api/settings/generation-presets/image",
-        json = {**settings, "currentParams": {"steps": 24}},
-        headers = ordered(2),
-    ).status_code == 200
-    assert client.put(
-        "/api/settings/generation-presets/image",
-        json = settings,
-        headers = ordered(1),
-    ).status_code == 200
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image",
+            json = {**settings, "currentParams": {"steps": 24}},
+            headers = ordered(2),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image",
+            json = settings,
+            headers = ordered(1),
+        ).status_code
+        == 200
+    )
     saved = client.get("/api/settings/generation-presets/image").json()
     assert saved["currentParams"]["steps"] == 24
 
-    assert client.delete(
-        "/api/settings/generation-presets/image/custom",
-        params = {"name": "Transient"},
-        headers = ordered(4),
-    ).status_code == 200
-    assert client.put(
-        "/api/settings/generation-presets/image/custom",
-        json = {"name": "Transient", "params": {}},
-        headers = ordered(3),
-    ).status_code == 200
+    assert (
+        client.delete(
+            "/api/settings/generation-presets/image/custom",
+            params = {"name": "Transient"},
+            headers = ordered(4),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = {"name": "Transient", "params": {}},
+            headers = ordered(3),
+        ).status_code
+        == 200
+    )
     saved = client.get("/api/settings/generation-presets/image").json()
     assert saved["customPresets"] == []

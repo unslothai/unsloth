@@ -5172,6 +5172,7 @@ def test_diffusion_status_response_carries_requested_precision():
 
 def test_diffusion_status_response_carries_gguf_variant():
     from models.inference import DiffusionStatusResponse
+
     response = DiffusionStatusResponse(
         loaded = True,
         gguf_filename = "z-image-turbo-Q8_0.gguf",
