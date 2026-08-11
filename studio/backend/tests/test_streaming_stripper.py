@@ -416,8 +416,58 @@ def test_no_reference_to_the_buffer_is_retained():
     stripper.strip(text)
 
     assert not [
-        holder for holder in gc.get_referrers(text) if holder is stripper.__class__ or holder is stripper
+        holder
+        for holder in gc.get_referrers(text)
+        if holder is stripper.__class__ or holder is stripper
     ]
-    assert all(
-        getattr(stripper, slot) is not text for slot in StreamingMarkupStripper.__slots__
-    )
+    assert all(getattr(stripper, slot) is not text for slot in StreamingMarkupStripper.__slots__)
+
+
+def test_reset_clears_the_cached_prefix_for_a_new_buffer():
+    """The streaming caller keeps one instance across tool iterations, and each iteration
+    starts a fresh ``cumulative_display``. ``_is_extension`` samples the ends rather than
+    comparing, so a new buffer that happens to agree on a length and 64 bytes at each end
+    is accepted, and the scan then resumes at an offset from the previous iteration and
+    never looks below it again. The caller says so explicitly instead.
+    """
+    stripper = StreamingMarkupStripper(ENABLED)
+
+    first = "x" * 200 + '<tool_call>{"name": "search", "arguments": {}}</tool_call>' + "y" * 200
+    stripper.strip(first)
+
+    # Same length, same first and last 64 bytes, different middle: an accepted impostor.
+    second = first[:64] + "z" * (len(first) - 128) + first[-64:]
+    assert len(second) == len(first) and second != first
+    assert stripper._is_extension(second)
+
+    stripper.reset()
+
+    assert stripper.strip(second) == _reference_strip(second)
+
+
+def test_early_markup_is_not_slower_than_the_code_it_replaces():
+    """Once the cut is 0 and nothing is settled, both arms are the same strip.
+
+    Paying the whole-buffer checks there cannot change the answer, and an answer with
+    markup near its front would pay them on every token for the rest of the turn, which
+    measured slower than the full rescan this replaces.
+    """
+    import time
+
+    prefix = '`x` <tool_call>{"name": "search", "arguments": {}}</tool_call> '
+
+    def elapsed(fn, count):
+        text = prefix
+        start = time.perf_counter()
+        for _ in range(count):
+            text += "word "
+            fn(text)
+        return time.perf_counter() - start
+
+    count = 1500
+    reference = min(elapsed(_reference_strip, count) for _ in range(3))
+    incremental = min(elapsed(StreamingMarkupStripper(ENABLED).strip, count) for _ in range(3))
+
+    assert (
+        incremental <= reference * 1.10
+    ), f"early markup cost {incremental:.3f}s against the reference's {reference:.3f}s"

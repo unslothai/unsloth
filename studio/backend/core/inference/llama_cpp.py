@@ -15484,6 +15484,8 @@ class LlamaCppBackend:
                 _reasoning_summary_emitted = False
                 _deferred_reasoning_summary = None
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
+                # A new buffer, not a continuation of the previous iteration's.
+                _streaming_stripper.reset()
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments

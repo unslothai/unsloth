@@ -868,6 +868,10 @@
             "decorators": [],
             "signature": "self, text: str"
           },
+          "reset": {
+            "decorators": [],
+            "signature": "self"
+          },
           "strip": {
             "decorators": [],
             "signature": "self, text: str"

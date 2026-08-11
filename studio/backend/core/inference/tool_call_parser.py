@@ -987,6 +987,19 @@ class StreamingMarkupStripper:
 
         return _tool_healing.strip_outside_think(text, _seg)
 
+    def reset(self):
+        """Drop every cached prefix, for a caller starting a new buffer.
+
+        The streaming caller keeps one instance for the whole request but begins a fresh
+        ``cumulative_display`` in each tool iteration. ``_is_extension`` samples the ends
+        rather than comparing, deliberately, so it cannot be relied on to notice: two
+        buffers agreeing on a length and 64 bytes at each end are accepted, and the scan
+        then resumes at an offset belonging to the previous iteration and never looks
+        below it again. Saying so explicitly costs nothing and makes the sampled check
+        exact for that caller, since within an iteration every mutation is an append.
+        """
+        self._reset()
+
     def _note(self, text: str):
         """Record what this call saw, as measurements rather than as the buffer.
 
@@ -998,6 +1011,9 @@ class StreamingMarkupStripper:
         loop at 64k tokens: 1.14s holding the buffer, 0.003s holding these three.
         """
         self._seen_len = len(text)
+        # A buffer at or under the sample size is its own sample, so these two do alias
+        # it there. That is harmless: the copy the alias forces is bounded by the sample
+        # size, and the cost this avoids is proportional to the buffer.
         self._seen_head = text[:_EXTENSION_SAMPLE]
         self._seen_tail = text[-_EXTENSION_SAMPLE:]
 
@@ -1023,10 +1039,12 @@ class StreamingMarkupStripper:
             self._reset()
 
         if self._degenerate:
+            # With nothing settled the two arms are the same expression, so the check
+            # would be two full-buffer scans that cannot change the answer.
             out = (
-                self._full_strip(text)
-                if self._needs_whole_buffer(text)
-                else self._floor_out + self._full_strip(text[self._floor :])
+                self._floor_out + self._full_strip(text[self._floor :])
+                if self._floor and not self._needs_whole_buffer(text)
+                else self._full_strip(text)
             )
             self._note(text)
             return out
@@ -1060,11 +1078,6 @@ class StreamingMarkupStripper:
             if state != "settled":
                 break
 
-        if self._needs_whole_buffer(text):
-            out = self._full_strip(text)
-            self._note(text)
-            return out
-
         tail = text[self._floor :]
         # Markup at offset 0 of the unsettled text: the cut is 0 now and stays 0 as the
         # buffer grows, and no reasoning block can settle, so skip the bookkeeping from
@@ -1073,6 +1086,14 @@ class StreamingMarkupStripper:
         # Recomputed per call rather than cached: the sentinel may have been found before
         # the run preceding it finished streaming, so re-deriving keeps the cut exact.
         cut = _safe_cut(tail, self._first)
+        # After the cut, not before it: with nothing settled and nothing to trim, the
+        # whole-buffer strip below already is the split one, so the two scans this costs
+        # would decide nothing and an answer with markup near its front would pay them on
+        # every token for the rest of the turn.
+        if (cut or self._floor) and self._needs_whole_buffer(text):
+            out = self._full_strip(text)
+            self._note(text)
+            return out
         stripped = tail[:cut] + self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
         out = self._floor_out + stripped if self._floor else stripped
         self._note(text)
