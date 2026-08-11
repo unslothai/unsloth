@@ -75,13 +75,7 @@ from core.inference.llama_server_args import (
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     strip_segment as _parser_strip_segment,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -92,14 +86,9 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the GGUF streaming strip stays aligned with the parser.
-from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
-    _strip_bracket_tag_calls,
-    apply_tool_strip_patterns,
-    strip_outside_think,
-)
+# The healer owns think-block splitting; the bracket-tag and rehearsal arms it used to
+# lend this module now run inside the parser's ``strip_segment``.
+from core.tool_healing import strip_outside_think
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
