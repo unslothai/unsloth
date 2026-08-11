@@ -204,3 +204,45 @@ def test_a_concurrent_first_install_captures_the_original_encode_once(
     assert not errors, errors[:2]
     assert audio_decode._ORIGINAL_ENCODE is original
     assert audio_decode._ORIGINAL_ENCODE is not audio_decode._encode_with_soundfile
+
+
+def test_a_multi_repo_mapping_picks_the_token_of_the_source_repo():
+    """Interleaved or concatenated streaming splits carry one token per source repo.
+
+    Handing an arbitrary one to xopen sends a private repo's credential to a different
+    repo's host, so the repo id has to come from the URL being opened.
+    """
+    from datasets import config
+
+    tokens = {"org/first": "token-first", "org/second": "token-second"}
+    url = "hf://datasets/org/second@main/data/train-00000.wav"
+    assert audio_decode._token_for_url(url, tokens) == "token-second"
+
+    resolve = f"{config.HF_ENDPOINT}/datasets/org/first/resolve/main/data/train-00000.wav"
+    assert audio_decode._token_for_url(resolve, tokens) == "token-first"
+
+
+def test_a_chained_url_is_keyed_on_the_repo_it_actually_fetches():
+    """Compressed streaming shards arrive as "zip://inner::https://outer" chains."""
+    from datasets import config
+
+    tokens = {"org/first": "token-first", "org/second": "token-second"}
+    outer = f"{config.HF_ENDPOINT}/datasets/org/second/resolve/main/audio.zip"
+    assert audio_decode._token_for_url(f"zip://clip.wav::{outer}", tokens) == "token-second"
+
+
+def test_an_unknown_host_gets_no_token_when_the_mapping_is_ambiguous():
+    tokens = {"org/first": "token-first", "org/second": "token-second"}
+    assert audio_decode._token_for_url("https://example.com/clip.wav", tokens) is None
+    # The single-repo mapping every caller in this codebase passes still works, which is
+    # what the previous next(iter(...)) did for all of them.
+    assert audio_decode._token_for_url("https://example.com/clip.wav", {"org/x": "t"}) == "t"
+    assert audio_decode._token_for_url("https://example.com/clip.wav", {}) is None
+    assert audio_decode._token_for_url("https://example.com/clip.wav", None) is None
+
+
+def test_a_repo_absent_from_the_mapping_sends_no_credential():
+    """A public repo mixed in with private ones must not borrow their token."""
+    tokens = {"org/private": "token-private"}
+    url = "hf://datasets/org/public@main/data/clip.wav"
+    assert audio_decode._token_for_url(url, tokens) is None

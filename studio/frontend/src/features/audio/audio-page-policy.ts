@@ -178,15 +178,21 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
  * The page is authoritative for the newest `page.length` clips and any scrollback below
  * it is kept; replacing outright collapsed a paginated History on every delete and
  * generate, and reselected a different clip. `removedId` drops a clip this client just
- * deleted, which the page can no longer report. */
+ * deleted, which the page can no longer report. `hasMore` is the page's own report of
+ * whether the server holds anything older. */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
   removedId?: string,
+  hasMore?: boolean,
 ): { clips: T[]; stitched: boolean } {
   const inPage = new Set(page.map((clip) => clip.id));
   // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
   if (page.length === 0) return { clips: [], stitched: false };
+  // A complete first page IS everything the server holds, so there is no scrollback to
+  // keep: a cached clip below it was deleted by another client or pruned by the size cap,
+  // and stitching it back rendered a row that could never be played again.
+  if (hasMore === false) return { clips: [...page], stitched: false };
   // The page is authoritative over the window it covers, so a cached clip inside that
   // window and absent from the page was deleted by another client and must go. Only what
   // sits BELOW the page's oldest entry is scrollback. Keying on the position of that

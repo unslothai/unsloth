@@ -453,9 +453,12 @@ def _prompt_token_estimate(prompt: str) -> int:
     except Exception:  # noqa: BLE001 - an estimate must never fail the request
         pass
     # llama-server holds its own tokenizer, so estimate by character class instead of a
-    # flat ratio: CJK and emoji are about a token each, Latin text about a third of one.
-    # A flat len(prompt) would be safe but would reject ordinary English that fits.
-    dense = sum(1 for ch in prompt if ord(ch) > 0x2E7F)
+    # flat ratio. Everything outside ASCII counts as a token: the earlier cut at U+2E7F
+    # only caught CJK and emoji, so Arabic, Cyrillic, Hebrew and the Indic scripts were
+    # billed at the Latin third-of-a-token rate and a long prompt in any of them passed
+    # the guard, then overflowed the context during generation. Over-counting accented
+    # Latin is the safe direction for a budget: it shortens the clip rather than failing.
+    dense = sum(1 for ch in prompt if ord(ch) > 0x7F)
     return max(1, dense + (len(prompt) - dense) // 3)
 
 
@@ -9215,6 +9218,11 @@ async def _generate_tts_wav(
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
     await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
+    # Again, now that a context exists to measure against. The check above runs before the
+    # restore so an invalid request never triggers a reload, but with nothing loaded it has
+    # no context length and passes everything, so the first request after an idle eviction
+    # would reach generation over-context and come back as a one-token clip.
+    _raise_if_prompt_leaves_no_speech_budget(text)
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
@@ -9529,6 +9537,41 @@ def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
     return resolved
 
 
+def _prepare_runtime_fallback_checkpoint(
+    requested_engine: Optional[str],
+    serving_engine: str,
+    model: Optional[str],
+    hf_token: Optional[str] = None,
+) -> None:
+    """Fetch the Transformers snapshot a broken whisper.cpp runtime now falls back to.
+
+    A GGUF pick downloads one .bin file, so when the runtime turns out to be broken at
+    inference time the Transformers engine it is redirected to has no snapshot and every
+    retry raises SttModelNotDownloadedError instead of the promised fallback. The two
+    engines share curated ids, so the equivalent snapshot is known and is fetched in the
+    background here; /audio/stt/status reports its progress and the next attempt lands on
+    a usable checkpoint. Only for a runtime that broke: whisper-server simply not being
+    installed already routes the download itself through Transformers.
+    """
+    if serving_engine != "transformers" or _resolve_stt_engine(requested_engine) != "gguf":
+        return
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+
+    if stt_ggml_sidecar.runtime_inference_failure() is None:
+        return
+    if stt_sidecar.is_model_downloaded(model):
+        return
+    try:
+        stt_sidecar.start_model_download(model, hf_token)
+    except Exception as exc:  # noqa: BLE001 - preparation is best effort, never fatal
+        # Another dictation model already downloading is the common case, and the caller
+        # is about to report "not downloaded" anyway.
+        logger.info(
+            "Could not start the Transformers fallback download for STT model %r: %s",
+            model, exc,
+        )
+
+
 def _stt_download_module(engine: str):
     """Module owning download/status for an engine."""
     if engine == "mtmd":
@@ -9731,6 +9774,9 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    await asyncio.to_thread(
+        _prepare_runtime_fallback_checkpoint, payload.engine, engine, payload.model,
+    )
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
     cancel_event = threading.Event()
@@ -9849,7 +9895,11 @@ async def _transcribe_audio_result(
     if len(raw) > _MAX_AUDIO_RAW_BYTES:
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
-    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
+    serving_engine = _resolve_serving_stt_engine(engine)
+    await asyncio.to_thread(
+        _prepare_runtime_fallback_checkpoint, engine, serving_engine, model,
+    )
+    sidecar = _stt_sidecar_for(serving_engine)
     cancel_event = threading.Event() if request is not None else None
     disconnect_watcher = (
         asyncio.create_task(_await_stt_disconnect_then_cancel(request, sidecar, cancel_event))

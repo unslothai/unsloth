@@ -30,6 +30,38 @@ _ORIGINAL_ENCODE = None
 _install_lock = threading.Lock()
 
 
+def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
+    """Pick the credential belonging to the repository this URL points at.
+
+    A mapping holds one entry per source repo, and `concatenate_datasets` or
+    `interleave_datasets` over streaming splits puts several in it at once, so taking an
+    arbitrary value would send one repo's token to another repo's host. Resolved the way
+    `datasets.Audio.decode_example` does it, from the repo id embedded in the URL.
+    """
+    if not token_per_repo_id:
+        return None
+    from datasets import config
+    from datasets.utils.py_utils import string_to_dict
+
+    # A chained URL ("zip://inner::https://outer") names its host in the last segment.
+    source_url = path.split("::")[-1]
+    pattern = (
+        config.HUB_DATASETS_URL if source_url.startswith(config.HF_ENDPOINT)
+        else config.HUB_DATASETS_HFFS_URL
+    )
+    try:
+        fields = string_to_dict(source_url, pattern)
+    except ValueError:
+        # Older `datasets` raise here instead of returning None.
+        fields = None
+    if fields is None:
+        # Not a Hub URL, so no repo id to key on. One entry is unambiguous and is the
+        # shape every caller in this codebase passes; more than one is not guessable.
+        values = list(token_per_repo_id.values())
+        return values[0] if len(values) == 1 else None
+    return token_per_repo_id.get(fields["repo_id"])
+
+
 def _decode_with_soundfile(
     self,
     value: dict,
@@ -58,9 +90,10 @@ def _decode_with_soundfile(
     elif is_local_path(path):
         source = path
     else:
-        # Callers pass a single-repo mapping, so the token needs no URL-to-repo-id parsing.
-        token = next(iter(token_per_repo_id.values()), None) if token_per_repo_id else None
-        source = xopen(path, "rb", download_config = DownloadConfig(token = token))
+        source = xopen(
+            path, "rb",
+            download_config = DownloadConfig(token = _token_for_url(path, token_per_repo_id)),
+        )
 
     array, sampling_rate = sf.read(source, dtype = "float32", always_2d = False)
     if array.ndim > 1:

@@ -34,6 +34,10 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
     /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\(repoId, ggufFilename, meta\.loadId\)/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
+  assert.match(
+    source,
+    /\/\*\* Start a pick that lost the race[\s\S]*?const replayQueuedTtsPick = useCallback/,
+  );
   // Still single-flight, but the loser is queued rather than dropped: a pick arriving
   // while a cancelled load settles used to vanish, and the route effect had already
   // cleared ?model=, so nothing retried it.
@@ -43,7 +47,10 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
   );
   assert.match(
     source,
-    /const queued = pendingRoutedTtsPick\.current;\s*pendingRoutedTtsPick\.current = null;\s*if \(queued\)/,
+    // Replayed only while Audio is visible, and again when it becomes visible. Replaying
+    // unconditionally started a load with activeRef already false, which the deactivation
+    // effect had already stopped watching, so a hidden page could replace Chat's model.
+    /if \(activeRef\.current\) replayQueuedTtsPick\(\);/,
   );
 });
 

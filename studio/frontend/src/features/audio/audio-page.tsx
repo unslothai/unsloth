@@ -557,6 +557,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           page.audio,
           galleryCache.clips,
           removedId,
+          page.has_more,
         );
         galleryCache.clips = merged;
         // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
@@ -695,6 +696,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const pending = {
         generation,
         repoId,
+        // What the request actually sent. Cancelling under the display id works only when
+        // the load target is a standard HF cache snapshot, because the backend can map
+        // models--org--name back to a repo id; a pinned directory elsewhere does not match
+        // and _cancel_scoped_load_attempt then refuses, leaving the load running.
+        loadTarget: loadId || repoId,
         loadRequestId,
         controller,
         requestStarted: false,
@@ -750,17 +756,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         busyRef.current = null;
         setBusy(null);
         if (activeRef.current) void refreshStatus();
-        // Replayed without an active check: the queue is only ever filled by an explicit
-        // pick, and a routed one arrives with a navigation to this page that may not have
-        // landed yet, so gating on activeRef here would drop exactly the pick being fixed.
-        const queued = pendingRoutedTtsPick.current;
-        pendingRoutedTtsPick.current = null;
-        if (queued)
-          void loadTtsModelRef.current(
-            queued.repoId,
-            queued.ggufFilename,
-            queued.loadId,
-          );
+        // Only while Audio is visible. Replaying unconditionally started a load with
+        // activeRef already false, and since the deactivation effect had run it never saw
+        // that attempt to cancel it, so a hidden page could replace the model Chat had
+        // loaded. The pick stays queued instead and the activation effect replays it.
+        if (activeRef.current) replayQueuedTtsPick();
       }
     },
     [refreshStatus],
@@ -770,6 +770,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // progress, cancellation, resume and disk preflight behavior as Chat/Images/Video.
   const loadTtsModelRef = useRef(loadTtsModel);
   loadTtsModelRef.current = loadTtsModel;
+  /** Start a pick that lost the race with a load still settling. Visible pages only:
+   *  a load started while hidden outlives the deactivation effect that would cancel it. */
+  const replayQueuedTtsPick = useCallback(() => {
+    const queued = pendingRoutedTtsPick.current;
+    if (!queued) return;
+    pendingRoutedTtsPick.current = null;
+    void loadTtsModelRef.current(queued.repoId, queued.ggufFilename, queued.loadId);
+  }, []);
   const invalidatePendingStagedTts = useCallback(() => {
     stagedTtsGeneration.current += 1;
     pendingStagedTtsLoad.current = null;
@@ -794,13 +802,20 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
-        const release = releaseTranscribeSelection().catch((error) => {
-          toast.error(
-            error instanceof Error
-              ? error.message
-              : "Failed to release the transcription model.",
-          );
-        });
+        // Resolves to whether the sidecar is actually gone. Swallowing the rejection made
+        // a failed unload look like a successful release, so the speech load went ahead
+        // with the dictation model still resident, which OOMs a device that fits one.
+        const release = releaseTranscribeSelection().then(
+          () => true,
+          (error) => {
+            toast.error(
+              error instanceof Error
+                ? error.message
+                : "Failed to release the transcription model.",
+            );
+            return false;
+          },
+        );
         // Recorded so a TTS load can wait for the teardown: allocating while the sidecar
         // still holds its model is what OOMs a device that fits either one alone.
         pendingTranscribeRelease.current = release;
@@ -1012,7 +1027,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         pending.controller.abort();
         if (pending.requestStarted)
           void unloadModel({
-            model_path: pending.repoId,
+            model_path: pending.loadTarget,
             cancel_load_request_id: pending.loadRequestId,
           }).catch(() => {});
       }
@@ -1040,6 +1055,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       }
       return;
     }
+
+    // A pick queued behind a settling load, held back because the page went away before
+    // the load finished. Now that Audio is visible again the attempt is cancellable.
+    replayQueuedTtsPick();
 
     const deferred = deferredSttLoad.current;
     deferredSttLoad.current = null;
@@ -1080,7 +1099,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
   /** An in-flight Transcribe teardown a following TTS load has to wait behind. */
-  const pendingTranscribeRelease = useRef<Promise<void> | null>(null);
+  const pendingTranscribeRelease = useRef<Promise<boolean> | null>(null);
 
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
@@ -1109,7 +1128,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       if (!transitionMode("speak")) return;
       // Serialize against a Transcribe release started by that transition.
       const releaseInFlight = pendingTranscribeRelease.current;
-      if (releaseInFlight) await releaseInFlight;
+      // A release that failed leaves the sidecar resident, so do not stack a speech model
+      // on top of it. Back to Transcribe, where Eject can retry the unload.
+      if (releaseInFlight && !(await releaseInFlight)) {
+        setMode("transcribe");
+        return;
+      }
       if (ttsPickGeneration.current !== selectionGeneration) return;
       const exactGguf = exactGgufLoadSelector(meta);
       const isGguf = Boolean(

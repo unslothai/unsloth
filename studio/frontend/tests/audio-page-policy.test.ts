@@ -320,7 +320,10 @@ test("leaving Audio cancels an owned TTS load without touching a pre-request pro
   );
   assert.match(
     audioPageSource,
-    /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{[\s\S]*model_path: pending\.repoId,[\s\S]*cancel_load_request_id: pending\.loadRequestId/,
+    // Cancels under the target the request actually sent. The display id only maps back
+    // to the load for a standard HF cache snapshot; a pinned directory elsewhere does not,
+    // and the backend then refuses the cancellation and keeps loading.
+    /const pending = pendingTtsLoad\.current;[\s\S]*pending\.controller\.abort\(\);[\s\S]*if \(pending\.requestStarted\)[\s\S]*unloadModel\(\{[\s\S]*model_path: pending\.loadTarget,[\s\S]*cancel_load_request_id: pending\.loadRequestId/,
   );
   assert.match(
     chatApiSource,
@@ -459,5 +462,35 @@ test("the transcript download revokes its URL only after the click is consumed",
   assert.match(
     audioPageSource,
     /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
+  );
+});
+
+test("a complete first page drops cached rows the server no longer holds", () => {
+  // has_more=false means the page IS everything on the server, so a cached clip below it
+  // was deleted by another client or pruned by the size cap. Stitching it back rendered a
+  // row that stayed on screen across every refresh and failed to play.
+  const merged = mergeGalleryPage(
+    [{ id: "c" }, { id: "b" }],
+    [{ id: "c" }, { id: "b" }, { id: "a" }],
+    undefined,
+    false,
+  );
+  assert.deepEqual(merged, { clips: [{ id: "c" }, { id: "b" }], stitched: false });
+
+  // With more on the server the scrollback is still real and is kept.
+  const stitched = mergeGalleryPage(
+    [{ id: "c" }, { id: "b" }],
+    [{ id: "c" }, { id: "b" }, { id: "a" }],
+    undefined,
+    true,
+  );
+  assert.deepEqual(stitched.clips, [{ id: "c" }, { id: "b" }, { id: "a" }]);
+  assert.equal(stitched.stitched, true);
+});
+
+test("the refresh passes the page's completeness into the merge", () => {
+  assert.match(
+    audioPageSource,
+    /mergeGalleryPage\(\s*page\.audio,\s*galleryCache\.clips,\s*removedId,\s*page\.has_more,/,
   );
 });

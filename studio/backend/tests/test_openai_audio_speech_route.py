@@ -203,6 +203,26 @@ def test_the_shared_core_guards_before_generating():
     assert "_raise_if_prompt_leaves_no_speech_budget(text)" in source
 
 
+def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
+    """With nothing loaded there is no context to measure, so the guard passes everything.
+    Idle auto-unload leaves exactly that state, and the restore below it brings the context
+    back, so the first request after an eviction reached generation over-context and came
+    back as a one-token clip."""
+    import inspect
+
+    source = inspect.getsource(routes_module._generate_tts_wav)
+    guards = [
+        i for i, line in enumerate(source.splitlines())
+        if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
+    ]
+    restore = next(
+        i for i, line in enumerate(source.splitlines())
+        if "_maybe_auto_switch_model(_RELOAD_ONLY_MODEL" in line
+    )
+    assert len(guards) == 2, "one check before the restore, one after"
+    assert guards[0] < restore < guards[1]
+
+
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):
     import core.inference.audio_gallery as gallery
 
@@ -265,3 +285,26 @@ def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(mon
     saved = gallery.save(b"R" * 4096, meta)
 
     assert [clip["id"] for clip in gallery.list_audio()] == [saved["id"]]
+
+
+def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
+    """Without a Python tokenizer (GGUF TTS), the estimate is by character class. Cutting
+    at U+2E7F caught CJK and emoji but billed Arabic, Cyrillic, Hebrew and the Indic
+    scripts at a third of a token each, so a long prompt in any of them passed the guard
+    and then overflowed the loaded context during generation."""
+    estimate = routes_module._prompt_token_estimate
+
+    for label, text in (
+        ("arabic", "مرحبا بالعالم " * 40),
+        ("cyrillic", "Привет мир " * 40),
+        ("hebrew", "שלום עולם " * 40),
+        ("devanagari", "नमस्ते दुनिया " * 40),
+    ):
+        assert estimate(text) >= len(text.replace(" ", "")), label
+
+    # Latin is still counted at the cheaper rate, so ordinary English is not rejected.
+    english = "the quick brown fox jumps over the lazy dog " * 40
+    assert estimate(english) < len(english) // 2
+
+    # And CJK, which already worked, is unchanged.
+    assert estimate("你好世界" * 50) >= 200

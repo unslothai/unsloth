@@ -78,12 +78,14 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
   // wait behind the teardown instead of allocating alongside it.
   assert.match(
     source,
-    /setMode\(nextMode\);[^}]*if \(mode === "transcribe"\) \{\s*const release = releaseTranscribeSelection\(\)/,
+    /setMode\(nextMode\);[\s\S]*?if \(mode === "transcribe"\) \{[\s\S]*?const release = releaseTranscribeSelection\(\)\.then\(/,
   );
   assert.match(source, /pendingTranscribeRelease\.current = release;/);
   assert.match(
     source,
-    /const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight\) await releaseInFlight;/,
+    // The release resolves to whether the sidecar is gone. A failure must not hand off to
+    // a speech load on top of a still-resident dictation model.
+    /const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]*?if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*setMode\("transcribe"\);\s*return;/,
   );
 });
 

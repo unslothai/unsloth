@@ -81,3 +81,73 @@ def test_an_amd_box_does_not_report_its_dictation_device_as_cuda(monkeypatch):
 
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     assert _reported_device("cuda") == "cuda"
+
+
+def test_the_fallback_fetches_the_transformers_snapshot_it_needs(monkeypatch):
+    """The GGUF pick downloaded one .bin, so Transformers has no snapshot to serve.
+
+    Without this the fallback swaps a 501 for a 409 "not downloaded" on every retry while
+    the Audio page still shows the selection as ready.
+    """
+    from core.inference import stt_sidecar
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(stt_ggml_sidecar, "find_whisper_server_binary", lambda: "whisper-server")
+    monkeypatch.setattr(stt_ggml_sidecar, "slim_runtime_intact", lambda binary: True)
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
+    started: list[tuple] = []
+    monkeypatch.setattr(
+        stt_sidecar, "start_model_download",
+        lambda model, token = None, revision = None: started.append((model, token)),
+    )
+
+    # A healthy runtime serves the GGUF itself, so nothing is fetched.
+    inference_routes._prepare_runtime_fallback_checkpoint("gguf", "gguf", "small")
+    assert started == []
+
+    stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
+    engine = inference_routes._resolve_serving_stt_engine("gguf")
+    inference_routes._prepare_runtime_fallback_checkpoint("gguf", engine, "small")
+    assert started == [("small", None)]
+
+
+def test_an_already_downloaded_snapshot_is_not_fetched_again(monkeypatch):
+    from core.inference import stt_sidecar
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: True)
+    started: list[tuple] = []
+    monkeypatch.setattr(
+        stt_sidecar, "start_model_download",
+        lambda model, token = None, revision = None: started.append((model, token)),
+    )
+    stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
+    inference_routes._prepare_runtime_fallback_checkpoint("gguf", "transformers", "small")
+    assert started == []
+
+
+def test_a_plain_transformers_pick_is_left_alone(monkeypatch):
+    """Only a GGUF selection redirected by a broken runtime needs preparing. An engine
+    that was never installed already routes its own download through Transformers."""
+    from core.inference import stt_sidecar
+    from routes import inference as inference_routes
+
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: False)
+    started: list[tuple] = []
+    monkeypatch.setattr(
+        stt_sidecar, "start_model_download",
+        lambda model, token = None, revision = None: started.append((model, token)),
+    )
+    stt_ggml_sidecar.note_runtime_inference_failure("RemoteDisconnected")
+    inference_routes._prepare_runtime_fallback_checkpoint("transformers", "transformers", "small")
+    inference_routes._prepare_runtime_fallback_checkpoint("mtmd", "mtmd", "small")
+    assert started == []
+
+    # And a download that cannot start (another model is in flight) is not fatal: the
+    # caller still reports "not downloaded" rather than a 500.
+    def refuse(model, token = None, revision = None):
+        from core.inference.stt_sidecar import SttModelIdError
+        raise SttModelIdError("Another dictation model is still downloading; wait for it.")
+
+    monkeypatch.setattr(stt_sidecar, "start_model_download", refuse)
+    inference_routes._prepare_runtime_fallback_checkpoint("gguf", "transformers", "small")

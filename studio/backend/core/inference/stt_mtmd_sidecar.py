@@ -627,6 +627,15 @@ class MtmdSttSidecar:
             self._port = None
             self._model_id = None
 
+    def _drain_active_requests(self, deadline: float) -> None:
+        """Wait, bounded, for in-flight transcriptions to finish.
+
+        Never called while holding ``_lock``: `transcribe` claims ``_active_requests``
+        under that lock, so waiting there would block the very request being waited on.
+        """
+        while self._active_requests and time.monotonic() < deadline:
+            time.sleep(0.1)
+
     def unload(self, wait: bool = True) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
@@ -635,36 +644,44 @@ class MtmdSttSidecar:
         """
         if not wait and (self.is_loading() or self._active_requests):
             return
-        if wait and self._active_requests:
-            # A blocking caller is training claiming the VRAM, so this cannot wait forever,
-            # but `wait=True` still must not kill llama-server under a live transcription and
-            # throw the recording away. Bounded window, then proceed.
-            drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
-            while self._active_requests and time.monotonic() < drain_deadline:
-                time.sleep(0.1)
-            if self._active_requests:
-                logger.warning(
-                    "mtmd STT still had %d active request(s) after %.0fs; releasing anyway",
-                    self._active_requests,
-                    _ACTIVE_REQUEST_DRAIN_TIMEOUT,
-                )
+        # A blocking caller is training claiming the VRAM, so this cannot wait forever, but
+        # `wait=True` still must not kill llama-server under a live transcription and throw
+        # the recording away. Bounded window, then proceed.
+        drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
+        if wait:
+            self._drain_active_requests(drain_deadline)
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
         # settle outside _lock: load() holds _start_lock across startup and
         # takes _lock inside it, so holding _lock here would invert them.
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
-        if not self._lock.acquire(blocking = wait):
-            return
-        try:
-            # Recheck under the lock. `transcribe` claims _active_requests while holding it,
-            # so a request starting between the probe above and this acquire would otherwise
-            # have llama-server killed underneath it and lose the recording.
-            if not wait and self._active_requests:
+        while True:
+            if not self._lock.acquire(blocking = wait):
                 return
-            self._release_locked()
-        finally:
-            self._lock.release()
+            try:
+                # Recheck under the lock. `transcribe` claims _active_requests while holding
+                # it, so a request starting between the drain above and this acquire would
+                # otherwise have llama-server killed underneath it and lose the recording.
+                busy = bool(self._active_requests)
+                if busy and not wait:
+                    return
+                if not busy or time.monotonic() >= drain_deadline:
+                    if busy:
+                        logger.warning(
+                            "mtmd STT still had %d active request(s) after %.0fs; "
+                            "releasing anyway",
+                            self._active_requests,
+                            _ACTIVE_REQUEST_DRAIN_TIMEOUT,
+                        )
+                    self._release_locked()
+                    return
+            finally:
+                self._lock.release()
+            # Drained outside the lock, then the release is retried under it. A blocking
+            # unload that found the sidecar busy only after acquiring cannot drain in
+            # place without deadlocking the request it is draining.
+            self._drain_active_requests(drain_deadline)
 
     def cancel_pending_load(self) -> bool:
         """Preempt a starting llama-server so training is not raced for VRAM.

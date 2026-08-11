@@ -339,3 +339,66 @@ def test_an_undownloaded_switch_keeps_the_resident_engine_until_the_load_succeed
     stt_registry.load("mtmd", "some/asr-model")
 
     assert [step for step, _ in order] == ["load", "unload"]
+
+
+def _racing_sidecar():
+    """An MtmdSttSidecar stripped to the fields unload() touches."""
+    import threading
+
+    from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
+
+    sidecar = MtmdSttSidecar.__new__(MtmdSttSidecar)
+    sidecar._lock = threading.RLock()
+    sidecar._active_requests = 0
+    sidecar._loading = False
+    sidecar.is_loading = lambda: False
+    sidecar.cancel_pending_load = lambda: False
+    sidecar.wait_for_load_to_settle = lambda: None
+    sidecar.released = []
+    sidecar._release_locked = lambda: sidecar.released.append(True)
+    return sidecar
+
+
+def test_a_blocking_unload_drains_a_request_that_started_during_the_acquire():
+    """The under-lock recheck only guarded wait=False, so the blocking unload training
+    uses could reap llama-server underneath a transcription that had just started, losing
+    the recording rather than honoring the drain window."""
+    import threading
+
+    from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
+
+    sidecar = _racing_sidecar()
+    real_lock = sidecar._lock
+    acquires = []
+
+    class _RacingLock:
+        def acquire(self, blocking = True, *args, **kwargs):
+            acquires.append(True)
+            if len(acquires) == 1:
+                # Claimed after the unlocked drain has already passed.
+                sidecar._active_requests = 1
+                threading.Timer(0.15, lambda: setattr(sidecar, "_active_requests", 0)).start()
+            return real_lock.acquire(blocking, *args, **kwargs)
+
+        def release(self):
+            return real_lock.release()
+
+    sidecar._lock = _RacingLock()
+    MtmdSttSidecar.unload(sidecar, wait = True)
+    # Released, but only once the transcription that raced in had finished.
+    assert sidecar.released == [True]
+    assert len(acquires) >= 2
+    assert sidecar._active_requests == 0
+
+
+def test_a_blocking_unload_still_gives_up_after_the_drain_window(monkeypatch):
+    """Training claiming the VRAM cannot wait forever, so a request that never finishes
+    must not turn the bounded window into a permanent block."""
+    from core.inference import stt_mtmd_sidecar
+    from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
+
+    monkeypatch.setattr(stt_mtmd_sidecar, "_ACTIVE_REQUEST_DRAIN_TIMEOUT", 0.3)
+    sidecar = _racing_sidecar()
+    sidecar._active_requests = 1
+    MtmdSttSidecar.unload(sidecar, wait = True)
+    assert sidecar.released == [True]
