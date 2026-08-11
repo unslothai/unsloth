@@ -976,6 +976,29 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
+def live_sibling_backend() -> "int | None":
+    """PID of another live Studio backend of this install, or None.
+
+    Two of ours at once is a supported configuration: `_resolve_port` refuses
+    only the port one of ours already holds, and `_abort_already_running` tells
+    the user to pick another. They share an install-tree compiled cache, so the
+    second one must not wipe it out from under the first.
+
+    Called before `_write_pid_file`, so our own record is not there yet; the
+    explicit pid check keeps it correct if that ever changes.
+    """
+    me = os.getpid()
+    for record in _per_port_records():
+        if record is None:
+            continue
+        pid, created, _address = record
+        if pid == me or not _pid_alive(pid):
+            continue
+        if _pid_is_studio_backend(pid, [created]):
+            return pid
+    return None
+
+
 def _per_port_records() -> "list[tuple[int, float | None, str | None] | None]":
     try:
         return [_read_pid_record(p) for p in _studio_root().glob(PID_FILE_GLOB)]
@@ -2008,6 +2031,11 @@ def run_server(
     import_started = time.perf_counter()
 
     from main import app, setup_frontend, _desktop_owner, _IS_COLAB
+
+    # Handed to lifespan as a callable, not a value: it is asked again at
+    # shutdown, when a sibling may have started since. On app.state rather than
+    # imported, because main.py must not import this module back.
+    app.state.live_sibling_backend = live_sibling_backend
 
     logger.info(
         "Imported FastAPI app in %.1fms",

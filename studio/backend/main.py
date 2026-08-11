@@ -629,6 +629,28 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     _warm_rag_embedder()
 
 
+def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
+    """Clear the compiled cache, unless another backend of this install is live.
+
+    The cache sits in the install tree, not the studio home, so two of our own
+    backends share it and the wipe would delete modules the other one is still
+    importing -- including the Unsloth*Trainer.py that the in-process clears
+    preserve for spawn workers. run_server supplies the probe on app.state;
+    without it (tests, an embedded app) the old unconditional clear stands.
+    """
+    probe = getattr(app.state, "live_sibling_backend", None)
+    sibling = probe() if callable(probe) else None
+    if sibling is None:
+        clear_unsloth_compiled_cache()
+        return
+    import structlog as _structlog
+
+    _structlog.get_logger(__name__).info(
+        "Keeping the compiled cache: another backend of this install is live",
+        sibling_pid = sibling,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -639,7 +661,7 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
-    clear_unsloth_compiled_cache()
+    clear_compiled_cache_unless_shared(app)
 
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
@@ -783,7 +805,7 @@ async def lifespan(app: FastAPI):
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
-        clear_unsloth_compiled_cache,
+        lambda: clear_compiled_cache_unless_shared(app),
         _hw_module,
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.

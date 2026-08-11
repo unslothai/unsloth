@@ -566,3 +566,35 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     run._write_pid_file(8902, "127.0.0.1")
 
     assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())
+
+
+def test_a_live_sibling_is_found_so_the_shared_cache_survives(tmp_path):
+    # The compiled cache is install-tree relative, so a second backend of this
+    # install must not wipe it out from under the first.
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_our_own_record_is_not_a_sibling(tmp_path):
+    # _write_pid_file has already run by shutdown, so our own record is there.
+    me = os.getpid()
+    (tmp_path / f"studio-8888-{me}.pid").write_text(f"{me}\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_dead_record_is_not_a_sibling(tmp_path, monkeypatch):
+    # A crashed server leaves its record behind; clearing the cache is right then.
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
+    # Alive, but not our server: the create_time no longer matches the record.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
