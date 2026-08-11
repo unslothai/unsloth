@@ -1027,12 +1027,14 @@ if _DOCS_ASSETS_DIR.is_dir():
     @app.get("/redoc", include_in_schema = False)
     async def redoc_html():
         # ReDoc's bundle carries no inline init, so this one needs no nonce.
-        return HTMLResponse(get_redoc_html(
-            openapi_url = app.openapi_url,
-            title = f"{app.title} - ReDoc",
-            redoc_js_url = f"{_DOCS_ASSETS_URL}/redoc.standalone.js",
-            redoc_favicon_url = f"{_DOCS_ASSETS_URL}/favicon-32x32.png",
-        ).body.decode())
+        return HTMLResponse(
+            get_redoc_html(
+                openapi_url = app.openapi_url,
+                title = f"{app.title} - ReDoc",
+                redoc_js_url = f"{_DOCS_ASSETS_URL}/redoc.standalone.js",
+                redoc_favicon_url = f"{_DOCS_ASSETS_URL}/favicon-32x32.png",
+            ).body.decode()
+        )
 
 
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.

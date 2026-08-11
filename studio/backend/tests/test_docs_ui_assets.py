@@ -52,9 +52,7 @@ def test_tree_matches_the_manifest():
 def test_no_symlinks():
     """A symlink would let the digest check pass while the served bytes differ."""
     offenders = [
-        str(path.relative_to(_DOCS_UI))
-        for path in _DOCS_UI.rglob("*")
-        if path.is_symlink()
+        str(path.relative_to(_DOCS_UI)) for path in _DOCS_UI.rglob("*") if path.is_symlink()
     ]
     assert not offenders, f"assets/docs_ui must be plain files: {offenders}"
 

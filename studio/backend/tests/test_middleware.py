@@ -536,9 +536,10 @@ class TestSecurityHeadersMiddleware:
             assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers}
 
         # ReDoc has no inline script, so it gets no nonce to leak.
-        assert "nonce-" not in TestClient(main_module.app).get("/redoc").headers[
-            "content-security-policy"
-        ]
+        assert (
+            "nonce-"
+            not in TestClient(main_module.app).get("/redoc").headers["content-security-policy"]
+        )
 
     def test_docs_assets_are_served_from_this_origin(self, main_module):
         c = TestClient(main_module.app)
