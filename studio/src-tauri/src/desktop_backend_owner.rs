@@ -217,6 +217,49 @@ fn home_dir_or_error() -> Result<PathBuf, String> {
     dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())
 }
 
+fn lease_secret_path_for_home(home: &Path) -> PathBuf {
+    managed_run_dir(home).join(".native_path_lease_secret")
+}
+
+/// The install's native path lease secret, created on first use.
+///
+/// Per-install, not per-process, because a backend outlives the app that
+/// spawned it: when the previous app pid is dead the preflight ADOPTS the
+/// survivor rather than restarting it. A freshly minted per-process secret
+/// would leave that adopted backend verifying with the old key, so the picker
+/// (which only sees the boolean `native_path_leases_supported`) stays live and
+/// every grant fails the signature check. Same key, same file, no restart.
+///
+/// Kept beside the owner metadata, which already stores the desktop owner token
+/// in the same 0700 dir at 0600 -- a strictly stronger credential, since it
+/// buys a desktop-login. An unreadable or too-short file is replaced: the old
+/// secret is unrecoverable either way, so minting is all that is left.
+pub(crate) fn ensure_native_path_lease_secret() -> Result<Vec<u8>, String> {
+    ensure_native_path_lease_secret_at(&lease_secret_path_for_home(&home_dir_or_error()?))
+}
+
+fn ensure_native_path_lease_secret_at(path: &Path) -> Result<Vec<u8>, String> {
+    if let Ok(raw) = std::fs::read_to_string(path) {
+        if let Some(secret) = crate::native_backend_lease::decode_secret_env(raw.trim()) {
+            if secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES {
+                return Ok(secret);
+            }
+        }
+    }
+    let secret = crate::native_backend_lease::new_lease_secret();
+    let parent = path
+        .parent()
+        .ok_or_else(|| "lease secret path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    set_private_dir_permissions(parent);
+    write_private_file(
+        path,
+        crate::native_backend_lease::encode_secret_env(&secret).as_bytes(),
+    )?;
+    set_private_file_permissions(path);
+    Ok(secret)
+}
+
 fn ensure_studio_root_id_at(
     path: &Path,
     create_when_missing: bool,
@@ -1324,6 +1367,67 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("desktop_backend.json")
+    }
+
+    fn temp_lease_secret_path(test_name: &str) -> PathBuf {
+        temp_metadata_path(test_name)
+            .parent()
+            .unwrap()
+            .join(".native_path_lease_secret")
+    }
+
+    #[test]
+    fn an_adopted_backend_and_the_next_app_process_share_one_lease_secret() {
+        // The whole point. Two app processes, one install: the second must sign
+        // with the key the survivor it adopted was spawned with, or the picker
+        // is live and every grant fails the signature check.
+        let path = temp_lease_secret_path("lease-shared");
+        let first = ensure_native_path_lease_secret_at(&path).unwrap();
+        let second = ensure_native_path_lease_secret_at(&path).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
+    }
+
+    #[test]
+    fn a_lease_secret_below_the_backend_floor_is_replaced() {
+        // The backend refuses anything under 32 bytes, so keeping a short one
+        // would advertise leases that cannot verify.
+        let path = temp_lease_secret_path("lease-short");
+        std::fs::write(
+            &path,
+            crate::native_backend_lease::encode_secret_env(b"too-short"),
+        )
+        .unwrap();
+
+        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+
+        assert!(secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
+        assert_eq!(secret, ensure_native_path_lease_secret_at(&path).unwrap());
+    }
+
+    #[test]
+    fn an_unreadable_lease_secret_is_replaced_rather_than_failing_the_app() {
+        let path = temp_lease_secret_path("lease-garbage");
+        std::fs::write(&path, "not base64url!!!").unwrap();
+
+        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+
+        assert!(secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
+    }
+
+    #[test]
+    fn the_persisted_lease_secret_round_trips_through_the_child_env_encoding() {
+        // What process.rs hands the backend is the encoded form, and the backend
+        // decodes it with the same alphabet.
+        let path = temp_lease_secret_path("lease-roundtrip");
+        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+        let encoded = crate::native_backend_lease::encode_secret_env(&secret);
+
+        assert_eq!(
+            crate::native_backend_lease::decode_secret_env(&encoded),
+            Some(secret)
+        );
     }
 
     fn closed_port() -> u16 {
