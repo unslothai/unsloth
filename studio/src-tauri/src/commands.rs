@@ -4,7 +4,7 @@ use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const BACKEND_STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
 const HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
@@ -99,8 +99,16 @@ pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
+    let lease_secret_persisted = app
+        .try_state::<crate::native_intents::NativeIntakeState>()
+        .map(|state| state.lease_secret_persisted())
+        .unwrap_or(false);
     let (result, adopted_watchdog_generation) =
-        crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
+        crate::preflight::desktop_preflight_result_with_state(
+            state.inner(),
+            lease_secret_persisted,
+        )
+        .await?;
     diagnostics::record_preflight(&diagnostics, &result);
 
     info!(

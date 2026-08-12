@@ -33,6 +33,11 @@ const READINESS = readFileSync(
   "utf8",
 );
 
+const PREFLIGHT = readFileSync(
+  fileURLToPath(new URL("../../src-tauri/src/preflight.rs", import.meta.url)),
+  "utf8",
+);
+
 test("the picker is gated on the backend capability, not on isTauri alone", () => {
   assert.match(
     HOOK,
@@ -86,5 +91,13 @@ test("the capability is read from /api/health and only latches on true", () => {
   assert.ok(
     READINESS.includes("useState(false)"),
     "the hook must start unsupported, so the picker is never live before it is known",
+  );
+});
+
+test("an adopted backend is restarted when the current lease key is transient", () => {
+  assert.match(PREFLIGHT, /snapshot\.is_adopted\s*&&\s*!lease_secret_persisted/);
+  assert.ok(
+    PREFLIGHT.includes("native_path_lease_secret_not_persisted"),
+    "a transient key must make an adopted survivor stale instead of ready",
   );
 });
