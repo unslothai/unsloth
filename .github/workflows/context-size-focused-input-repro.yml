@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Context size focused-input A-B repro
+
+on:
+  push:
+    branches:
+      - fix/context-size-repro-ci
+
+permissions:
+  contents: read
+
+jobs:
+  focused-context-input:
+    name: ${{ matrix.case }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - case: before-fix-reproduces
+            ref: 95f42bcceed7bbecb244adfbc16484cd23a9f13f
+            expect: reproduce
+          - case: fixed-preserves-context
+            ref: dffea2af27b9ee5a10479fb6566184394d6921cd
+            expect: pass
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      HF_HOME: ${{ github.workspace }}/hf-cache
+
+    steps:
+      - name: Check out repro harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Keep the branch-scoped workflow and modern CI helpers in the root while
+      # installing the historical application from an isolated worktree.
+      - name: Check out application under test
+        shell: bash
+        run: git worktree add --detach tested "${{ matrix.ref }}"
+
+      # Run exactly the probe added by the fix against both implementations.
+      # The parent did not yet contain the focused-input assertion, so copy only
+      # the test from the fixed commit; application code remains untouched.
+      - name: Install identical focused-input probe
+        shell: bash
+        run: |
+          git show dffea2af27b9ee5a10479fb6566184394d6921cd:tests/studio/playwright_model_config.py \
+            > tested/tests/studio/playwright_model_config.py
+
+      - name: Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache tiny GGUF fixture
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: hf-cache
+          key: context-input-repro-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime model fixtures
+        shell: bash
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p "$HF_HOME"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Install Unsloth from tested ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          (cd tested && bash install.sh --local --no-torch) 2>&1 | tee logs/install.log
+
+      - name: Install Chromium
+        shell: bash
+        run: |
+          python -m pip install 'playwright>=1.45'
+          python -m playwright install --with-deps chromium
+
+      - name: Boot isolated Studio
+        shell: bash
+        run: |
+          mkdir -p logs/playwright_modelcfg
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
+          bash .github/scripts/wait-for-health.sh \
+            --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/context-repro-health.json
+
+      - name: Create one-run login password
+        shell: bash
+        run: |
+          NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Assert expected A-B result
+        id: repro
+        shell: bash
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_modelcfg
+          STUDIO_UI_STRICT: '1'
+          STUDIO_DISTINCT_CTX: '4096'
+          STUDIO_MODEL_HINT: gemma-3-270m
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          set +e
+          python tested/tests/studio/playwright_model_config.py 2>&1 | tee logs/modelcfg-probe.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "$EXPECT" == "reproduce" ]]; then
+            test "$status" -ne 0
+            grep -F "context not stored in unsloth_model_configs" logs/modelcfg-probe.log
+            echo "PASS reproduced: focused Context Length draft was discarded before dffea2af2"
+          else
+            test "$status" -eq 0
+            grep -F "OK persist(request): /api/inference/load max_seq_length=4096" \
+              logs/modelcfg-probe.log
+            echo "PASS fixed: focused Context Length draft reached /api/inference/load"
+          fi
+
+      - name: Stop Studio
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${STUDIO_MODELCFG_PID:-}" ]]; then
+            kill "$STUDIO_MODELCFG_PID" 2>/dev/null || true
+          fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: context-size-${{ matrix.case }}
+          path: |
+            logs/modelcfg-probe.log
+            logs/studio_modelcfg.log
+            logs/install.log
+            logs/playwright_modelcfg/
+          retention-days: 1
