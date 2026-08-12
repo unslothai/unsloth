@@ -4809,7 +4809,7 @@ if ($LatestVer) {
                         "$($_rel.Name)`t$(if ($_relFile.yanked) { 1 } else { 0 })`t$($_relFile.requires_python)`t$($_relFile.packagetype)`t$($_relFile.filename)"
                     }
                 }
-                Set-Content -Path $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
+                Set-Content -LiteralPath $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
                 # the path rides in as base64: a profile name like O'Neil would otherwise
                 # end the generated Python string literal early
                 $_relPathB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_relPath))
@@ -4868,7 +4868,7 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
                     $_updateOk = $true
                 }
             } finally {
-                Remove-Item $_relPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $_relPath -Force -ErrorAction SilentlyContinue
             }
         }
     }
