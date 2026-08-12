@@ -8,9 +8,11 @@ import {
   PASTED_TEXT_MIN_CHARS,
   PASTED_TEXT_MIN_LINES,
   createPastedTextFile,
+  isPastedTextAttachment,
   isPastedTextFile,
   pasteLongTextAsFile,
   pastedTextFileName,
+  rememberPastedTextAttachment,
   shouldAttachPastedText,
   unwrapAttachmentText,
 } from "../src/features/chat/utils/pasted-text.ts";
@@ -72,24 +74,64 @@ test("bulk pastes become attachments by length or by line count", () => {
   );
 });
 
-test("pasted text files are named and recognised", () => {
-  const name = pastedTextFileName(1_786_400_000_000);
-  assert.equal(name, "Pasted_Text_1786400000.txt");
-
-  const file = createPastedTextFile(
-    "a".repeat(PASTED_TEXT_MIN_CHARS),
-    1_786_400_000_000,
+test("the file is named after the opening of the paste", () => {
+  assert.equal(
+    pastedTextFileName("Introducing Unsloth"),
+    "Introducing Unsloth.txt",
   );
-  assert.equal(file.name, name);
+  // Leading blank lines are skipped.
+  assert.equal(
+    pastedTextFileName("\n\n  Release notes  \nbody"),
+    "Release notes.txt",
+  );
+  // Long openings cut on a word boundary, short ones are not padded.
+  assert.equal(
+    pastedTextFileName(
+      "Introducing Unsloth Studio, the fastest way to finetune",
+    ),
+    "Introducing Unsloth Studio, the.txt",
+  );
+  assert.equal(
+    pastedTextFileName(`${"z".repeat(60)} tail`),
+    `${"z".repeat(32)}.txt`,
+  );
+  // Path separators and control characters cannot reach the filename.
+  assert.equal(
+    pastedTextFileName("src/lib\\util:\tmain"),
+    "src lib util main.txt",
+  );
+  assert.equal(pastedTextFileName("\n   \n"), "Pasted text.txt");
+  assert.equal(pastedTextFileName("///"), "Pasted text.txt");
+});
+
+test("pasted text files are recognised by identity", () => {
+  const file = createPastedTextFile(
+    "Deploy log\n".repeat(PASTED_TEXT_MIN_LINES),
+  );
+  assert.equal(file.name, "Deploy log.txt");
   assert.equal(file.type, "text/plain");
-  assert.equal(file.size, PASTED_TEXT_MIN_CHARS);
   assert.equal(isPastedTextFile(file), true);
   // A .txt the user actually attached keeps the normal file tile.
   assert.equal(
-    isPastedTextFile(new File(["hi"], "notes.txt", { type: "text/plain" })),
+    isPastedTextFile(
+      new File(["hi"], "Deploy log.txt", { type: "text/plain" }),
+    ),
     false,
   );
-  assert.equal(isPastedTextFile(undefined, "Pasted_Text_1786400000.txt"), true);
+  assert.equal(isPastedTextFile(undefined), false);
+});
+
+test("the attachment id carries the chip through a send", () => {
+  assert.equal(isPastedTextAttachment("attachment-1"), false);
+  rememberPastedTextAttachment("attachment-1");
+  assert.equal(isPastedTextAttachment("attachment-1"), true);
+  // Re-registering the same id must not evict it.
+  rememberPastedTextAttachment("attachment-1");
+  for (let index = 0; index < 200; index += 1) {
+    rememberPastedTextAttachment(`filler-${index}`);
+  }
+  assert.equal(isPastedTextAttachment("attachment-1"), false);
+  assert.equal(isPastedTextAttachment("filler-199"), true);
 });
 
 test("a long text paste is swallowed and handed over as a file", async () => {
@@ -142,12 +184,10 @@ test("a paste too big to hold inline still attaches", () => {
   assert.equal(shouldAttachPastedText(huge), true);
 });
 
-test("a .txt the user named like a paste keeps the normal tile", () => {
-  const lookalike = new File(["hi"], "Pasted_Text_1786400000.txt", {
-    type: "text/plain",
-  });
+test("a .txt named like a pasted one keeps the normal tile", () => {
+  const pasted = createPastedTextFile("Release notes\nbody");
+  const lookalike = new File(["hi"], pasted.name, { type: "text/plain" });
   assert.equal(isPastedTextFile(lookalike), false);
-  assert.equal(isPastedTextFile(lookalike, lookalike.name), false);
 });
 
 test("native image and file payloads stay on the file paste path", () => {

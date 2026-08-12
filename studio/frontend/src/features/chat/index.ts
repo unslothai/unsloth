@@ -146,8 +146,10 @@ export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
   createPastedTextFile,
+  isPastedTextAttachment,
   isPastedTextFile,
   pasteLongTextAsFile,
+  rememberPastedTextAttachment,
   shouldAttachPastedText,
   unwrapAttachmentText,
 } from "./utils/pasted-text";

@@ -17,7 +17,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { isPastedTextFile, unwrapAttachmentText } from "@/features/chat";
+import {
+  isPastedTextAttachment,
+  isPastedTextFile,
+  rememberPastedTextAttachment,
+  unwrapAttachmentText,
+} from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
 import {
@@ -188,7 +193,10 @@ const usePastedTextAttachment = (): PastedTextAttachment | null => {
     useShallow(({ attachment }): PastedTextAttachment | null => {
       if (attachment.type !== "document") return null;
       const file = (attachment as { file?: File }).file;
-      if (!isPastedTextFile(file, attachment.name)) return null;
+      const pasted = file
+        ? isPastedTextFile(file)
+        : isPastedTextAttachment(attachment.id);
+      if (!pasted) return null;
       const inlineText = attachment.content?.flatMap((part) =>
         part.type === "text" ? [part.text] : [],
       )[0];
@@ -260,6 +268,11 @@ const PastedTextAttachmentUI: FC<{
       mountedRef.current = false;
     };
   }, []);
+  // The sent message keeps the id but not the File, so record it while the
+  // composer still holds both.
+  useEffect(() => {
+    if (isComposer) rememberPastedTextAttachment(attachmentId);
+  }, [attachmentId, isComposer]);
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -291,9 +304,10 @@ const PastedTextAttachmentUI: FC<{
   const chip = (
     <button
       className={cn(
-        "aui-pasted-text-chip group flex h-14 max-w-[15rem] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] border bg-muted px-3 text-left transition-opacity hover:opacity-90",
+        // Borderless, and in dark mode a shade under the composer surface.
+        "aui-pasted-text-chip group flex h-14 max-w-[15rem] min-w-0 cursor-pointer items-center gap-2.5 rounded-[14px] bg-muted px-3 text-left transition-colors hover:bg-muted-foreground/15 dark:bg-background dark:hover:bg-muted",
         // Keep the label clear of the remove button in the corner.
-        isComposer && "aui-pasted-text-chip-composer border-foreground/20 pr-6",
+        isComposer && "aui-pasted-text-chip-composer pr-6",
       )}
       type="button"
       aria-label={

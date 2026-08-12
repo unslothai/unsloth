@@ -7,7 +7,10 @@
 const PASTED_TEXT_MIME = "text/plain";
 export const PASTED_TEXT_MIN_CHARS = 2000;
 export const PASTED_TEXT_MIN_LINES = 40;
-const PASTED_TEXT_NAME_RE = /^Pasted_Text_\d+\.txt$/;
+const PASTED_TEXT_NAME_MAX_CHARS = 32;
+const PASTED_TEXT_FALLBACK_NAME = "Pasted text";
+// Illegal in filenames on at least one platform, plus control characters.
+const UNSAFE_NAME_CHARS = /[\\/:*?"<>|\p{Cc}]/gu;
 
 type ClipboardTextPasteEvent = {
   readonly clipboardData: DataTransfer | null;
@@ -15,9 +18,11 @@ type ClipboardTextPasteEvent = {
   preventDefault: () => void;
 };
 
-// Identity separates a pasted blob from a .txt the user attached. Sent
-// messages keep only the name, so isPastedTextFile falls back to that.
+// Identity separates a pasted blob from a .txt the user attached. A sent
+// message keeps no File, so the attachment id carries it over instead.
 const pastedTextFiles = new WeakSet<File>();
+const pastedTextIds = new Set<string>();
+const PASTED_TEXT_ID_LIMIT = 200;
 
 function countLines(text: string): number {
   let lines = 1;
@@ -36,30 +41,52 @@ export function shouldAttachPastedText(text: string): boolean {
   );
 }
 
-export function pastedTextFileName(now: number = Date.now()): string {
-  return `Pasted_Text_${Math.floor(now / 1000)}.txt`;
+/** Names the file after the opening of the paste, so the chip is readable. */
+export function pastedTextFileName(text: string): string {
+  const firstLine = text.split("\n").find((line) => line.trim().length > 0);
+  const cleaned = (firstLine ?? "")
+    .replace(UNSAFE_NAME_CHARS, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let snippet = cleaned.slice(0, PASTED_TEXT_NAME_MAX_CHARS);
+  if (cleaned.length > PASTED_TEXT_NAME_MAX_CHARS) {
+    // Prefer a word boundary, but not one that leaves a stub.
+    const lastSpace = snippet.lastIndexOf(" ");
+    if (lastSpace >= PASTED_TEXT_NAME_MAX_CHARS / 2) {
+      snippet = snippet.slice(0, lastSpace);
+    }
+  }
+  snippet = snippet.replace(/[\s.]+$/, "");
+  return `${snippet.length > 0 ? snippet : PASTED_TEXT_FALLBACK_NAME}.txt`;
 }
 
-export function createPastedTextFile(
-  text: string,
-  now: number = Date.now(),
-): File {
-  const file = new File([text], pastedTextFileName(now), {
+export function createPastedTextFile(text: string): File {
+  const file = new File([text], pastedTextFileName(text), {
     type: PASTED_TEXT_MIME,
-    lastModified: now,
+    lastModified: Date.now(),
   });
   pastedTextFiles.add(file);
   return file;
 }
 
-export function isPastedTextFile(
-  file: File | undefined,
-  name?: string,
-): boolean {
-  // A live File must match by identity, or a .txt the user named this way
-  // would be mistaken for a paste.
-  if (file) return pastedTextFiles.has(file);
-  return PASTED_TEXT_NAME_RE.test(name ?? "");
+/** A live File must match by identity: the name no longer marks a paste. */
+export function isPastedTextFile(file: File | undefined): boolean {
+  return file !== undefined && pastedTextFiles.has(file);
+}
+
+/** Sending keeps the attachment id, which is how the chip survives the send. */
+export function rememberPastedTextAttachment(id: string): void {
+  if (pastedTextIds.has(id)) return;
+  if (pastedTextIds.size >= PASTED_TEXT_ID_LIMIT) {
+    const oldest = pastedTextIds.values().next().value;
+    if (oldest !== undefined) pastedTextIds.delete(oldest);
+  }
+  pastedTextIds.add(id);
+}
+
+export function isPastedTextAttachment(id: string): boolean {
+  return pastedTextIds.has(id);
 }
 
 function clipboardHasFiles(clipboardData: DataTransfer): boolean {
