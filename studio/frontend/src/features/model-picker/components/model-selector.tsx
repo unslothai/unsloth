@@ -43,6 +43,11 @@ import {
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import {
+  type ExternalConnectionRef,
+  missingExternalModel,
+} from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
@@ -124,6 +129,7 @@ export type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
+export type { ExternalConnectionRef } from "./model-selector/missing-external-model";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -134,6 +140,12 @@ interface ModelSelectorProps {
   loadedModelIdOverride?: string;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
+  /**
+   * The connections behind `externalModels`, carrying each one's cached catalogue.
+   * `externalModels` lists only the models the user ticked, so it cannot tell a model the
+   * user turned off from one the provider withdrew; the catalogue can.
+   */
+  externalConnections?: ExternalConnectionRef[];
   value?: string;
   defaultValue?: string;
   /**
@@ -643,6 +655,7 @@ export function ModelSelector({
   loadedModelIdOverride,
   loraModels = [],
   externalModels = [],
+  externalConnections = [],
   value,
   defaultValue,
   activeGgufVariant,
@@ -676,6 +689,7 @@ export function ModelSelector({
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
+  const t = useT();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
@@ -735,18 +749,49 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
+    // A pick whose connection no longer offers it takes its option away and leaves the
+    // id in the checkpoint, and the generic fallback below cannot shorten an
+    // `external::` id. Name the model the user picked, and say why it is unusable: it
+    // cannot be loaded, so a tidy name on its own would hide the failure until the next
+    // send (#8405). The connections carry the cached catalogue, which is what separates a
+    // model the user unticked from one the provider withdrew.
+    const missingExternal = found
+      ? null
+      : missingExternalModel(selected, externalModels, externalConnections);
     // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
     // The leaf, not the namespaced public id (#7966), matches the catalog row that
     // later replaces this one.
-    const fallbackName = modelDisplayName(selected);
+    const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
         : { id: selected, name: fallbackName, description: desc };
     }
+    if (missingExternal) {
+      const disabled = missingExternal.state === "disabled";
+      return {
+        id: selected,
+        name: fallbackName,
+        description: missingExternal.providerName
+          ? t(
+              disabled
+                ? "picker.modelDisabledByProvider"
+                : "picker.modelDroppedByProvider",
+              { provider: missingExternal.providerName },
+            )
+          : t(disabled ? "picker.modelDisabled" : "picker.modelDropped"),
+      };
+    }
     return found ?? { id: selected, name: fallbackName };
-  }, [selected, optionById, activeGgufVariant]);
+  }, [
+    selected,
+    optionById,
+    activeGgufVariant,
+    externalModels,
+    externalConnections,
+    t,
+  ]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {

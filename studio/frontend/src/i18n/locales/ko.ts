@@ -17,6 +17,10 @@ export const ko = {
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
     pickModelFile: "디스크에서 모델 파일 선택",
+    modelDropped: "더 이상 제공되지 않음",
+    modelDroppedByProvider: "{provider} · 더 이상 제공되지 않음",
+    modelDisabled: "사용 안 함",
+    modelDisabledByProvider: "{provider} · 사용 안 함",
     multipleMatches:
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
