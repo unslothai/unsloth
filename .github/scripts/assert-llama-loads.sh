@@ -60,11 +60,30 @@ fi
 # real runtime is installed, since a monkeypatched sys.platform unit test
 # cannot. Runs under the interpreter the `unsloth` shim points at, so the
 # backend's imports resolve without reinstalling anything.
-UNSLOTH_SHIM="$(command -v unsloth || true)"
-if [ -n "$UNSLOTH_SHIM" ]; then
-  STUDIO_PY="$(head -1 "$UNSLOTH_SHIM" | sed 's/^#!//' | awk '{print $1}')"
+# Resolve the interpreter from STUDIO_HOME first, not from PATH. The
+# clean-machine lane scrubs PATH down to system directories and puts the shim
+# under its own UNSLOTH_STUDIO_HOME, so `command -v unsloth` is empty there and
+# a PATH-only lookup would skip this assertion in the one lane whose whole
+# point is a clean install, while CI still reported success.
+STUDIO_PY=""
+for candidate in \
+  "$UNSLOTH_HOME/unsloth_studio/bin/python" \
+  "$UNSLOTH_HOME/.venv/bin/python" \
+  "$HOME/.unsloth/unsloth_studio/bin/python"; do
+  [ -x "$candidate" ] && { STUDIO_PY="$candidate"; break; }
+done
+if [ -z "$STUDIO_PY" ]; then
+  for shim in "$UNSLOTH_HOME/bin/unsloth" "$(command -v unsloth || true)"; do
+    [ -n "$shim" ] && [ -x "$shim" ] || continue
+    candidate="$(head -1 "$shim" | sed 's/^#!//' | awk '{print $1}')"
+    [ -n "$candidate" ] && [ -x "$candidate" ] && { STUDIO_PY="$candidate"; break; }
+  done
 fi
-if [ -n "${STUDIO_PY:-}" ] && [ -x "$STUDIO_PY" ]; then
+# Fail rather than skip: an install that produced a llama-server but no
+# reachable interpreter is itself a broken install, and a skip here is
+# indistinguishable from a pass.
+[ -n "$STUDIO_PY" ] || fail "no Unsloth interpreter found under $UNSLOTH_HOME or on PATH; cannot check the launch environment"
+if [ -n "$STUDIO_PY" ]; then
   if ! PYTHONPATH=studio/backend "$STUDIO_PY" - "$SERVER" <<'PY'
 import os, sys
 from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
@@ -83,8 +102,6 @@ PY
   then
     fail "Studio's llama-server launch environment is wrong for macOS (see above)"
   fi
-else
-  echo "note: no unsloth shim on PATH, skipping the launch-environment assertion"
 fi
 
 echo "llama.cpp load validation passed on macOS $HOST_VER"

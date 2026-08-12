@@ -810,3 +810,36 @@ class TestDyldInstallNames:
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "unsloth studio update" in msg
+
+
+class TestMacOSSymbolProvenance:
+    """Where dyld expected the symbol decides the remedy: reinstalling the same
+    build cannot make the OS export a symbol it does not have."""
+
+    def test_a_system_framework_symbol_reads_as_a_too_new_build(self):
+        out = (
+            "dyld[1]: Symbol not found: _MTLDeviceNewCommandQueueWithDescriptor\n"
+            "  Referenced from: /Users/me/.unsloth/llama.cpp/build/bin/libggml-metal.dylib\n"
+            "  Expected in: /System/Library/Frameworks/Metal.framework/Versions/A/Metal"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "newer macOS" in msg
+        assert "different build than the llama-server binary" not in msg
+
+    def test_a_llama_dylib_symbol_still_reads_as_a_mixed_install(self):
+        out = (
+            "dyld[1]: Symbol not found: __ZN4ggml7backendE\n"
+            "  Referenced from: /Users/me/.unsloth/llama.cpp/build/bin/libmtmd.dylib\n"
+            "  Expected in: /Users/me/.unsloth/llama.cpp/build/bin/libllama.dylib"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "different build" in msg
+        assert "newer macOS" not in msg
+
+    def test_a_usr_lib_symbol_is_read_the_same_way_as_a_framework(self):
+        out = (
+            "dyld[1]: Symbol not found: _os_signpost_emit\n"
+            "  Expected in: /usr/lib/libSystem.B.dylib"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "newer macOS" in msg

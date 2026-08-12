@@ -9121,10 +9121,22 @@ class LlamaCppBackend:
                 lib, verdict[: LlamaCppBackend._MACOS_REASON_CHARS], binary
             )
 
-        # A symbol mismatch with no missing file: llama-server and its dylibs
-        # come from different builds (a half-applied update, or a stale custom
-        # install shadowing the managed one).
+        # A symbol mismatch with no missing file. Where the symbol was expected
+        # decides the diagnosis: a system framework means the build wants a
+        # newer macOS than this one (reinstalling the same build cannot make
+        # the OS export it), while a llama.cpp dylib means our own files are
+        # from different builds.
         if "symbol not found" in lowered:
+            expected = re.search(r"expected in:\s*(?:<[^>]*>\s*)?([^\r\n]+)", output, re.IGNORECASE)
+            expected_path = expected.group(1).strip() if expected else ""
+            if expected_path.startswith(("/System/", "/usr/lib/")):
+                return (
+                    "llama-server could not start: it needs a symbol this "
+                    "version of macOS does not provide, so the installed "
+                    "llama.cpp runtime was built for a newer macOS. Update "
+                    f"macOS, or {LlamaCppBackend._runtime_remedy(binary)} to get "
+                    "a build that matches this OS."
+                )
             return (
                 "llama-server could not start: its llama.cpp libraries are from "
                 "a different build than the llama-server binary (a symbol it "
