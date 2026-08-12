@@ -11502,10 +11502,11 @@ def _check_signal_escape_patterns(code: str):
             # Both take the operation list as the 2nd positional param.
             ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
             operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
+            # Scan every keyword before resolving: a `**kwargs` splat can smuggle
+            # the operations (or a token) in, and it may sit after `operations=`.
+            if any(kw.arg is None for kw in node.keywords or []):
+                return _HF_UPLOAD_PATH_VIOLATION
             for kw in node.keywords or []:
-                if kw.arg is None:
-                    # `**kwargs` can smuggle the operations past this gate.
-                    return _HF_UPLOAD_PATH_VIOLATION
                 if kw.arg == ops_kwarg:
                     operations_node = kw.value
                     break
@@ -11525,7 +11526,13 @@ def _check_signal_escape_patterns(code: str):
             f = node.func
             op_name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
             if op_name in _HF_NO_READ_COMMIT_OPS:
-                return None  # deletes / server-side copies read no local file
+                # Deletes / server-side copies read no local file, but a computed
+                # argument still can (path_in_repo=open('x').read()), and the value
+                # ships to the Hub, so their args must be plain literals.
+                values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
+                if any(not isinstance(v, ast.Constant) for v in values):
+                    return _HF_UPLOAD_PATH_VIOLATION
+                return None
             # CommitOperationAdd(path_in_repo, path_or_fileobj) -- either can be
             # positional, so every positional arg must be a sandbox-local literal.
             path_nodes = list(node.args or [])

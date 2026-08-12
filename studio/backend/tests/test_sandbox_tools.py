@@ -1752,6 +1752,67 @@ class TestHfUploadSandboxLocalPaths:
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
+    def test_create_commit_trailing_kwargs_splat_blocked(self):
+        # The splat can follow operations=, so the whole keyword list is scanned
+        # before the operation argument is resolved.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "kw = {'token': 'attacker'}\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin')],\n"
+            "  **kw,\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_delete_operation_computed_argument_blocked(self):
+        # The constructor reads no file, but evaluating its argument does, and the
+        # value is sent to the Hub.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationDelete\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationDelete(\n"
+            "    path_in_repo=open('/etc/hostname').read().strip())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_copy_operation_computed_argument_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationCopy\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationCopy(\n"
+            "    src_path_in_repo='a', path_in_repo=open('/etc/hostname').read())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_copy_operation_literal_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationCopy\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationCopy(src_path_in_repo='a', path_in_repo='b')],\n"
+            ")"
+        )
+
+    def test_delete_operation_literal_flag_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationDelete\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationDelete(path_in_repo='d', is_folder=True)],\n"
+            ")"
+        )
+
     def test_preupload_lfs_files_relative_allowed(self):
         _ok(
             "import huggingface_hub\n"
