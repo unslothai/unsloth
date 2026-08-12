@@ -5425,9 +5425,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_free_memory(
-        binary: Optional[str] = None,
-        *,
-        for_llama_server: bool = False,
+        binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int]]:
         """Query free memory per GPU. Returns ``(gpu_index, free_mib)`` sorted by
         index; empty if no supported GPU is reachable. Thin wrapper over
@@ -5471,9 +5469,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _get_gpu_memory(
-        binary: Optional[str] = None,
-        *,
-        for_llama_server: bool = False,
+        binary: Optional[str] = None, *, for_llama_server: bool = False
     ) -> list[tuple[int, int, int]]:
         """Query free AND total memory per GPU.
 

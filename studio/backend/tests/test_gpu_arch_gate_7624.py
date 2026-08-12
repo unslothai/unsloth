@@ -101,7 +101,14 @@ class _FakeProps:
         setattr(self, self._ATTR, arch)
 
 
-def _fake_torch(archs, free_mib, *, props_cls = _FakeProps, hip = "7.1.0", version_str = ""):
+def _fake_torch(
+    archs,
+    free_mib,
+    *,
+    props_cls = _FakeProps,
+    hip = "7.1.0",
+    version_str = "",
+):
     torch = types.ModuleType("torch")
     torch.version = types.SimpleNamespace() if hip is None else types.SimpleNamespace(hip = hip)
     torch.__version__ = version_str
@@ -179,8 +186,9 @@ class TestGpuArchGate:
         assert LlamaCppBackend._rocm_arch_by_physical_id() == {0: "gfx1101", 1: "gfx1036"}
         assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
 
-    def test_amd_sdk_wheel_without_version_hip_is_gated(self, tmp_path, monkeypatch,
-                                                       rocm_probe_env):
+    def test_amd_sdk_wheel_without_version_hip_is_gated(
+        self, tmp_path, monkeypatch, rocm_probe_env
+    ):
         # AMD SDK / Radeon ROCm wheels can leave torch.version.hip unset while
         # __version__ still identifies ROCm. A bare version.hip test would skip
         # the gate there; the shared _torch_is_rocm predicate does not.
@@ -226,13 +234,11 @@ class TestTorchCallersStayUnfiltered:
             sys.modules, "torch", _fake_torch(["gfx1101", "gfx1036"], [12049, 12176])
         )
         assert LlamaCppBackend._get_gpu_free_memory() == [(0, 12049), (1, 12176)]
-        assert LlamaCppBackend._get_gpu_memory() == [
-            (0, 12049, 32768),
-            (1, 12176, 32768),
-        ]
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 12049, 32768), (1, 12176, 32768)]
 
-    def test_rag_auto_still_picks_sentence_transformers(self, tmp_path, monkeypatch,
-                                                       rocm_probe_env):
+    def test_rag_auto_still_picks_sentence_transformers(
+        self, tmp_path, monkeypatch, rocm_probe_env
+    ):
         # Every visible device is unsupported by the prebuilt; the torch caller
         # must still see a GPU and choose the torch backend.
         from core.rag import embeddings
@@ -324,9 +330,7 @@ class TestArchCrashRetrySet:
         def _boom():
             raise AssertionError("must not probe on a single-GPU host")
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom))
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0]) == []
 
     def test_empty_selection_is_a_no_op(self):
@@ -336,7 +340,5 @@ class TestArchCrashRetrySet:
         def _boom():
             raise RuntimeError("hip enumeration failed")
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom)
-        )
+        monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(_boom))
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0, 1], [0, 1]) == []

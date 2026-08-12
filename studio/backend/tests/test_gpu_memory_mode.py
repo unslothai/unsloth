@@ -794,7 +794,9 @@ def test_remote_vulkan_preflight_download_failure_keeps_active_server(monkeypatc
 
         monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
         monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: True)
-        monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)])
+        monkeypatch.setattr(
+            backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 1024, 2048)]
+        )
         monkeypatch.setattr(backend, "_download_gguf", _download)
         monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
         monkeypatch.setattr(backend, "_kill_process", lambda: order.append("kill"))
