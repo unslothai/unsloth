@@ -1036,10 +1036,10 @@ def _uninstall_package(pypi_name: str, display_name: str) -> bool:
 def _distribution_present(pypi_name: str) -> bool:
     """Whether the distribution's METADATA is installed, without importing it.
 
-    Metadata is the thing that matters: unsloth/models/_utils.py gates on
-    ``_package_available`` (metadata) and only then imports the native module, so metadata
-    left behind is what turns a rejected wheel into an in-process crash. Reading it never
-    loads the extension, so this is safe to call even for a wheel that would abort.
+    Metadata is what matters: unsloth/models/_utils.py gates on ``_package_available`` and
+    only then imports the native module, so metadata left behind is what turns a rejected
+    wheel into an in-process crash. Reading it never loads the extension, so this is safe
+    even for a wheel that would abort.
     """
     importlib.invalidate_caches()
     try:
@@ -1052,10 +1052,9 @@ def _distribution_present(pypi_name: str) -> bool:
 def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
     """Discard an install that will not import, and say which state we ended in.
 
-    Idempotent and state-based, so it is safe to call on EVERY exit from the install path
-    rather than only the ones somebody remembered: it no-ops when the distribution is
-    already gone. Leaving it in place is not the same as never having installed it, since
-    the metadata gate above would import the extension anyway.
+    Idempotent, so it is safe on EVERY exit rather than only the ones somebody remembered:
+    it no-ops when the distribution is already gone. Leaving it in place is not the same as
+    never having installed it, since the metadata gate above imports it anyway.
     """
     if not _distribution_present(pypi_name):
         return
@@ -1076,12 +1075,11 @@ def _install_package_wheel_first(
     """Install a fast-path package, wheel first, and never leave an unusable one behind.
 
     The two "touch nothing" guards run here, outside the cleanup: an already-working
-    package returns before any subprocess, and offline returns without changing anything.
-    Everything after them is an install attempt, so the invariant applies to it -- ANY
-    unsuccessful exit, including a timeout or a failed install, discards whatever is left
-    rather than leaving metadata the in-process import would pick up. Enforcing that here
-    rather than at each return is deliberate: this is the fourth defect of exactly that
-    shape, each one a path somebody did not think to clean up.
+    package returns before any subprocess, and offline changes nothing. Everything after
+    them is an install attempt, so ANY unsuccessful exit -- timeout, failed install, bad
+    import -- discards what is left rather than leaving metadata the in-process import
+    would pick up. Enforced here rather than at each return because four separate exits
+    have now been found that forgot to clean up.
     """
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
