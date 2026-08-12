@@ -6,15 +6,15 @@ export { ChangePasswordPage } from "./change-password-page";
 export { authFetch, logout, refreshSession } from "./api";
 export {
   AUTH_SESSION_CLEARED_EVENT,
+
+  AUTH_SESSION_STORED_EVENT,
   clearAuthTokens,
   getAuthToken,
+  getAuthSessionEpoch,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
-  isOnboardingDone,
-  markOnboardingDone,
   mustChangePassword,
-  resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";

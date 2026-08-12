@@ -254,7 +254,14 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        free, total = torch.cuda.mem_get_info()
+        # Not torch.cuda.mem_get_info directly: on Windows ROCm its free half is an
+        # over-report that does not track residency, and this feeds the activation
+        # refusal that exists BECAUSE Windows WDDM spills to host RAM instead of
+        # raising (#8403). Imported lazily to keep this module free of backend
+        # imports at module scope.
+        from utils.hardware import trusted_mem_get_info
+
+        free, total = trusted_mem_get_info()
         kind = "discrete_vram"
         try:
             # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the wrong GPU and misclassify it.

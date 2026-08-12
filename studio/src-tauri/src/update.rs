@@ -47,7 +47,15 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
         // -X utf8, not PYTHONUTF8: -I implies -E, so this process ignores every
         // PYTHON* variable and its own output would reach read_lossy_lines in
         // the locale encoding. The env vars still apply to descendants.
-        cmd.args(["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        cmd.args([
+            "-X",
+            "utf8",
+            "-I",
+            "-c",
+            WINDOWS_CLI_ENTRYPOINT,
+            "studio",
+            "update",
+        ]);
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
         Ok(cmd)
@@ -59,6 +67,15 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
         cmd.args(["studio", "update"]);
         Ok(cmd)
     }
+}
+
+fn configure_tauri_update_environment(cmd: &mut Command) {
+    // The desktop owns both its shortcuts and its frontend bundle. The managed
+    // Python update only needs backend dependencies and native helpers.
+    cmd.env_remove("UNSLOTH_STUDIO_HOME");
+    cmd.env_remove("STUDIO_HOME");
+    cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    cmd.env("SKIP_STUDIO_FRONTEND", "1");
 }
 
 fn spawn_update(
@@ -83,14 +100,9 @@ fn spawn_update(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
-    // the same install the desktop app uses, not an inherited custom root.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
-    // Signal to unsloth_cli that this update was initiated by the Tauri
-    // desktop bundle so it skips re-creating CLI launchers/.app/.desktop
-    // shortcuts (Tauri owns its own bundle entries).
-    cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    // Keep the update on the desktop-managed install and avoid rebuilding assets
+    // that are already compiled into the signed Tauri bundle.
+    configure_tauri_update_environment(&mut cmd);
     #[cfg(windows)]
     cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
@@ -472,6 +484,25 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn tauri_backend_update_skips_the_web_frontend_build() {
+        use std::ffi::OsStr;
+
+        let mut cmd = Command::new("unused");
+        configure_tauri_update_environment(&mut cmd);
+
+        for name in ["UNSLOTH_STUDIO_HOME", "STUDIO_HOME"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
+        for (name, expected) in [("UNSLOTH_TAURI_UPDATE", "1"), ("SKIP_STUDIO_FRONTEND", "1")] {
+            assert!(cmd.get_envs().any(|(key, value)| {
+                key == OsStr::new(name) && value == Some(OsStr::new(expected))
+            }));
+        }
+    }
 
     #[test]
     fn lossy_reader_keeps_invalid_utf8_and_later_lines() {

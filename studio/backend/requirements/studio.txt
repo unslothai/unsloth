@@ -1,14 +1,22 @@
 # Unsloth UI backend dependencies
-typer
-fastapi
-uvicorn
-pydantic
-packaging
+# typer / fastapi / uvicorn / ddgs / gguf all dropped Python 3.9 in their newest
+# release, so each pin splits on the same 3.10 marker used elsewhere in this file.
+typer==0.27.1; python_version >= "3.10"
+typer==0.23.2; python_version < "3.10"
+fastapi==0.141.1; python_version >= "3.10"
+fastapi==0.128.8; python_version < "3.10"
+uvicorn==0.52.1; python_version >= "3.10"
+uvicorn==0.39.0; python_version < "3.10"
+pydantic==2.13.4
+packaging==26.3
 matplotlib==3.10.9
-pandas
-nest_asyncio
+# Held at 2.3.3 rather than the 3.0.x line: single-env/constraints.txt pins
+# pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
+# 3.9. Bump both together.
+pandas==2.3.3
+nest_asyncio==1.6.0
 datasets==4.3.0
-pyjwt
+pyjwt==2.13.0
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface-hub==0.36.2; python_version < "3.10"
@@ -20,8 +28,9 @@ huggingface-hub==0.36.2; python_version < "3.10"
 # way, so this is defence in depth, not the bound itself.
 urllib3>=2.3.0
 structlog>=24.1.0
-diceware
-ddgs
+diceware==1.0.1
+ddgs==9.14.4; python_version >= "3.10"
+ddgs==9.8.0; python_version < "3.10"
 cryptography>=42.0.0
 boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
@@ -29,7 +38,8 @@ fastmcp>=3.0.2
 # Local image generation (Images page): diffusers' GGUFQuantizationConfig needs
 # the gguf reader. diffusers itself is torch-bound and comes via the ML stack;
 # gguf is torch-free so it lives here, where it's installed in every mode.
-gguf
+gguf==0.19.0; python_version >= "3.10"
+gguf==0.18.0; python_version < "3.10"
 # Local video generation (Video page): MP4 encode (H.264 + AAC mux for LTX-2's
 # synchronized audio) runs through PyAV, which bundles its own ffmpeg libs. The
 # video load path fails fast with a clear error when this is missing, so keep it

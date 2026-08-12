@@ -158,6 +158,48 @@ def _isolate_xet_health_state():
 
 
 @pytest.fixture(autouse = True)
+def _confine_prequant_registration_memo():
+    """Keep one test's answer about the pre-quant allowlist from becoming every later test's.
+
+    ``diffusion_prequant`` asks once whether this torch can register the constructor allowlist and
+    memoises the answer, INCLUDING the failure, in a module global. That is right in a process
+    where torch never changes. It is wrong in this suite, where several files put a fake torch in
+    ``sys.modules``: the question gets asked while the fake is installed, the answer is False, and
+    ``monkeypatch`` restores ``sys.modules`` but not the memo. Every later real load then refuses.
+
+    Measured on main: after ``test_diffusion_backend.py`` the memo reads False, where it reads None
+    when that file runs alone. In a full-suite run that turned 20 tests across
+    ``test_diffusion_prequant.py`` and ``test_diffusion_convrot.py`` red, all with the same
+    ``assert None is not None``, while every one of them passed when its file ran by itself.
+
+    Restored rather than cleared, so nothing re-registers 22k times and a test that sets the memo
+    deliberately still sees its own value.
+    """
+    from core.inference import diffusion_prequant
+
+    registered = diffusion_prequant._SAFE_GLOBALS_REGISTERED
+    resolved = set(diffusion_prequant._RESOLVED_SAFE_GLOBALS)
+    yield
+    diffusion_prequant._SAFE_GLOBALS_REGISTERED = registered
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.clear()
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.update(resolved)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_audio_gallery(monkeypatch, tmp_path):
+    """Keep generated-clip persistence out of the developer's real gallery.
+
+    /audio/generate persists every clip, so a route test with a fake TTS core left silent
+    wavs in ``studio_root()/audio`` for the Audio page to list. Here, not per-suite, so
+    no test can leak.
+    """
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(audio_gallery, "studio_root", lambda: tmp_path)
+    yield
+
+
+@pytest.fixture(autouse = True)
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 
@@ -804,7 +846,11 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            if name.endswith("Pipeline"):
+            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
+            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
+            # pipeline. Answering only pipelines let that probe miss and turned routing tests
+            # into the 400 about diffusers this proxy exists to prevent.
+            if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
 
@@ -814,3 +860,38 @@ def healthy_diffusers(monkeypatch):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))
     monkeypatch.setitem(sys.modules, "diffusers", proxy)
+
+
+@pytest.fixture
+def real_prequant_safe_globals(monkeypatch):
+    """Stand in for the allowlist entries this host cannot import, and hand back the real resolver.
+
+    The file header promises these tests run without torchao, and the Backend CI image keeps that
+    promise literally: it installs torch and transformers and no torchao at all. Production then
+    resolves not one entry of ``_PREQUANT_SAFE_GLOBALS``, the registration floor ("TorchVersion
+    plus at least one real torchao class") is not met, every load refuses, and 19 tests in here
+    fail on ``assert None is not None`` -- saying nothing whatever about the loader they are
+    about. ``test_diffusion_convrot.py`` loads through the same registration and needs it too,
+    which is why this lives here rather than in one of the two files. The tests also swap ``sys.modules["torch"]`` for a bare module while a load runs, so
+    even ``torch.torch_version`` is unimportable at that moment, torchao or no torchao.
+
+    Standing in only for the names that did NOT resolve keeps a host that has torchao testing the
+    real classes. Which names a given release actually ships is asked separately, by
+    ``test_the_registration_floor_needs_a_real_torchao``, which skips rather than pretends -- and
+    ``test_the_registration_refuses_when_nothing_resolves`` pins the refusal itself, so the gate
+    that the CI image trips is still under test rather than merely worked around.
+    """
+    import core.inference.diffusion_prequant as pq
+
+    resolver = pq._prequant_safe_globals
+    resolved = {name: obj for obj, name in resolver()}
+    pairs = [
+        (resolved.get(f"{module}.{name}") or type(name, (), {}), f"{module}.{name}")
+        for module, name in pq._PREQUANT_SAFE_GLOBALS
+    ]
+    monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
+    # Per test rather than per process: the memo is a module global, so one test's registration
+    # would otherwise decide the answer for every test that ran after it.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
+    return resolver

@@ -78,6 +78,53 @@ def _extract_sh_function_body(source: str, name: str) -> str:
     return source[start:]
 
 
+# A dpkg-query -W stand-in that renders whichever showformat string it is handed,
+# so this tests how install.sh ASKS for the version, not only how it parses the
+# answer. It answers for a package in ANY state because the real tool does: only
+# purged ones are left out, so a rocm-core removed with `apt remove` and never
+# purged keeps reporting the version it had.
+_DPKG_QUERY_STUB = r"""#!/bin/sh
+_status='__STATUS__'
+_ver='__VERSION__'
+# dpkg's Status field is "<want> <error-flag> <status>".
+case "$_status" in installed) _want=install ;; *) _want=deinstall ;; esac
+_fmt=''
+_found=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f=*)            _fmt=${1#-f=} ;;
+        --showformat=*)  _fmt=${1#--showformat=} ;;
+        -f|--showformat) shift; _fmt=$1 ;;
+        -*)              : ;;
+        rocm-core)       _found=1 ;;
+    esac
+    shift
+done
+[ -n "$_found" ] || exit 1
+[ -n "$_fmt" ] || _fmt='${Package}\t${Version}\n'
+# Unrecognised fields render empty, like the real dpkg-query.
+_out=$(printf '%s' "$_fmt" | sed \
+    -e "s|\${Package}|rocm-core|g" \
+    -e "s|\${Status}|$_want ok $_status|g" \
+    -e "s|\${db:Status-Status}|$_status|g" \
+    -e "s|\${db:Status-Want}|$_want|g" \
+    -e "s|\${db:Status-Eflag}|ok|g" \
+    -e "s|\${Version}|$_ver|g" \
+    -e "s|\${[^}]*}||g")
+printf "$_out"
+"""
+
+
+def _write_dpkg_query_stub(
+    path: str,
+    version: str,
+    status: str = "installed",
+) -> None:
+    with open(path, "w", encoding = "utf-8") as f:
+        f.write(_DPKG_QUERY_STUB.replace("__STATUS__", status).replace("__VERSION__", version))
+    os.chmod(path, 0o755)
+
+
 # ── Helper: build HostInfo for different scenarios ──────────────────────────
 
 
@@ -2020,23 +2067,56 @@ class TestInstallShStructure:
             '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
         ), "the gpu summary must not claim no usable ROCm for a pinned index"
 
+    _ROCM_VERSION_SOURCES = (
+        "_rocm_tag_from_amd_smi",
+        "_rocm_tag_from_version_file",
+        "_rocm_tag_from_hipconfig",
+        "_rocm_tag_from_dpkg",
+        "_rocm_tag_from_rpm",
+    )
+
+    def _rocm_version_detection_script(self, source: str, rocm_prefix: str) -> str:
+        """The version-source helpers plus the resolver and the guarded
+        assignment that get_torch_index_url makes, as a runnable script.
+
+        /opt/rocm is redirected to `rocm_prefix` so the version file is a source
+        the test controls: a real ROCm host would otherwise answer one of the
+        probes and make the assertions machine-dependent."""
+        parts = []
+        # _run_bounded first: _rocm_tag_from_rpm routes its query through it, so
+        # omitting it makes that source answer nothing and the per-position
+        # assertions below pass for the wrong reason.
+        for name in (
+            "_run_bounded",
+            *self._ROCM_VERSION_SOURCES,
+            "_highest_rocm_tag",
+            "_detect_rocm_version_tag",
+        ):
+            body = _extract_sh_function_body(source, name)
+            assert body, f"install.sh no longer defines {name}()"
+            parts.append(body)
+        assignment = re.search(
+            r'^        _rocm_tag=\$\(_detect_rocm_version_tag.*?\|\| _rocm_tag=""\n',
+            source,
+            re.S | re.M,
+        )
+        assert assignment, "could not extract the guarded _rocm_tag assignment"
+        parts.append(assignment.group(0))
+        return "\n".join(parts).replace("/opt/rocm", rocm_prefix)
+
     def test_rocm_version_chain_survives_no_source_under_set_e(self):
         """When every ROCm version source is missing (e.g. rocminfo present but
-        rocm-core not installed, so dpkg-query/rpm exit 1), the _rocm_tag ||
-        chain fails as a whole; without the || guard set -e kills the installer
-        BEFORE the actionable no-version WARN it feeds. Executed, not text."""
+        rocm-core not installed, so dpkg-query/rpm exit 1), detection must still
+        return empty AND succeed; otherwise set -e kills the installer BEFORE the
+        actionable no-version WARN it feeds. Executed, not text."""
         shell = shutil.which("bash")
         if not shell:
             pytest.skip("bash needed to execute the version chain")
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        chain = re.search(
-            r'^        _rocm_tag=\$\(\{ command -v amd-smi.*?\|\| _rocm_tag=""\n',
-            source,
-            re.S | re.M,
-        )
-        assert chain, "could not extract the guarded _rocm_tag chain"
         with tempfile.TemporaryDirectory() as d:
+            # Nothing is created under this prefix, so every source comes up empty.
+            script_body = self._rocm_version_detection_script(source, os.path.join(d, "rocm"))
             # Tools exist on PATH but yield nothing usable, like a box with the
             # probe tools installed and no rocm-core package.
             for name in ("amd-smi", "hipconfig", "dpkg-query", "rpm"):
@@ -2045,13 +2125,101 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\nexit 1\n")
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n" + chain.group(0) + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
+                "set -euo pipefail\n" + script_body + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
             r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
-            assert r.returncode == 0, f"version chain aborted under set -e: {r.stderr}"
-            assert r.stdout.startswith("SURVIVED:"), r.stdout
+            assert r.returncode == 0, f"version detection aborted under set -e: {r.stderr}"
+            assert r.stdout.strip() == "SURVIVED:", r.stdout
         assert "rocm" in source.lower()
+
+    def test_rocm_version_detection_takes_the_highest_source(self):
+        """Issue #8402: Debian 13 ships hipconfig 5.7 next to a 6.1 runtime, so
+        stopping at the first source that answered gated a working gfx1100 out to
+        CPU wheels. Every source is read and the highest wins. Executed, not
+        text, and asserted per source position so no single ordering passes by
+        accident."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        # Each source answers; whichever position holds the 6.4 reading must win.
+        # "version-file" is /opt/rocm/.info/version rather than a PATH tool.
+        outputs = {
+            "amd-smi": "AMDSMI Tool: 25.0.1 | ROCm version: {v}",
+            "version-file": "{v}.1-98",
+            "hipconfig": "{v}.31921-0",
+            "dpkg-query": "1:{v}.4-1",
+            "rpm": "{v}.4-1",
+        }
+        for winner in outputs:
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                for name, template in outputs.items():
+                    line = template.format(v = "6.4" if name == winner else "5.7")
+                    if name == "version-file":
+                        os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                        with open(
+                            os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                        ) as f:
+                            f.write(line + "\n")
+                        continue
+                    if name == "dpkg-query":
+                        _write_dpkg_query_stub(os.path.join(d, name), line, "installed")
+                        continue
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write(f"#!/bin/sh\necho '{line}'\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == "TAG:rocm6.4", (
+                    f"{winner} reported 6.4 while every other source reported 5.7, "
+                    f"but detection resolved {r.stdout.strip()}"
+                )
+
+    def test_removed_dpkg_rocm_core_cannot_pick_the_wheels(self):
+        """Highest-wins fixed the undershoot in #8402 and opened the symmetric
+        hole: a source reading HIGHER than the runtime now wins outright.
+        Undershoot lands on CPU wheels, which work; overshoot installs wheels the
+        runtime cannot load. `dpkg-query -W` reports packages left in "deinstall
+        ok config-files" by `apt remove` without `apt purge`, still carrying the
+        version they had, so a host that ran ROCm 7.0 and went back to 6.1 hands
+        dpkg a 7.0 that beats every live source. Only "installed" counts.
+        Executed, not text, and paired with the installed case so the assertion
+        cannot pass on the version alone."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        for status, expected in (("config-files", "TAG:rocm6.1"), ("installed", "TAG:rocm7.0")):
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                # The live runtime, via the version file: ROCm 6.1.
+                os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                with open(
+                    os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                ) as f:
+                    f.write("6.1.2-98\n")
+                _write_dpkg_query_stub(os.path.join(d, "dpkg-query"), "1:7.0.0-1", status)
+                # Silence the rest so a real ROCm on the test host cannot answer.
+                for name in ("amd-smi", "hipconfig", "rpm"):
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write("#!/bin/sh\nexit 1\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == expected, (
+                    f"dpkg rocm-core 7.0 in state {status!r} next to a 6.1 version file "
+                    f"resolved {r.stdout.strip()}, expected {expected}"
+                )
 
     def test_cuda_precedence(self):
         """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
@@ -2471,13 +2639,35 @@ class TestInstallShStructure:
         fn = _extract_sh_function_body(source, "get_torch_index_url")
         probe_fn = _extract_sh_function_body(source, "_probe_amd_gfx_arch")
         family_fn = _extract_sh_function_body(source, "_amd_arch_index_family_for_gfx")
+        # The version helpers must be extracted too: without them get_torch_index_url
+        # calls a missing command, the guarded assignment swallows the 127, and the
+        # no-version endpoint is reached for the wrong reason. Verified by mutation
+        # (making _detect_rocm_version_tag return a real tag left this test green).
+        version_fns = [
+            _extract_sh_function_body(source, name)
+            for name in (
+                "_rocm_tag_from_amd_smi",
+                "_rocm_tag_from_version_file",
+                "_rocm_tag_from_hipconfig",
+                "_rocm_tag_from_dpkg",
+                "_rocm_tag_from_rpm",
+                "_highest_rocm_tag",
+                "_detect_rocm_version_tag",
+            )
+        ]
         assert fn and probe_fn and family_fn
+        assert all(version_fns), "ROCm version helpers not found in install.sh"
         with tempfile.TemporaryDirectory() as d:
             # Neutralise the host's real ROCm: the version chain reads
             # /opt/rocm/.info/version directly (no tool to shim), which resolves
             # a tag on a real ROCm box and skips the no-version endpoint under
             # test. Same path-substitution technique as the KFD topology tests.
-            fn = fn.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+            # The read moved into _rocm_tag_from_version_file, so the rewrite has to
+            # land on the helper text; applying it to fn alone is a no-op.
+            version_fns = [
+                body.replace("/opt/rocm/.info/version", Path(d, "no-rocm-version").as_posix())
+                for body in version_fns
+            ]
             with open(os.path.join(d, "uname"), "w", encoding = "utf-8", newline = "\n") as f:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
             # Silence every ROCm version source, not just amd-smi: a dev box with
@@ -2500,6 +2690,8 @@ class TestInstallShStructure:
                 + probe_fn
                 + "\n"
                 + family_fn
+                + "\n"
+                + "\n".join(version_fns)
                 + "\n"
                 + fn
                 + "\n"
@@ -3809,7 +4001,10 @@ class TestSetupPs1ShadowingParity:
         assert "ConfigManagerErrorCode" in block
         # ... but when the filter would leave nothing, keep the parked card rather than
         # reporting no AMD GPU (matches the Python WMI path).
-        assert "if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }" in block
+        # @() around the WHOLE if, not each branch: an if-expression unrolls a one-element array,
+        # and a CimInstance scalar's .Count is $null on 5.1, so a host with exactly one Radeon
+        # reported no AMD GPU at all (#8335).
+        assert "@(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
         # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every site
@@ -4509,7 +4704,15 @@ class TestProgressStepCountMatchesTotal:
     base_total. Regression for a repair step added without incrementing base_total,
     which pushed _STEP past _TOTAL (Codex P2)."""
 
-    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm):
+    def _run_stack(
+        self,
+        tmp_path,
+        *,
+        is_windows,
+        is_macos,
+        is_mac_arm,
+        skip_base = True,
+    ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
         unstructured_plugin.mkdir()
@@ -4518,7 +4721,9 @@ class TestProgressStepCountMatchesTotal:
         sub.returncode = 0
         sub.stdout = ""
         with (
-            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1" if skip_base else "0"}),
+            patch.object(stack_mod, "_report_mlx_stack_health"),
+            patch.object(stack_mod, "_bitsandbytes_installed", return_value = False),
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
@@ -4545,6 +4750,29 @@ class TestProgressStepCountMatchesTotal:
     def test_linux_progress_reaches_total(self, tmp_path):
         step, total = self._run_stack(tmp_path, is_windows = False, is_macos = False, is_mac_arm = False)
         assert step == total, f"Linux progress {step} != total {total}"
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    @pytest.mark.parametrize(
+        "is_windows, is_macos, is_mac_arm",
+        [(False, False, False), (True, False, False), (False, True, True), (False, True, False)],
+        ids = ["linux", "windows", "macos_arm", "macos_intel"],
+    )
+    def test_progress_reaches_total_on_both_core_paths(
+        self, tmp_path, is_windows, is_macos, is_mac_arm, skip_base
+    ):
+        """Both the installer handoff and `studio update`, on every platform.
+
+        The update path on Apple Silicon runs the MLX step, which the earlier
+        SKIP_STUDIO_BASE=1-only cases never reached, so its slot went uncounted.
+        """
+        step, total = self._run_stack(
+            tmp_path,
+            is_windows = is_windows,
+            is_macos = is_macos,
+            is_mac_arm = is_mac_arm,
+            skip_base = skip_base,
+        )
+        assert step == total, f"progress {step} != total {total}"
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
@@ -6225,6 +6453,84 @@ class TestLlamaCppRuntimeWslOrdering:
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1
         assert idx_helper < idx_binary
+
+
+class TestRocmWslSupplyChainPins:
+    """The ROCm-on-WSL bootstrap runs unattended and installs with sudo, so every piece of
+    code it fetches must come from an immutable ref: a moving branch would turn any rewrite
+    of that branch into root code execution on affected WSL hosts."""
+
+    def test_helper_is_fetched_from_a_pinned_commit_not_a_branch(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_bootstrap_rocm_wsl()")
+        assert start != -1
+        body = source[start : source.find("\n}", start)]
+        assert (
+            "unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" not in body
+        ), "the helper must not be fetched from the mutable main branch"
+        ref = re.search(r'_ROCM_WSL_HELPER_REF="([0-9a-f]+)"', body)
+        assert ref is not None, "the helper fetch must pin a full commit SHA"
+        assert len(ref.group(1)) == 40
+        assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
+        # And whatever that pin (or a user's older checkout) supplies, a helper without the
+        # pinned-source check is refused rather than trusted.
+        assert 'grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper"' in body
+        assert "predates the pinned-source check" in body
+
+    def test_librocdxg_ref_is_pinned_and_verified_before_build(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        assert (
+            "UNSLOTH_LIBROCDXG_REF:-develop" not in source
+        ), "librocdxg must not default to a moving branch"
+        sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', source)
+        assert sha is not None, "librocdxg must default to a pinned commit SHA"
+        # The ref itself must be that commit, so even a helper with no SHA check (an older
+        # fetched copy) resolves the same immutable revision rather than a movable tag.
+        ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', source)
+        assert ref is not None and ref.group(1) == sha.group(1)
+        # The SHA check must run before anything from the clone is built or installed.
+        # A failed checkout must not fall through to the default branch.
+        assert "_co_failed=1" in source
+        assert "Refusing to build the repository's default branch instead" in source
+        idx_check = source.find("git rev-parse HEAD")
+        idx_cmake = source.find("cmake .. -DWIN_SDK")
+        idx_install = source.find("$SUDO make install")
+        assert idx_check != -1 and idx_check < idx_cmake < idx_install
+
+    def test_install_sh_forwards_the_same_librocdxg_pin_as_the_helper(self):
+        # install.sh forwards the pin so it also applies to a helper fetched from an older
+        # commit. The two copies must never disagree, or a bumped helper would be handed a
+        # stale pin by install.sh and build the wrong revision.
+        install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        fwd_ref = re.search(r'_rw_dxg_ref="([0-9a-f]{40})"', install_sh)
+        fwd_sha = re.search(r'_rw_dxg_sha="\$_rw_dxg_ref"', install_sh)
+        own_ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', helper)
+        own_sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', helper)
+        assert None not in (fwd_ref, fwd_sha, own_ref, own_sha)
+        assert fwd_ref.group(1) == own_ref.group(1) == own_sha.group(1)
+        # A SHA, whether ours or the operator's, is forwarded AS the ref, so even a helper
+        # that ignores UNSLOTH_LIBROCDXG_SHA resolves exactly the authorised commit.
+        assert 'if [ -n "$_rw_dxg_sha" ]; then\n        _rw_dxg_ref="$_rw_dxg_sha"' in install_sh
+        # A ref-only override must reach the helper untouched, so that path still works.
+        assert '_rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"' in install_sh
+        assert (
+            'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"'
+            in install_sh
+        )
+
+    def test_helper_contract_matches_what_install_sh_requires(self):
+        # install.sh runs only a helper declaring this contract, so the level it requires and
+        # the level the helper declares must move together, and the helper must actually
+        # implement both guarantees the level stands for.
+        install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        required = re.search(r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh)
+        declared = re.search(r"^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)$", helper, re.M)
+        assert required is not None and declared is not None
+        assert required.group(1) == declared.group(1)
+        assert "git rev-parse HEAD" in helper
+        assert "_co_failed=1" in helper
 
 
 if __name__ == "__main__":

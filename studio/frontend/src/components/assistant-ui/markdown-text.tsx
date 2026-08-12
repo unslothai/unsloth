@@ -35,6 +35,7 @@ import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 const code = createCodePlugin({
@@ -399,10 +400,11 @@ const MarkdownTextImpl = () => {
   // Parts are keyed by index, so switching conversations hands this instance a different
   // message, and Streamdown only extends its parsed blocks: key it per message instead.
   const messageId = useAuiState(({ message }) => message.id);
-  const displayText = useRafCoalescedText(text, status.type === "running");
+  const isStreaming = status.type === "running";
+  const displayText = useRafCoalescedText(text, isStreaming);
   const processedText = useMemo(
-    () => preprocessLaTeX(displayText),
-    [displayText],
+    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
+    [displayText, isStreaming],
   );
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -415,7 +417,7 @@ const MarkdownTextImpl = () => {
       <Streamdown
         key={messageId}
         mode="streaming"
-        isAnimating={status.type === "running"}
+        isAnimating={isStreaming}
         animated={STREAMDOWN_IMMEDIATE_UPDATES}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}

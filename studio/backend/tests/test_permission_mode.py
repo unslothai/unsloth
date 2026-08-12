@@ -1678,6 +1678,30 @@ def test_high_risk_dispatcher_non_terminal():
         ("from builtins import open as w\nw('x', 'w')", True),
         ("globals()['open']('x', 'w')", True),  # dynamic open lookup
         ("import pickle\npickle.loads(b'')", True),  # code exec on load
+        # PyYAML's non-safe loaders build arbitrary Python objects from tags
+        # (!!python/object/apply:os.system), so the command lives in the data.
+        ("import yaml\nyaml.load(s, Loader=yaml.Loader)", True),
+        ("import yaml\nyaml.unsafe_load(s)", True),
+        ("from yaml import unsafe_load\nunsafe_load(s)", True),
+        ("import yaml\nyaml.full_load(s)", True),
+        ("import yaml\nyaml.Loader(s).get_data()", True),  # the loader class itself
+        ("import yaml.loader\nyaml.loader.Loader(s).get_data()", True),  # through a submodule
+        ("from yaml import loader as yl\nyl.Loader(s).get_data()", True),  # submodule alias
+        ("import yaml\nclass L(yaml.Loader): pass\nL(s).get_data()", True),  # a subclass
+        # Naming one is enough, so the ways of moving it around need no tracking.
+        ("import yaml\nld = yaml.unsafe_load\nld(s)", True),
+        ("import yaml\nh.loader = yaml.unsafe_load\nh.loader(s)", True),
+        ("import yaml\nfor fn in [yaml.unsafe_load]: fn(s)", True),
+        ("import yaml\ndef choose(): return yaml.unsafe_load\nchoose()(s)", True),
+        ("import yaml\ndef get(): return yaml\nget().unsafe_load(s)", True),  # the module
+        # The safe readers name none of those, so they still run unprompted.
+        ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),
+        ("import yaml\nfor d in yaml.safe_load_all(open('c.yml')): print(d)", False),
+        ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
+        ("import yaml\ncfg = yaml.safe_load(open('c.yml'))\nprint(cfg['lr'])", False),
+        ("import yaml\ndef read(q): return yaml.safe_load(open(q))\nprint(read('a.yml'))", False),
+        ("import yaml\nprint(yaml.dump({'a': 1}))", True),  # dump is a writer, as before
+        ("import json\nprint(json.load(open('a.json')))", False),  # json.load is data
         ("import io\nio.FileIO('out', 'w')", True),  # raw write handle
         (
             "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",
