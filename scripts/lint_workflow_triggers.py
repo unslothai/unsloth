@@ -94,6 +94,31 @@ _INVOCATION = re.compile(
     rf"(?:^|[;&|]|\n)\s*[\w./-]*python[\w.]*\s+[^\n;&|]*{re.escape(LINT_SCRIPT_NAME)}"
 )
 
+# Shell that swallows a non-zero exit, so the step goes green on findings.
+_MASKED = re.compile(
+    rf"{re.escape(LINT_SCRIPT_NAME)}[^\n]*(?:\|\||[;&]\s*(?:true|:)\s*(?:$|\n))",
+    re.MULTILINE,
+)
+# Flags that keep the gate running but stop it gating anything.
+NEUTERING_FLAGS: tuple[str, ...] = ("--workflows-dir", "--no-require-host")
+
+
+def _invocation_problems(run: str) -> list[str]:
+    """Ways a real invocation can still fail to enforce anything."""
+    problems = []
+    if _MASKED.search(run) or "set +e" in run:
+        problems.append(
+            "its lint command swallows a non-zero exit (|| true, ; true, "
+            "set +e), so findings cannot fail the run"
+        )
+    used = [f for f in NEUTERING_FLAGS if f in run]
+    if used:
+        problems.append(
+            f"its lint command passes {' + '.join(used)}, so it does not "
+            "gate the live workflows"
+        )
+    return problems
+
 
 def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
     """(job, step) pairs whose `run` actually invokes this script.
@@ -221,6 +246,8 @@ def main() -> int:
                     "its lint job declares 'needs:', so a skipped prerequisite "
                     "skips the gate without failing the run"
                 )
+            for _, step in lint_steps:
+                problems.extend(_invocation_problems(str(step.get("run") or "")))
             if problems:
                 findings.append(
                     f"{path.name}: runs {LINT_SCRIPT_NAME} but "

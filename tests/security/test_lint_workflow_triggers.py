@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fnmatch
+import re
 import shutil
 import subprocess
 import sys
@@ -157,6 +157,43 @@ def test_lint_rejects_a_host_that_only_mentions_the_script(tmp_path):
     assert "does not cover every PR" in proc.stderr
 
 
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        ("python3 scripts/lint_workflow_triggers.py || true", "swallows"),
+        ("python3 scripts/lint_workflow_triggers.py ; true", "swallows"),
+        ("set +e\n          python3 scripts/lint_workflow_triggers.py", "swallows"),
+        (
+            "python3 scripts/lint_workflow_triggers.py --workflows-dir /tmp/empty",
+            "--workflows-dir",
+        ),
+        (
+            "python3 scripts/lint_workflow_triggers.py --no-require-host",
+            "--no-require-host",
+        ),
+    ],
+    ids = ["or-true", "semi-true", "set-plus-e", "elsewhere-dir", "self-check-off"],
+)
+def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
+    """Running the script is not enough; it has to be able to gate.
+
+    `|| true` swallows the exit code, and the flags point it away from the
+    live tree or switch off its own wiring check. Each leaves a workflow that
+    looks wired and enforces nothing.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            f"run: |\n          {command}",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert expected in proc.stderr
+
+
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
     """A skipped prerequisite skips the lint job without failing the run."""
     wf = tmp_path / "wf"
@@ -259,16 +296,32 @@ def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
     return rules
 
 
-def _glob_variants(pattern: str) -> list[str]:
-    """Expand `**/`, which wildmatch lets match ZERO directories.
+def _pattern_regex(pattern: str) -> re.Pattern:
+    """CODEOWNERS globbing: `*` stops at `/`, `**` crosses directories.
 
-    `fnmatch` has no way to express that, so `/.github/**/workflows/` would
-    miss `.github/workflows/...` and hide a real override.
+    `fnmatch` gets both halves wrong here. Its `*` consumes `/`, so
+    `/.github/*` would wrongly claim nested workflow files and fail a valid
+    CODEOWNERS change; and it cannot express `**/` matching zero directories,
+    so `/.github/**/workflows/` would wrongly miss one.
     """
-    head, sep, tail = pattern.partition("**/")
-    if not sep:
-        return [pattern]
-    return [f"{head}{prefix}{t}" for t in _glob_variants(tail) for prefix in ("**/", "")]
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
 
 
 def _is_valid_owner(token: str) -> bool:
@@ -280,28 +333,34 @@ def _is_valid_owner(token: str) -> bool:
 
 
 def _pattern_matches(pattern: str, path: str) -> bool:
-    """Approximate GitHub's CODEOWNERS matching, erring toward matching.
+    """Approximate GitHub's CODEOWNERS matching.
 
-    A directory pattern owns everything beneath it, so every directory prefix
-    of the path is a candidate. Patterns are globbed rather than compared
-    literally: `**/workflows/` is a valid rule that a substring search misses.
-    An unanchored pattern may start at any depth.
+    A pattern that NAMES a directory owns everything beneath it, so directory
+    prefixes of the path are candidates. A pattern with a wildcard in it does
+    not: GitHub documents `docs/*` as matching `docs/getting-started.md` but
+    not `docs/build-app/troubleshooting.md`. An unanchored pattern may start
+    at any depth.
     """
     if pattern == "*":
         return True
     anchored = pattern.startswith("/")
     is_dir = pattern.endswith("/")
     body = pattern.strip("/")
+    rx = _pattern_regex(body)
     segments = path.split("/")
 
-    candidates = ["/".join(segments[:i]) for i in range(1, len(segments))]
-    if not is_dir:
-        candidates.append(path)
-    if not anchored:
-        candidates += [
-            "/".join(segments[j:i]) for i in range(1, len(segments) + 1) for j in range(1, i)
-        ]
-    return any(fnmatch.fnmatch(c, variant) for c in candidates for variant in _glob_variants(body))
+    def matches(candidate: str) -> bool:
+        parts = candidate.split("/")
+        starts = [0] if anchored else range(len(parts))
+        return any(rx.match("/".join(parts[j:])) for j in starts)
+
+    prefixes = ["/".join(segments[:i]) for i in range(1, len(segments))]
+    if is_dir:
+        return any(matches(p) for p in prefixes)
+    if matches(path):
+        return True
+    # A plain path may name a directory, and then owns everything under it.
+    return not any(ch in body for ch in "*?") and any(matches(p) for p in prefixes)
 
 
 def _effective_owners(text: str, path: str) -> list[str]:
@@ -350,6 +409,36 @@ def test_workflow_changes_require_code_owner_review():
             f"CODEOWNERS gives {probe} effective owners {owners or '(none)'}; "
             "a later pattern overrode the workflow rule."
         )
+
+
+@pytest.mark.parametrize(
+    "pattern, path, matches",
+    [
+        # `*` stops at a directory boundary, like GitHub's `docs/*` example.
+        ("/.github/*", ".github/workflows/lint.yml", False),
+        ("/.github/*", ".github/CODEOWNERS", True),
+        # `**` crosses them, and `**/` may match zero.
+        ("/.github/**", ".github/workflows/lint.yml", True),
+        ("/.github/**/workflows/", ".github/workflows/lint.yml", True),
+        ("/.github/**/workflows/", ".github/a/b/workflows/lint.yml", True),
+        # A plain path naming a directory owns everything beneath it.
+        ("/.github/workflows/", ".github/workflows/lint.yml", True),
+        ("/scripts", "scripts/data/x.txt", True),
+        # Unanchored patterns may start at any depth.
+        ("workflows/", ".github/workflows/lint.yml", True),
+        ("**/workflows/", ".github/workflows/lint.yml", True),
+        # Non-matches.
+        ("/unsloth/", ".github/workflows/lint.yml", False),
+        ("/unsloth", "unsloth_zoo/x.py", False),
+    ],
+)
+def test_codeowners_pattern_semantics(pattern, path, matches):
+    """The matcher must model GitHub, in both directions.
+
+    Under-matching hides a rule that steals ownership; over-matching fails a
+    valid CODEOWNERS change that never touched the workflows.
+    """
+    assert _pattern_matches(pattern, path) is matches
 
 
 @pytest.mark.parametrize(
