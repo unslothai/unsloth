@@ -1954,7 +1954,12 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
             _setup_torch_hip=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f4)
         fi
     fi
-    if [ "$_setup_torch_probe_answered" = true ] && [ "$_setup_torch_sees_gpu" = false ]; then
+    # A hybrid Intel/NVIDIA host on the XPU wheel answers False here and still runs on
+    # the GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU
+    # verdict there would be a false alarm about a working machine, which is worse than
+    # staying quiet, so an XPU-ready venv suppresses it.
+    if [ "$_setup_torch_probe_answered" = true ] && [ "$_setup_torch_sees_gpu" = false ] \
+        && [ "$_setup_xpu_ready" = false ]; then
         if [ "$_setup_amd_detected" = true ]; then
             step "gpu check" "PyTorch cannot see the AMD GPU reported above" "$C_ERR"
             substep "detected by the installer: AMD ROCm${_setup_gfx:+ ($_setup_gfx)}${_setup_mkt:+ -- $_setup_mkt}" "$C_ERR"

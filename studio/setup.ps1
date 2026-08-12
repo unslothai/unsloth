@@ -5141,7 +5141,13 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
     $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy
-    if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu) {
+    # A hybrid Intel/NVIDIA host on the XPU wheel answers False here and still runs on the
+    # GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU verdict
+    # there would be a false alarm about a working machine, which is worse than staying
+    # quiet, so an XPU venv suppresses it. Read off disk, like the rest of the XPU guards,
+    # so a stalled Arc driver cannot hang this on `import torch`.
+    if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu -and
+        -not (Test-VenvTorchIsXpu -VenvPath $VenvDir)) {
         $_gpuCheckHip = if ($_gpuVisibility.Hip) { $_gpuVisibility.Hip } else { "none" }
         step "gpu check" "PyTorch cannot see the $_gpuCheckAnnounced reported above" "Red"
         substep "torch.cuda.is_available() is False in $VenvDir" "Red"

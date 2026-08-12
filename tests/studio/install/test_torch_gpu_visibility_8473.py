@@ -105,6 +105,7 @@ def _run_block(
     *,
     amd: bool = False,
     nvidia: bool = False,
+    xpu: bool = False,
     gfx: str = "",
     marketing: str = "",
     env: dict[str, str] | None = None,
@@ -141,6 +142,7 @@ def _run_block(
             f'VENV_DIR="{venv}"',
             f"_setup_nvidia_usable={'true' if nvidia else 'false'}",
             f"_setup_amd_detected={'true' if amd else 'false'}",
+            f"_setup_xpu_ready={'true' if xpu else 'false'}",
             f'_setup_gfx="{gfx}"',
             f'_setup_mkt="{marketing}"',
             block_text,
@@ -356,3 +358,25 @@ def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
     check = text.index(_BLOCK_START)
     llama = text.index(_BLOCK_END)
     assert summary < announcement < check < llama
+
+
+def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
+    """Hybrid Intel/NVIDIA on the XPU wheel: torch.cuda.is_available() is False and the
+    machine still runs on its GPU, because _detect_hardware_locked falls through from
+    CUDA to XPU (hardware.py). Reporting a CPU verdict there is a false alarm about a
+    working host, which is worse than saying nothing (#8473)."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True, xpu = True)
+    out = result["stdout"]
+    assert "PyTorch cannot see" not in out
+    assert "No visible GPU" not in out
+    assert "BLOCK_DONE" in out
+    assert result["returncode"] == 0
+
+
+def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
+    """The suppression is XPU-specific, not a blanket mute: with no XPU the same
+    invisible-GPU host must still be reported."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True, xpu = False)
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]

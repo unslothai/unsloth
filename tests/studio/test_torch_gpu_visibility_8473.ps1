@@ -148,6 +148,14 @@ Check "NVIDIA is named"                   ($report -match 'if \(\$HasNvidiaSmi\)
 Check "the AMD arch is named"             ($report -match '\$_gpuCheckAnnounced = "AMD GPU \(\$script:ROCmGfxArch\)"')
 Check "an arch-less AMD host still counts" ($report -match 'elseif \(\$HasROCm\) \{ \$_gpuCheckAnnounced = "AMD GPU" \}')
 
+# A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the
+# GPU, because _detect_hardware_locked falls through from CUDA to XPU. Accusing that host of
+# running on CPU is a false alarm about a working machine (#8473). Test-VenvTorchIsXpu reads
+# torch/version.py off disk, so the suppression cannot hang on a stalled Arc driver.
+Check "the XPU suppression is present"    ($report -match 'Test-VenvTorchIsXpu')
+Check "it suppresses, not merely reports" ($report -match 'not \(Test-VenvTorchIsXpu')
+Check "it guards the mismatch arm"        ($report -match '\$_gpuVisibility\.SeesGpu -and[\s\S]{0,120}Test-VenvTorchIsXpu')
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green
