@@ -899,7 +899,7 @@ def _apple_cpu_freq_range_mhz():
             result = subprocess.run(
                 ["ioreg", "-a", "-r", "-c", "AppleARMIODevice", "-d", "1"],
                 capture_output = True,
-                timeout = 5,
+                timeout = 2,
             )
             entries = plistlib.loads(result.stdout) if result.stdout else []
             if isinstance(entries, dict):
@@ -915,9 +915,8 @@ def _apple_cpu_freq_range_mhz():
 def _corrected_apple_cpu_freq(sample):
     """Rescale one psutil scpufreq sample that was read in the wrong unit."""
     current = getattr(sample, "current", None)
-    if not isinstance(current, (int, float)) or current != current or current <= 0:
-        return sample
-    if current >= _APPLE_MIN_PLAUSIBLE_CPU_MHZ:
+    usable = isinstance(current, (int, float)) and current == current and current > 0
+    if usable and current >= _APPLE_MIN_PLAUSIBLE_CPU_MHZ:
         return sample  # already plausible: a fixed psutil, or not an affected chip
 
     freq_range = _apple_cpu_freq_range_mhz()
@@ -926,6 +925,8 @@ def _corrected_apple_cpu_freq(sample):
         # psutil reports the peak as `current` on macOS -- it has no per-instant
         # clock there -- so keep that shape rather than inventing a live value.
         return sample._replace(current = peak, min = low, max = peak)
+    if not usable:
+        return sample  # 0, negative or NaN and no tables: nothing to say
     # ioreg unavailable: recover the order of magnitude from what psutil read.
     # psutil truncates in integer arithmetic, so this lands on the GHz step
     # (4 -> 4000 MHz) rather than on the exact peak.
@@ -966,6 +967,23 @@ def patch_psutil_cpu_freq():
                 return namedtuple_type
         return None
 
+    def _from_tables(percpu):
+        """The IORegistry reading in psutil's own return shape, or None.
+
+        macOS has no per-core clock, so psutil's percpu answer there is a
+        one-element list of the same sample. Matching that keeps a percpu caller
+        on the same footing as a plain one instead of leaving it with the raise.
+        """
+        namedtuple_type = _scpufreq_type()
+        if namedtuple_type is None:
+            return None
+        freq_range = _apple_cpu_freq_range_mhz()
+        if freq_range is None:
+            return None
+        low, peak = freq_range
+        sample = namedtuple_type(peak, low, peak)
+        return [sample] if percpu else sample
+
     @functools.wraps(original_cpu_freq)
     def cpu_freq(*args, **kwargs):
         try:
@@ -973,24 +991,23 @@ def patch_psutil_cpu_freq():
         except Exception:
             # psutil raises on M5, whose renumbered tables it cannot find at the
             # indexes it hardcodes. Stand in with the IORegistry reading rather
-            # than propagating, but only for the plain call: percpu asks for a
-            # per-core breakdown the tables cannot supply.
-            namedtuple_type = _scpufreq_type()
-            freq_range = (
-                None
-                if _percpu_requested(args, kwargs) or namedtuple_type is None
-                else _apple_cpu_freq_range_mhz()
-            )
-            if freq_range is None:
+            # than propagating; with no tables either, the original error is the
+            # honest answer.
+            stand_in = _from_tables(_percpu_requested(args, kwargs))
+            if stand_in is None:
                 raise
-            low, peak = freq_range
-            return namedtuple_type(peak, low, peak)
+            return stand_in
         try:
             # percpu = True returns a list of samples, otherwise a single one.
             if isinstance(result, list):
+                # Empty is what a psutil carrying giampaolo/psutil#2382 returns
+                # when the clock is undeterminable.
+                if not result:
+                    return _from_tables(percpu = True) or result
                 return [_corrected_apple_cpu_freq(sample) for sample in result]
             if result is None:
-                return result
+                stand_in = _from_tables(percpu = False)
+                return result if stand_in is None else stand_in
             return _corrected_apple_cpu_freq(result)
         except Exception:
             return result  # never let a cosmetic fix break a caller

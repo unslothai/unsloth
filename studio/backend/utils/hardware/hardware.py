@@ -1362,7 +1362,10 @@ def _read_apple_cpu_peak_mhz() -> Optional[float]:
             result = subprocess.run(
                 ["ioreg", "-a", "-r", "-c", "AppleARMIODevice", "-d", "1"],
                 capture_output = True,
-                timeout = 5,
+                # Same budget as the AGX probe above. The call is made once per
+                # process but from inside a /api/system request, so it must not
+                # be able to hold a worker thread for long.
+                timeout = 2,
             )
             entries = plistlib.loads(result.stdout) if result.stdout else []
             if isinstance(entries, dict):
