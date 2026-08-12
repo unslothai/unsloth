@@ -679,11 +679,13 @@ def main(argv: list[str] | None = None) -> int:
         action = "store_true",
         help = (
             "Treat every finding as blocking (exit 1). "
-            "Default mode only blocks on known-malicious versions, "
-            "indicator-of-compromise strings, or structurally broken "
-            "lockfiles; everything else is printed as an advisory "
-            "warning with exit 0. CI should use the default; local "
-            "audits aiming for zero noise can opt in via --strict."
+            "Default mode already blocks on known-malicious versions, "
+            "indicator-of-compromise strings, structurally broken "
+            "lockfiles, and dependency provenance/integrity failures "
+            "(non-registry npm URL or cargo source, missing integrity "
+            "hash or cargo checksum). Remaining anomalies, such as an "
+            "entry with no resolved URL, are printed as an advisory "
+            "warning with exit 0; --strict escalates those too."
         ),
     )
     args = parser.parse_args(argv)
