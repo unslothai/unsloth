@@ -262,6 +262,13 @@ export function useTauriBackend() {
           return;
         }
         case "owned_ready":
+          // A stop mid-reap can still probe as owned_ready; honor the intent.
+          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
+            setIsExternalServer(false);
+            stopExternalServerPoll();
+            setBackendStatus("stopped");
+            return;
+          }
           if (!preflight.port) {
             setBackendError("Desktop preflight found an owned backend without a port.");
             return;
