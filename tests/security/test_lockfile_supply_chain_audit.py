@@ -276,7 +276,7 @@ def test_blocking_finding_emitted_as_single_line_annotation(tmp_path):
         cargo_lockfiles = [lockfile],
     )
     error_lines = [line for line in proc.stderr.splitlines() if line.startswith("::error::")]
-    assert error_lines, "expected at least one ::error:: annotation; " f"stderr was:\n{proc.stderr}"
+    assert error_lines, f"expected at least one ::error:: annotation; stderr was:\n{proc.stderr}"
     for line in error_lines:
         # One physical line: kind/package/detail joined via %0A, not split.
         assert "%0A" in line, (
