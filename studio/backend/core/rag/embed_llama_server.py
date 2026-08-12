@@ -55,7 +55,6 @@ def _resolve_entrypoint(binary: str) -> str:
     """
     try:
         from core.inference.llama_cpp import _resolve_llama_binary
-
         return str(_resolve_llama_binary(binary))
     except Exception:  # noqa: BLE001 - launch what we were given
         return binary
