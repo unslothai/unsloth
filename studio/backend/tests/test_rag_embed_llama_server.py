@@ -192,6 +192,69 @@ def test_settings_gate_does_not_block_on_detection_or_probe(monkeypatch):
     assert embeddings.active_backend_is_llama() is False
 
 
+def _unsettled_detection(monkeypatch, *, rocm_possible):
+    """Detection still running, with ROCm-possibility pinned torch-free."""
+    import threading
+
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(hardware_mod, "DETECTION_COMPLETE", threading.Event())  # unset
+    monkeypatch.setattr(embeddings, "_rocm_is_possible", lambda: rocm_possible)
+
+
+def test_a_cpu_host_keeps_its_gguf_classification_while_detection_runs(monkeypatch):
+    # settings.py reads this to decide whether a local .gguf needs HF verification. A host
+    # that can never be ROCm must keep its real answer during the detection window, or a
+    # valid local .gguf transiently 409s on a machine that has no AMD GPU at all.
+    _unsettled_detection(monkeypatch, rocm_possible = False)
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings.active_backend_is_llama() is True
+
+
+def test_a_possibly_rocm_host_still_holds_back_while_detection_runs(monkeypatch):
+    _unsettled_detection(monkeypatch, rocm_possible = True)
+    _forbid_gpu_query(monkeypatch)
+    _forbid_probe(monkeypatch)
+    assert embeddings.active_backend_is_llama() is False
+
+
+def test_resolver_keeps_the_gguf_answer_for_an_impossible_rocm_host(monkeypatch):
+    _unsettled_detection(monkeypatch, rocm_possible = False)
+    monkeypatch.setattr(embeddings, "get_device", lambda: None)  # detection stays unsettled
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings._resolve_auto() == "llama-server"
+
+
+def test_rocm_is_possible_is_false_on_macos(monkeypatch):
+    monkeypatch.setattr(embeddings.sys, "platform", "darwin")
+    assert embeddings._rocm_is_possible() is False
+
+
+def test_rocm_is_possible_follows_the_kfd_node_on_linux(monkeypatch):
+    monkeypatch.setattr(embeddings.sys, "platform", "linux")
+    seen: list = []
+
+    def _isdir(path):
+        seen.append(path)
+        return False
+
+    monkeypatch.setattr(embeddings.os.path, "isdir", _isdir)
+    assert embeddings._rocm_is_possible() is False
+    # ROCm's own kernel driver publishes this; hardware.py reads the same tree.
+    assert seen == ["/sys/class/kfd/kfd/topology/nodes"]
+
+
+def test_rocm_is_possible_follows_the_rocm_install_on_windows(monkeypatch):
+    from utils import device_allocation_probe as probe_mod
+
+    monkeypatch.setattr(embeddings.sys, "platform", "win32")
+    monkeypatch.setattr(probe_mod, "_rocm_dll_directories", lambda: [])
+    assert embeddings._rocm_is_possible() is False
+    monkeypatch.setattr(probe_mod, "_rocm_dll_directories", lambda: [r"C:\rocm\bin"])
+    assert embeddings._rocm_is_possible() is True
+
+
 def test_settings_gate_does_not_probe_on_a_settled_rocm_host(monkeypatch):
     _mock_rocm_probe(monkeypatch, is_rocm = True, probe_ok = False)
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")

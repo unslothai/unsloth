@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
@@ -87,6 +88,33 @@ def _host_is_rocm() -> bool | None:
         return bool(hardware_mod.IS_ROCM)
     except Exception:  # noqa: BLE001 - if we cannot even tell, leave behaviour untouched
         return False
+
+
+def _rocm_is_possible() -> bool:
+    """Could this host be ROCm at all, answered without torch and without detection.
+
+    The point is to keep the "detection has not settled yet" caution narrow. Treating
+    every unsettled host as possibly-ROCm is safe for the crash but too broad to be free:
+    it also hands a CPU or macOS host the provisional sentence-transformers answer, and
+    ``routes/settings.py`` reads that as "not llama" and stops applying its GGUF handling,
+    so a valid local .gguf briefly 409s on a host that never had an AMD GPU.
+
+    Each branch is a file-existence test, so it costs nothing on the request path:
+      * macOS never has ROCm.
+      * Linux: ROCm's own kernel driver publishes this topology directory, and
+        ``utils/hardware/hardware.py`` already reads it (``_rocm_kfd_gpu_pci_ids``).
+      * Windows: no equivalent node, so use the ROCm install itself -- the same bin
+        directories the probe child needs in order to load amdhip64.dll.
+    """
+    try:
+        if sys.platform == "darwin":
+            return False
+        if sys.platform == "win32":
+            from utils.device_allocation_probe import _rocm_dll_directories
+            return bool(_rocm_dll_directories())
+        return os.path.isdir("/sys/class/kfd/kfd/topology/nodes")
+    except Exception:  # noqa: BLE001 - unsure means possible; the caution is the safe side
+        return True
 
 
 def _safe_torch_device() -> str:
@@ -587,9 +615,10 @@ def _resolve_auto() -> str:
         except Exception:  # noqa: BLE001 - detection failing is not this function's problem
             is_rocm = None
 
-    if is_rocm is not False:
-        # None lands here too, and deliberately: until detection settles ROCm cannot be
-        # ruled out, and guessing "not ROCm" would reopen the AMD query below.
+    if is_rocm is True or (is_rocm is None and _rocm_is_possible()):
+        # The None case is detection that would not settle. Only hold back the AMD query
+        # below for a host that could actually be ROCm; a CPU or macOS host still gets its
+        # real answer, which is what keeps its GGUF classification intact.
         return "sentence-transformers"
 
     from core.inference.llama_cpp import LlamaCppBackend
@@ -719,13 +748,15 @@ def active_backend_is_llama() -> bool:
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
         if raw in _AUTO_ALIASES:
             # This runs inside PUT /embedding-model and friends, so it must not sit behind
-            # hardware detection. On ROCm, and while detection is still unsettled and ROCm
-            # cannot be ruled out, answer without asking: auto resolves to
-            # sentence-transformers on every ROCm host, so the answer is False. That also
-            # leaves the ST pickle gate ENGAGED, the conservative direction for a security
-            # check. Only a settled non-ROCm host reaches the resolver, where the GPU query
+            # hardware detection. A ROCm host, and an unsettled host that could be ROCm,
+            # answer without asking: auto resolves to sentence-transformers on every ROCm
+            # host, so False is the real answer and not a placeholder, and it leaves the ST
+            # pickle gate ENGAGED, the conservative direction for a security check.
+            # Everything else reaches the resolver and keeps its llama/GGUF classification,
+            # which settings.py needs to accept a local .gguf; the GPU query it runs there
             # is nvidia-smi and cheap.
-            if _host_is_rocm() is not False:
+            is_rocm = _host_is_rocm()
+            if is_rocm is True or (is_rocm is None and _rocm_is_possible()):
                 return False
             key = _resolve_auto()
         else:
