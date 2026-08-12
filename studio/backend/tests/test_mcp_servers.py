@@ -1344,7 +1344,6 @@ def test_status_for_tool_uses_mcp_display_name(tmp_path, monkeypatch):
 def test_status_for_tool_unknown_mcp_server_keeps_raw_name(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tool_loop_controller import status_for_tool
-
     assert status_for_tool("mcp__missing__x", {}) == "Calling: mcp__missing__x"
 
 
