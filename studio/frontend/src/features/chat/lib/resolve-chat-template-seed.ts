@@ -33,6 +33,12 @@ export function resolveChatTemplateSeed(options: {
   // While a load is in flight performLoad owns the load params, and an older backend
   // omitting the field says nothing about the template.
   if (incoming === undefined || !seedLoadParams) {
+    if (hydratingExistingModel && seedLoadParams) {
+      return {
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
+      };
+    }
     return {};
   }
   const unseeded =

@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -334,6 +335,7 @@ export function applyActiveModelStatusToStore(
     },
     hydratingExistingModel,
     seedLoadParams,
+    pristineControl: readPersistedSpeculativeType(),
   });
   const specDraftSeed = resolvePairedLoadParamSeed({
     incoming:
@@ -366,6 +368,7 @@ export function applyActiveModelStatusToStore(
     },
     hydratingExistingModel,
     seedLoadParams,
+    pristineControl: false,
   });
   const mlxKvBitsSeed = resolveMlxKvBitsSeed({
     isMlx: status.is_mlx,
