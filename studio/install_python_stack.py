@@ -3708,6 +3708,13 @@ NO_DATASETS_SKIP_PACKAGES = {
     "pandas",
 }
 
+# Constraint entries dropped in the ARM64 tier: the skipped packages themselves (a
+# pin on something never installed can still drag it back in transitively) plus the
+# two pins that sit below the first release with a win_arm64 wheel. The lifts live in
+# single-env/overrides-win-arm64.txt; a constraint cannot be lifted by an override,
+# only removed, so the ceiling has to come off here for the floor there to apply.
+_WIN_ARM64_UNCONSTRAINED = NO_DATASETS_SKIP_PACKAGES | {"pyarrow", "av", "pymupdf"}
+
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
@@ -4056,12 +4063,21 @@ def pip_install(
     """Build and run a pip install command (uses uv when available, falls back to pip)."""
     constraint_args_pip: list[str] = []
     constraint_args_uv: list[str] = []
+    temp_reqs: list[Path] = []
     if constrain and CONSTRAINTS.is_file():
-        constraint_args_pip = ["-c", str(CONSTRAINTS)]
-        constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
+        constraints = CONSTRAINTS
+        if NO_DATASETS and IS_WINDOWS_ARM64_PYTHON:
+            # A constraint is a ceiling, and two of these sit below the first version
+            # with a win_arm64 wheel (av<16, pymupdf via studio.txt), which no override
+            # can lift -- uv reports the pair as unsatisfiable. The dropped packages'
+            # pins go with them so a stale `pyarrow==23.0.1` cannot pull datasets back
+            # through a transitive requirement. Everything else still applies.
+            constraints = _filter_requirements(CONSTRAINTS, _WIN_ARM64_UNCONSTRAINED)
+            temp_reqs.append(constraints)
+        constraint_args_pip = ["-c", str(constraints)]
+        constraint_args_uv = ["-c", _uv_safe_path(constraints)]
 
     actual_req = req
-    temp_reqs: list[Path] = []
     if req is not None and IS_WINDOWS and WINDOWS_SKIP_PACKAGES:
         actual_req = _filter_requirements(req, WINDOWS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)

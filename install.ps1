@@ -4261,6 +4261,20 @@ exit 0
     function Get-ArmFilteredRequirements {
         param([string]$Path)
         if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
+        # The version lifts live in the same overrides file install_python_stack.py
+        # points UV_OVERRIDE at, so the two never drift. They cannot be applied as an
+        # override here: this file is installed --no-deps, where uv resolves nothing to
+        # override, so the pinned line itself is rewritten.
+        $lifts = @{}
+        $liftFile = Join-Path (Split-Path -Parent $Path) "single-env\overrides-win-arm64.txt"
+        if (Test-Path -LiteralPath $liftFile) {
+            foreach ($liftLine in Get-Content -LiteralPath $liftFile) {
+                $liftBare = ($liftLine -split "#")[0].Trim()
+                if (-not $liftBare) { continue }
+                $liftName = (($liftBare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
+                if ($liftName) { $lifts[$liftName] = $liftBare }
+            }
+        }
         $kept = foreach ($line in Get-Content -LiteralPath $Path) {
             $bare = ($line -split "#")[0].Trim()
             if (-not $bare) { $line; continue }
@@ -4268,6 +4282,7 @@ exit 0
             # Normalised PEP 503 style so hf_transfer and hf-transfer are one package.
             $name = (($bare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
             if ($script:ArmInferenceSkipPackages -contains $name) { continue }
+            if ($lifts.ContainsKey($name)) { $lifts[$name]; continue }
             $line
         }
         $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f $PID)
@@ -4291,7 +4306,12 @@ exit 0
         # existing torch/CUDA unless the flavor repair below re-lands it.
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
-        if ($SkipTorch) {
+        # The ARM64 inference-only tier takes the no-deps route for the same reason
+        # no-torch does: unsloth's released metadata declares datasets (and torch) hard
+        # dependencies, so a with-deps upgrade here re-pulls pyarrow into an environment
+        # that has no wheel for it. The migrated venv kept its native ARM64 interpreter
+        # deliberately -- the arch re-probe above only rebuilds it outside the tier.
+        if ($SkipTorch -or $script:ArmInferenceOnly) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
