@@ -15,8 +15,9 @@ How it works
 Pooling layer and accepts ``pixel_values`` / ``image_grid_thw``) and swaps in an
 ``AutoProcessor`` so images become ``pixel_values``. Training rides on the stock
 ``SentenceTransformerTrainer`` + ``MultipleNegativesRankingLoss`` (in-batch negatives,
-i.e. InfoNCE); sentence-transformers' own multimodal data collator tokenizes each
-column through the processor, so no custom collator is needed.
+i.e. InfoNCE); ``SentenceTransformerDataCollator`` hands each column to
+``model.preprocess``, and the module's ``modality_config`` routes
+``{"image": ..., "text": ...}`` through the processor, so no custom collator is needed.
 
 Requirements: a CUDA GPU, ``sentence-transformers>=5.4``, ``transformers>=4.57``.
 
