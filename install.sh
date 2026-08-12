@@ -3875,16 +3875,19 @@ _maybe_bootstrap_rocm_wsl() {
     # the current helper. A lagging pin only means an older helper, never a broken install,
     # and the librocdxg pin below is forwarded so it applies to an older helper too.
     _ROCM_WSL_HELPER_REF="a23951b72698f2bf6e12f4f4f954b6562e3a1c1d"
-    # librocdxg pin, forwarded to the helper so the third-party source is pinned even when
-    # the fetched helper predates this change. Kept equal to the helper's own defaults
-    # (tests/studio/install/test_rocm_support.py enforces that they never drift). A user-set
-    # UNSLOTH_LIBROCDXG_REF wins and, with no SHA of its own, turns the helper's check off
-    # rather than failing it against our pin.
+    # librocdxg pin, forwarded to the helper. The ref IS the commit (v1.2.2), so an OLDER
+    # fetched helper, which knows nothing about the SHA check, still lands on exactly this
+    # revision: its `--branch <sha>` attempt fails, the full clone follows, and its checkout
+    # resolves the commit. That makes the pin hold on the `curl ... | sh` path immediately,
+    # without waiting for this file's helper pin to be bumped. Kept equal to the helper's own
+    # defaults (tests/studio/install/test_rocm_support.py enforces that they never drift). A
+    # user-set UNSLOTH_LIBROCDXG_REF wins and, with no SHA of its own, turns the helper's
+    # check off rather than failing it against our pin.
     _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
     _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
     if [ -z "$_rw_dxg_ref" ]; then
-        _rw_dxg_ref="v1.2.2"
-        [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="4955d12888a3ec57057f1cf8660c2485e415e74c"
+        _rw_dxg_ref="4955d12888a3ec57057f1cf8660c2485e415e74c"
+        [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="$_rw_dxg_ref"
     fi
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""

@@ -39,10 +39,10 @@ ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
 # The ROCm + librocdxg setup is arch-agnostic; only verify + the smoke test need the arch.
 GFX="${UNSLOTH_WSL_GFX:-}"
 # ROCm/librocdxg source to build. This is compiled and `sudo make install`ed, so it is
-# pinned to a release tag AND verified against that tag's immutable commit SHA (tags can
-# be moved; a branch like develop is rewritten by definition). v1.2.2 is what develop
-# points at today, so this builds exactly what it did before. Bump both together.
-LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-v1.2.2}"     # ROCm/librocdxg git ref to build
+# pinned to a commit, not to a branch (rewritten by definition) or a tag (movable): the
+# ref IS the commit and the clone is verified against it below. This is v1.2.2, the
+# current release, which is also what develop points at, so the build is unchanged.
+LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-4955d12888a3ec57057f1cf8660c2485e415e74c}"
 LIBROCDXG_SHA="${UNSLOTH_LIBROCDXG_SHA:-4955d12888a3ec57057f1cf8660c2485e415e74c}"
 # An explicit UNSLOTH_LIBROCDXG_REF with no SHA is a deliberate operator choice (e.g.
 # testing a fix branch) -- honour it and skip the pin check rather than hard-failing.
@@ -207,8 +207,14 @@ else
     note "Windows SDK: ${_win_sdk}"
     _src="${HOME}/.unsloth/librocdxg"
     rm -rf "$_src"
-    git clone --depth 1 --branch "$LIBROCDXG_REF" https://github.com/ROCm/librocdxg.git "$_src" \
-        || git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    # --branch takes a branch/tag, never a commit, so a 40 char ref goes straight to the
+    # full clone (librocdxg is ~29 MB, about a second) and is reached by checkout below.
+    if [ "${#LIBROCDXG_REF}" = "40" ]; then
+        git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    else
+        git clone --depth 1 --branch "$LIBROCDXG_REF" https://github.com/ROCm/librocdxg.git "$_src" \
+            || git clone "https://github.com/ROCm/librocdxg.git" "$_src"
+    fi
     (
         cd "$_src"
         git checkout "$LIBROCDXG_REF" 2>/dev/null || true

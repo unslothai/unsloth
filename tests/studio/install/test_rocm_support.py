@@ -6480,6 +6480,10 @@ class TestRocmWslSupplyChainPins:
         ), "librocdxg must not default to a moving branch"
         sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', source)
         assert sha is not None, "librocdxg must default to a pinned commit SHA"
+        # The ref itself must be that commit, so even a helper with no SHA check (an older
+        # fetched copy) resolves the same immutable revision rather than a movable tag.
+        ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', source)
+        assert ref is not None and ref.group(1) == sha.group(1)
         # The SHA check must run before anything from the clone is built or installed.
         idx_check = source.find("git rev-parse HEAD")
         idx_cmake = source.find("cmake .. -DWIN_SDK")
@@ -6492,13 +6496,12 @@ class TestRocmWslSupplyChainPins:
         # stale pin by install.sh and build the wrong revision.
         install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
         helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
-        fwd_ref = re.search(r'_rw_dxg_ref="(v[0-9.]+)"', install_sh)
-        fwd_sha = re.search(r'_rw_dxg_sha="([0-9a-f]{40})"', install_sh)
-        own_ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-(v[0-9.]+)\}"', helper)
+        fwd_ref = re.search(r'_rw_dxg_ref="([0-9a-f]{40})"', install_sh)
+        fwd_sha = re.search(r'_rw_dxg_sha="\$_rw_dxg_ref"', install_sh)
+        own_ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', helper)
         own_sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', helper)
         assert None not in (fwd_ref, fwd_sha, own_ref, own_sha)
-        assert fwd_ref.group(1) == own_ref.group(1)
-        assert fwd_sha.group(1) == own_sha.group(1)
+        assert fwd_ref.group(1) == own_ref.group(1) == own_sha.group(1)
         # A user-set ref must reach the helper untouched, so the operator override still works.
         assert '_rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"' in install_sh
         assert (
