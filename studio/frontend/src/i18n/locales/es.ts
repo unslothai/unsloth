@@ -1505,6 +1505,16 @@ export const es = {
       importingChats: "Importando chats: {count} hasta ahora ({percent}%)...",
       importedChatCountPartial: "Se importaron {count} conversaciones a Recientes; {failed} no se pudieron guardar.",
       importFailed: "La importación falló.",
+      importFromCursor: "Importar desde Cursor",
+      importFromCursorDescription:
+        "Copia tus conversaciones de Cursor a Studio, agrupadas por proyecto.",
+      importingAction: "Importando...",
+      importCursorNoChats: "No se encontraron conversaciones de Cursor.",
+      importedCursorOneChat: "Se importó 1 conversación desde Cursor.",
+      importedCursorChatCount:
+        "Se importaron {count} conversaciones desde Cursor.",
+      cursorUpToDate:
+        "Las conversaciones de Cursor ya están actualizadas.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",
       clearAction: "Borrar",

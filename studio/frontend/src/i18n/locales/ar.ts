@@ -1474,6 +1474,15 @@ export const ar = {
       importingChats: "جارٍ استيراد المحادثات: {count} حتى الآن ({percent}%)...",
       importedChatCountPartial: "تم استيراد {count} محادثة إلى الأخيرة؛ تعذّر حفظ {failed} منها.",
       importFailed: "فشل الاستيراد.",
+      importFromCursor: "الاستيراد من Cursor",
+      importFromCursorDescription:
+        "انسخ محادثاتك في Cursor إلى Studio، مجمّعة حسب المشروع.",
+      importingAction: "جارٍ الاستيراد...",
+      importCursorNoChats: "لم يُعثر على محادثات Cursor.",
+      importedCursorOneChat: "تم استيراد محادثة واحدة من Cursor.",
+      importedCursorChatCount:
+        "تم استيراد المحادثات من Cursor. العدد: {count}.",
+      cursorUpToDate: "محادثات Cursor محدَّثة بالفعل.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
       clearAction: "مسح",
