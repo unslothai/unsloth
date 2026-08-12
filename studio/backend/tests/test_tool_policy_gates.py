@@ -108,6 +108,7 @@ def _req(**kw):
         tool_choice = None,
         tools = None,
         messages = [_msg()],
+        model_extra = {},
     )
     fields.update(kw)
     return SimpleNamespace(**fields)
@@ -137,6 +138,17 @@ class TestRequestStatesToolIntent:
     def test_tool_result_history_is_intent(self):
         assert _request_states_tool_intent(_req(messages = [_msg(role = "tool")])) is True
         assert _request_states_tool_intent(_req(messages = [_msg(tool_calls = [{}])])) is True
+
+    def test_response_format_is_a_contract(self):
+        # The tool loop would break structured output; the GGUF passthrough
+        # already exempts these requests from the policy.
+        payload = _req(model_extra = {"response_format": {"type": "json_object"}})
+        assert _request_states_tool_intent(payload) is True
+
+    def test_empty_tools_reads_as_omitted(self):
+        # bool(payload.tools) is the GGUF router's own reading in
+        # _takes_tool_passthrough; both paths treat [] like an absent catalog.
+        assert _request_states_tool_intent(_req(tools = [])) is False
 
 
 class TestLauncherDefaultOnly:
@@ -176,6 +188,11 @@ class TestSafetensorsGateHonorsStatedIntent:
     def test_tool_result_history_keeps_the_passthrough(self):
         set_tool_policy_default(True)
         assert _sf_tools_on(_req(messages = [_msg(role = "tool")])) is False
+
+    def test_response_format_keeps_structured_output(self):
+        set_tool_policy_default(True)
+        payload = _req(model_extra = {"response_format": {"type": "json_object"}})
+        assert _sf_tools_on(payload) is False
 
     def test_explicit_ask_still_claims_a_catalog(self):
         set_tool_policy_default(True)

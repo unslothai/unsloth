@@ -2692,12 +2692,19 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
 
 def _request_states_tool_intent(payload) -> bool:
     """True when a request states its own tool intent through the standard
-    OpenAI fields: a `tool_choice: "none"` withdrawal, its own tool catalog, or
-    tool-result history to continue. Such a request did not omit the question,
-    so the launcher default must not answer it."""
+    OpenAI fields: a `tool_choice: "none"` withdrawal, its own tool catalog,
+    tool-result history to continue, or a `response_format` contract the tool
+    loop would break. Such a request did not omit the question, so the launcher
+    default must not answer it.
+
+    Mirrors what `_takes_tool_passthrough` already withholds from the policy on
+    the GGUF router, including its `bool(payload.tools)` reading of the catalog:
+    an empty `tools: []` reads the same as an omitted one on both paths."""
     if getattr(payload, "tool_choice", None) == "none":
         return True
     if payload.tools:
+        return True
+    if _extract_response_format(payload) is not None:
         return True
     return any(m.role == "tool" or m.tool_calls for m in payload.messages)
 
