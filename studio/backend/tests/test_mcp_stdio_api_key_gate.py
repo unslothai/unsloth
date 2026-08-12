@@ -213,9 +213,7 @@ def test_refresh_refuses_stored_stdio_from_api_key(tmp_path, monkeypatch, stdio_
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(
-        id = "stdio1", display_name = "Local", url = STDIO_CMD, is_enabled = True
-    )
+    mcp_servers_db.create_server(id = "stdio1", display_name = "Local", url = STDIO_CMD, is_enabled = True)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             routes_mcp.refresh_mcp_server_tools(
@@ -236,9 +234,7 @@ def test_refresh_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", _probe)
     res = asyncio.run(
-        routes_mcp.refresh_mcp_server_tools(
-            "s1", current_subject = "api-key-user", via_api_key = True
-        )
+        routes_mcp.refresh_mcp_server_tools("s1", current_subject = "api-key-user", via_api_key = True)
     )
     assert res.ok is True
 
@@ -370,9 +366,7 @@ def test_data_recipe_mcp_tools_refuses_stdio_from_api_key():
     from routes.data_recipe.mcp import list_mcp_tools
 
     with pytest.raises(HTTPException) as exc:
-        list_mcp_tools(
-            McpToolsListRequest(mcp_providers = [_STDIO_PROVIDER]), via_api_key = True
-        )
+        list_mcp_tools(McpToolsListRequest(mcp_providers = [_STDIO_PROVIDER]), via_api_key = True)
     assert exc.value.status_code == 403
 
 
