@@ -683,12 +683,7 @@ class TestDuplicateCoreMetadataRepair:
             ("unsloth", "unsloth-zoo"), ci_source_overlay = "/src/candidate"
         )
         assert len(installs) == 1
-        assert installs[0][1] == (
-            "--no-cache-dir",
-            "--no-deps",
-            "-e",
-            "/src/candidate",
-        )
+        assert installs[0][1] == ("--no-cache-dir", "--no-deps", "-e", "/src/candidate")
         assert installs[0][2]["constrain"] is False
 
     def test_ci_overlay_is_wired_into_duplicate_repair(self):

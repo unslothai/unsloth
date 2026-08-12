@@ -3565,7 +3565,10 @@ def _overlay_local_core_packages(local_repo: str, package_names = None) -> None:
 
 
 def _repair_duplicate_core_metadata(
-    package_names: "tuple[str, ...]", *, local_repo: str = "", ci_source_overlay: str = ""
+    package_names: "tuple[str, ...]",
+    *,
+    local_repo: str = "",
+    ci_source_overlay: str = "",
 ) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
