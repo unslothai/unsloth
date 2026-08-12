@@ -2678,6 +2678,30 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     return payload.enable_tools
 
 
+def _tools_on_by_launcher_default_only(payload) -> bool:
+    """True when tools are on ONLY because of the launcher's tools-on default:
+    no CLI override is installed and the request itself asked for nothing."""
+    from state.tool_policy import get_tool_policy
+
+    return (
+        get_tool_policy() is None
+        and payload.enable_tools is None
+        and not getattr(payload, "mcp_enabled", False)
+    )
+
+
+def _request_states_tool_intent(payload) -> bool:
+    """True when a request states its own tool intent through the standard
+    OpenAI fields: a `tool_choice: "none"` withdrawal, its own tool catalog, or
+    tool-result history to continue. Such a request did not omit the question,
+    so the launcher default must not answer it."""
+    if getattr(payload, "tool_choice", None) == "none":
+        return True
+    if payload.tools:
+        return True
+    return any(m.role == "tool" or m.tool_calls for m in payload.messages)
+
+
 def _explicit_studio_tool_loop_requested(payload) -> bool:
     """True when the request itself asks Unsloth to execute local tools.
 
@@ -13885,6 +13909,19 @@ async def openai_chat_completions(
 
     _sf_cli_policy = _get_tool_policy_sf()
     _sf_tools_on = _effective_enable_tools(payload)
+    # The launcher's tools-on default answers a request that said nothing about
+    # tools. A request carrying tool_choice: "none", its own tool catalog, or
+    # tool-result history did say something, so the default must not withdraw
+    # that opt-out or take the catalog from the client-tool passthrough below.
+    # The GGUF router draws the same line with _client_disabled_tool_calls and
+    # _explicit_studio_tool_loop_requested; an explicit enable_tools/mcp_enabled
+    # ask, or a CLI --enable-tools, still claims the request as before.
+    if (
+        _sf_tools_on
+        and _tools_on_by_launcher_default_only(payload)
+        and _request_states_tool_intent(payload)
+    ):
+        _sf_tools_on = False
     _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
     _sf_use_tools = (
         (_sf_tools_on or _sf_mcp_allowed)
@@ -14359,7 +14396,10 @@ async def openai_chat_completions(
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
     _sf_client_tools = (
-        not _effective_enable_tools(payload)
+        # Read the resolved value, not a fresh _effective_enable_tools: the gate
+        # above withdraws the launcher default for exactly these requests, and
+        # recomputing here would hide that and drop the client catalog.
+        not _sf_tools_on
         and not _sf_use_tools
         and image is None
         and not _sf_is_gptoss
