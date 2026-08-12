@@ -58,6 +58,18 @@ else
     bad "the pinned uv version is a single constant"
 fi
 
+# astral's destination priority puts XDG_DATA_HOME/../bin between XDG_BIN_HOME and the home
+# default. An implementation that skips that tier drops uv under ~/.local/bin on a host that
+# configured an XDG location, where no later shell looks for it.
+for _impl in "$INSTALL_SH" "$SCRIPT_DIR/../../studio/setup.sh" \
+             "$SCRIPT_DIR/../../install.ps1" "$SCRIPT_DIR/../../studio/setup.ps1"; do
+    if grep -q 'XDG_DATA_HOME' "$_impl"; then
+        ok "${_impl##*/} honours the XDG_DATA_HOME destination tier"
+    else
+        bad "${_impl##*/} honours the XDG_DATA_HOME destination tier"
+    fi
+done
+
 # ── behaviour ──
 echo "=== behaviour ==="
 
@@ -90,7 +102,12 @@ run_case() {
         _uv_pinned_asset() { echo "uv-fake.tar.gz $ADVERTISED"; }
         download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
         HOME="$_rc_home"
-        unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
+        unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME
+        if [ -n "${CASE_XDG_DATA_HOME:-}" ]; then
+            export XDG_DATA_HOME="$CASE_XDG_DATA_HOME"
+        else
+            unset XDG_DATA_HOME
+        fi
         _uv_install_pinned
         echo "rc=$?"
     )
@@ -108,6 +125,16 @@ if [ -x "$WORK/home_ok/.local/bin/uvx" ]; then
     ok "uvx is installed alongside uv"
 else
     bad "uvx is installed alongside uv"
+fi
+
+# XDG_DATA_HOME/../bin wins over the home default, as it does for astral's installer.
+ADVERTISED="$FIXTURE_SHA" CASE_XDG_DATA_HOME="$WORK/home_xdg/share" \
+    run_case "$WORK/home_xdg" > "$WORK/out_xdg" 2>&1 || true
+if [ -x "$WORK/home_xdg/bin/uv" ] && [ ! -e "$WORK/home_xdg/.local/bin/uv" ]; then
+    ok "XDG_DATA_HOME redirects the install away from the home default"
+else
+    bad "XDG_DATA_HOME redirects the install away from the home default"
+    sed 's/^/      /' "$WORK/out_xdg"
 fi
 
 ADVERTISED="0000000000000000000000000000000000000000000000000000000000000000" \

@@ -1533,7 +1533,12 @@ _setup_install_uv_pinned() {
     [ -n "$(_setup_uv_sha256 /dev/null)" ] || return 1
     [ -n "${HOME:-}" ] || return 1
 
-    _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-$HOME/.local/bin}}}"
+    # astral's full destination priority, including the XDG_DATA_HOME tier that sits between
+    # XDG_BIN_HOME and the home default. Dropping it would leave uv under ~/.local/bin on a
+    # host that configured an XDG location, where no later shell looks for it.
+    _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-}}}"
+    if [ -z "$_siup_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _siup_dest="$XDG_DATA_HOME/../bin"; fi
+    [ -n "$_siup_dest" ] || _siup_dest="$HOME/.local/bin"
     _siup_work=$(mktemp -d) || return 1
     _siup_rc=1
     for _siup_base in \

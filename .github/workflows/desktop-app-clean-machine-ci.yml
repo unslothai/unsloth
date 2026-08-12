@@ -442,8 +442,13 @@ jobs:
           # ships it as a bundle resource, so find it there and run it as install.rs does.
           if [ "${{ matrix.kind }}" = "deb" ]; then
             PKG="$(dpkg-deb -f dl/*.deb Package)"
-            SH="$(dpkg -L "$PKG" | grep -E '/install\.sh$' | head -1)"
-            STRAY="$(dpkg -L "$PKG" | grep -E '/install\.ps1$' | head -1)"
+            # `|| true` on both: grep exits 1 when it selects nothing, and under the
+            # `set -o pipefail` above plus the step's own `bash -e` that aborts the
+            # assignment outright. For the stray lookup no match is the PASSING case, so
+            # without this every correctly split .deb fails here; for install.sh it would
+            # swallow the explicit annotation below in favour of a bare exit 1.
+            SH="$(dpkg -L "$PKG" | grep -E '/install\.sh$' | head -1 || true)"
+            STRAY="$(dpkg -L "$PKG" | grep -E '/install\.ps1$' | head -1 || true)"
           else
             # ls returns a bare filename here, and a command word with no slash resolves
             # through PATH, not the cwd, so this needs the ./ prefix.
