@@ -496,9 +496,7 @@ class TestAdviceIsNotEmittedForRdna1:
         )
         # The group must be named by its members, or the carve-out has nothing to cut.
         for _member in ("Polaris", "RDNA 1"):
-            assert _member in src, (
-                f"README: never names {_member} as part of the unsupported group"
-            )
+            assert _member in src, f"README: never names {_member} as part of the unsupported group"
         assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
         # The carve-out has to be true of the installer, not just of the README.
         assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
