@@ -6,24 +6,44 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+// Newlines normalized because the assertions below span lines: .gitattributes keeps this
+// tree at LF, but a source archive or a stray core.autocrlf hands the same file back with
+// CRLF and every multi-line marker would miss.
 const source = readFileSync(
   fileURLToPath(
     new URL("../src/features/video/video-page.tsx", import.meta.url),
   ),
   "utf8",
-);
+).replace(/\r\n/g, "\n");
+
+/** The source between two markers, asserting both are actually there.
+ *
+ *  Without the assertion a marker that moves yields an empty (or wildly wrong) slice, and
+ *  the negative assertion below -- "the clear button no longer calls handleClearAll" --
+ *  passes over it vacuously. A guard that silently stops guarding is worse than none. */
+function between(start: string, end: string): string {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end);
+  if (from === -1) {
+    throw new Error(`marker not found in video-page.tsx: ${start}`);
+  }
+  if (to <= from) {
+    throw new Error(`marker not found after ${JSON.stringify(start)}: ${end}`);
+  }
+  return source.slice(from, to);
+}
 
 test("video gallery bulk deletion requires an explicit confirmation", () => {
-  const clearButton = source.slice(
-    source.indexOf("{/* Clear-all, tucked at the end"),
-    source.indexOf("<TooltipContent>Clear all videos</TooltipContent>"),
+  const clearButton = between(
+    "{/* Clear-all, tucked at the end",
+    "<TooltipContent>Clear all videos</TooltipContent>",
   );
   assert.ok(clearButton.includes("onClick={() => setClearConfirmOpen(true)}"));
   assert.ok(!clearButton.includes("handleClearAll"));
 
-  const dialog = source.slice(
-    source.indexOf("<AlertDialog\n        open={active && clearConfirmOpen}"),
-    source.indexOf("<Dialog\n        open={pendingH3Load"),
+  const dialog = between(
+    "<AlertDialog\n        open={active && clearConfirmOpen}",
+    "<Dialog\n        open={pendingH3Load",
   );
   assert.ok(
     dialog.includes("<AlertDialogTitle>Clear all videos?</AlertDialogTitle>"),
@@ -45,9 +65,9 @@ test("video gallery bulk deletion requires an explicit confirmation", () => {
 });
 
 test("video gallery confirmation stays controlled while clearing and off-route", () => {
-  const handler = source.slice(
-    source.indexOf("const handleClearAll = useCallback("),
-    source.indexOf("// Load a clip's recipe back into the form inputs."),
+  const handler = between(
+    "const handleClearAll = useCallback(",
+    "// Load a clip's recipe back into the form inputs.",
   );
   assert.ok(handler.includes("setClearingGallery(true);"));
   assert.ok(handler.includes("await clearVideoGallery();"));
@@ -58,10 +78,25 @@ test("video gallery confirmation stays controlled while clearing and off-route",
       handler.indexOf("setClearConfirmOpen(false);"),
   );
 
-  const root = source.slice(
-    source.indexOf("<AlertDialog\n        open={active && clearConfirmOpen}"),
-    source.indexOf('<AlertDialogContent size="sm">'),
+  const root = between(
+    "<AlertDialog\n        open={active && clearConfirmOpen}",
+    '<AlertDialogContent size="sm">',
   );
   assert.ok(root.includes("open={active && clearConfirmOpen}"));
   assert.ok(root.includes("if (!clearingGallery) setClearConfirmOpen(open);"));
+});
+
+test("leaving the video route closes the confirmation rather than hiding it", () => {
+  // The page is mounted persistently, so `active` going false only hides the dialog;
+  // Radix does not call onOpenChange for a parent-forced close, so without this reset the
+  // same confirm is back on screen the moment the route becomes active again.
+  const reset = between(
+    "const [clearingGallery, setClearingGallery] = useState(false);",
+    "const playCountRef = useRef(0);",
+  );
+  assert.ok(
+    reset.includes(
+      "if (!active && clearConfirmOpen) setClearConfirmOpen(false);",
+    ),
+  );
 });
