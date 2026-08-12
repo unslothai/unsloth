@@ -3867,17 +3867,51 @@ _maybe_bootstrap_rocm_wsl() {
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
     # copy counts only for a --local checkout run, since this executes with no prompt and
     # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
+    #
+    # PINNED, never a branch: this runs unattended and installs with sudo, so a moving ref
+    # would turn any rewrite of that branch into root code on every affected WSL box. Bump
+    # it whenever the helper changes; lagging only means an older helper, and the gate below
+    # rejects one too old to be safe.
+    _ROCM_WSL_HELPER_REF="d3367edd9a1de7a0ac15aa899bd9cb97173679dc"
+    # librocdxg pin (v1.2.2), forwarded to the helper. The ref IS the commit, so an older
+    # helper that ignores the SHA still resolves this exact revision: its `--branch <sha>`
+    # attempt fails and the full clone plus checkout land on it. Kept equal to the helper's
+    # defaults; a test enforces that. A user-set ref wins and, with no SHA of its own, turns
+    # the helper's check off rather than failing against our pin.
+    _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
+    _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
+    if [ -z "$_rw_dxg_ref" ]; then
+        _rw_dxg_ref="4955d12888a3ec57057f1cf8660c2485e415e74c"
+        [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="$_rw_dxg_ref"
+    fi
+    # A known SHA is authoritative, so forward it AS the ref: an operator pinning a branch
+    # plus its expected commit would otherwise have that symbolic ref cloned unverified by a
+    # helper old enough to ignore the SHA.
+    if [ -n "$_rw_dxg_sha" ]; then
+        _rw_dxg_ref="$_rw_dxg_sha"
+    fi
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
-        if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+        if download "https://raw.githubusercontent.com/unslothai/unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
         else
             substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
             [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
             return 0
         fi
+    fi
+
+    # Run ONLY a helper declaring the contract (defined in its header): verifies the clone
+    # against the pinned SHA, and treats an unresolvable checkout as fatal. One without it
+    # swallows that failure and would build the repo's default HEAD as root once the pinned
+    # ref stopped existing. Gating on the declaration is what makes this fail closed whatever
+    # the pin, or a user's older checkout, supplies.
+    if ! grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper" 2>/dev/null; then
+        substep "ROCm-on-WSL helper predates the pinned-source check; using CPU fallback." "$C_WARN"
+        [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
+        return 0
     fi
 
     # Consent: the narrow guarded case is exactly the GPU setup the user ran the
@@ -3895,7 +3929,9 @@ _maybe_bootstrap_rocm_wsl() {
     if [ "$_rw_go" = "1" ]; then
         # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
         # installs torch itself right after, into the real venv.
-        if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
+        if UNSLOTH_WSL_SMOKE_TEST=0 \
+           UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
+           bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection
             # (rocminfo) now enumerates the GPU and routes to gfx1151.
             if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then

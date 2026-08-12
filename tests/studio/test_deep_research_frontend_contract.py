@@ -44,6 +44,8 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
 
 def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
+
+    inference_request = source("features/chat/research-inference-request.ts")
     thread = source("components/assistant-ui/thread.tsx")
     assert "runtime.deepResearchEnabled" in adapter
     assert "!options.pairId" in adapter
@@ -58,10 +60,10 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "watchResearchRun(createdRun.id" in adapter
     assert "followResearchRun" not in adapter
     assert "inferenceRequest" in adapter
-    assert "Number.isFinite(params.temperature)" in adapter
-    assert "Number.isFinite(params.topP)" in adapter
-    assert "Number.isFinite(params.maxTokens)" in adapter
-    assert "Math.min(8192, Math.floor(params.maxTokens))" in adapter
+    assert "Number.isFinite(input.temperature)" in inference_request
+    assert "Number.isFinite(input.topP)" in inference_request
+    assert "Number.isFinite(input.maxTokens)" in inference_request
+    assert "Math.min(8192, Math.floor(input.maxTokens))" in inference_request
     assert '{ type: "text" as const, text: report }' in adapter
     # yields are deduped by status, or every streamed delta drives an autosave the server rejects.
     assert "run.status === yieldedStatus" in adapter
@@ -99,12 +101,11 @@ def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
     # fall back to the template default. Must use the same helper and levels as normal local
     # chat so the two paths cannot drift apart again.
     adapter = source("features/chat/api/chat-adapter.ts")
-    branch = adapter.split("Deep research requires a selected local model.", 1)[1].split(
-        "createdRun = await createResearchRun({", 1
-    )[0]
-    assert "inferenceRequest.reasoningEffort = runtime.reasoningEffort;" not in branch
-    assert "inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(" in branch
-    assert "runtime.reasoningEffortLevels," in branch
+    inference_request = source("features/chat/research-inference-request.ts")
+    assert "buildResearchInferenceRequest({" in adapter
+    assert "request.reasoningEffort = input.reasoningEffort;" not in inference_request
+    assert "request.reasoningEffort = input.clampReasoningEffort(" in inference_request
+    assert "input.reasoningEffortLevels," in inference_request
     assert "const localReasoningEffort = clampReasoningEffortToLevels(" in adapter
 
 
