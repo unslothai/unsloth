@@ -1123,6 +1123,20 @@ def test_cpu_only_pin_keeps_hip_even_with_prefer_rocr(monkeypatch):
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+def test_cpu_only_pin_keeps_an_inherited_rocr_mask(monkeypatch):
+    # The anti-stacking clear exists for a POSITIVE pin (ROCR re-indexes from 0,
+    # then a non-zero HIP pin points out of range). "-1" hides every device
+    # whatever ROCR says, so clearing it only re-exposes agents the parent hid to
+    # the HSA enumeration that dies on an uncovered arch (#7624). Same rule the
+    # embedding CPU launch follows.
+    _rocm_torch_stub(monkeypatch)
+    env = {"ROCR_VISIBLE_DEVICES": "1"}
+    LlamaCppBackend._emit_child_gpu_visibility(env, "-1")
+    assert env["HIP_VISIBLE_DEVICES"] == "-1"
+    assert env["CUDA_VISIBLE_DEVICES"] == "-1"
+    assert env["ROCR_VISIBLE_DEVICES"] == "1"
+
+
 def _amd_sdk_torch_stub(monkeypatch):
     # AMD SDK wheel: torch.version.hip is None but __version__ encodes rocm.
     torch_stub = _types.ModuleType("torch")

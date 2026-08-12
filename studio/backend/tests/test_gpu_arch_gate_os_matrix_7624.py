@@ -966,6 +966,34 @@ class TestEveryDeviceUncoveredDownstream:
         # "-1" keeps the HIP spelling: the sentinel has no portable ROCR form.
         assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
 
+    def test_all_uncovered_keeps_an_inherited_rocr_mask(self, tmp_path, monkeypatch, probe_env):
+        """The forced-CPU mask must not widen what the child can see. ROCr filters
+        at topology build, below HIP, so a parent that hid a segfaulting agent
+        with ROCR_VISIBLE_DEVICES keeps hiding it: HIP "-1" already means zero
+        devices, and clearing ROCR would hand the HSA enumeration the agents the
+        parent dropped. The embedding CPU launch states this rule; the chat one
+        went through the default HIP arm, which clears ROCR."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX120X,  # covers neither card
+            returncode = None,
+            env_extra = {"ROCR_VISIBLE_DEVICES": "1"},
+        )
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert _visibility(env) == {
+            "HIP_VISIBLE_DEVICES": "-1",
+            "ROCR_VISIBLE_DEVICES": "1",
+            "CUDA_VISIBLE_DEVICES": "-1",
+        }
+
     def test_the_forced_cpu_server_reports_zero_vram(self, tmp_path, monkeypatch, probe_env):
         """A masked-off child holds no VRAM, so the flag the training coordinator
         reads must be exactly False. None is not good enough: routes/
@@ -1390,6 +1418,179 @@ class TestGatedNarrowingDropsUnifiedMemory:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+
+class TestGatedNarrowingDropsDeadTensorMode:
+    """The proactive twin of TestArchCrashRetryDropsDeadTensorMode. Manual mode
+    admits tensor parallelism on the FULL device count, which still counts the
+    card the gate drops, so the survivor pin can leave one device running
+    ``--split-mode tensor`` -- a no-op that /status still advertises and that
+    arms the MTP tensor watchdog. ``_without_tensor_split`` takes only the ratio.
+    """
+
+    def _narrowed_tensor_load(
+        self,
+        monkeypatch,
+        tmp_path,
+        targets,
+        *,
+        devices,
+        capture = None,
+    ):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(devices, vendor = "amd")
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            targets,
+            returncode = None,
+            capture = capture,
+            intent_kwargs = {
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 20,
+                "tensor_parallel": True,
+            },
+        )
+
+    def test_one_survivor_drops_split_mode_tensor(self, tmp_path, monkeypatch, probe_env):
+        capture: dict = {}
+        launches = self._narrowed_tensor_load(
+            monkeypatch,
+            tmp_path,
+            GFX103X,  # covers the dGPU, not the gfx1036 iGPU
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+            capture = capture,
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+        assert "--split-mode" not in cmd and "-sm" not in cmd
+        # /status must not advertise a mode one device cannot be running.
+        assert capture["backend"]._tensor_parallel is False
+
+    def test_two_survivors_keep_it(self, tmp_path, monkeypatch, probe_env):
+        """Scoped to a narrowing that leaves ONE card, not to every narrowing:
+        two survivors still split by tensor."""
+        capture: dict = {}
+        launches = self._narrowed_tensor_load(
+            monkeypatch,
+            tmp_path,
+            GFX103X,  # covers 0 and 1, not the gfx1036 iGPU
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1031", free_mib = 12176),
+                _device("gfx1036", free_mib = 30000),
+            ],
+            capture = capture,
+        )
+        cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0,1", "CUDA_VISIBLE_DEVICES": "0,1"}
+        assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+        assert capture["backend"]._tensor_parallel is True
+
+
+class TestGatedNarrowingRechecksTheApuRamGuard:
+    """The proactive twin of TestArchCrashRetryRechecksTheApuRamGuard, in the
+    other direction. The preflight runs with ``gpu_indices`` None on an unpinned
+    launch, so an uncovered APU anywhere on the host prices the load -- and the
+    gate then hands the child only the discrete survivor, whose VRAM the weights
+    fit. Refusing there rejects a load that would have run (#7624).
+    """
+
+    def _apu_and_dgpu(
+        self,
+        monkeypatch,
+        *,
+        avail_mib = 8000,
+    ):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: avail_mib)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+
+    @staticmethod
+    def _shortfall_stub(calls):
+        # Counted, not raised: this runs inside the launch path's own
+        # except-Exception arms, which would swallow an AssertionError.
+        def _shortfall(model_size_bytes, avail_mib, *_a, **_kw):
+            calls.append((model_size_bytes, avail_mib))
+            return "This model needs about 20 GB but only about 8 GB of memory is available."
+
+        return _shortfall
+
+    def test_a_discrete_survivor_waives_the_refusal(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu_and_dgpu(monkeypatch)
+        calls: list = []
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,  # covers the dGPU, not the gfx1151 APU
+            returncode = None,
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._shortfall_stub(calls),
+        )
+        assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
+        assert capture.get("error") is None, capture.get("error")
+        assert len(launches) == 1, "the load was refused for a device it never uses"
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+
+    def test_a_surviving_apu_still_refuses(self, tmp_path, monkeypatch, probe_env):
+        """The waiver is scoped to survivors that are all discrete. A build
+        covering both cards leaves the APU in play, so the refusal stands."""
+        torch = self._apu_and_dgpu(monkeypatch)
+        calls: list = []
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            [*GFX103X, "gfx1151"],
+            returncode = None,
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._shortfall_stub(calls),
+        )
+        assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
+        assert launches == [], "an oversized APU load reached the child"
+        assert "only about 8 GB" in str(capture.get("error"))
+
+    def test_the_forced_cpu_host_still_refuses(self, tmp_path, monkeypatch, probe_env):
+        """Every card gated out means the weights load into system RAM after all,
+        so the guard the gate has no survivor to answer with keeps its refusal."""
+        torch = self._apu_and_dgpu(monkeypatch)
+        calls: list = []
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX120X,  # covers neither card
+            returncode = None,
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = self._shortfall_stub(calls),
+        )
+        assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
+        assert launches == [], "an oversized CPU-bound load reached the child"
+        assert "only about 8 GB" in str(capture.get("error"))
 
 
 class TestArchCrashRetryOntoAnApu:

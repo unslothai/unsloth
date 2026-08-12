@@ -4956,7 +4956,11 @@ class LlamaCppBackend:
         gfx1030/1031/1032/1034), before llama-server logs a line. ROCR drops the
         device at the driver layer, consuming physical ids.
         The CPU-only sentinel ("-1") has no portable ROCR spelling, so it keeps
-        the HIP mask. Windows keeps the HIP mask too: ROCR_VISIBLE_DEVICES is a
+        the HIP mask -- and leaves an inherited ROCR mask alone. HIP sees zero
+        devices either way, so the anti-stacking clear buys nothing there, while
+        dropping the mask re-exposes agents the parent hid to the HSA enumeration
+        that dies on an uncovered arch (the same rule the embedding CPU launch
+        follows). Windows keeps the HIP mask too: ROCR_VISIBLE_DEVICES is a
         Linux ROCr variable (Windows HIP has no ROCr layer), so the ROCR pin
         would be dead there while the cleared HIP mask stops selecting."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
@@ -4982,7 +4986,8 @@ class LlamaCppBackend:
                     )
                 else:
                     env["HIP_VISIBLE_DEVICES"] = pinned
-                    env.pop("ROCR_VISIBLE_DEVICES", None)
+                    if pinned != "-1":
+                        env.pop("ROCR_VISIBLE_DEVICES", None)
         except Exception as e:
             logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
 
@@ -12136,6 +12141,25 @@ class LlamaCppBackend:
                     _ram_msg = self._apu_ram_shortfall_message(
                         model_size, self._available_system_memory_mib()
                     )
+                    # gpu_indices is None here for a launch nothing pinned, so the
+                    # guard priced every visible card -- including an APU the arch
+                    # gate below is about to drop. The narrowed child never touches
+                    # that shared pool, so refusing costs a load the surviving
+                    # discrete card would have held. Re-ask for the set the child
+                    # will actually see, the same re-check the arch-crash retry
+                    # makes. Only on the refusal branch, so a passing launch pays
+                    # for no probe, and an empty answer (non-ROCm, unknown
+                    # coverage, an unmappable mask, or every card gated out to CPU)
+                    # keeps the refusal.
+                    if _ram_msg and gpu_indices is None and not gpu_ids:
+                        _gated_pin = self._arch_gate_survivors(binary)
+                        if _gated_pin and not self._amd_apu_wants_unified_memory(_gated_pin):
+                            logger.info(
+                                "Skipping the APU RAM refusal: the arch gate pins "
+                                "this launch to discrete GPU(s) %s.",
+                                _gated_pin,
+                            )
+                            _ram_msg = None
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
 
@@ -13070,6 +13094,23 @@ class LlamaCppBackend:
                             )
                             cmd = _gated_cmd
                             self._tensor_split = None
+                        # Manual mode admits tensor parallelism on the FULL device
+                        # count (_effective_gpu_count(None)), which still counts the
+                        # card the gate just dropped, so narrowing to one survivor
+                        # leaves --split-mode tensor a no-op that is still REPORTED
+                        # as active: the tensor_parallel property drives the UI and
+                        # arms the MTP tensor crash watchdog. _without_tensor_split
+                        # takes only the ratio, so drop the mode too -- the same
+                        # normalisation the arch-crash retry below makes.
+                        if len(_survivors) < 2 and self._tensor_parallel:
+                            _no_tensor_mode = self._without_flags(cmd, ("--split-mode", "-sm"))
+                            if _no_tensor_mode is not None:
+                                cmd = _no_tensor_mode
+                            self._tensor_parallel = False
+                            logger.info(
+                                "The arch gate leaves one GPU; dropped tensor "
+                                "parallelism, which needs at least two."
+                            )
                         logger.info(
                             "The installed llama.cpp build has no kernels for GPU(s) "
                             "left visible; pinning the child to %s.",
