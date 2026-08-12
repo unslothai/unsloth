@@ -507,17 +507,24 @@ class TestArchRetryDropsTensorSplit:
     def test_the_two_token_form_goes_with_its_value(self):
         cmd = ["llama-server", "-m", "x.gguf", "--tensor-split", "10,20,30", "-ngl", "-1"]
         assert LlamaCppBackend._without_tensor_split(cmd) == [
-            "llama-server", "-m", "x.gguf", "-ngl", "-1",
+            "llama-server",
+            "-m",
+            "x.gguf",
+            "-ngl",
+            "-1",
         ]
 
     def test_the_short_and_equals_forms_go_too(self):
         assert LlamaCppBackend._without_tensor_split(["s", "-ts", "1,2", "-ngl", "-1"]) == [
-            "s", "-ngl", "-1",
+            "s",
+            "-ngl",
+            "-1",
         ]
         # An "=" form carries its value in the token, so nothing may be skipped
         # after it -- dropping the next token would eat --ngl's flag.
         assert LlamaCppBackend._without_tensor_split(["s", "--tensor-split=1,2", "-ngl"]) == [
-            "s", "-ngl",
+            "s",
+            "-ngl",
         ]
         # llama.cpp normalises long-option underscores; _flag_name mirrors it.
         assert LlamaCppBackend._without_tensor_split(["s", "--tensor_split", "1,2"]) == ["s"]
@@ -530,14 +537,30 @@ class TestArchRetryDropsTensorSplit:
 
     def test_only_the_split_is_removed(self):
         cmd = [
-            "llama-server", "-m", "x.gguf", "--split-mode", "tensor",
-            "--tensor-split", "10,20,30", "--flash-attn", "on", "-ngl", "-1",
+            "llama-server",
+            "-m",
+            "x.gguf",
+            "--split-mode",
+            "tensor",
+            "--tensor-split",
+            "10,20,30",
+            "--flash-attn",
+            "on",
+            "-ngl",
+            "-1",
         ]
         out = LlamaCppBackend._without_tensor_split(cmd)
         assert "--tensor-split" not in out and "10,20,30" not in out
         assert out == [
-            "llama-server", "-m", "x.gguf", "--split-mode", "tensor",
-            "--flash-attn", "on", "-ngl", "-1",
+            "llama-server",
+            "-m",
+            "x.gguf",
+            "--split-mode",
+            "tensor",
+            "--flash-attn",
+            "on",
+            "-ngl",
+            "-1",
         ]
 
     def test_the_retry_call_site_drops_it_before_respawning(self):
@@ -560,7 +583,13 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
     crashes unless the surviving ids are carried into the launch env."""
 
     @staticmethod
-    def _probes(monkeypatch, *, gated, everything, archs = frozenset({"gfx1030"})):
+    def _probes(
+        monkeypatch,
+        *,
+        gated,
+        everything,
+        archs = frozenset({"gfx1030"}),
+    ):
         """Stub the gate marker + both probes. Returns the per-call kwargs seen,
         so a test can COUNT calls -- raising inside a spy here would be
         swallowed by the caller's ``except Exception``."""
@@ -579,7 +608,6 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
     def test_a_narrowing_gate_yields_the_surviving_ids(self, monkeypatch):
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         from core.rag.embed_llama_server import LlamaServerBackend
-
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == [1]
 
     def test_full_coverage_needs_no_mask(self, monkeypatch):
@@ -587,7 +615,6 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
             monkeypatch, gated = [(0, 60000), (1, 24000)], everything = [(0, 60000), (1, 24000)]
         )
         from core.rag.embed_llama_server import LlamaServerBackend
-
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
 
     def test_unknown_coverage_fails_open_without_probing(self, monkeypatch):
@@ -608,7 +635,6 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
             staticmethod(lambda _b = None: (_ for _ in ()).throw(RuntimeError("marker"))),
         )
         from core.rag.embed_llama_server import LlamaServerBackend
-
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
 
     @staticmethod

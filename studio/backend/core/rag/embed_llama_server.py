@@ -245,13 +245,13 @@ class LlamaServerBackend:
         Vulkan and macOS have no mapped_targets marker, and a build covering
         every installed card needs no pin."""
         from core.inference.llama_cpp import LlamaCppBackend
-
         try:
             if LlamaCppBackend._installed_llama_gfx_archs(binary) is None:
                 return []  # unknown coverage: fail open, same as the probe
-            gated = [i for i, _free in LlamaCppBackend._get_gpu_free_memory(
-                binary, for_llama_server = True
-            )]
+            gated = [
+                i
+                for i, _free in LlamaCppBackend._get_gpu_free_memory(binary, for_llama_server = True)
+            ]
             everything = [i for i, _free in LlamaCppBackend._get_gpu_free_memory(binary)]
             return gated if gated and gated != everything else []
         except Exception as e:  # noqa: BLE001 - a probe failure must not block the spawn
@@ -293,9 +293,7 @@ class LlamaServerBackend:
                 LlamaCppBackend._emit_child_gpu_visibility(
                     env, ",".join(str(i) for i in _pinned), prefer_rocr = True
                 )
-                logger.info(
-                    "pinning the embed server to arch-supported GPU(s) %s", _pinned
-                )
+                logger.info("pinning the embed server to arch-supported GPU(s) %s", _pinned)
         else:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
