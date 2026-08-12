@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Launcher refresh: fetch install.sh / install.ps1 from main, bundled copy as fallback.
+"""The launcher refresh fetches install.sh / install.ps1 from unsloth.ai and runs it.
 
-`unsloth studio update` re-runs the installer with --shortcuts-only. It used to fetch
-https://unsloth.ai/install.sh and pipe it into `bash -s` with no local copy to fall back
-to. Now the fetch goes to raw.githubusercontent.com, the origin that URL was a Cloudflare
-301 to, and pyproject ships the installers under <data>/share/unsloth so there is always a
-fallback when the fetch fails or returns something that is not an installer. A source
-checkout still outranks both: `update --local` must test its own installer.
+`unsloth studio update` re-runs the installer with --shortcuts-only. Fetching, rather
+than shipping a copy in the wheel, is deliberate: a launcher fix then reaches users
+without waiting for a release. unsloth.ai and the unslothai/unsloth repo it redirects to
+are trusted, so what is left to get right is everything around the fetch, namely that a
+transport error cannot abort an update that already succeeded, that a response which is
+not an installer is not piped into bash, and that a source checkout still outranks the
+network so `update --local` tests its own installer.
 """
 
 from __future__ import annotations
 
 import sys
-import sysconfig
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,70 +40,49 @@ def _posix(monkeypatch, tmp_path):
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
     monkeypatch.setattr(studio, "_PACKAGE_ROOT", tmp_path / "no-checkout-here")
-    monkeypatch.delenv("UNSLOTH_NO_REMOTE_INSTALLER", raising = False)
     monkeypatch.delenv("STUDIO_LOCAL_REPO", raising = False)
     return studio
 
 
-def _record_runs(monkeypatch, studio):
-    runs = []
-
-    def _run(argv, **kwargs):
-        runs.append((argv, kwargs.get("input")))
-        return _Result()
-
-    monkeypatch.setattr(studio.subprocess, "run", _run)
-    return runs
+# ── where the installer comes from ─────────────────────────────────────────────────
 
 
-# ── source of the fetch ────────────────────────────────────────────────────────────
-
-
-def test_fetch_targets_the_repo_origin_not_the_website():
+def test_the_installer_is_fetched_from_unsloth_ai():
     studio = _studio()
-    for url in (studio._INSTALLER_URL_BASH, studio._INSTALLER_URL_PWSH):
-        assert url.startswith("https://raw.githubusercontent.com/unslothai/unsloth/")
-    assert "unsloth.ai/install" not in studio._INSTALLER_URL_BASH
+    assert studio._INSTALLER_URL_BASH == "https://unsloth.ai/install.sh"
+    assert studio._INSTALLER_URL_PWSH == "https://unsloth.ai/install.ps1"
 
 
-def test_a_starting_url_off_the_pinned_host_is_refused(monkeypatch, tmp_path):
-    """The guard covers the constant too: https://unsloth.ai/install.sh redirects TO the
-    pinned host, so a redirect-only check would happily fetch through it.
-    """
-    studio = _posix(monkeypatch, tmp_path)
-    monkeypatch.setattr(studio, "_INSTALLER_URL_BASH", "https://unsloth.ai/install.sh")
-    monkeypatch.setattr(
-        studio.urllib.request,
-        "build_opener",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not open a connection")),
-    )
-    assert studio._fetch_installer("install.sh") is None
-
-
-def test_redirect_off_the_pinned_host_is_refused():
+def test_the_redirect_chain_is_allowed_and_nothing_else():
+    """unsloth.ai 301s to raw.githubusercontent, so both are in the chain."""
     studio = _studio()
-    handler = studio._InstallerRedirectHandler()
+    for good in (
+        "https://unsloth.ai/install.sh",
+        "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh",
+    ):
+        assert studio._is_allowed_installer_url(good), good
+    for bad in (
+        "https://evil.example/install.sh",
+        "http://unsloth.ai/install.sh",
+        "https://unsloth.ai.evil.example/install.sh",
+    ):
+        assert not studio._is_allowed_installer_url(bad), bad
+
+
+def test_a_redirect_off_the_chain_is_refused():
     import urllib.error
 
-    for bad in ("https://evil.example/install.sh", "http://raw.githubusercontent.com/x"):
-        try:
-            handler.redirect_request(None, None, 302, "Found", {}, bad)
-        except urllib.error.URLError:
-            continue
-        raise AssertionError(f"followed redirect to {bad}")
-
-
-# ── candidate resolution ───────────────────────────────────────────────────────────
-
-
-def test_bundled_candidate_covers_wheel_installs():
     studio = _studio()
-    shipped = Path(sysconfig.get_path("data")) / "share" / "unsloth" / "install.sh"
-    assert shipped in studio._installer_bundled_candidates("install.sh")
+    handler = studio._InstallerRedirectHandler()
+    try:
+        handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/x.sh")
+    except urllib.error.URLError:
+        return
+    raise AssertionError("followed a redirect off the allowed chain")
 
 
-def test_checkout_outranks_everything(monkeypatch, tmp_path):
-    """A --local update tests its own installer, so no fetch may happen."""
+def test_a_checkout_outranks_the_network(monkeypatch, tmp_path):
+    """`update --local` is testing its own installer, so no fetch may happen."""
     studio = _posix(monkeypatch, tmp_path)
     checkout = tmp_path / "install.sh"
     checkout.write_bytes(_SH)
@@ -113,80 +92,76 @@ def test_checkout_outranks_everything(monkeypatch, tmp_path):
         "_fetch_installer",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("checkout must not fetch")),
     )
-    runs = _record_runs(monkeypatch, studio)
+    runs = []
+    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: runs.append(argv) or _Result())
     studio._refresh_desktop_shortcuts()
-    assert runs == [(["bash", str(checkout), "--shortcuts-only"], None)]
+    assert runs == [["bash", str(checkout), "--shortcuts-only"]]
 
 
-# ── fetch first, bundled fallback ──────────────────────────────────────────────────
-
-
-def test_fetched_installer_is_preferred_over_the_bundled_copy(monkeypatch, tmp_path):
+def test_a_wheel_install_fetches_and_pipes_to_bash(monkeypatch, tmp_path):
     studio = _posix(monkeypatch, tmp_path)
-    bundled = tmp_path / "install.sh"
-    bundled.write_bytes(_SH)
-    monkeypatch.setattr(studio, "_installer_bundled_candidates", lambda n: [tmp_path / n])
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: b"FETCHED")
-    runs = _record_runs(monkeypatch, studio)
+    runs = []
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda argv, **kw: runs.append((argv, kw.get("input"))) or _Result(),
+    )
     studio._refresh_desktop_shortcuts()
     assert runs == [(["bash", "-s", "--", "--shortcuts-only"], b"FETCHED")]
 
 
-def test_failed_fetch_falls_back_to_the_bundled_copy(monkeypatch, tmp_path):
-    studio = _posix(monkeypatch, tmp_path)
-    bundled = tmp_path / "install.sh"
-    bundled.write_bytes(_SH)
-    monkeypatch.setattr(studio, "_installer_bundled_candidates", lambda n: [tmp_path / n])
-    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
-    runs = _record_runs(monkeypatch, studio)
-    studio._refresh_desktop_shortcuts()
-    assert runs == [(["bash", str(bundled), "--shortcuts-only"], None)]
+# ── what a bad response must not do ────────────────────────────────────────────────
 
 
-def test_offline_with_no_bundled_copy_skips_instead_of_guessing(monkeypatch, tmp_path, capsys):
+def test_a_failed_fetch_skips_instead_of_executing(monkeypatch, tmp_path, capsys):
     studio = _posix(monkeypatch, tmp_path)
-    monkeypatch.setattr(studio, "_installer_bundled_candidates", lambda n: [tmp_path / n])
     monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: None)
     monkeypatch.setattr(
         studio.subprocess,
         "run",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("nothing to run")),
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("nothing to execute")),
     )
     studio._refresh_desktop_shortcuts()
-    assert "skipped" in capsys.readouterr().out
-
-
-def test_opt_out_pins_the_refresh_to_the_bundled_installer(monkeypatch, tmp_path):
-    studio = _posix(monkeypatch, tmp_path)
-    monkeypatch.setenv("UNSLOTH_NO_REMOTE_INSTALLER", "1")
-    monkeypatch.setattr(
-        studio.urllib.request,
-        "build_opener",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not open a connection")),
-    )
-    assert studio._fetch_installer("install.sh") is None
-
-
-# ── what is allowed to reach a shell ───────────────────────────────────────────────
+    assert capsys.readouterr().out == ""
 
 
 def test_non_installer_responses_are_not_executed():
-    """A captive portal or error page must never be piped into bash."""
+    """A captive portal or an error body must never be piped into bash."""
     studio = _studio()
-    rejected = [
+    for body in (
         None,
         b"",
         b"<!DOCTYPE html><html><body>Sign in to WiFi</body></html>" + b"x" * 4000,
         b"  <html>" + b"x" * 4000,
-        b"rm -rf ~" + b"\n" * 4000,  # right size, wrong content
-        _SH[:200],  # truncated
-    ]
-    for body in rejected:
-        assert not studio._looks_like_installer(body, "install.sh"), body[:40] if body else body
+        b"rm -rf ~" + b"\n" * 4000,
+        _SH[:200],
+    ):
+        assert not studio._looks_like_installer(body, "install.sh")
     assert studio._looks_like_installer(_SH, "install.sh")
 
 
-def test_oversized_and_bad_responses_return_none(monkeypatch, tmp_path):
+def test_http_framing_errors_are_fetch_failures_not_crashes(monkeypatch, tmp_path):
+    """IncompleteRead is neither URLError nor OSError, and must not abort the update."""
+    import http.client
+
+    studio = _posix(monkeypatch, tmp_path)
+    assert not issubclass(http.client.IncompleteRead, (OSError, ValueError))
+    for exc in (
+        http.client.IncompleteRead(b"half"),
+        http.client.BadStatusLine("nonsense"),
+        http.client.LineTooLong("header line"),
+    ):
+
+        class _Opener:
+            def open(self, *a, **k):
+                raise exc
+
+        monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
+        assert studio._fetch_installer("install.sh") is None, exc
+
+
+def test_oversized_and_html_responses_return_none(monkeypatch, tmp_path):
     studio = _posix(monkeypatch, tmp_path)
 
     class _Response:
@@ -202,9 +177,9 @@ def test_oversized_and_bad_responses_return_none(monkeypatch, tmp_path):
         def __exit__(self, *a):
             return False
 
-    for body, why in (
-        (b"x" * (studio._INSTALLER_MAX_BYTES + 1), "oversized"),
-        (b"<html>not an installer</html>" + b"x" * 4000, "not an installer"),
+    for body in (
+        b"x" * (studio._INSTALLER_MAX_BYTES + 1),
+        b"<html>not an installer</html>" + b"x" * 4000,
     ):
 
         class _Opener:
@@ -212,65 +187,4 @@ def test_oversized_and_bad_responses_return_none(monkeypatch, tmp_path):
                 return _Response(body)
 
         monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
-        assert studio._fetch_installer("install.sh") is None, why
-
-
-# ── fetched-installer failure modes ────────────────────────────────────────────────
-
-
-def test_a_fetched_installer_that_exits_nonzero_falls_back(monkeypatch, tmp_path):
-    """A broken main must not consume the fallback: the release-matched copy runs."""
-    studio = _posix(monkeypatch, tmp_path)
-    bundled = tmp_path / "install.sh"
-    bundled.write_bytes(_SH)
-    monkeypatch.setattr(studio, "_installer_bundled_candidates", lambda n: [tmp_path / n])
-    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: b"FETCHED")
-
-    runs = []
-
-    class _Fail:
-        returncode = 1
-
-    class _Ok:
-        returncode = 0
-
-    def _run(argv, **kwargs):
-        runs.append((argv, kwargs.get("input")))
-        return _Fail() if kwargs.get("input") else _Ok()
-
-    monkeypatch.setattr(studio.subprocess, "run", _run)
-    studio._refresh_desktop_shortcuts()
-    assert runs == [
-        (["bash", "-s", "--", "--shortcuts-only"], b"FETCHED"),
-        (["bash", str(bundled), "--shortcuts-only"], None),
-    ]
-
-
-def test_http_framing_errors_are_fetch_failures_not_crashes(monkeypatch, tmp_path):
-    """IncompleteRead is neither URLError nor OSError, and must not abort the update."""
-    import http.client
-
-    studio = _posix(monkeypatch, tmp_path)
-    assert not issubclass(http.client.IncompleteRead, (OSError, ValueError))
-
-    for exc in (
-        http.client.IncompleteRead(b"half"),
-        http.client.BadStatusLine("nonsense"),
-        http.client.LineTooLong("header line"),
-    ):
-
-        class _Opener:
-            def open(self, *a, **k):
-                raise exc
-
-        monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
-        assert studio._fetch_installer("install.sh") is None, exc
-
-
-def test_the_managed_venv_leads_the_bundled_candidates(monkeypatch):
-    """A CLI outside the managed venv updates INTO it, so that root outranks the CLI's own."""
-    studio = _studio()
-    candidates = studio._installer_bundled_candidates("install.sh")
-    managed = studio.STUDIO_HOME / "unsloth_studio" / "share" / "unsloth" / "install.sh"
-    assert candidates[0] == managed
-    assert len(candidates) == len(set(candidates)), "duplicate roots"
+        assert studio._fetch_installer("install.sh") is None
