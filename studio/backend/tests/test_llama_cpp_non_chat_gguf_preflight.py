@@ -25,7 +25,12 @@ from core.inference.llama_cpp import LlamaCppBackend
 GGUF_MAGIC = 0x46554747
 
 
-def _write_gguf(path: Path, *, arch: str | None, tensor_count: int = 1) -> Path:
+def _write_gguf(
+    path: Path,
+    *,
+    arch: str | None,
+    tensor_count: int = 1,
+) -> Path:
     """A minimal GGUF header: magic, version, counts, then one optional
     ``general.architecture`` string KV. Enough for the header parser, which never reads
     the tensor data."""
@@ -43,7 +48,13 @@ def _write_gguf(path: Path, *, arch: str | None, tensor_count: int = 1) -> Path:
     return path
 
 
-def _refusal(tmp_path: Path, *, arch: str | None, name: str, identifier: str | None = None):
+def _refusal(
+    tmp_path: Path,
+    *,
+    arch: str | None,
+    name: str,
+    identifier: str | None = None,
+):
     gguf = _write_gguf(tmp_path / name, arch = arch)
     backend = LlamaCppBackend()
     backend._model_identifier = identifier

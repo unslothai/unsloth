@@ -8908,12 +8908,9 @@ class LlamaCppBackend:
 
         # No architecture declared: not loadable by llama-server whatever it is. Say which
         # page runs it when the identifiers make that clear.
-        needles = [
-            n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n
-        ]
+        needles = [n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n]
         try:
             from core.inference.video_families import detect_video_family
-
             if any(detect_video_family(n) is not None for n in needles):
                 return (
                     "This is a text-to-video model, not a chat model: its GGUF carries no "
@@ -8924,7 +8921,6 @@ class LlamaCppBackend:
             logger.debug("Video family probe failed during non-chat GGUF preflight: %s", e)
         try:
             from core.inference.diffusion_families import detect_family
-
             if any(detect_family(n) is not None for n in needles):
                 return (
                     "This is an image-generation model, not a chat model: its GGUF carries "
