@@ -114,7 +114,9 @@ def test_every_probe_site_records_whether_it_was_definitive():
     # A site that reassigns _audio_type without its flag leaves the flag describing
     # the previous probe, which is worse than not having it.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
-    sites = [l for l in text.splitlines() if "detect_audio_type_checked(" in l and "import" not in l]
+    sites = [
+        l for l in text.splitlines() if "detect_audio_type_checked(" in l and "import" not in l
+    ]
     assert sites, "no probe sites found"
     for line in sites:
         assert "self._audio_type_known" in line, line.strip()
