@@ -557,7 +557,18 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     let started = Instant::now();
     let result = match crate::process::find_unsloth_binary() {
         Some(bin) => probe_managed_bin(bin).await,
-        None => ManagedProbe::Missing,
+        // The managed install lives under the user's profile, so an unreachable
+        // profile looks exactly like no install at all. Say which it is, or a
+        // user whose network profile is late at login is sent to reinstall.
+        None => match crate::process::home_dir_available() {
+            Ok(()) => ManagedProbe::Missing,
+            Err(error) => {
+                info!("Managed preflight: {}", error);
+                ManagedProbe::Unavailable {
+                    reason: WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+                }
+            }
+        },
     };
     info!(
         "Managed preflight: install probe result {:?} in {}ms",

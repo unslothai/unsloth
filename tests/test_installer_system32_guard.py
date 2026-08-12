@@ -328,8 +328,12 @@ def _guard_outcome(
     chdir_error: OSError | None = None,
     getcwd_error: OSError | None = None,
     makedirs_error: OSError | None = None,
+    windows_dirs: tuple[str, ...] = (r"C:\Windows",),
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
+    real_windows_dirs = {
+        ntpath.normcase(ntpath.join(directory, "System32")) for directory in windows_dirs
+    }
     environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile}
     if public is not None:
         environ["PUBLIC"] = public
@@ -375,6 +379,8 @@ def _guard_outcome(
         sep = "\\",
         expanduser = lambda _p: userprofile,
         makedirs = _makedirs,
+        # Only a folder that really holds System32 counts as a Windows directory.
+        isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
     )
     assert fatal == (colour == "red"), "only a red message may stop the command"
     return message, colour, chdir_calls
@@ -707,14 +713,39 @@ def test_cli_guard_reports_a_deleted_working_directory_for_what_it_is():
     assert r"C:\Windows" not in message, "the user was never in a Windows folder"
 
 
-def test_cli_guard_prefers_system_root_over_a_user_settable_windir():
+def test_cli_guard_finds_the_real_windows_folder_past_a_shadowed_windir():
     """WINDIR can be shadowed from HKCU\\Environment; SystemRoot cannot."""
     _, colour, _ = _guard_outcome(
         r"D:\Windows\System32",
         argv = ["unsloth", "train"],
         environ_extra = {"SystemRoot": r"D:\Windows", "WINDIR": r"C:\Users\me"},
+        windows_dirs = (r"D:\Windows",),
     )
     assert colour == "red", "the real Windows folder must still be caught"
+
+
+def test_cli_guard_ignores_a_windir_that_holds_no_system32():
+    """A WINDIR pointed at the user's own profile must not turn their project
+    folders into system folders, which would block every command they run."""
+    message, colour, _ = _guard_outcome(
+        r"C:\Users\me\projects\llm",
+        argv = ["unsloth", "train"],
+        environ_extra = {"SystemRoot": r"C:\Windows", "WINDIR": r"C:\Users\me"},
+        windows_dirs = (r"C:\Windows",),
+    )
+    assert (message, colour) == (None, None)
+
+
+def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
+    """No candidate holds System32 (an unusual image, or a test): fall back to
+    SystemRoot rather than trusting the settable value."""
+    _, colour, _ = _guard_outcome(
+        r"E:\Windows\System32",
+        argv = ["unsloth", "train"],
+        environ_extra = {"SystemRoot": r"E:\Windows", "WINDIR": r"C:\Users\me"},
+        windows_dirs = (),
+    )
+    assert colour == "red"
 
 
 def test_cli_guard_does_nothing_off_windows():

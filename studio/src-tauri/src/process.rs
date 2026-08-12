@@ -936,6 +936,22 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     find_unsloth_binary_in_studio_dir(&studio)
 }
 
+/// Whether the user's profile is reachable at all.
+///
+/// A roaming or network profile that is not mounted yet at login makes the managed
+/// install look absent, since it lives under that profile. The two are worth telling
+/// apart: one is fixed by reconnecting, the other by installing.
+pub(crate) fn home_dir_available() -> Result<(), String> {
+    match dirs::home_dir() {
+        Some(home) if home.is_dir() => Ok(()),
+        Some(home) => Err(format!(
+            "Home directory {} is not reachable",
+            home.display()
+        )),
+        None => Err("Could not determine the home directory".to_string()),
+    }
+}
+
 /// Marker the desktop sets on every CLI child it owns. The Python CLI reads it to
 /// tell a desktop-managed launch from a user typing the same command in a shell.
 pub(crate) const DESKTOP_MANAGED_ENV: &str = "UNSLOTH_DESKTOP_MANAGED";
@@ -1020,28 +1036,52 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     managed_cli_working_dir_from(dirs::home_dir(), &windirs)
 }
 
-/// Every plausible Windows directory, empty off Windows.
+/// Every real Windows directory, empty off Windows.
 ///
-/// All of them, not the first one found: reading a single variable means whoever
-/// can set it can point the check somewhere harmless. WINDIR in particular is an
-/// ordinary variable that anything writing HKCU\Environment can shadow.
+/// Candidates are checked rather than trusted. Reading one variable means whoever
+/// can set it can point the check somewhere harmless, but believing every variable
+/// is worse: WINDIR is an ordinary value that anything writing HKCU\Environment can
+/// shadow, and a WINDIR aimed at the user's own profile would make this reject that
+/// profile and stop the backend from starting at all. A directory only counts if it
+/// actually contains System32.
 fn windows_roots() -> Vec<std::path::PathBuf> {
     if !cfg!(windows) {
         return Vec::new();
     }
+    let system_root = std::env::var("SystemRoot").ok();
+    let fallback = system_root
+        .clone()
+        .unwrap_or_else(|| r"C:\Windows".to_string());
+    windows_roots_from(
+        [
+            system_root,
+            std::env::var("WINDIR").ok(),
+            Some(r"C:\Windows".to_string()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(std::path::PathBuf::from)
+        .collect(),
+        std::path::PathBuf::from(fallback),
+        |root| root.join("System32").is_dir(),
+    )
+}
+
+fn windows_roots_from(
+    candidates: Vec<std::path::PathBuf>,
+    fallback: std::path::PathBuf,
+    is_windows_dir: impl Fn(&std::path::Path) -> bool,
+) -> Vec<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    for value in [
-        std::env::var("SystemRoot").ok(),
-        std::env::var("WINDIR").ok(),
-        Some(r"C:\Windows".to_string()),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let root = std::path::PathBuf::from(value);
-        if !roots.contains(&root) {
+    for root in candidates {
+        if is_windows_dir(&root) && !roots.contains(&root) {
             roots.push(root);
         }
+    }
+    if roots.is_empty() {
+        // Nothing on this machine looks like a Windows installation. Keep the
+        // check alive, on SystemRoot or the default, never on a settable value.
+        roots.push(fallback);
     }
     roots
 }
@@ -2555,6 +2595,46 @@ mod managed_cli_working_dir_tests {
             std::path::Path::new("/home/me"),
             &windirs
         ));
+    }
+
+    // A WINDIR aimed at the user's profile would otherwise make this reject that
+    // profile, so the backend would never start anywhere on that machine.
+    #[test]
+    fn a_candidate_that_holds_no_system32_is_not_a_windows_directory() {
+        let roots = windows_roots_from(
+            vec![
+                PathBuf::from(r"C:\Windows"),
+                PathBuf::from(r"C:\Users\me"),
+                PathBuf::from(r"C:\Windows"),
+            ],
+            PathBuf::from(r"C:\Windows"),
+            |root| root == std::path::Path::new(r"C:\Windows"),
+        );
+        assert_eq!(roots, vec![PathBuf::from(r"C:\Windows")]);
+    }
+
+    #[test]
+    fn a_shadowed_windir_does_not_hide_the_real_windows_directory() {
+        let roots = windows_roots_from(
+            vec![PathBuf::from(r"D:\Windows"), PathBuf::from(r"C:\Users\me")],
+            PathBuf::from(r"D:\Windows"),
+            |root| root == std::path::Path::new(r"D:\Windows"),
+        );
+        assert_eq!(roots, vec![PathBuf::from(r"D:\Windows")]);
+    }
+
+    #[test]
+    fn nothing_that_looks_like_windows_falls_back_to_the_authoritative_value() {
+        let roots = windows_roots_from(
+            vec![PathBuf::from(r"E:\Windows"), PathBuf::from(r"C:\Users\me")],
+            PathBuf::from(r"E:\Windows"),
+            |_root| false,
+        );
+        assert_eq!(
+            roots,
+            vec![PathBuf::from(r"E:\Windows")],
+            "the guard must stay alive, and never on the settable value"
+        );
     }
 
     #[test]

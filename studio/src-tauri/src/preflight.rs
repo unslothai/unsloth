@@ -37,7 +37,7 @@ fn release_auto_repair() -> bool {
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
     match managed {
         ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
-        ManagedProbe::Missing => None,
+        ManagedProbe::Missing | ManagedProbe::Unavailable { .. } => None,
     }
 }
 
@@ -78,6 +78,15 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             ManagedProbe::Missing => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::NotInstalled,
                 reason: None,
+                port: None,
+                can_auto_repair: false,
+                managed_bin: None,
+            },
+            // Not "install Unsloth": there may well be an install, sitting on a
+            // profile that is not mounted. Reinstalling would need it too.
+            ManagedProbe::Unavailable { reason } => DesktopPreflightResult {
+                disposition: DesktopPreflightDisposition::ManagedStale,
+                reason: Some(reason),
                 port: None,
                 can_auto_repair: false,
                 managed_bin: None,
@@ -410,6 +419,19 @@ mod tests {
                 DesktopPreflightDisposition::NotInstalled,
                 None,
                 None,
+                false,
+                None,
+            ),
+            // An unreachable profile is not a missing install: the install may
+            // well be there, and reinstalling would need the same folder.
+            (
+                ManagedProbe::Unavailable {
+                    reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+                },
+                BackendProbe::Missing,
+                DesktopPreflightDisposition::ManagedStale,
+                None,
+                Some(managed::WORKING_DIRECTORY_UNAVAILABLE),
                 false,
                 None,
             ),

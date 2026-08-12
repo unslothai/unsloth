@@ -35,26 +35,35 @@ DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 WORK_DIR_NAME = ".unsloth"
 
 
-def windows_root(environ):
-    """Where Windows is installed, for messages.
+def windows_root(environ, pathmod = _os.path, isdir = None):
+    """Where Windows is installed, for messages."""
+    return windows_roots(environ, pathmod, isdir)[0]
 
-    SystemRoot first: WINDIR is an ordinary user-settable variable, while
-    SystemRoot comes from the system. install.ps1 reads SystemRoot too.
+
+def windows_roots(environ, pathmod = _os.path, isdir = None):
+    """Every real Windows directory.
+
+    Candidates are checked rather than trusted. Reading one variable means
+    whichever is read first can be shadowed to point the guard somewhere
+    harmless, but believing every variable is worse: a WINDIR aimed at the user's
+    own profile would make this treat their ordinary folders as system ones. A
+    directory only counts if it actually contains System32. install.ps1 reads
+    SystemRoot for the same reason.
     """
-    return windows_roots(environ)[0]
+    if isdir is None:
+        isdir = pathmod.isdir
+    system_root = environ.get("SystemRoot")
+    candidates = [system_root, environ.get("WINDIR"), r"C:\Windows"]
 
-
-def windows_roots(environ):
-    """Every plausible Windows directory, checked together.
-
-    Reading one variable means whichever is read first can be shadowed to point
-    the guard somewhere harmless; checking all of them costs nothing.
-    """
     roots = []
-    for value in (environ.get("SystemRoot"), environ.get("WINDIR"), r"C:\Windows"):
-        if value and value not in roots:
+    for value in candidates:
+        if value and value not in roots and isdir(pathmod.join(value, "System32")):
             roots.append(value)
-    return roots
+    if roots:
+        return roots
+    # Nothing on this machine looks like a Windows installation. Keep the guard
+    # alive, on SystemRoot or the default, never on a user-settable value.
+    return [system_root or r"C:\Windows"]
 
 
 def _strip_extended_prefix(path):
@@ -295,6 +304,7 @@ def check_working_directory(
     sep = _os.sep,
     expanduser = None,
     makedirs = _os.makedirs,
+    isdir = None,
 ):
     """Decide what to do about the current working directory.
 
@@ -304,7 +314,7 @@ def check_working_directory(
     if platform != "win32":
         return None, None, False
 
-    windirs = windows_roots(environ)
+    windirs = windows_roots(environ, pathmod, isdir)
     windir = windirs[0]
     try:
         cwd = getcwd()
