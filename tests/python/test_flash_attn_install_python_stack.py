@@ -364,8 +364,9 @@ class TestEnsureFlashAttn:
         assert any("flash-attn" in cmd for cmd in removals), removals
         assert ("warning", "Continuing without flash-attn") in step_messages
 
-    def test_uninstall_mirrors_the_uv_system_mode(self):
-        """UV_NEEDS_SYSTEM is set exactly when --python failed, so --python cannot be used."""
+    def test_uninstall_targets_the_interpreter_install_wheel_used(self):
+        """install_wheel passes --python as well as --system, and its pip fallback runs
+        sys.executable directly, so --system alone would uninstall from the wrong Python."""
         commands: list[list[str]] = []
 
         def fake_run(cmd, **kwargs):
@@ -380,7 +381,9 @@ class TestEnsureFlashAttn:
         ):
             assert ips._remove_rejected_flash_attn() is True
 
-        assert commands == [["uv", "pip", "uninstall", "--system", "flash-attn"]]
+        assert commands == [
+            ["uv", "pip", "uninstall", "--system", "--python", sys.executable, "flash-attn"]
+        ]
 
     def test_uninstall_targets_the_interpreter_without_system_mode(self):
         commands: list[list[str]] = []

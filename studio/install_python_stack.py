@@ -3674,17 +3674,17 @@ def _flash_attn_importable() -> bool:
 def _remove_rejected_flash_attn() -> bool:
     """Uninstall a flash-attn that installed but will not import. True iff it is gone.
 
-    Mirrors the mode the wheel was installed with: UV_NEEDS_SYSTEM is set exactly when the
-    --python probe failed, so uninstalling with --python there would use the one mode
-    already known not to work in this environment.
+    Targets the same interpreter install_wheel installed into, which is always
+    ``sys.executable``: its uv command passes --python as well as --system, and its pip
+    fallback runs that interpreter directly. Uninstalling with --system ALONE would remove
+    from the system Python instead, leaving the rejected wheel in the venv while setup
+    reported it gone.
     """
     if USE_UV and shutil.which("uv"):
         cmd = ["uv", "pip", "uninstall"]
         if UV_NEEDS_SYSTEM:
             cmd.append("--system")
-        else:
-            cmd.extend(["--python", sys.executable])
-        cmd.append("flash-attn")
+        cmd.extend(["--python", sys.executable, "flash-attn"])
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
