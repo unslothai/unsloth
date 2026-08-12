@@ -172,6 +172,11 @@ name: Kaggle T4 Studio GPU CI
 
 on:
   pull_request:
+    # `labeled` on top of the defaults, because the opt-in label below is
+    # advertised as the way to force a run that sampling declined. Without it
+    # GitHub starts nothing when the label is added and the override only
+    # takes effect on the next unrelated push.
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'studio/backend/**'
       - 'studio/setup.sh'
@@ -272,6 +277,11 @@ jobs:
       # The gate itself is shared with the notebook leg, unchanged. Only the
       # numbers differ.
       #
+      # --kernels 1, not the default 2: this leg pushes ONE kernel and leaves
+      # the session's second T4 idle (see ONE PAYLOAD, NOT TWO above), so
+      # demanding two free concurrency slots would stand the job down on an
+      # account that has room for it.
+      #
       # budget-hours is the worst case ONE invocation can cost: the 70-minute
       # kernel ceiling set below, rounded up.
       #
@@ -290,6 +300,7 @@ jobs:
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-studio-gpu-ci \
+            --kernels 1 \
             --budget-hours 2 \
             --reserve-hours 10
 

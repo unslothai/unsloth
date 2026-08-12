@@ -171,6 +171,21 @@ print("{PAYLOAD_SENTINEL} paths " + json.dumps({{
 }}), flush=True)
 
 
+def fail_report(reason):
+    # A failure of the INSTALLATION UNDER TEST is a payload failure, not an
+    # infra one. Without a T4_SMOKE_REPORT the shared launcher classifies the
+    # run as `infra` and the reporter exits 0, so an install.sh or dependency
+    # regression -- the exact thing this workflow's path filter selects for --
+    # would pass silently. Emitting the report first is what makes it red.
+    # Infra outcomes (no GPU assigned, a clone that would not download) keep
+    # the no-report path on purpose.
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": "studio-gpu", "model": None, "passed": False,
+        "failures": [reason], "assertions": [],
+        "environment": {{}}, "config": {{}},
+    }}), flush=True)
+
+
 def sh(cmd, *, cwd=None, timeout=3600, check=True, label=""):
     print(f"  $ {{' '.join(cmd)}}", flush=True)
     started = time.time()
@@ -209,10 +224,16 @@ print("{PAYLOAD_SENTINEL} checkout " + json.dumps({{"ref": REF, "head": head}}),
 # Torch is NOT skipped here. Every other Studio workflow installs with
 # --no-torch because its runner has no GPU to use one on; the training and
 # export assertions need the real CUDA stack.
-sh(["bash", "install.sh", "--local"], cwd=str(REPO), timeout=5400, label="install.sh")
+_install = sh(["bash", "install.sh", "--local"], cwd=str(REPO), timeout=5400, check=False,
+              label="install.sh")
+if _install.returncode != 0:
+    fail_report(f"install.sh --local exited {{_install.returncode}}: the supported "
+                f"installation of the checkout under test failed")
+    raise SystemExit("install.sh failed")
 
 VENV_PY = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
 if not VENV_PY.is_file():
+    fail_report(f"install.sh --local succeeded but left no interpreter at {{VENV_PY}}")
     raise SystemExit(f"install.sh left no interpreter at {{VENV_PY}}")
 print("{PAYLOAD_SENTINEL} venv " + str(VENV_PY), flush=True)
 """
@@ -241,12 +262,15 @@ print("{PAYLOAD_SENTINEL} probe rc=" + str(proc.returncode), flush=True)
 print(proc.stdout[-4000:], flush=True)
 if proc.returncode != 0:
     print(proc.stderr[-4000:], flush=True)
+    fail_report("the dependency probe could not run under the installed Studio venv")
     raise SystemExit("dependency probe failed")
 
 probe = json.loads(proc.stdout.strip().splitlines()[-1])
 print("{PAYLOAD_SENTINEL} versions " + json.dumps(probe["versions"]), flush=True)
 if probe["missing"]:
     print("{PAYLOAD_SENTINEL} MISSING " + json.dumps(probe["missing"]), flush=True)
+    fail_report("the installed Studio venv is missing dependencies the payload needs: "
+                + "; ".join(probe["missing"]))
     raise SystemExit("payload dependencies incomplete")
 if not probe.get("cuda", {{}}).get("available"):
     print("{PAYLOAD_SENTINEL} NO CUDA " + json.dumps(probe.get("cuda")), flush=True)
@@ -358,6 +382,24 @@ try:
     rc = proc.returncode
 except subprocess.TimeoutExpired:
     rc, err = -9, "papermill timed out after {per_run_timeout}s"
+    # Whether this is infra or a code failure turns on ONE question: had the
+    # payload itself started? Before that, the time went on the clone, the
+    # install and the model downloads, and a slow Kaggle session teaches
+    # nothing. After it, something under test hung, and with no report the
+    # launcher would file that hang as unavailable infrastructure and exit 0.
+    try:
+        _tail = log.read_text(errors="replace")
+    except OSError:
+        _tail = ""
+    if "{PAYLOAD_SENTINEL} exec" in _tail:
+        print("{RESULT_PREFIX}" + json.dumps({{
+            "label": "studio-gpu", "model": None, "passed": False,
+            "failures": ["the payload was still running when the "
+                         "{per_run_timeout}s driver deadline expired, so an "
+                         "assertion hung rather than the session being slow to "
+                         "start"],
+            "assertions": [], "environment": {{}}, "config": {{}},
+        }}), flush=True)
 except Exception as exc:
     rc, err = -1, f"{{type(exc).__name__}}: {{exc}}"
 

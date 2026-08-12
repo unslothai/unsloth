@@ -41,11 +41,19 @@ MAX_MEMBER_BYTES = 20_000_000
 
 
 def iter_text(path: Path):
-    """Every text stream in a collected evidence directory."""
+    """Every text stream in a collected evidence directory.
+
+    Recursive, because the launcher collects each kernel into its own
+    subdirectory (``kaggle_evidence/<kernel-slug>/``) so two kernels of one
+    run cannot overwrite each other's ``kernel.log``, while the workflow
+    hands this script the parent. A top-level ``glob`` therefore matched
+    nothing and every real run reported "the payload emitted no evidence
+    bundle". Same discovery ``launch.py::extract_reports`` uses.
+    """
     if path.is_file():
         yield path.read_text(encoding = "utf-8", errors = "replace")
         return
-    for nb_path in sorted(path.glob("*_output.ipynb")):
+    for nb_path in sorted(path.rglob("*_output.ipynb")):
         try:
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
@@ -56,8 +64,7 @@ def iter_text(path: Path):
                 if isinstance(text, list):
                     text = "".join(text)
                 yield text
-    log_path = path / "kernel.log"
-    if log_path.exists():
+    for log_path in sorted(path.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")
         try:
             records = json.loads(raw)

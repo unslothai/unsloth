@@ -92,6 +92,7 @@ from studio_client import (  # noqa: E402
     export_verdict,
     health_is_ready,
     newest_gguf,
+    nonfinite_losses,
     trained_steps,
     training_verdict,
     wait_for,
@@ -109,6 +110,10 @@ EVIDENCE_CHUNK = 4096
 # notebook's cell output, which is the only channel the shared launcher
 # collects, so it competes with the notebook itself for the download.
 MAX_EVIDENCE_BYTES = 2_500_000
+
+# Last resort when the redacted logs alone are over the cap: keep the tail of
+# each, which is where a failure's traceback is, rather than dropping them.
+MAX_LOG_TAIL_BYTES = 400_000
 
 # Free space the payload refuses to start without. A CUDA llama.cpp bundle,
 # a torch stack, two models and a merged 16-bit export do not fit in much
@@ -197,32 +202,90 @@ def gpu_inventory() -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
-def studio_log_text(
-    server_log: Path,
-    studio_home: Path,
-    tail_bytes: int = 4_000_000,
-) -> str:
-    """Everything Studio and its llama-server children wrote, as one string.
+def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
+    """Every file Studio or a llama-server child may be writing to.
 
     llama.cpp's offload line lands in whichever of these the server's stderr
     was wired to, and which one that is depends on how Studio was started, so
     both are read.
     """
-    parts: list[str] = []
     candidates = [server_log]
     log_dir = studio_home / "logs"
     if log_dir.is_dir():
         candidates += sorted(log_dir.rglob("*.log"))
-    for path in candidates:
+    return candidates
+
+
+def log_marks(server_log: Path, studio_home: Path) -> dict[str, int]:
+    """Current size of every log, to read forward from later.
+
+    Taken immediately before a model load so the evidence gathered afterwards
+    belongs to THAT load. Without it, a reload whose own log line never
+    appeared inherited the previous load's ``offloaded N/M layers`` and the
+    verdict passed on evidence from a different model.
+    """
+    marks: dict[str, int] = {}
+    for path in log_paths(server_log, studio_home):
+        try:
+            marks[str(path)] = path.stat().st_size
+        except OSError:
+            continue
+    return marks
+
+
+def studio_log_text(
+    server_log: Path,
+    studio_home: Path,
+    tail_bytes: int = 4_000_000,
+    *,
+    since: dict[str, int] | None = None,
+) -> str:
+    """Everything Studio and its llama-server children wrote, as one string.
+
+    ``since`` is a ``log_marks()`` snapshot; each file is then read from the
+    offset it had then, so only what this load produced comes back. A file
+    that has since shrunk was rotated or truncated, and is read whole.
+    """
+    parts: list[str] = []
+    for path in log_paths(server_log, studio_home):
+        start = (since or {}).get(str(path), 0)
         try:
             with open(path, "rb") as fh:
                 fh.seek(0, io.SEEK_END)
                 size = fh.tell()
-                fh.seek(max(0, size - tail_bytes))
+                if start > size:
+                    start = 0
+                fh.seek(max(start, size - tail_bytes))
                 parts.append(fh.read().decode("utf-8", errors = "replace"))
         except OSError:
             continue
     return "\n".join(parts)
+
+
+def llama_server_pids() -> list[int]:
+    """PIDs of the llama-server children Studio started, from /proc.
+
+    ``GET /api/inference/status`` does not carry one: ``InferenceStatusResponse``
+    declares neither ``llama_server_pid`` nor ``pid``, and FastAPI drops
+    anything the response model does not declare, so the process-level VRAM
+    probe never had a pid to match and could never contribute evidence.
+    Reading the process table gives it one back.
+    """
+    pids: list[int] = []
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return pids
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", errors = "replace")
+        except OSError:
+            continue
+        argv0 = cmdline.split("\x00", 1)[0]
+        if "llama-server" in Path(argv0).name:
+            pids.append(int(entry.name))
+    return pids
 
 
 class Payload:
@@ -340,8 +403,23 @@ class Payload:
     # ---------------------------------------------------------------- server
 
     def studio_command(self) -> list[str]:
-        binary = shutil.which("unsloth")
-        head = [binary] if binary else [sys.executable, "-c", "from unsloth_cli import app; app()"]
+        """The `unsloth` entry point of the interpreter running this payload.
+
+        NOT ``shutil.which("unsloth")``. This payload runs under the Studio
+        venv's Python and that venv's ``bin`` is not on PATH, so a global
+        ``unsloth`` anywhere on PATH would win the lookup and the run would
+        measure some other installation instead of the checkout under test.
+        The console script sits next to ``sys.executable``; if it is missing,
+        the same interpreter runs the module directly.
+        """
+        bin_dir = Path(sys.executable).parent
+        for name in ("unsloth", "unsloth.exe"):
+            candidate = bin_dir / name
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                head = [str(candidate)]
+                break
+        else:
+            head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
         return head + ["studio", "-H", "127.0.0.1", "-p", str(self.args.port)]
 
     def start_server(self) -> bool:
@@ -358,7 +436,12 @@ class Payload:
 
         cmd = self.studio_command()
         log(f"starting Studio: {' '.join(cmd)}")
-        handle = open(self.server_log, "wb")
+        # Append, never truncate. assert_chat_ui() restarts the server to
+        # re-seed the account, and a "wb" here threw away every backend log
+        # from the inference, training and export assertions before the
+        # evidence bundle was built -- so a GPU failure followed by the normal
+        # UI phase shipped an artifact containing only the UI session.
+        handle = open(self.server_log, "ab")
         self.proc = subprocess.Popen(
             cmd,
             cwd = str(self.repo_root),
@@ -372,7 +455,7 @@ class Payload:
             accept = health_is_ready,
             deadline_s = self.args.health_deadline,
             interval_s = 2.0,
-            alive = lambda: self.proc is not None and self.proc.poll() is None,
+            alive = self.server_alive,
         )
         detail: dict = {"health": last if isinstance(last, dict) else str(last)[:400]}
         failures = []
@@ -424,6 +507,9 @@ class Payload:
         except StudioError as exc:
             failures.append(str(exc))
         return self.record("authenticate", not failures, {"failures": failures})
+
+    def server_alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
 
     def stop_server(self) -> None:
         if self.proc is None or self.proc.poll() is not None:
@@ -510,6 +596,9 @@ class Payload:
 
         failures: list[str] = []
         status_body: dict = {}
+        # Everything already in the logs belongs to an EARLIER load. Only what
+        # is written past this mark is evidence about this one.
+        marks = log_marks(self.server_log, self.studio_home)
         try:
             self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
         except StudioError as exc:
@@ -523,11 +612,14 @@ class Payload:
         after = nvidia_used_mib()
         delta = None if (before is None or after is None) else after - before
 
-        server_pid = status_body.get("llama_server_pid") or status_body.get("pid")
+        # The status response declares no pid field, so the processes are
+        # discovered here instead. See llama_server_pids().
+        server_pids = llama_server_pids()
         verdict = offload_verdict(
-            server_pid = int(server_pid) if isinstance(server_pid, int) else None,
+            server_pid = None,
+            server_pids = server_pids,
             compute_apps = nvidia_compute_apps(),
-            log_text = studio_log_text(self.server_log, self.studio_home),
+            log_text = studio_log_text(self.server_log, self.studio_home, since = marks),
             device_vram_delta_mib = delta,
             status = status_body,
         )
@@ -548,7 +640,7 @@ class Payload:
             "variant": variant,
             "requested_gpu_layers": requested,
             "effective_gpu_layers": effective,
-            "llama_server_pid": server_pid,
+            "llama_server_pids": server_pids,
             "device_vram_delta_mib": None if delta is None else round(delta, 1),
             "evidence": verdict["evidence"],
             "positives": verdict["positives"],
@@ -696,10 +788,16 @@ class Payload:
             accept = _accept,
             deadline_s = self.args.train_deadline,
             interval_s = 5.0,
+            # A Studio that died mid-training answers every status request
+            # with an error, which wait_for retries -- for the whole 1200s
+            # deadline, out of a 70-minute session, before reporting it as
+            # slowness rather than as death.
+            alive = self.server_alive,
         )
         status = last if isinstance(last, dict) else {}
         detail["phase"] = status.get("phase")
         detail["steps_with_loss"] = trained_steps(status)
+        detail["nonfinite_losses"] = len(nonfinite_losses(status))
         detail["output_dir"] = (status.get("details") or {}).get("output_dir")
 
         if not ok:
@@ -710,9 +808,17 @@ class Payload:
             # `completed` is the worker's own bookkeeping. These two are the
             # run's output, and they are what a false green would have to
             # forge.
+            if detail["nonfinite_losses"]:
+                # A T4 has no bf16, so this trains in fp16, and an fp16 run
+                # that diverges still reaches `completed` and still saves an
+                # adapter. NaN is not a loss.
+                failures.append(
+                    f"{detail['nonfinite_losses']} of the logged losses are NaN or "
+                    f"infinite, so the run diverged rather than trained"
+                )
             if detail["steps_with_loss"] < self.args.max_steps:
                 failures.append(
-                    f"the run reported completed but logged a loss for only "
+                    f"the run reported completed but logged a finite loss for only "
                     f"{detail['steps_with_loss']} of {self.args.max_steps} steps, so it did "
                     f"not train what it claimed to"
                 )
@@ -865,6 +971,16 @@ class Payload:
             failures.append(f"export request failed: {exc}")
             detail["failures"] = failures
             return self.record("gguf_export", False, detail)
+        except OSError as exc:
+            # The route is blocking (routes/export.py awaits the whole export
+            # in a thread), and the transport timeout is SHORTER than the
+            # export deadline. A merge-convert-quantize that runs past it left
+            # the backend still working while this raised an unhandled
+            # TimeoutError and crashed the payload. The operation is in
+            # flight, not failed: fall through to the status poll, which
+            # already knows how to tell "finished" from "never started".
+            detail["export_request_timeout"] = f"{type(exc).__name__}: {exc}"
+            log(f"the export request timed out in transport ({type(exc).__name__}); still polling")
 
         terminal_reason = {"why": ""}
 
@@ -879,6 +995,7 @@ class Payload:
             accept = _accept,
             deadline_s = self.args.export_deadline,
             interval_s = 10.0,
+            alive = self.server_alive,
         )
         status = last if isinstance(last, dict) else {}
         detail["last_op_status"] = status.get("last_op_status")
@@ -1057,29 +1174,43 @@ class Payload:
         and the report always travel; screenshots only on failure, because on
         a pass they are megabytes nobody reads.
         """
-        buf = io.BytesIO()
-        with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
-            for name in ("studio_gpu_report.json", "playwright_chat_ui.log", "studio.log"):
-                path = self.outdir / name
-                if path.is_file():
-                    scrubbed = self.redacted(path)
-                    info = tarfile.TarInfo(name)
-                    info.size = len(scrubbed)
-                    tar.addfile(info, io.BytesIO(scrubbed))
-            if not passed:
-                for shot in sorted(self.art_dir.glob("*.png")):
-                    if buf.tell() > MAX_EVIDENCE_BYTES:
-                        break
-                    tar.add(shot, arcname = f"playwright/{shot.name}")
-        blob = buf.getvalue()
-        if len(blob) > MAX_EVIDENCE_BYTES:
-            log(f"evidence bundle is {len(blob)} bytes, over the cap; shipping logs only")
+        def _pack(*, with_screenshots: bool, log_tail_bytes: int | None = None) -> bytes:
             buf = io.BytesIO()
             with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
-                path = self.outdir / "studio_gpu_report.json"
-                if path.is_file():
-                    tar.add(path, arcname = "studio_gpu_report.json")
-            blob = buf.getvalue()
+                for name in ("studio_gpu_report.json", "playwright_chat_ui.log", "studio.log"):
+                    path = self.outdir / name
+                    if path.is_file():
+                        scrubbed = self.redacted(path)
+                        if (
+                            log_tail_bytes is not None
+                            and name != "studio_gpu_report.json"
+                            and len(scrubbed) > log_tail_bytes
+                        ):
+                            scrubbed = b"[earlier lines dropped to fit the evidence cap]\n" + (
+                                scrubbed[-log_tail_bytes:]
+                            )
+                        info = tarfile.TarInfo(name)
+                        info.size = len(scrubbed)
+                        tar.addfile(info, io.BytesIO(scrubbed))
+                if with_screenshots:
+                    for shot in sorted(self.art_dir.glob("*.png")):
+                        if buf.tell() > MAX_EVIDENCE_BYTES:
+                            break
+                        tar.add(shot, arcname = f"playwright/{shot.name}")
+            return buf.getvalue()
+
+        blob = _pack(with_screenshots = not passed)
+        if len(blob) > MAX_EVIDENCE_BYTES:
+            # Screenshots are what blow the cap, so screenshots are what goes.
+            # The earlier version rebuilt with the report ALONE while saying it
+            # was shipping logs, which discarded studio.log and
+            # playwright_chat_ui.log in exactly the failing runs that need
+            # them.
+            log(f"evidence bundle is {len(blob)} bytes, over the cap; shipping logs only")
+            blob = _pack(with_screenshots = False)
+        if len(blob) > MAX_EVIDENCE_BYTES:
+            log(f"the logs alone are {len(blob)} bytes; shipping their tails")
+            blob = _pack(with_screenshots = False, log_tail_bytes = MAX_LOG_TAIL_BYTES)
 
         encoded = base64.b64encode(blob).decode("ascii")
         chunks = [encoded[i : i + EVIDENCE_CHUNK] for i in range(0, len(encoded), EVIDENCE_CHUNK)]
@@ -1131,8 +1262,19 @@ class Payload:
             json.dumps(report, indent = 2), encoding = "utf-8"
         )
         self.stop_server()
+        # Evidence FIRST, then the report line. The launcher's extract_reports
+        # keeps the first report it sees for each label|model, so a crash in
+        # emit_evidence after a pass was printed published PASS and left the
+        # corrected failing report to be ignored.
+        try:
+            self.emit_evidence(report["passed"])
+        except Exception as exc:  # noqa: BLE001
+            self.failures.append(f"evidence packaging failed: {type(exc).__name__}: {exc}")
+            report = self.report()
+            (self.outdir / "studio_gpu_report.json").write_text(
+                json.dumps(report, indent = 2), encoding = "utf-8"
+            )
         print(RESULT_PREFIX + json.dumps(report), flush = True)
-        self.emit_evidence(report["passed"])
         return 0 if report["passed"] else 1
 
 

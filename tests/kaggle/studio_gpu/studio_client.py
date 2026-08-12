@@ -21,6 +21,7 @@ caller's job.
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -328,22 +329,40 @@ def adapter_verdict(output_dir: str | Path | None) -> tuple[bool, list[str], dic
     return not failures, failures, detail
 
 
+def _loss_values(status: Any) -> list:
+    if not isinstance(status, dict):
+        return []
+    history = status.get("metric_history")
+    if not isinstance(history, dict):
+        return []
+    losses = history.get("loss")
+    return losses if isinstance(losses, list) else []
+
+
+def _is_finite_loss(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def trained_steps(status: Any) -> int:
-    """How many steps the run actually logged a loss for.
+    """How many steps the run actually logged a USABLE loss for.
 
     A run can reach ``completed`` having trained nothing -- a dataset that
     formatted to zero usable rows is the way it happens -- and the phase alone
     does not say. The loss history does.
+
+    Non-finite entries do not count. A T4 has no bf16, so training runs in
+    fp16, and an fp16 run that diverges logs ``NaN`` or ``inf`` for every step
+    while still reaching ``completed`` and still saving an adapter. Those
+    entries are not ``None``, so counting mere list occupancy scored a
+    numerically broken run as a full-length one and turned the CUDA training
+    assertion green.
     """
-    if not isinstance(status, dict):
-        return 0
-    history = status.get("metric_history")
-    if not isinstance(history, dict):
-        return 0
-    losses = history.get("loss")
-    if not isinstance(losses, list):
-        return 0
-    return len([value for value in losses if value is not None])
+    return len([value for value in _loss_values(status) if _is_finite_loss(value)])
+
+
+def nonfinite_losses(status: Any) -> list:
+    """The logged losses that are NaN, infinite, or not a number at all."""
+    return [value for value in _loss_values(status) if not _is_finite_loss(value) and value is not None]
 
 
 def newest_gguf(root: str | Path) -> Path | None:

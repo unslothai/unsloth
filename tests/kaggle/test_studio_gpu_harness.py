@@ -24,6 +24,7 @@ import base64
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -1499,3 +1500,602 @@ def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     session.settled_baseline()
     assert session.studio.posts[0][1]["model_path"] == "only-here.gguf"
+
+
+# ------------------------------------------------- the evidence the launcher left
+#
+# The launcher collects each kernel into its own subdirectory, and the
+# workflow hands collect_evidence.py the parent. A non-recursive walk of that
+# parent finds nothing at all.
+
+
+def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp_path):
+    """launch.py::fetch_evidence writes kaggle_evidence/<slug>/..., and the
+    workflow passes kaggle_evidence. A top-level glob reported every real run
+    as having emitted no evidence at all."""
+    blob = _bundle({"studio_gpu_report.json": b'{"passed": false}'})
+    evidence = tmp_path / "kaggle_evidence" / "unsloth-t4-ci-deadbeef"
+    evidence.mkdir(parents = True)
+    (evidence / "kernel.log").write_text("\n".join(_chunk_lines(blob)), encoding = "utf-8")
+    outdir = tmp_path / "studio_evidence"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(CI_DIR / "collect_evidence.py"),
+            "--evidence",
+            str(tmp_path / "kaggle_evidence"),
+            "--outdir",
+            str(outdir),
+        ],
+        capture_output = True,
+        text = True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (outdir / "studio_gpu_report.json").read_bytes() == b'{"passed": false}'
+
+
+def test_a_nested_executed_notebook_is_read_too(tmp_path):
+    blob = _bundle({"studio.log": b"a log"})
+    nb = {
+        "cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}],
+    }
+    nested = tmp_path / "evidence" / "unsloth-t4-ci-1234"
+    nested.mkdir(parents = True)
+    (nested / "studio_gpu_output.ipynb").write_text(json.dumps(nb), encoding = "utf-8")
+    chunks, total = collect_evidence.collect_chunks(
+        collect_evidence.iter_text(tmp_path / "evidence")
+    )
+    assert total and len(chunks) == total
+
+
+# ------------------------------------------------------- a diverged training run
+
+
+def test_a_nan_loss_is_not_a_trained_step():
+    """A T4 has no bf16, so this trains in fp16, and an fp16 run that diverges
+    logs NaN for every step while still reaching `completed` and still saving
+    an adapter. Counting mere list occupancy scored that as a full run."""
+    status = {"metric_history": {"loss": [float("nan")] * 8}}
+    assert studio_client.trained_steps(status) == 0
+    assert len(studio_client.nonfinite_losses(status)) == 8
+
+
+def test_an_infinite_loss_is_not_a_trained_step():
+    status = {"metric_history": {"loss": [1.4, float("inf"), 0.9, None]}}
+    assert studio_client.trained_steps(status) == 2
+    assert studio_client.nonfinite_losses(status) == [float("inf")]
+
+
+def test_real_losses_still_count():
+    status = {"metric_history": {"loss": [2.0, 1.5, 1.1]}}
+    assert studio_client.trained_steps(status) == 3
+    assert studio_client.nonfinite_losses(status) == []
+
+
+# ------------------------------------------------------ which Studio gets started
+
+
+def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
+    """The payload runs under the Studio venv, whose bin is NOT on PATH. A
+    global `unsloth` anywhere on PATH would otherwise win shutil.which() and
+    the run would measure some other install instead of the checkout."""
+    module = _load_payload()
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents = True)
+    own = venv_bin / "unsloth"
+    own.write_text("#!/bin/sh\n", encoding = "utf-8")
+    own.chmod(0o755)
+
+    stray_bin = tmp_path / "stray"
+    stray_bin.mkdir()
+    stray = stray_bin / "unsloth"
+    stray.write_text("#!/bin/sh\n", encoding = "utf-8")
+    stray.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stray_bin))
+
+    session = _session(module, tmp_path, port = 18902)
+    monkeypatch.setattr(module.sys, "executable", str(venv_bin / "python"))
+    assert session.studio_command()[0] == str(own)
+
+
+def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path, monkeypatch):
+    module = _load_payload()
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents = True)
+    stray_bin = tmp_path / "stray"
+    stray_bin.mkdir()
+    stray = stray_bin / "unsloth"
+    stray.write_text("#!/bin/sh\n", encoding = "utf-8")
+    stray.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stray_bin))
+
+    session = _session(module, tmp_path, port = 18902)
+    monkeypatch.setattr(module.sys, "executable", str(venv_bin / "python"))
+    command = session.studio_command()
+    assert command[0] == str(venv_bin / "python")
+    assert command[1] == "-c"
+
+
+# ------------------------------------------------------- the llama-server pid
+
+
+def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
+    """InferenceStatusResponse declares no llama_server_pid and no pid, and
+    FastAPI drops what the response model does not declare, so that lookup was
+    always None and the process-level VRAM probe could never fire."""
+    import re
+
+    model_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    declared = set()
+    for cls in ("class InferenceStatusResponse", "class _InferenceRuntimeFields"):
+        block = model_src.split(cls, 1)[1].split("\nclass ", 1)[0]
+        declared |= set(re.findall(r"^    (\w+):", block, re.MULTILINE))
+    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    fn = payload_src.split("def load_model", 1)[1].split("\n    def ", 1)[0]
+    read = set(re.findall(r'status_body\.get\("(\w+)"\)', fn))
+    assert read <= declared, (
+        f"load_model reads {sorted(read - declared)}, which the inference status "
+        f"response does not declare"
+    )
+
+
+def test_a_discovered_llama_server_pid_is_enough_evidence():
+    verdict = gpu_assert.offload_verdict(
+        server_pid = None,
+        server_pids = [4242],
+        compute_apps = {4242: 2048},
+        log_text = "",
+        device_vram_delta_mib = None,
+        status = {},
+    )
+    assert verdict["passed"]
+    assert any("4242" in p for p in verdict["positives"])
+
+
+def test_a_discovered_pid_holding_nothing_is_still_not_evidence():
+    verdict = gpu_assert.offload_verdict(
+        server_pid = None,
+        server_pids = [4242],
+        compute_apps = {4242: 12},
+        log_text = "",
+        device_vram_delta_mib = None,
+        status = {},
+    )
+    assert not verdict["passed"]
+
+
+def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
+    module = _load_payload()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        executable = sys.executable,
+    )
+    try:
+        # Only the discovery mechanism is exercised here; the name match is
+        # what the real llama-server supplies.
+        assert isinstance(module.llama_server_pids(), list)
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+# ------------------------------------------- evidence belongs to the load it follows
+
+
+def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
+    """The exported-model reload used to inherit the chat model's
+    `offloaded 29/29` when its own load logged nothing, so the GPU check
+    passed on evidence from a different model."""
+    module = _load_payload()
+    server_log = tmp_path / "studio.log"
+    home = tmp_path / "home"
+    home.mkdir()
+    server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8")
+
+    marks = module.log_marks(server_log, home)
+    # The second load says nothing at all.
+    with open(server_log, "a", encoding = "utf-8") as fh:
+        fh.write("llama_server: listening\n")
+
+    scoped = module.studio_log_text(server_log, home, since = marks)
+    assert "offloaded" not in scoped
+    assert gpu_assert.offloaded_layers(scoped) is None
+    # And the whole file still reads back when nothing is scoped away.
+    assert "offloaded" in module.studio_log_text(server_log, home)
+
+
+def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
+    module = _load_payload()
+    server_log = tmp_path / "studio.log"
+    home = tmp_path / "home"
+    home.mkdir()
+    server_log.write_text("x" * 500, encoding = "utf-8")
+    marks = module.log_marks(server_log, home)
+    server_log.write_text("offloaded 7/7 layers to GPU\n", encoding = "utf-8")
+    assert "offloaded" in module.studio_log_text(server_log, home, since = marks)
+
+
+# ---------------------------------------------- the log across the UI restart
+
+
+def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, monkeypatch):
+    """assert_chat_ui() restarts Studio, and a truncating open threw away the
+    backend log of every GPU assertion before the evidence was packaged."""
+    module = _load_payload()
+    session = _session(
+        module,
+        tmp_path,
+        port = 18902,
+        health_deadline = 0.0,
+    )
+    session.outdir = tmp_path / "out"
+    session.outdir.mkdir()
+    session.server_log = session.outdir / "studio.log"
+    session.server_log.write_text("the first session's traceback\n", encoding = "utf-8")
+    session.proc = None
+    session.base_url = "http://127.0.0.1:18902"
+    session.studio = _FakeStudio({})
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **kw: _DeadProc())
+    monkeypatch.setattr(module, "wait_for", lambda **kw: (True, {}, ""))
+    session.start_server()
+    assert "the first session's traceback" in session.server_log.read_text()
+
+
+class _DeadProc:
+    def poll(self):
+        return None
+
+    def terminate(self):
+        return None
+
+    def wait(self, timeout = None):
+        return 0
+
+
+# ------------------------------------------------- an export that outlives its request
+
+
+def _export_session(module, tmp_path, studio):
+    session = _session(
+        module,
+        tmp_path,
+        export_timeout = 1.0,
+        export_deadline = 5.0,
+        quantization = "q8_0",
+        gpu_layers = 99,
+    )
+    session.outdir = tmp_path / "out"
+    session.outdir.mkdir()
+    session.server_log = session.outdir / "studio.log"
+    session.studio = studio
+    session.proc = _DeadProc()
+    return session
+
+
+class _ExportStudio:
+    """load-checkpoint fine, the gguf POST times out in transport, and the
+    export finishes on the backend regardless."""
+
+    def __init__(self, marker: Path):
+        self.marker = marker
+        self.polls = 0
+
+    def expect(self, method, path, body = None, **kw):
+        if path == "/api/export/export/gguf":
+            raise TimeoutError("the read timed out")
+        return {}
+
+    def get(self, path, **kw):
+        if path == "/api/export/status":
+            self.polls += 1
+            if self.polls < 2:
+                return 200, {"last_op_seq": 1, "is_export_active": True}
+            return 200, {
+                "last_op_seq": 2,
+                "is_export_active": False,
+                "last_op_status": "success",
+                "last_op_output_path": str(self.marker.parent),
+            }
+        return 200, {}
+
+
+def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monkeypatch):
+    """The route blocks for the whole export and the transport timeout is
+    shorter than the export deadline, so a slow quantize raised an unhandled
+    TimeoutError and crashed the payload instead of waiting for the result."""
+    module = _load_payload()
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    gguf = exports / "model.Q8_0.gguf"
+    gguf.write_bytes(b"GGUF" + b"\x00" * 64)
+    session = _export_session(module, tmp_path, _ExportStudio(gguf))
+    session.args.chat_timeout = 1.0
+    session.args.load_timeout = 1.0
+    monkeypatch.setattr(module, "llama_cpp_marker", lambda home: None)
+    monkeypatch.setattr(module, "install_kind", lambda marker: "cuda12")
+    monkeypatch.setattr(
+        module.Payload,
+        "load_model",
+        lambda self, path, *, variant, label: {"failures": [], "evidence": []},
+    )
+    monkeypatch.setattr(
+        module.Payload, "chat", lambda self, messages, **kw: (200, {"choices": [{"message": {"content": "hi"}}]})
+    )
+    ok = session.assert_gguf_export(str(tmp_path / "adapter"))
+    detail = session.assertions[-1]
+    assert "export_request_timeout" in detail, detail
+    assert ok, detail.get("failures")
+
+
+# ---------------------------------------------------- the oversized bundle
+
+
+def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
+    """The fallback used to rebuild with the report ALONE while its message
+    said it was shipping logs, discarding studio.log and the driver log in
+    exactly the failing runs that need them."""
+    module = _load_payload()
+    session = _session(module, tmp_path)
+    session.outdir = tmp_path / "out"
+    session.art_dir = session.outdir / "playwright"
+    session.art_dir.mkdir(parents = True)
+    session.server_log = session.outdir / "studio.log"
+    (session.outdir / "studio_gpu_report.json").write_text('{"passed": false}', encoding = "utf-8")
+    session.server_log.write_text("backend traceback\n", encoding = "utf-8")
+    (session.outdir / "playwright_chat_ui.log").write_text("driver log\n", encoding = "utf-8")
+    # A screenshot that will not compress, so the first pack blows the cap.
+    (session.art_dir / "01.png").write_bytes(os.urandom(3_000_000))
+
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **kw: printed.append(" ".join(map(str, a))))
+    session.emit_evidence(False)
+    encoded = "".join(
+        line.split(" ")[-1] for line in printed if line.startswith(module.EVIDENCE_PREFIX)
+    )
+    blob = base64.b64decode(encoded)
+    assert len(blob) <= module.MAX_EVIDENCE_BYTES
+    with tarfile.open(fileobj = io.BytesIO(blob), mode = "r:gz") as tar:
+        names = tar.getnames()
+        assert "studio.log" in names
+        assert "playwright_chat_ui.log" in names
+        assert "studio_gpu_report.json" in names
+
+
+# ------------------------------------------------- one report, and it is the last
+
+
+def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, monkeypatch):
+    """extract_reports keeps the FIRST report per label|model, so printing a
+    pass and then crashing published the pass and left the correction
+    unread."""
+    module = _load_payload()
+    session = _session(
+        module,
+        tmp_path,
+        label = "studio-gpu",
+        chat_model = "m",
+        chat_variant = None,
+        train_model = "t",
+        max_steps = 8,
+        quantization = "q8_0",
+        gpu_layers = 99,
+    )
+    session.outdir = tmp_path / "out"
+    session.outdir.mkdir()
+    session.server_log = session.outdir / "studio.log"
+    session.proc = None
+    session.started = 0.0
+
+    def _boom(passed):
+        raise OSError("the artifact could not be read")
+
+    monkeypatch.setattr(session, "emit_evidence", _boom)
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **kw: printed.append(" ".join(map(str, a))))
+    code = session.finish()
+    reports = [line for line in printed if line.startswith(module.RESULT_PREFIX)]
+    assert len(reports) == 1
+    published = json.loads(reports[0][len(module.RESULT_PREFIX) :])
+    assert published["passed"] is False
+    assert code == 1
+
+
+# ------------------------------------- an installer failure is a failure, not infra
+
+
+def _cell_source(driver: dict, needle: str) -> str:
+    for cell in _payload_notebook(driver)["cells"]:
+        source = "".join(cell["source"])
+        if needle in source:
+            return source
+    raise AssertionError(f"no generated cell contains {needle!r}")
+
+
+def test_a_failing_install_under_test_reports_a_failure_rather_than_infra(tmp_path):
+    """`install.sh --local` raising SystemExit left papermill with no
+    T4_SMOKE_REPORT, the launcher called that `infra` and the reporter exited
+    0 -- so this workflow passed exactly the installer regressions its path
+    filter selects for."""
+    driver = _build(tmp_path)
+    payload_source = _payload_source(driver)
+    fail_report_src = "def fail_report" + payload_source.split("def fail_report", 1)[1].split(
+        "\n\ndef ", 1
+    )[0]
+
+    emitted: list[str] = []
+    namespace = {"json": json, "print": lambda *a, **kw: emitted.append("".join(map(str, a)))}
+    exec(compile(fail_report_src, "<fail_report>", "exec"), namespace)
+
+    class _Result:
+        returncode = 1
+
+    namespace.update(
+        {
+            "sh": lambda *a, **kw: _Result(),
+            "REPO": tmp_path,
+            "STUDIO_HOME": tmp_path,
+            "pathlib": __import__("pathlib"),
+        }
+    )
+    with pytest.raises(SystemExit):
+        exec(compile(_cell_source(driver, "_install = sh("), "<install>", "exec"), namespace)
+
+    reports = [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
+    assert len(reports) == 1, emitted
+    report = json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])
+    assert report["passed"] is False
+    assert "install.sh" in report["failures"][0]
+
+
+def test_an_install_that_leaves_no_interpreter_is_also_a_failure(tmp_path):
+    driver = _build(tmp_path)
+    payload_source = _payload_source(driver)
+    fail_report_src = "def fail_report" + payload_source.split("def fail_report", 1)[1].split(
+        "\n\ndef ", 1
+    )[0]
+    emitted: list[str] = []
+    namespace = {"json": json, "print": lambda *a, **kw: emitted.append("".join(map(str, a)))}
+    exec(compile(fail_report_src, "<fail_report>", "exec"), namespace)
+
+    class _Result:
+        returncode = 0
+
+    namespace.update({"sh": lambda *a, **kw: _Result(), "REPO": tmp_path, "STUDIO_HOME": tmp_path})
+    with pytest.raises(SystemExit):
+        exec(compile(_cell_source(driver, "_install = sh("), "<install>", "exec"), namespace)
+    reports = [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
+    assert len(reports) == 1
+    assert json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])["passed"] is False
+
+
+def test_a_payload_that_hangs_past_the_driver_deadline_is_a_failure(tmp_path):
+    """papermill killed mid-assertion emitted no report at all, so a hang in
+    the code under test was filed as unavailable infrastructure."""
+    driver = _build(tmp_path)
+    runner = None
+    for cell in driver["cells"]:
+        source = "".join(cell["source"])
+        if "papermill" in source:
+            runner = source
+    assert runner is not None
+
+    emitted: list[str] = []
+
+    class _FakeSubprocess:
+        TimeoutExpired = subprocess.TimeoutExpired
+        STDOUT = subprocess.STDOUT
+
+        @staticmethod
+        def run(cmd, **kw):
+            kw["stdout"].write(
+                f"{build_kernel.PAYLOAD_SENTINEL} exec /usr/bin/python run_studio_gpu.py\n".encode()
+            )
+            kw["stdout"].flush()
+            raise subprocess.TimeoutExpired(cmd, 3900)
+
+    namespace = {
+        "WORK": tmp_path,
+        "os": os,
+        "sys": sys,
+        "time": __import__("time"),
+        "json": json,
+        "subprocess": _FakeSubprocess,
+        "print": lambda *a, **kw: emitted.append("".join(map(str, a))),
+    }
+    exec(compile(runner, "<runner>", "exec"), namespace)
+    reports = [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
+    assert len(reports) == 1, emitted
+    assert json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])["passed"] is False
+
+
+def test_a_timeout_before_the_payload_started_is_still_infra(tmp_path):
+    """A slow clone or install is Kaggle being slow, and must stay a no-report
+    infra outcome rather than turning a pull request red."""
+    driver = _build(tmp_path)
+    runner = [
+        "".join(c["source"]) for c in driver["cells"] if "papermill" in "".join(c["source"])
+    ][0]
+    emitted: list[str] = []
+
+    class _FakeSubprocess:
+        TimeoutExpired = subprocess.TimeoutExpired
+        STDOUT = subprocess.STDOUT
+
+        @staticmethod
+        def run(cmd, **kw):
+            kw["stdout"].write(b"cloning...\n")
+            raise subprocess.TimeoutExpired(cmd, 3900)
+
+    namespace = {
+        "WORK": tmp_path,
+        "os": os,
+        "sys": sys,
+        "time": __import__("time"),
+        "json": json,
+        "subprocess": _FakeSubprocess,
+        "print": lambda *a, **kw: emitted.append("".join(map(str, a))),
+    }
+    exec(compile(runner, "<runner>", "exec"), namespace)
+    assert not [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
+
+
+# ---------------------------------------------------------------- the gate flags
+
+
+def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
+    """This leg pushes ONE kernel and leaves the second T4 idle. The gate
+    defaults to two, and refuses unless that many slots are free."""
+    import re
+
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    gate = text.split("gate.py", 1)[1].split("\n\n", 1)[0]
+    assert re.search(r"^\s+--kernels 1 \\\s*$", gate, re.MULTILINE), gate
+    assert "--expect 1" in text
+
+
+def test_the_opt_in_label_can_actually_start_the_workflow():
+    """GitHub's default pull_request activity types are opened, synchronize
+    and reopened, so adding the advertised label started nothing."""
+    triggers = _triggers(_workflow())
+    assert "labeled" in triggers["pull_request"]["types"]
+    for default in ("opened", "synchronize", "reopened"):
+        assert default in triggers["pull_request"]["types"]
+
+
+class _LoadStudio:
+    def __init__(self, status_body):
+        self.status_body = status_body
+
+    def expect(self, method, path, body = None, **kw):
+        return {}
+
+    def get(self, path, **kw):
+        return 200, self.status_body
+
+    def post(self, path, body = None, **kw):
+        return 200, {}
+
+
+def test_load_model_does_not_inherit_the_previous_loads_offload_line(tmp_path, monkeypatch):
+    """The end-to-end shape of the scoping fix: a reload whose own load logged
+    nothing must not pass on the chat model's `offloaded 29/29`."""
+    module = _load_payload()
+    session = _session(module, tmp_path, load_timeout = 5.0, gpu_layers = 99)
+    session.outdir = tmp_path / "out"
+    session.outdir.mkdir()
+    session.server_log = session.outdir / "studio.log"
+    session.studio_home.mkdir(parents = True, exist_ok = True)
+    session.server_log.write_text(
+        "load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8"
+    )
+    session.studio = _LoadStudio({})
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
+    monkeypatch.setattr(module, "nvidia_compute_apps", lambda: {})
+    monkeypatch.setattr(module, "llama_server_pids", lambda: [])
+    monkeypatch.setattr(module.Payload, "settled_baseline", lambda self: None)
+
+    detail = session.load_model("exported.gguf", variant = None, label = "exported")
+    assert detail["positives"] == []
+    assert detail["failures"], "silence must be a failure, not the previous load's evidence"

@@ -240,6 +240,7 @@ def offload_verdict(
     log_text: str,
     device_vram_delta_mib: float | None,
     status: dict | None,
+    server_pids: list[int] | None = None,
 ) -> dict:
     """Was the model on the GPU? Returns a verdict dict with its evidence.
 
@@ -285,26 +286,34 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
+    # Studio's status body carries no pid, so the caller also discovers the
+    # llama-server processes itself; either source is accepted here.
+    candidates: list[int] = []
+    for pid in [server_pid, *(server_pids or [])]:
+        if isinstance(pid, int) and pid not in candidates:
+            candidates.append(pid)
+
     if compute_apps is None:
         evidence.append("nvidia-smi compute-apps: unreadable")
     elif not compute_apps:
         evidence.append("nvidia-smi compute-apps: no process listed")
-    elif server_pid is None:
+    elif not candidates:
         evidence.append(
             f"nvidia-smi compute-apps: {len(compute_apps)} process(es) listed, but "
-            f"Studio did not report a llama-server pid to match them against"
+            f"no llama-server pid was found to match them against"
         )
     else:
-        used = compute_apps.get(int(server_pid))
-        if used is None:
+        matched = {pid: compute_apps[pid] for pid in candidates if pid in compute_apps}
+        if not matched:
             evidence.append(
-                f"nvidia-smi compute-apps: llama-server pid {server_pid} is not among "
-                f"the {len(compute_apps)} process(es) holding GPU memory"
+                f"nvidia-smi compute-apps: llama-server pid(s) "
+                f"{', '.join(str(p) for p in candidates)} are not among the "
+                f"{len(compute_apps)} process(es) holding GPU memory"
             )
-        else:
-            evidence.append(f"nvidia-smi compute-apps: pid {server_pid} holds {used} MiB")
+        for pid, used in matched.items():
+            evidence.append(f"nvidia-smi compute-apps: pid {pid} holds {used} MiB")
             if used >= MIN_PROCESS_VRAM_MIB:
-                positives.append(f"llama-server pid {server_pid} holds {used} MiB of VRAM")
+                positives.append(f"llama-server pid {pid} holds {used} MiB of VRAM")
             else:
                 evidence.append(
                     f"that is below the {MIN_PROCESS_VRAM_MIB} MiB floor, so it is "
