@@ -134,7 +134,10 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         assert "the rest of the path is kept relative to the working directory" in full
         assert "replacing any file already sitting there" in full
         assert "only the base name is kept" in full
-        assert "fails outright if that name is taken" in full
+        # Measured: a DIFFERENT invented path with the same basename raises, but
+        # rewriting the SAME invented path is permitted via the remap sidecar.
+        assert "fails outright if that name is taken by an unrelated file" in full
+        assert "rewriting the same absolute path just replaces" in full
         # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
         # os.rename and os.symlink raise, and shutil.copy writes the rewritten
         # file through open and then raises in copymode.

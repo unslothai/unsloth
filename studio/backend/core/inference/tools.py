@@ -8988,7 +8988,10 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                              existing ./out.csv is overwritten
 #   python, any other missing parent -> the generic fallback keeps only the base
 #                              name, and declines (open raises) when that name is
-#                              already taken in the workdir
+#                              already taken in the workdir by an UNRELATED file.
+#                              The .unsloth_sandbox_remap.json sidecar carries the
+#                              healed mapping across calls, so rewriting the same
+#                              invented path re-serves its own target instead
 #   python, prefix present  -> a real /mnt/data mount is never shadowed, so a
 #                              prefix is only special while it is absent
 #   python, unpatched API   -> only open/io.open/os.open and the mkdir family are
@@ -9012,7 +9015,9 @@ _FULL_ACCESS_CLAUSE = {
         "/mnt/outputs, /tmp/outputs, /home/sandbox, /workspace) the rest of the "
         "path is kept relative to the working directory, replacing any file "
         "already sitting there; under any other missing directory only the base "
-        "name is kept, and the write fails outright if that name is taken. Both "
+        "name is kept, and the write fails outright if that name is taken by an "
+        "unrelated file, though rewriting the same absolute path just replaces "
+        "what your own earlier call left there. Both "
         "reach only open() and the mkdir calls, so os.rename, os.symlink and the "
         "like are never rewritten and simply fail, and a helper such as "
         "shutil.copy can write the rewritten file and still raise on a later "
