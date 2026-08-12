@@ -6474,7 +6474,7 @@ class TestRocmWslSupplyChainPins:
         assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
         # And whatever that pin (or a user's older checkout) supplies, a helper without the
         # pinned-source check is refused rather than trusted.
-        assert 'grep -q "LIBROCDXG_SHA" "$_rw_helper"' in body
+        assert 'grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper"' in body
         assert "predates the pinned-source check" in body
 
     def test_librocdxg_ref_is_pinned_and_verified_before_build(self):
@@ -6518,6 +6518,21 @@ class TestRocmWslSupplyChainPins:
             'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"'
             in install_sh
         )
+
+    def test_helper_contract_matches_what_install_sh_requires(self):
+        # install.sh runs only a helper declaring this contract, so the level it requires and
+        # the level the helper declares must move together, and the helper must actually
+        # implement both guarantees the level stands for.
+        install_sh = _INSTALL_SH_PATH.read_text(encoding="utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding="utf-8")
+        required = re.search(
+            r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh
+        )
+        declared = re.search(r"^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)$", helper, re.M)
+        assert required is not None and declared is not None
+        assert required.group(1) == declared.group(1)
+        assert "git rev-parse HEAD" in helper
+        assert "_co_failed=1" in helper
 
 
 if __name__ == "__main__":

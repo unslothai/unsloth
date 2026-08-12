@@ -3874,7 +3874,7 @@ _maybe_bootstrap_rocm_wsl() {
     # Bump this to the merge commit whenever the helper changes, so WSL users keep getting
     # the current helper. A lagging pin only means an older helper, never a broken install,
     # and the librocdxg pin below is forwarded so it applies to an older helper too.
-    _ROCM_WSL_HELPER_REF="d7e7bf32db4368e2ea6b4cc3cf7e3cfe0625591e"
+    _ROCM_WSL_HELPER_REF="d3367edd9a1de7a0ac15aa899bd9cb97173679dc"
     # librocdxg pin, forwarded to the helper. The ref IS the commit (v1.2.2), so an OLDER
     # fetched helper, which knows nothing about the SHA check, still lands on exactly this
     # revision: its `--branch <sha>` attempt fails, the full clone follows, and its checkout
@@ -3909,12 +3909,14 @@ _maybe_bootstrap_rocm_wsl() {
         fi
     fi
 
-    # Run ONLY a helper that carries the pinned-source check. One without it resolves the
-    # forwarded ref through `git checkout ... || true` and, if that commit ever stopped
-    # existing upstream, would fall through and build the repository's default HEAD as root.
-    # Refusing such a helper is what makes this path fail closed no matter which revision the
-    # pin above, or a user's older checkout, happens to supply.
-    if ! grep -q "LIBROCDXG_SHA" "$_rw_helper" 2>/dev/null; then
+    # Run ONLY a helper that declares the contract below (see the helper's own header):
+    # verifies the clone against the pinned SHA, and treats a checkout it could not resolve
+    # as fatal. A helper without it resolves the forwarded ref through `git checkout ...
+    # || true` and would build the repository's default HEAD as root once that ref stopped
+    # existing upstream. Requiring the declaration, rather than guessing from some string in
+    # the file, is what makes this path fail closed whatever the pin above or a user's older
+    # checkout happens to supply.
+    if ! grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper" 2>/dev/null; then
         substep "ROCm-on-WSL helper predates the pinned-source check; using CPU fallback." "$C_WARN"
         [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
         return 0
