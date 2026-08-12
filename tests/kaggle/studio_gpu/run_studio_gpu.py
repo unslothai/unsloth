@@ -698,9 +698,7 @@ class Payload:
         # install.sh" and "a CPU bundle after install.sh" are different bugs
         # and this step would hide the difference by fixing both. Recording the
         # prior state keeps the original question answerable.
-        detail["install_kind_before"] = install_kind(
-            install_dir / "UNSLOTH_PREBUILT_INFO.json"
-        )
+        detail["install_kind_before"] = install_kind(install_dir / "UNSLOTH_PREBUILT_INFO.json")
         env = dict(os.environ)
         env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
         # `run` already applies capture_output and text; passing them again is
