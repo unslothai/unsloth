@@ -113,26 +113,31 @@ logger = get_logger(__name__)
 
 
 class ImageGenerationPresetParams(BaseModel):
+    """Bounds track DiffusionGenerateRequest. A preset the generate endpoint would refuse is not
+    a usable preset: selecting it would make every following Generate fail validation."""
+
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = Field(default = "", max_length = 20_000)
-    width: int = Field(default = 1024, ge = 64, le = 8192)
-    height: int = Field(default = 1024, ge = 64, le = 8192)
-    steps: int = Field(default = 9, ge = 1, le = 500)
-    guidance: float = Field(default = 0, ge = 0, le = 100)
+    width: int = Field(default = 1024, ge = 256, le = 2048)
+    height: int = Field(default = 1024, ge = 256, le = 2048)
+    steps: int = Field(default = 9, ge = 1, le = 100)
+    guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
     runs: int = Field(default = 1, ge = 1, le = 128)
 
 
 class VideoGenerationPresetParams(BaseModel):
+    """Bounds track VideoGenerateRequest, as the image params track theirs."""
+
     model_config = ConfigDict(extra = "forbid")
 
     negativePrompt: str = Field(default = "", max_length = 20_000)
-    width: int = Field(default = 768, ge = 64, le = 8192)
-    height: int = Field(default = 512, ge = 64, le = 8192)
+    width: int = Field(default = 768, ge = 32, le = 2048)
+    height: int = Field(default = 512, ge = 32, le = 2048)
     durationSeconds: float = Field(default = 3, gt = 0, le = 3600)
-    steps: int = Field(default = 8, ge = 1, le = 500)
-    guidance: float = Field(default = 1, ge = 0, le = 100)
+    steps: int = Field(default = 8, ge = 1, le = 100)
+    guidance: float = Field(default = 1, ge = 0, le = 20)
     flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
 
@@ -221,6 +226,26 @@ def _readable(model: type[BaseModel], value: Any) -> Any:
     return readable
 
 
+def _validated_without_invalid_fields(schema: type[BaseModel], payload: dict) -> BaseModel:
+    """Validate, dropping only the fields that fail.
+
+    Resetting the whole recipe over one unreadable field would hand the client schema defaults,
+    which it then autosaves over the rest of a perfectly good stored recipe.
+    """
+    remaining = dict(payload)
+    while True:
+        try:
+            return schema.model_validate(remaining)
+        except ValidationError as exc:
+            invalid = {
+                error["loc"][0] for error in exc.errors() if error.get("loc")
+            } & remaining.keys()
+            if not invalid:
+                return schema()
+            for key in invalid:
+                remaining.pop(key, None)
+
+
 def _get_generation_preset_settings(kind, schema):
     stored = get_media_generation_preset_settings(kind)
     try:
@@ -240,10 +265,9 @@ def _get_generation_preset_settings(kind, schema):
         state = {
             key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
         }
-        try:
-            response = schema.model_validate({**state, "customPresets": readable})
-        except ValidationError:
-            response = schema(customPresets = readable)
+        response = _validated_without_invalid_fields(
+            schema, {**state, "customPresets": readable}
+        )
     response.saved = bool(stored)
     return response
 

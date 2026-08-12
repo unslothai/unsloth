@@ -257,6 +257,57 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
     assert body["currentParams"]["steps"] == 24
 
 
+def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
+    # The response is still "saved", so the client applies and autosaves it. Handing back schema
+    # defaults for a recipe that read fine would overwrite the stored one.
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "X" * 200,
+                "currentParams": {"steps": 24, "guidance": 3.5},
+                "customPresets": [{"name": "Keep", "params": {"steps": 20}}],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert body["activePreset"] == "Default"
+    assert body["currentParams"]["steps"] == 24
+    assert body["currentParams"]["guidance"] == 3.5
+    assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
+
+
+def test_preset_bounds_match_the_generation_request(monkeypatch):
+    # A preset the generate endpoint would refuse is not usable: selecting it would make every
+    # following Generate fail validation.
+    client = _client(monkeypatch)
+    for params in ({"steps": 500}, {"guidance": 100}, {"width": 8192}, {"height": 64}):
+        assert (
+            client.put(
+                "/api/settings/generation-presets/image/custom",
+                json = {"name": "Out of bounds", "params": params},
+            ).status_code
+            == 422
+        ), params
+    for params in ({"steps": 100}, {"guidance": 20}, {"width": 2048}, {"height": 256}):
+        assert (
+            client.put(
+                "/api/settings/generation-presets/image/custom",
+                json = {"name": "In bounds", "params": params},
+            ).status_code
+            == 200
+        ), params
+    assert (
+        client.put(
+            "/api/settings/generation-presets/video/custom",
+            json = {"name": "Video bounds", "params": {"steps": 500}},
+        ).status_code
+        == 422
+    )
+
+
 def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
     # The GET drops what this build cannot validate, so the state the client echoes back is lossy.
     # Opening the store with an older build must not cost the newer build its fields.

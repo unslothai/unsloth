@@ -2098,6 +2098,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current = null;
+        // Status owns the recipe from here, so the pick's claim on Default expires with it.
+        setPendingModelDefaults(null);
         // lastLoad.current already holds the now-resident pick, so drop its revert too.
         lastLoadRevert.current = null;
         return;
@@ -2257,6 +2259,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
+    // Wire Reapply to the resident model too, so an advanced-option reload works without
+    // re-picking. Only a full pipeline is reloadable by repo id alone; a resident GGUF/single_file
+    // carries no checkpoint filename, so leave the target null for those and the button hidden.
+    // Set before the recipe decision below: whether Reapply has a target is a separate question
+    // from whether the model's defaults should seed the form.
+    if (status?.model_kind === "pipeline") {
+      lastLoad.current = { repoId, kind: "pipeline" };
+    }
     // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
     // the first seed. Later resident changes still seed, as picking a model always has.
     if (!residentSeeded.current) {
@@ -2774,8 +2784,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
-    // Status is authoritative when another client replaced the resident model. The ref remains
-    // the fallback while this page's own load is committing and status has not caught up yet.
     const l = lastLoad.current;
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
   }, [handleLoad]);
