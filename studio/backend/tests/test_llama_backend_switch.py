@@ -446,6 +446,12 @@ def test_a_switch_and_an_update_cannot_run_at_once(monkeypatch, tmp_path):
 
 def test_backend_resolution_is_part_of_the_serialized_operation(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path)
+    with upd._job_lock:
+        upd._job.update(
+            state = upd._JOB_SUCCESS,
+            message = "old completed job",
+            finished_at = "2020-01-01T00:00:00Z",
+        )
     entered = threading.Event()
     release = threading.Event()
 
@@ -463,11 +469,16 @@ def test_backend_resolution_is_part_of_the_serialized_operation(monkeypatch, tmp
     assert entered.wait(timeout = 5)
 
     second = upd.start_update()
+    assert second["reason"] == "already_running"
+    assert second["job"]["state"] == "running"
+    assert second["job"]["operation"] == "switch"
+    assert second["job"]["requested_backend"] == "rocm"
+    assert second["job"]["finished_at"] is None
     release.set()
     thread.join(timeout = 5)
 
-    assert second["reason"] == "already_running"
     assert first["reason"] == "backend_unavailable"
+    assert first["job"]["state"] == "error"
     assert not upd._operation_lock.locked()
 
 

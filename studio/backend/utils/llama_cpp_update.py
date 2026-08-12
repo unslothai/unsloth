@@ -356,7 +356,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     return _merge_whisper_status(status, force_refresh = force_refresh)
 
 
-def _llama_only_status(*, force_refresh: bool = False) -> dict:
+def _llama_only_status(
+    *, force_refresh: bool = False, allow_source_probe_while_running: bool = False
+) -> dict:
     """The llama.cpp half of get_update_status (no whisper sub-status)."""
     binary = _find_binary()
     # A --with-llama-cpp-dir local link is the user's own tree; never offer to
@@ -373,7 +375,11 @@ def _llama_only_status(*, force_refresh: bool = False) -> dict:
     # Skipped while the updater swaps the tree: each 3s poll would exec the
     # half-replaced binary (on Windows that exec can make the installer's
     # os.replace fail) and the poller only consumes job progress.
-    if marker is None and binary is not None and not job_running:
+    if (
+        marker is None
+        and binary is not None
+        and (not job_running or allow_source_probe_while_running)
+    ):
         src = _source_build_status(binary, force_refresh = force_refresh)
         if src is not None:
             return src
@@ -806,7 +812,14 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
         # A switch replaces the backend at the same release.
-        status = {} if backend_request is not None else _llama_only_status(force_refresh = True)
+        status = (
+            {}
+            if backend_request is not None
+            else _llama_only_status(
+                force_refresh = True,
+                allow_source_probe_while_running = True,
+            )
+        )
         if backend_request is None and not status.get("update_available"):
             return {
                 "skip_reason": "up_to_date",
@@ -981,16 +994,43 @@ def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool)
         return {}
 
 
-def _claim_operation() -> bool:
-    """Reserve planning and installation without blocking status readers."""
-    if not _operation_lock.acquire(blocking = False):
-        return False
+def _claim_operation(backend_request: Optional[str]) -> bool:
+    """Reserve the operation and publish its planning state atomically."""
     with _job_lock:
-        running = _job["state"] == _JOB_RUNNING
-    if running:
-        _operation_lock.release()
-        return False
+        if not _operation_lock.acquire(blocking = False):
+            return False
+        if _job["state"] == _JOB_RUNNING:
+            _operation_lock.release()
+            return False
+        _job.update(_flow.new_job())
+        _job.update(
+            state = _JOB_RUNNING,
+            operation = "switch" if backend_request is not None else "update",
+            requested_backend = backend_request,
+            message = (
+                f"Checking the {backend_request} llama.cpp build..."
+                if backend_request is not None
+                else "Checking for llama.cpp updates..."
+            ),
+            progress = 0.0,
+            started_at = _utcnow(),
+        )
     return True
+
+
+def _finish_planning_refusal(reason: str, message: str) -> dict:
+    """Publish a terminal result for an operation that stopped during planning."""
+    succeeded = reason in {"up_to_date", "already_selected"}
+    with _job_lock:
+        _job.update(
+            state = _JOB_SUCCESS if succeeded else _JOB_ERROR,
+            message = message,
+            error = None if succeeded else message,
+            progress = 1.0 if succeeded else None,
+            finished_at = _utcnow(),
+        )
+        job = dict(_job)
+    return {"started": False, "reason": reason, "message": message, "job": job}
 
 
 def _run_claimed_job(phases: list[dict]) -> None:
@@ -1012,7 +1052,7 @@ def _run_claimed_job(phases: list[dict]) -> None:
 
 def _start_llama_job(backend_request: Optional[str] = None) -> dict:
     """Shared body of start_update() and start_backend_switch()."""
-    if not _claim_operation():
+    if not _claim_operation(backend_request):
         with _job_lock:
             return {
                 "started": False,
@@ -1035,16 +1075,10 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 published_repo = llama_spec["repo"],
             )
             if not resolved:
-                with _job_lock:
-                    job = dict(_job)
-                return {
-                    "started": False,
-                    "reason": "unresolved",
-                    "message": (
-                        "Could not verify the available llama.cpp backends. Try again online."
-                    ),
-                    "job": job,
-                }
+                return _finish_planning_refusal(
+                    "unresolved",
+                    "Could not verify the available llama.cpp backends. Try again online.",
+                )
             option = next(
                 (
                     entry
@@ -1059,16 +1093,10 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 or not option.get("available")
                 or (backend_request != "auto" and resolved_backend != backend_request)
             ):
-                with _job_lock:
-                    job = dict(_job)
-                return {
-                    "started": False,
-                    "reason": "backend_unavailable",
-                    "message": (
-                        f"No {backend_request} llama.cpp build is available for this machine."
-                    ),
-                    "job": job,
-                }
+                return _finish_planning_refusal(
+                    "backend_unavailable",
+                    f"No {backend_request} llama.cpp build is available for this machine.",
+                )
             marker = read_install_marker(_find_binary())
             if _resolved_selection_applied(marker, backend_request, option):
                 llama_plan = {
@@ -1086,10 +1114,8 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         if llama_spec is None and whisper_spec is None:
             # Nothing to run: answer with the llama refusal so the existing reasons
             # (local_link / up_to_date / already_selected / ...) keep their meaning.
-            refusal = dict(llama_plan["refusal"])
-            with _job_lock:
-                refusal["job"] = dict(_job)
-            return refusal
+            refusal = llama_plan["refusal"]
+            return _finish_planning_refusal(refusal["reason"], refusal["message"])
 
         whisper_run = None
         if whisper_spec is not None:
@@ -1157,18 +1183,8 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
 
         with _job_lock:
             _job.update(
-                state = _JOB_RUNNING,
-                operation = "switch" if backend_request is not None else "update",
-                requested_backend = backend_request,
                 message = starting_message,
                 from_tag = (llama_spec or {}).get("from_tag"),
-                to_tag = None,
-                reload_required = None,
-                error = None,
-                progress = 0.0,
-                started_at = _utcnow(),
-                finished_at = None,
-                phases = None,
             )
             job_snapshot = dict(_job)
 
@@ -1197,6 +1213,15 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             }
         handed_to_worker = True
         return {"started": True, "reason": None, "job": job_snapshot}
+    except Exception as exc:
+        with _job_lock:
+            _job.update(
+                state = _JOB_ERROR,
+                message = "Could not plan the llama.cpp install.",
+                error = str(exc),
+                finished_at = _utcnow(),
+            )
+        raise
     finally:
         if not handed_to_worker:
             _operation_lock.release()
