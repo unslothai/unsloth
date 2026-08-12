@@ -7145,6 +7145,23 @@ class LlamaCppBackend:
         if self._gguf_path_is_diffusion(gguf_path, model_identifier):
             raise ValueError(_VULKAN_DIFFUSION_GPU_IDS_ERROR)
 
+    @classmethod
+    def _non_chat_gguf_refusal_for_path(
+        cls, gguf_path: str, model_identifier: Optional[str]
+    ) -> Optional[str]:
+        """``_non_chat_gguf_refusal`` for a file on disk, WITHOUT touching the active
+        backend, so the refusal can be raised before Phase 1 tears the running model down.
+
+        Refusing after the teardown would still cost the user their resident chat model to
+        answer a question the header could have answered first, which is most of what this
+        preflight is for. Same probe-instance trick as ``_gguf_path_is_diffusion``: reading
+        the header into ``self`` here would overwrite the live model's metadata with a
+        file we are about to reject."""
+        probe = object.__new__(cls)
+        probe._model_identifier = model_identifier
+        probe._read_gguf_metadata(gguf_path)
+        return probe._non_chat_gguf_refusal(gguf_path)
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -8847,25 +8864,58 @@ class LlamaCppBackend:
         (
             "qwen_image",
             "flux",
-            "sd1",
-            "sdxl",
-            "sd3",
-            "aura",
-            "hidream",
             "lumina2",
         )
     )
-    # Text-to-video architectures. Split from the image set so the refusal names the
-    # Video page: sending someone with a Wan / LTX-2 GGUF to Images is a second dead end.
+    # Text-to-video architectures the Video page can actually offer. Split from the image
+    # set so the refusal names the Video page: sending someone with a Wan / LTX-2 GGUF to
+    # Images is a second dead end.
     _VIDEO_ARCHES = frozenset(
         (
-            "cosmos",
             "ltxv",
-            "hyvid",
             "wan",
         )
     )
-    _DIFFUSION_ARCHES = _IMAGE_ARCHES | _VIDEO_ARCHES
+    # Media archs Studio recognises but NO page can run, so the refusal must not promise
+    # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
+    # GGUFs ``image-diffusion-unsupported`` and thereby hides them from the Images picker
+    # AND the Video one -- naming either page sends the user to an empty list.
+    #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
+    #     every cosmos repo id and for override="cosmos"), and the cosmos GGUFs actually
+    #     published are Cosmos-Predict2-14B-Text2Image, an IMAGE model the Images page
+    #     cannot assemble either.
+    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the HunyuanVideo-1.5 GGUFs that
+    #     do map to one are still tagged unsupported by the picker (that family ships no
+    #     ``gguf_repo``), so no hyvid GGUF is selectable on the Video page today.
+    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": tagged unsupported for the same
+    #     reason on the image side. The Images page cannot assemble a pipeline around any
+    #     of them, so "use the Images page" was the same empty promise the video split was
+    #     opened to remove -- it just predates it.
+    # Kept inside _DIFFUSION_ARCHES: the pre-launch refusal still fires, it just stops
+    # naming a destination it cannot deliver. This set is the whole mirror rather than
+    # only the archs the video split moved, because a partial mirror leaves the identical
+    # dead end standing on the other half.
+    _UNRUNNABLE_MEDIA_ARCHES = frozenset(
+        (
+            "cosmos",
+            "hyvid",
+            "sd1",
+            "sd3",
+            "sdxl",
+            "aura",
+            "hidream",
+        )
+    )
+    _DIFFUSION_ARCHES = _IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
+
+    # Not architectures: the literal placeholders calcuis / gguf-org's "gguf-connector"
+    # writes into general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf
+    # and calcuis/cosmos-predict2-gguf both declare "pig"). ComfyUI-GGUF's loader special
+    # cases the same two strings -- ``if arch_str in [None, "pig", "cow"]`` -- and falls
+    # back to sniffing the tensor names. llama.cpp knows neither, so these GGUFs are just
+    # as unloadable as any other diffusion file; without this they slip past the arch sets
+    # and die in llama-server as the opaque failure this preflight exists to prevent.
+    _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
 
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
         """Why this GGUF cannot be a chat model, decided from its own header BEFORE
@@ -8893,7 +8943,18 @@ class LlamaCppBackend:
         if not getattr(self, "_gguf_header_parsed", False):
             return None
         arch = (self._architecture or "").strip().lower()
+        if arch in self._PLACEHOLDER_ARCHES:
+            # A placeholder that names no architecture at all: treat it exactly like a GGUF
+            # that declares none, so the name-based branch below still names a page.
+            arch = ""
         if arch:
+            if arch in self._UNRUNNABLE_MEDIA_ARCHES:
+                return (
+                    f"This is an image / video generation GGUF (architecture '{arch}'), "
+                    "which cannot run as a chat model. Unsloth Studio cannot run this "
+                    "architecture at all: neither the Images page nor the Video page "
+                    "accepts it."
+                )
             if arch in self._VIDEO_ARCHES:
                 return (
                     f"This is a text-to-video GGUF (architecture '{arch}'), which cannot "
@@ -9143,6 +9204,13 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
+            if arch in LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES:
+                return (
+                    f"'{arch}' is an image / video generation GGUF, which llama-server "
+                    "cannot run as a chat/completion model. Unsloth Studio cannot run "
+                    "this architecture at all: neither the Images page nor the Video "
+                    "page accepts it."
+                )
             if arch in LlamaCppBackend._VIDEO_ARCHES:
                 return (
                     f"'{arch}' is a text-to-video GGUF, which llama-server "
@@ -10407,6 +10475,23 @@ class LlamaCppBackend:
                 and self._gguf_path_is_diffusion(gguf_path, model_identifier)
             ):
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
+
+            # An image / video GGUF already on disk is refused HERE, before the teardown
+            # below: the header answers the question without llama-server, so there is no
+            # reason to make the user pay their resident chat model for it. A repo load
+            # cannot be settled this early (the file only exists after Phase 2), so that
+            # path is caught by the same check after the download instead.
+            if gguf_path and not hf_repo and Path(gguf_path).is_file():
+                _early_non_chat = self._non_chat_gguf_refusal_for_path(
+                    gguf_path, model_identifier
+                )
+                if _early_non_chat:
+                    logger.error(
+                        "Refusing non-chat GGUF before teardown: %s (%s)",
+                        _early_non_chat,
+                        gguf_path,
+                    )
+                    raise ValueError(_early_non_chat)
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             _replaying_cpu_fallback = intent.cpu_fallback

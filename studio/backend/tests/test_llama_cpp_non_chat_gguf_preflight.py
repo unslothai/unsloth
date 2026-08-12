@@ -146,3 +146,73 @@ def test_every_media_arch_is_refused_before_launch(tmp_path, arch):
     _, message = _refusal(tmp_path, arch = arch, name = f"{arch}.gguf")
     assert message is not None
     assert "cannot run as a chat model" in message
+
+
+def test_the_path_probe_does_not_touch_the_live_backend(tmp_path):
+    # The refusal has to run BEFORE Phase 1 kills the resident model, otherwise it still
+    # costs the user their chat model to answer a question the header already answered.
+    # Reading the header into `self` that early would overwrite the LIVE model's metadata
+    # with the file being rejected, so the pre-teardown probe uses its own instance.
+    live = LlamaCppBackend()
+    live._model_identifier = "unsloth/Qwen3-0.6B-GGUF"
+    live._architecture = "qwen3"
+    live._context_length = 40960
+    live._gguf_header_parsed = True
+
+    video = _write_gguf(tmp_path / "minimax_h3-Q2_K.gguf", arch = None)
+    message = LlamaCppBackend._non_chat_gguf_refusal_for_path(
+        str(video), "unsloth/MiniMax-H3-GGUF"
+    )
+    assert message is not None and "Video page" in message
+    # The resident model's metadata is untouched.
+    assert live._architecture == "qwen3"
+    assert live._context_length == 40960
+    assert live._model_identifier == "unsloth/Qwen3-0.6B-GGUF"
+
+
+def test_the_path_probe_agrees_with_the_instance_check(tmp_path):
+    # One verdict, two entry points: the pre-teardown probe and the post-download check
+    # must never disagree, or a load could be refused on one path and launched on the other.
+    for arch, name in (("llama", "chat.gguf"), ("flux", "flux.gguf"), ("ltxv", "ltx.gguf")):
+        gguf = _write_gguf(tmp_path / name, arch = arch)
+        backend = LlamaCppBackend()
+        backend._model_identifier = None
+        backend._read_gguf_metadata(str(gguf))
+        assert backend._non_chat_gguf_refusal(str(gguf)) == (
+            LlamaCppBackend._non_chat_gguf_refusal_for_path(str(gguf), None)
+        )
+
+
+def test_the_unrunnable_set_mirrors_the_canonical_one():
+    # Two places must not drift: routes.models tags these GGUFs
+    # image-diffusion-unsupported, which hides them from the Images AND Video pickers, so
+    # naming either page here would send the user to an empty list.
+    from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+
+    assert LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES == _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
+    # ...and a runnable set may never overlap it, or the destination is a promise again.
+    assert not (LlamaCppBackend._IMAGE_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
+    assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
+
+
+@pytest.mark.parametrize("arch", sorted(LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES))
+def test_an_unrunnable_media_arch_promises_no_page(tmp_path, arch):
+    _, message = _refusal(tmp_path, arch = arch, name = f"{arch}.gguf")
+    assert message is not None
+    # Refused, but WITHOUT being sent anywhere: no page can run these, so naming one is
+    # the empty promise the whole item was about.
+    assert "neither the Images page nor the Video page" in message
+    assert "Open it from the" not in message
+
+
+@pytest.mark.parametrize("repo", ["gguf-org/flux2-dev-gguf", "calcuis/cosmos-predict2-gguf"])
+def test_a_placeholder_architecture_still_refuses(tmp_path, repo):
+    # gguf-connector writes a literal "pig" into general.architecture rather than an
+    # architecture; measured on gguf-org/flux2-dev-gguf/flux2-dev-iq4_nl.gguf. llama.cpp
+    # knows no such arch, so without normalising it the file slips past every set and dies
+    # in llama-server as the opaque failure this preflight exists to prevent.
+    _, message = _refusal(
+        tmp_path, arch = "pig", name = "flux2-dev-iq4_nl.gguf", identifier = repo
+    )
+    assert message is not None
+    assert "cannot" in message

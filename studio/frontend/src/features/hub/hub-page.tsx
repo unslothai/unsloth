@@ -25,6 +25,7 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
@@ -1283,8 +1284,19 @@ export function ModelsPage() {
       // a llama.cpp load that could only fail ("llama-server failed to start") after evicting
       // whatever chat had resident, and dropped the user in a chat that could never answer.
       // Same destination and params the chat picker already routes its media picks to.
-      const mediaPage = studioPageForTask(selectedModel.pipelineTag);
-      if (mediaPage) {
+      // pipelineTag alone would never fire for the rows this is FOR: only CachedModelRepo
+      // carries it, so every cached GGUF repo (the reported MiniMax-H3 case included)
+      // reports its modality on `task` instead and would have gone to chat regardless.
+      // Same resolution the chat picker uses, so both surfaces route a pick identically.
+      const mediaPage = studioPageForTask(
+        taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
+      );
+      // A local row's runId is a filesystem path, and the target pages read a routed
+      // `model` as a Hub id (their own local branch splits directory + filename first),
+      // so a path sent through here would arrive as a repo that does not exist. Those keep
+      // today's route; the backend preflight now refuses them by name instead of letting
+      // llama-server fail opaquely.
+      if (mediaPage && selectedModel.kind !== "local") {
         void navigate({
           to: `/${mediaPage}`,
           // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
