@@ -28,8 +28,12 @@ import storage.studio_db as studio_db
 def client(monkeypatch):
     store: dict = {}
 
-    monkeypatch.setattr(studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback))
-    monkeypatch.setattr(studio_db, "upsert_app_settings", lambda values: store.update(values) or store)
+    monkeypatch.setattr(
+        studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback)
+    )
+    monkeypatch.setattr(
+        studio_db, "upsert_app_settings", lambda values: store.update(values) or store
+    )
 
     app = FastAPI()
     app.include_router(settings.router)

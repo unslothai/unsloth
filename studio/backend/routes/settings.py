@@ -502,7 +502,6 @@ def update_last_local_model(
     payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
 ) -> LastLocalModelResponse:
     from storage.studio_db import upsert_app_settings
-
     upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump()})
     return LastLocalModelResponse(**payload.model_dump())
 
