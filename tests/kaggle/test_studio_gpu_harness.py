@@ -1157,6 +1157,11 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
     assert len(recorded) == 1
     assert recorded[0]["llama_cpp_install_kind"] == "linux-cuda"
+    # install.sh --local claims to put a llama.cpp on disk. Recording what
+    # was there first is what keeps "install.sh installed nothing" and
+    # "install.sh installed a CPU bundle" distinguishable once this step
+    # fixes both.
+    assert "install_kind_before" in recorded[0]
 
 
 def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_path, monkeypatch):
