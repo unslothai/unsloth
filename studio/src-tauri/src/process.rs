@@ -1107,6 +1107,8 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_WHISPER_CPP_PATH",
     "LLAMA_SERVER_PATH",
     "WHISPER_SERVER_PATH",
+    "SD_CLI_PATH",
+    "SD_SERVER_PATH",
     "MLX_HOSTFILE",
     "OLLAMA_MODELS",
     "DG_VISUAL_BIN",
@@ -1120,8 +1122,12 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HUGGINGFACE_HUB_CACHE",
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
+    "HF_ASSETS_CACHE",
+    "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
     "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
 ];
 
 /// Whether a value already names a directory of its own.
