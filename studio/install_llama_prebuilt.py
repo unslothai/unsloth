@@ -171,9 +171,8 @@ def install_kinds_for_backend(backend: str | None) -> frozenset[str]:
     """Every install_kind that satisfies a request for ``backend``."""
     if not backend:
         return frozenset()
-    return frozenset(
-        kind for kind, value in INSTALL_KIND_BACKENDS.items() if value == backend
-    )
+    return frozenset(kind for kind, value in INSTALL_KIND_BACKENDS.items() if value == backend)
+
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
 # elevation (its manifest is asInvoker), so this is just harmless belt-and-
@@ -5989,9 +5988,7 @@ def persisted_llama_backend(llama_backend: str | None, choice: AssetChoice) -> s
     return llama_backend
 
 
-def persisted_marker_backend_request(
-    backend_request: str | None, choice: AssetChoice
-) -> str:
+def persisted_marker_backend_request(backend_request: str | None, choice: AssetChoice) -> str:
     """The backend choice to record for an install that landed ``choice``.
 
     Same rule as persisted_llama_backend, generalized: record the request only when
@@ -7031,9 +7028,7 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
     )
 
 
-def _backend_only_attempts(
-    attempts: Iterable[AssetChoice], backend: str
-) -> list[AssetChoice]:
+def _backend_only_attempts(attempts: Iterable[AssetChoice], backend: str) -> list[AssetChoice]:
     """Drop the generic fallbacks a plan appends, keeping only ``backend`` bundles."""
     kinds = install_kinds_for_backend(backend)
     return [attempt for attempt in attempts if attempt.install_kind in kinds]
@@ -7056,9 +7051,7 @@ def _backend_only_release_plans(
         if attempts:
             filtered.append(dataclasses_replace(plan, attempts = attempts))
     if not filtered:
-        raise BackendUnavailable(
-            f"no {backend} prebuilt bundle attempts were available"
-        )
+        raise BackendUnavailable(f"no {backend} prebuilt bundle attempts were available")
     return filtered
 
 
@@ -7098,10 +7091,7 @@ def _route_to_vulkan_prebuilt(
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
-        detecting
-        and host.has_intel_gpu
-        and not host.has_physical_nvidia
-        and not host.has_rocm
+        detecting and host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     )
     if force_cpu or not (forced or auto_intel or auto_no_hip):
         return host, published_repo, published_release_tag, None
@@ -7479,6 +7469,7 @@ def install_prebuilt(
                 log(
                     f"no existing llama.cpp install detected at {install_dir}; performing fresh prebuilt install"
                 )
+
             # Single resolver: every fork host selects from the release manifest;
             # an explicit ggml-org override selects by asset filename instead. A
             # Vulkan host is rewritten above so either resolver takes its Vulkan
@@ -7568,21 +7559,18 @@ def install_prebuilt(
             persist_rocm_gfx = selection.persist_rocm_gfx
             persist_backend_request = backend
 
-            def _record_reused_selection(
-                plan: InstallReleasePlan, reused: AssetChoice
-            ) -> None:
+            def _record_reused_selection(plan: InstallReleasePlan, reused: AssetChoice) -> None:
                 """Update selection fields when the existing bundle is reused."""
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
                     backend_request = persist_backend_request,
                     persist_force_cpu = persist_force_cpu,
-                    persist_llama_backend = persisted_llama_backend(
-                        persist_llama_backend, reused
-                    ),
+                    persist_llama_backend = persisted_llama_backend(persist_llama_backend, reused),
                     ggml_tree = recorded_ggml_tree(plan.approved_checksums, reused),
                     rocm_gfx = persist_rocm_gfx,
                 )
+
             if release_plans and existing_install_matches_plan(install_dir, host, release_plans[0]):
                 current = release_plans[0]
                 if diffusion_visual_server_backfill_needed(install_dir, host, current.attempts[0]):
@@ -8132,9 +8120,7 @@ def main() -> int:
             resolve_backends_payload(
                 args.resolve_backends,
                 args = args,
-                install_dir = (
-                    Path(args.install_dir).expanduser() if args.install_dir else None
-                ),
+                install_dir = (Path(args.install_dir).expanduser() if args.install_dir else None),
             ),
             output_format = args.output_format,
         )

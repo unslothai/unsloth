@@ -30,7 +30,15 @@ MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
 
 class _FakeInstallerPopen:
-    def __init__(self, cmd, *, on_start = None, returncode = 0, lines = None, **kwargs):
+    def __init__(
+        self,
+        cmd,
+        *,
+        on_start = None,
+        returncode = 0,
+        lines = None,
+        **kwargs,
+    ):
         if on_start is not None:
             on_start(list(cmd), kwargs)
         self.pid = 424242
@@ -47,13 +55,16 @@ class _FakeInstallerPopen:
         pass
 
 
-def _patch_installer(monkeypatch, *, on_start = None, returncode = 0):
+def _patch_installer(
+    monkeypatch,
+    *,
+    on_start = None,
+    returncode = 0,
+):
     monkeypatch.setattr(
         upd.subprocess,
         "Popen",
-        lambda cmd, **kw: _FakeInstallerPopen(
-            cmd, on_start = on_start, returncode = returncode, **kw
-        ),
+        lambda cmd, **kw: _FakeInstallerPopen(cmd, on_start = on_start, returncode = returncode, **kw),
     )
 
 
@@ -164,9 +175,7 @@ def test_a_switch_names_the_backend_and_keeps_the_installed_release(monkeypatch,
 def test_a_switch_clears_an_inherited_vulkan_pin(monkeypatch, tmp_path):
     # A legacy environment override must not defeat the switch.
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
-    install_dir = _install(
-        monkeypatch, tmp_path, backend = "vulkan", backend_request = "vulkan"
-    )
+    install_dir = _install(monkeypatch, tmp_path, backend = "vulkan", backend_request = "vulkan")
     seen: dict = {}
     _patch_installer(
         monkeypatch,
@@ -234,9 +243,7 @@ def test_unavailable_backend_is_refused_before_the_runtime_is_unloaded(monkeypat
         upd,
         "_resolve_backends_for_host",
         lambda install_dir, **kwargs: {
-            "backends": [
-                {"backend": "vulkan", "available": False, "resolved_backend": None}
-            ]
+            "backends": [{"backend": "vulkan", "available": False, "resolved_backend": None}]
         },
     )
     installer_started = False
@@ -260,11 +267,7 @@ def test_switch_preflight_uses_the_install_recorded_repository(monkeypatch, tmp_
 
     def _resolve(install_dir, **kwargs):
         seen.update(kwargs)
-        return {
-            "backends": [
-                {"backend": "cpu", "available": False, "resolved_backend": None}
-            ]
-        }
+        return {"backends": [{"backend": "cpu", "available": False, "resolved_backend": None}]}
 
     monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve)
 
@@ -274,9 +277,7 @@ def test_switch_preflight_uses_the_install_recorded_repository(monkeypatch, tmp_
     assert seen["published_repo"] == "owner/custom-llama"
 
 
-def test_switch_fails_if_the_installer_does_not_record_the_requested_backend(
-    monkeypatch, tmp_path
-):
+def test_switch_fails_if_the_installer_does_not_record_the_requested_backend(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
     _patch_installer(monkeypatch)
 
@@ -355,9 +356,7 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
         # is not the one it calls.
         upd,
         "latest_release_assets",
-        lambda repo, force_refresh = False: {
-            "app-b9596-mix-abc-linux-x64-cuda12.tar.gz": 1234
-        },
+        lambda repo, force_refresh = False: {"app-b9596-mix-abc-linux-x64-cuda12.tar.gz": 1234},
     )
 
     status = upd.get_backend_status()
@@ -377,9 +376,7 @@ def test_status_surfaces_an_environment_pin(monkeypatch, tmp_path):
     # Surface environment overrides instead of accepting an ineffective choice.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "vulkan")
     _install(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        upd, "_resolve_backends_for_host", lambda install_dir, **kwargs: {}
-    )
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", lambda install_dir, **kwargs: {})
 
     status = upd.get_backend_status()
 
@@ -399,9 +396,7 @@ def test_status_says_why_an_unmanaged_install_cannot_be_switched(monkeypatch, tm
 def test_status_degrades_when_the_options_cannot_be_resolved(monkeypatch, tmp_path):
     # Offline status keeps the installed backend without guessing alternatives.
     _install(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        upd, "_resolve_backends_for_host", lambda install_dir, **kwargs: None
-    )
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", lambda install_dir, **kwargs: None)
 
     status = upd.get_backend_status()
 

@@ -474,9 +474,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         except Exception as exc:
             failure = phase.get("failure_message") or f"{name} update failed."
             if phase.get("affects_job_reload", True):
-                reload_required = reload_required or bool(
-                    getattr(exc, "reload_required", False)
-                )
+                reload_required = reload_required or bool(getattr(exc, "reload_required", False))
             with job_lock:
                 job["phases"][name].update(state = PHASE_ERROR, error = str(exc))
                 for later in phases[index + 1 :]:

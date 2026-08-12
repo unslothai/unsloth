@@ -229,8 +229,7 @@ async def llama_backend_status(
 
 @router.post("/backend", response_model = LlamaUpdateActionResponse)
 async def llama_backend_switch(
-    request: LlamaBackendRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
 ) -> LlamaUpdateActionResponse:
     """Install the llama.cpp build for another backend and record the choice.
 

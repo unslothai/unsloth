@@ -3985,9 +3985,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     # 5, which is 2 plus a reason -- the backend the run named publishes no bundle
     # for this host, which a source build of the detected backend still answers.
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
-    assert (
-        'elif [ "$_PREBUILT_STATUS" -eq 2 ] || [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
-    )
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ] || [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
 
     ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
     ps_else = ps_block[ps_block.rindex("} else {") :]
@@ -4455,9 +4453,7 @@ def _sync_ggml_tree(install_dir, tree):
         ({"backend_request": "vulkan"}, "linux-vulkan", "backend_request", "vulkan"),
     ],
 )
-def test_marker_sync_survives_a_read_only_marker(
-    tmp_path, kwargs, install_kind, field, expected
-):
+def test_marker_sync_survives_a_read_only_marker(tmp_path, kwargs, install_kind, field, expected):
     """A shared or admin-owned install must not fail setup on a marker rewrite.
 
     Re-recording the run's selection (force_cpu, the legacy backend field, the

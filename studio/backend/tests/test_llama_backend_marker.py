@@ -60,9 +60,7 @@ def test_both_read_the_same_choice_from_a_marker(tmp_path, marker):
     (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"release_tag": "b1", **marker}), encoding = "utf-8"
     )
-    assert backend_marker.marker_backend_request(marker) == ilp.persisted_backend_request(
-        tmp_path
-    )
+    assert backend_marker.marker_backend_request(marker) == ilp.persisted_backend_request(tmp_path)
 
 
 def test_the_install_kind_maps_are_identical():
@@ -86,7 +84,6 @@ def test_the_api_offers_exactly_the_requestable_backends():
 
 def test_the_api_can_report_an_unreadable_newer_backend_request():
     from routes.llama import LlamaBackendStatusResponse
-
     response = LlamaBackendStatusResponse(backend_request = None)
 
     assert response.backend_request is None

@@ -342,13 +342,26 @@ def test_a_detected_install_records_its_backend_but_no_choice(tmp_path):
 # ── Applying a request to an install ──
 
 
-def _stub_selection(monkeypatch, *, available, install_kind = "linux-cuda"):
+def _stub_selection(
+    monkeypatch,
+    *,
+    available,
+    install_kind = "linux-cuda",
+):
     """Record which backend the install path asked for, and answer for it."""
     seen = []
     # Avoid the unrelated DiffusionGemma backfill download.
     monkeypatch.setattr(ilp, "diffusion_visual_server_backfill_needed", lambda *a, **k: False)
 
-    def _select(*, backend, llama_tag, published_repo, published_release_tag, route = None, **_):
+    def _select(
+        *,
+        backend,
+        llama_tag,
+        published_repo,
+        published_release_tag,
+        route = None,
+        **_,
+    ):
         seen.append(backend)
         if backend in available:
             plan = ilp.InstallReleasePlan(
@@ -385,9 +398,7 @@ def test_an_install_applies_the_choice_its_marker_recorded(monkeypatch, tmp_path
     assert seen == ["vulkan"]
 
 
-def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(
-    monkeypatch, tmp_path
-):
+def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkeypatch, tmp_path):
     # Re-detect after hardware invalidates a stored choice.
     seen = _stub_selection(monkeypatch, available = {"auto"})
     monkeypatch.setattr(ilp, "existing_install_matches_plan", lambda *a, **k: True)

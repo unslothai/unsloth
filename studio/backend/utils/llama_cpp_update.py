@@ -74,6 +74,7 @@ class _LlamaPhaseError(RuntimeError):
         super().__init__(message)
         self.reload_required = reload_required
 
+
 # Background job state. Single in-flight update at a time, guarded by _job_lock.
 _JOB_IDLE = _flow.JOB_IDLE
 _JOB_RUNNING = _flow.JOB_RUNNING
@@ -425,7 +426,9 @@ _backends_memo: dict = {}
 
 
 def _resolve_backends_for_host(
-    install_dir: Optional[Path], *, force_refresh: bool = False,
+    install_dir: Optional[Path],
+    *,
+    force_refresh: bool = False,
     published_repo: Optional[str] = None,
 ) -> Optional[dict]:
     """Ask the installer which backends it could install here. None on any failure."""
@@ -678,9 +681,7 @@ def _run_llama_phase(
                 reload_required = model_was_active,
             ) from exc
         logger.warning("llama update: failed", error = str(exc))
-        raise _LlamaPhaseError(
-            str(exc), reload_required = model_was_active
-        ) from exc
+        raise _LlamaPhaseError(str(exc), reload_required = model_was_active) from exc
     except Exception as exc:
         logger.warning("llama update: failed", error = str(exc))
         if isinstance(exc, _LlamaPhaseError):
@@ -791,8 +792,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         #
         # Switch only the backend. Slim whisper bundles require this exact release.
         installed_release_tag = marker.get("release_tag") or marker.get("tag")
-        wanted_tag = installed_release_tag if backend_request is not None else status.get(
-            "latest_tag"
+        wanted_tag = (
+            installed_release_tag if backend_request is not None else status.get("latest_tag")
         )
         pin_release_tag = None if sys.platform == "darwin" else wanted_tag
     elif backend_request is not None:
@@ -961,9 +962,9 @@ def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool)
     re-pair with the new backend for a switch. Fail-open to a skip either way, so
     whisper can never block llama."""
     if backend_request is None:
-        return _whisper_chain_status(
-            force_refresh = True, paired_llama_will_update = llama_will_run
-        ) or {}
+        return (
+            _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
+        )
     if not llama_will_run:
         return {}
     try:

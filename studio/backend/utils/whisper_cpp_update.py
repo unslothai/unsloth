@@ -407,6 +407,7 @@ def _installed_llama_backend() -> Optional[str]:
         from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
         from utils.llama_cpp_update import _find_binary as find_llama_binary
         from utils.prebuilt.llama_backend import marker_backend
+
         return marker_backend(read_llama_marker(find_llama_binary()))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("whisper repair: llama backend lookup failed", error = str(exc))
@@ -498,6 +499,7 @@ def _install_latest_while_blocked_with_maintenance(phase: dict, set_progress) ->
         try:
             from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
             from utils.llama_cpp_update import _find_binary as find_llama_binary
+
             llama_marker = read_llama_marker(find_llama_binary()) or {}
             asset = llama_marker.get("asset") or asset
         except Exception as exc:  # pragma: no cover - defensive
