@@ -1034,8 +1034,32 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
 
-    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
+    assert own.exists()
+    # Nothing here is Studio's to delete, so the refusal must not ask for anything to be removed.
+    # The old wording ended with "remove that directory" whatever the binary was, and PATH
+    # discovery hands this branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
+    assert "remove" not in str(excinfo.value)
+    assert str(own) in str(excinfo.value)
+
+
+def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatch, tmp_path):
+    # The one case where deleting IS the fix: an unmarked build sitting in a layout the installer
+    # writes to. It is not ours to unlink (install() refuses a non-empty unmarked target), but
+    # emptying the directory by hand lets the next load put the pinned prebuilt there.
+    root = tmp_path / "studio" / "stable-diffusion.cpp"
+    own = root / "sd-cli"
+    root.mkdir(parents = True)
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "managed_install_root", lambda: root)
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
+        bk.ensure_h3_sd_cpp_binary()
+    assert f"remove {root}" in str(excinfo.value)
     assert own.exists()
 
 
