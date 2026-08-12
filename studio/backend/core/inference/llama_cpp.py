@@ -5141,6 +5141,20 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _host_torch_is_rocm() -> bool:
+        """Whether torch on this host is a ROCm build, without the caller having
+        to import torch itself. False when torch is missing or unreadable.
+
+        Cheap guard for paths that only mean something on ROCm, so a CUDA or
+        CPU-only host is not made to pay for the work (#7624).
+        """
+        try:
+            import torch
+            return LlamaCppBackend._torch_is_rocm(torch)
+        except Exception:
+            return False
+
+    @staticmethod
     def _rocm_unified_memory_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM.
 
@@ -10935,6 +10949,11 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                # Set when the ROCm arch gate emptied a non-empty GPU pool, so the
+                # env block below masks the child onto the CPU. Bound before the
+                # try for the same reason as _detected_gpus: the except path
+                # (--fit on) falls through to the launch, which reads it.
+                _arch_gate_forced_cpu = False
                 total_by_idx: dict[int, int] = {}
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
@@ -10956,11 +10975,50 @@ class LlamaCppBackend:
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).
                     # Pass binary so a Vulkan build probes ggml's Vulkan ordinals.
-                    # The ROCm arch gate applies to automatic placement only: an
-                    # explicit pin is the user's call and keeps its own error
-                    # (dropping it here would silently fail open to a different
-                    # card, since an empty selection re-widens to the full pool).
+                    # The ROCm arch gate applies to automatic placement only.
+                    # Gating an explicit pin would cost more than it buys: the
+                    # picker filter below would leave `gpus` empty, so the fit and
+                    # the layer plan never run and the launch is forced onto
+                    # `--fit on` -- while `gpu_indices` is restored from `gpu_ids`
+                    # further down either way, so the pin still happens. An
+                    # explicitly pinned uncovered GPU is the user's own call and
+                    # today reports its own clear "device kernel image is invalid",
+                    # which beats a silently degraded plan for the same launch.
                     _gpu_mem = self._get_gpu_memory(binary, for_llama_server = not gpu_ids)
+                    # Every present device gated out (#7624). The gated probe is
+                    # empty while the ungated one is not, so this host's cards are
+                    # ALL uncovered by the installed prebuilt. Left alone, the
+                    # launch takes the `--fit on` arm with `gpu_indices` still
+                    # None, so no visibility mask is written, the child still
+                    # enumerates every unsupported card and dies exactly as #7624
+                    # describes -- and the reactive arch-crash retry cannot help,
+                    # since its guard needs a truthy `gpu_indices`. CPU is the one
+                    # placement that runs here, so mask the child onto it
+                    # (mirroring the zero-offload block below). Auto placement on
+                    # a ROCm host only; the ROCm guard also keeps CUDA and
+                    # CPU-only hosts, where an empty probe just means "no GPU",
+                    # from paying for a second probe.
+                    if (
+                        not gpu_ids
+                        and not _gpu_mem
+                        and not is_vulkan_backend
+                        and self._host_torch_is_rocm()
+                    ):
+                        _ungated = self._get_gpu_memory(binary)
+                        if _ungated:
+                            _arch_gate_forced_cpu = True
+                            _arch_by_id = self._rocm_arch_by_physical_id()
+                            _present = ", ".join(
+                                f"{idx} ({_arch_by_id.get(idx) or 'unknown arch'})"
+                                for idx, _free, _total in _ungated
+                            )
+                            logger.warning(
+                                "The installed llama.cpp build has no kernels for "
+                                "any GPU on this host (%s), so inference falls back "
+                                "to CPU. Reinstall llama.cpp for these devices to "
+                                "get GPU inference back.",
+                                _present,
+                            )
                     if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
                         _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
@@ -12797,7 +12855,12 @@ class LlamaCppBackend:
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins. Not on Vulkan
                 # (nor DC below): gpu_indices are ggml ordinals, not CUDA/ROCm ids.
+                # Ownership, not presence: the arch-crash retry below withdraws
+                # this only when THIS launch set it, so an inherited or deliberate
+                # user value is never clobbered.
+                _unified_env_applied = False
                 if not is_vulkan_backend and self._amd_apu_wants_unified_memory(gpu_indices):
+                    _unified_env_applied = "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
@@ -12829,7 +12892,12 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
-                if _cpu_only_zero_offload:
+                # The ROCm arch gate emptying the pool lands here for the same
+                # reason (#7624): the only device set this binary can launch on is
+                # none of them, so the child must not see the unsupported cards it
+                # would otherwise enumerate and abort on. gpu_indices is None on
+                # that path, so this is the branch that gets to write the mask.
+                if _cpu_only_zero_offload or _arch_gate_forced_cpu:
                     self._emit_child_gpu_visibility(env, "-1")
                 elif gpu_indices is not None and not is_vulkan_backend:
                     # When the user picked GPUs by index, align CUDA's ordering
@@ -13251,8 +13319,12 @@ class LlamaCppBackend:
                     and self._kernel_image_invalid("\n".join(self._stdout_lines[-80:]))
                 ):
                     _crashed = sorted(set(gpu_indices))
+                    # _detected_gpus, not gpus: it is the post-picker enumeration
+                    # this launch actually planned against, and unlike `gpus` it
+                    # survives the manual mode that empties the pool to bypass the
+                    # planner. Same rule the surrounding region already states.
                     _remaining = self._arch_crash_retry_gpu_ids(
-                        gpu_indices, [i for i, _free in gpus]
+                        gpu_indices, [i for i, _free in _detected_gpus]
                     )
                     if _remaining:
                         logger.warning(
@@ -13263,6 +13335,21 @@ class LlamaCppBackend:
                         )
                         self._kill_process()
                         gpu_indices = _remaining
+                        # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the
+                        # CRASHED device set. The canonical #7624 shape crashes on
+                        # the APU and retries on the dGPU, where that env is what
+                        # _amd_apu_wants_unified_memory's own docstring calls
+                        # harmful. Withdraw it for the respawn -- but only the
+                        # value this launch set, so a deliberate user one stands.
+                        if _unified_env_applied and not self._amd_apu_wants_unified_memory(
+                            _remaining
+                        ):
+                            env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
+                            _unified_env_applied = False
+                            logger.info(
+                                "Arch-crash retry targets discrete GPU(s); dropped "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY for the respawn."
+                            )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
                         )

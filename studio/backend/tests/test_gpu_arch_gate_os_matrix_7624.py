@@ -793,6 +793,7 @@ def _run_auto_load(
     *,
     returncode = 1,
     output = "",
+    env_extra = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the
     real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -826,7 +827,10 @@ def _run_auto_load(
     backend.probe_server_capabilities = lambda _binary: {"found": True}
     backend._record_server_pid = lambda _pid: None
     backend._clear_server_pid = lambda: None
-    backend._llama_server_env_for_binary = lambda _binary: {"PATH": os.environ.get("PATH", "")}
+    # env_extra seeds the child env the way an inherited / user-set variable
+    # would, so "did THIS launch set it" can be told from "it was already there".
+    _base_env = {"PATH": os.environ.get("PATH", ""), **(env_extra or {})}
+    backend._llama_server_env_for_binary = lambda _binary: dict(_base_env)
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
     )
@@ -919,13 +923,16 @@ class TestEveryDeviceUncoveredDownstream:
         # and that enumeration can segfault on the unsupported card.
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
-    def test_all_uncovered_leaves_the_child_unmasked(self, tmp_path, monkeypatch, probe_env):
-        """The observable outcome of dropping every device: placement sees no
-        GPU, so it pins nothing and asks llama.cpp to fit by itself -- and the
-        unsupported cards are still visible to the child. It is NOT a clean CPU
-        degradation (no ``--device none``, no ``-ngl 0``) and NOT a traceback or
-        a hang: the child launches, and on real hardware would crash exactly as
-        #7624 describes."""
+    def test_all_uncovered_degrades_to_cpu(self, tmp_path, monkeypatch, probe_env):
+        """Every device gated out must mask the child onto the CPU (#7624).
+
+        Before this, the empty pool left ``gpu_indices`` None, the launch took
+        the ``--fit on`` arm, the pin block never ran, and NO HIP/ROCR/CUDA mask
+        was written -- so the child still enumerated both unsupported cards and
+        died exactly as #7624 reports. The reactive arch-crash retry could not
+        save it either: its guard needs a truthy ``gpu_indices``. CPU is the only
+        placement that runs on this host, so the mask is the fix.
+        """
         _apply_os(monkeypatch, "linux", is_rocm = True)
         torch = _fake_torch(
             [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
@@ -940,8 +947,144 @@ class TestEveryDeviceUncoveredDownstream:
             output = "ROCm error: device kernel image is invalid",
         )
         assert len(launches) == 1, "the arch-crash retry cannot fire without a pinned set"
-        cmd, env = launches[0]
+        _cmd, env = launches[0]
+        # "-1" keeps the HIP spelling: the sentinel has no portable ROCR form.
+        assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
+
+    def test_all_uncovered_names_the_devices_in_the_warning(self, tmp_path, monkeypatch, probe_env):
+        """The CPU fallback is a large, silent-looking performance cliff, so the
+        log has to say why: which devices are present, and that the installed
+        build covers none of them (#7624)."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        # structlog, so the stdlib caplog fixture cannot see these records.
+        warnings = []
+        monkeypatch.setattr(
+            llama_cpp.logger,
+            "warning",
+            lambda msg, *a, **kw: warnings.append(msg % a if a else msg),
+        )
+        _run_auto_load(monkeypatch, tmp_path, torch, GFX120X, returncode = 1)
+        _hits = [w for w in warnings if "falls back to CPU" in w]
+        assert len(_hits) == 1, warnings
+        assert "0 (gfx1030)" in _hits[0] and "1 (gfx1036)" in _hits[0]
+
+    def test_partial_coverage_never_reaches_the_cpu_fallback(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The normal #7624 host (one covered card) must be untouched by the CPU
+        fallback: it still pins the survivor, and never pays for the second,
+        ungated probe the fallback needs to tell "all gated out" from "no GPU"."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        _ungated = []
+        _real = LlamaCppBackend._get_gpu_memory
+
+        def _spy(binary = None, *, for_llama_server = False):
+            if not for_llama_server:
+                _ungated.append(binary)
+            return _real(binary, for_llama_server = for_llama_server)
+
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_spy))
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None)
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+        assert _ungated == [], "a covered device was found; the ungated re-probe is dead weight"
+
+    def test_cuda_host_with_no_gpu_does_not_reprobe(self, tmp_path, monkeypatch, probe_env):
+        """The GPU-less path is the common case, so the ROCm guard has to come
+        BEFORE the ungated re-probe: on a CUDA or CPU-only host an empty probe
+        just means "no GPU", and probing again would cost every such load."""
+        _apply_os(monkeypatch, "linux", is_rocm = False)
+        torch = _fake_torch([], vendor = "nvidia")
+        _probes = []
+        _real = LlamaCppBackend._get_gpu_memory
+
+        def _spy(binary = None, *, for_llama_server = False):
+            _probes.append(for_llama_server)
+            return _real(binary, for_llama_server = for_llama_server)
+
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_spy))
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX110X, returncode = None)
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        # No mask at all: this is an ordinary CPU load, not the gated fallback.
         assert _visibility(env) == {}
-        assert "--device" not in cmd
-        assert "-ngl" not in cmd and "--gpu-layers" not in cmd
-        assert cmd[cmd.index("--fit") + 1] == "on", "placement left the fit to llama.cpp"
+        assert _probes == [True], "the ungated re-probe must not run off ROCm"
+
+
+class TestArchCrashRetryEnv:
+    """What the arch-crash respawn inherits from the crashed launch (#7624).
+
+    The canonical shape: the shared-pool APU outranks the dGPU, is pinned, and
+    llama-server dies with "device kernel image is invalid"; the retry moves to
+    the discrete card. Mock-based -- there is no ROCm here.
+    """
+
+    def _apu_then_dgpu(self, monkeypatch):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1030", free_mib = 12049),
+            ],
+            vendor = "amd",
+        )
+
+    def test_retry_on_a_discrete_card_drops_unified_memory_env(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """GGML_CUDA_ENABLE_UNIFIED_MEMORY is decided for the CRASHED set. Left
+        in place, the respawn on the dGPU keeps env that
+        _amd_apu_wants_unified_memory's own docstring says hurts discrete GPUs."""
+        torch = self._apu_then_dgpu(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+        )
+        # The APU is pinned first, so the crashed spawn carries the env; the
+        # respawns are the ones masked onto the discrete card. (The unrelated
+        # --fit off retry spawns each launch twice; select by the mask, not by
+        # position.)
+        assert launches[0][1].get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env for env in _retry)
+
+    def test_a_user_set_unified_memory_value_survives_the_retry(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The first spawn uses setdefault, so a value already in env is the
+        user's. Popping unconditionally would clobber it; ownership is tracked
+        instead, and only a value this launch set is withdrawn."""
+        torch = self._apu_then_dgpu(monkeypatch)
+        monkeypatch.setenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            env_extra = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
+        )
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
