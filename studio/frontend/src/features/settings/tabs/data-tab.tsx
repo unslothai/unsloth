@@ -38,6 +38,7 @@ import {
   nativeImportSource,
   fileImportSource,
   type ImportSource,
+  notifyChatProjectsUpdated,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -68,6 +69,11 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import {
+  type CursorImportStatus,
+  importCursorChats,
+  loadCursorImportStatus,
+} from "../api/cursor-import";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import { ArchivedMediaView } from "../components/archived-media-dialog";
 import { ManageChatsView } from "../components/manage-chats-view";
@@ -113,6 +119,12 @@ export function DataTab() {
   const { archivedItems } = useChatSidebarItems({ requireMessages: false });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // Null until the probe answers, and while it says Cursor has nothing here:
+  // the row only appears for a machine that has conversations to bring over.
+  const [cursorStatus, setCursorStatus] = useState<CursorImportStatus | null>(
+    null,
+  );
+  const [cursorImporting, setCursorImporting] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
@@ -204,6 +216,14 @@ export function DataTab() {
 
   useEffect(() => {
     void countAllChats().then(setCount);
+  }, []);
+
+  useEffect(() => {
+    // No Cursor, no route, no permission: all the same answer, which is that
+    // there is nothing to offer.
+    void loadCursorImportStatus()
+      .then((status) => setCursorStatus(status.available ? status : null))
+      .catch(() => setCursorStatus(null));
   }, []);
 
   const handleExport = async () => {
@@ -315,6 +335,35 @@ export function DataTab() {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
       });
+    }
+  };
+
+  const handleImportFromCursor = async () => {
+    setCursorImporting(true);
+    try {
+      const result = await importCursorChats();
+      // The sidebar and the project list read their own caches, so both are
+      // told rather than left showing a pre-import Studio.
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      setCursorStatus(await loadCursorImportStatus().catch(() => cursorStatus));
+      toast.success(
+        result.chats === 0
+          ? t("settings.chat.importCursorNoChats")
+          : result.newChats === 0
+            ? t("settings.chat.cursorUpToDate")
+            : result.newChats === 1
+              ? t("settings.chat.importedCursorOneChat")
+              : t("settings.chat.importedCursorChatCount", {
+                  count: result.newChats,
+                }),
+      );
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCursorImporting(false);
     }
   };
 
@@ -922,6 +971,32 @@ export function DataTab() {
             }}
           />
         </SettingsRow>
+
+        {cursorStatus ? (
+          <SettingsRow
+            label={t("settings.chat.importFromCursor")}
+            description={t("settings.chat.importFromCursorDescription")}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleImportFromCursor()}
+              disabled={cursorImporting}
+            >
+              {cursorImporting ? (
+                <Spinner className="size-3.5 mr-1.5" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Upload01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+              )}
+              {cursorImporting
+                ? t("settings.chat.importingAction")
+                : t("settings.chat.importChatsAction")}
+            </Button>
+          </SettingsRow>
+        ) : null}
       </div>
 
       <SettingsSection title={t("settings.data.filesSection")}>

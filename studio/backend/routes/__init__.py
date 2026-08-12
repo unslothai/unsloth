@@ -16,6 +16,7 @@ from routes.data_recipe import router as data_recipe_router
 from routes.export import router as export_router
 from routes.training_history import router as training_history_router
 from routes.chat_history import router as chat_history_router
+from routes.cursor_import import router as cursor_import_router
 from routes.providers import router as providers_router
 
 from routes.openai_codex_auth import router as openai_codex_auth_router
@@ -36,6 +37,7 @@ __all__ = [
     "export_router",
     "training_history_router",
     "chat_history_router",
+    "cursor_import_router",
     "providers_router",
     "openai_codex_auth_router",
     "mcp_servers_router",
