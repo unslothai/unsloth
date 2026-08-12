@@ -113,15 +113,10 @@ pub struct NativeIntakeState {
     lease_secret: Vec<u8>,
 }
 
-/// Per process, and deliberately not persisted.
-///
-/// A key on disk would be shared with a backend this process did not spawn,
-/// which is the only way an ADOPTED survivor could verify what we sign -- but it
-/// also outlives every backend restart, and the backend only remembers spent
-/// nonces in memory, so a consumed lease could be replayed against a replacement
-/// process inside the two minute TTL. The adopted case is handled where it
-/// belongs instead: the preflight reports that leases are unusable and the UI
-/// greys the picker, rather than the app holding a long-lived signing key.
+/// Per process, and deliberately not persisted: a key on disk outlives every
+/// backend restart, and spent nonces are only remembered in memory, so a
+/// consumed lease could be replayed against a replacement inside the TTL. The
+/// adopted-survivor case is answered by `native_path_leases_usable` instead.
 pub fn new_native_intake_state() -> NativeIntakeState {
     NativeIntakeState {
         inner: Mutex::new(NativeIntakeInner::default()),

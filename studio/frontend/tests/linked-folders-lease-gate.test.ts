@@ -117,10 +117,8 @@ test("the health bit alone does not enable the picker inside the app", () => {
 });
 
 test("an adopted backend keeps running and only loses lease-backed actions", () => {
-  // The earlier shape made an adopted survivor Stale, and owned_stale routes
-  // through startRepair(), which stops the backend and runs a network update.
-  // That is a heavy remedy for a key mismatch, and it fails offline, so the
-  // survivor is left alone and the capability is reported instead.
+  // owned_stale routes through startRepair(), which runs a network update, so a
+  // key mismatch must not force one: report the capability, leave it running.
   assert.ok(
     !PREFLIGHT.includes("native_path_lease_secret_not_persisted") &&
       !PREFLIGHT.includes("native_path_lease_secret_not_shared"),
