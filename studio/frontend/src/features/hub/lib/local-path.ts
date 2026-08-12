@@ -16,8 +16,8 @@ export function localPathCacheKey(path: string | null | undefined): string {
 
 /** Whether a selected row can be routed to the Images / Video pages, which resolve a routed
  * `model` as a Hub id. Only a FILESYSTEM row cannot: an HF-cache row is a complete Hub
- * snapshot that inventory dedup can leave as the only row for its repo, and it carries the
- * repo id, so excluding it by kind alone dropped it into a chat the backend then refuses. */
+ * snapshot carrying the repo id, and inventory dedup can leave it as the only row for that
+ * repo, so excluding it by kind alone dropped it into a chat the backend then refuses. */
 export function routableToMediaPage(
   kind: "discover" | "cache" | "local",
   localSource: string | null | undefined,

@@ -35,10 +35,9 @@ test("does not classify Hugging Face repository identifiers as paths", () => {
 });
 
 test("an HF-cache row routes to the media pages, a filesystem row does not", () => {
-  // Inventory dedup can leave a complete hf_cache LOCAL row as the only row for a repo
-  // (use-models-selection drops the partial cached row beside it), and that row carries the
-  // Hub id. Excluding it by kind sent a diffusion GGUF to the chat loader, where the backend
-  // refuses it, instead of to Images or Video.
+  // Inventory dedup can leave a complete hf_cache LOCAL row as the only row for a repo, and
+  // it carries the Hub id. Excluding it by kind sent a diffusion GGUF to the chat loader,
+  // where the backend refuses it, instead of to Images or Video.
   assert.equal(routableToMediaPage("local", "hf_cache"), true);
   assert.equal(routableToMediaPage("local", "models_dir"), false);
   assert.equal(routableToMediaPage("local", "lmstudio"), false);

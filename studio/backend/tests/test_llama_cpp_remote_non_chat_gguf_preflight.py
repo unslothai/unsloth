@@ -3,14 +3,13 @@
 
 """CPU-only unit tests for the non-chat GGUF refusal on a REPO load.
 
-The local-file refusal already runs before Phase 1. A repo load did not: the file only
-exists after Phase 2, so the check fired at the end and the user's resident chat model had
-already been killed for a load that was never going to start. That is the path the Model
-Hub actually takes -- /load carries one opaque model_path and the route resolves every Hub
-model to hf_repo -- so it was the reported case, not an API-only corner.
+The local-file refusal already runs before Phase 1; a repo load did not, because the file
+only exists after Phase 2, so the resident chat model had already been killed for a load
+that was never going to start. That is the path the Model Hub takes (the route resolves
+every Hub model to hf_repo), so it was the reported case, not an API-only corner.
 
-The fix decides it from a header-sized byte range instead of the download. Measured over
-the Hub, media GGUFs finish their KV walk in 144-3,987 bytes while a chat model's
+The fix decides it from a header-sized byte range instead of the download. Measured over the
+Hub, media GGUFs finish their KV walk in 144-3,987 bytes while a chat model's
 tokenizer.ggml.tokens array pushes its KV block past 5 MB, so a 256 KiB prefix is decisive
 for the first and truncated for the second -- and truncated means no verdict, which is the
 direction it has to fail in.
@@ -39,8 +38,8 @@ def _gguf_bytes(
     declared_kv: int | None = None,
 ) -> bytes:
     """A GGUF header as BYTES. ``declared_kv`` overstates the KV count without writing the
-    pairs, which is exactly the shape a byte-range prefix of a chat model has: the counts
-    say more is coming and the buffer ends first."""
+    pairs -- the shape a byte-range prefix of a chat model has: the counts say more is
+    coming and the buffer ends first."""
     body = b""
     kv_count = 0
     if arch is not None:
@@ -105,8 +104,8 @@ def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, p
 
 
 def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
-    # gguf-connector writes a literal "pig"; the probe must normalise it the same way the
-    # on-disk check does, or a 20 GB flux2 download still costs the resident model.
+    # gguf-connector writes a literal "pig"; the probe must normalise it like the on-disk
+    # check does, or a 20 GB flux2 download still costs the resident model.
     message, _ = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = "pig"),
@@ -118,8 +117,8 @@ def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
 
 
 def test_the_filename_survives_into_the_verdict(monkeypatch):
-    # With no general.architecture the page is named off the file name, so the prefix has
-    # to be spooled under the REAL name and not a temp one.
+    # With no general.architecture the page is named off the file name, so the prefix is
+    # spooled under the REAL name and not a temp one.
     message, _ = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = None),
@@ -130,8 +129,8 @@ def test_the_filename_survives_into_the_verdict(monkeypatch):
 
 
 def test_an_ambiguous_arch_is_resolved_from_the_real_filename(monkeypatch):
-    # A shared architecture is resolved from the repo id and the FILE NAME, which is the
-    # other reason the prefix is spooled under its real name rather than a temp one.
+    # A shared architecture is resolved from the repo id and the FILE NAME: the other reason
+    # the prefix is spooled under its real name.
     if not getattr(LlamaCppBackend, "_AMBIGUOUS_IMAGE_ARCHES", None):
         pytest.skip("no ambiguous image archs on this build")
     message, _ = _probe(
@@ -154,8 +153,8 @@ def test_a_chat_repo_gguf_is_not_refused(monkeypatch):
 
 def test_a_prefix_cut_mid_kv_yields_no_verdict(monkeypatch):
     # The chat-model case for real: 256 KiB of a 5.9 MB KV block. The counts promise 32
-    # pairs, one arrives, the buffer ends. _gguf_header_parsed stays False, so the probe
-    # must NOT read "declares no architecture" out of a read that simply stopped early.
+    # pairs, one arrives, the buffer ends. _gguf_header_parsed stays False, so "declares no
+    # architecture" must not be read out of a read that simply stopped early.
     message, _ = _probe(monkeypatch, header = _gguf_bytes(arch = "llama", declared_kv = 32))
     assert message is None
 
@@ -206,8 +205,8 @@ def test_a_probe_that_raises_yields_no_verdict(monkeypatch):
 
 
 def test_a_cached_copy_is_read_off_disk_instead_of_the_hub(monkeypatch, tmp_path):
-    # A file already in the cache answers this with no request at all, which is also the
-    # only way the verdict survives an unreachable Hub.
+    # A cached file answers this with no request, the only way the verdict survives an
+    # unreachable Hub.
     cached = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     message, requests = _probe(
@@ -224,8 +223,8 @@ def test_a_cached_copy_is_read_off_disk_instead_of_the_hub(monkeypatch, tmp_path
 
 
 def test_the_remote_probe_agrees_with_the_other_two_entry_points(tmp_path, monkeypatch):
-    # Three entry points, one verdict. A load refused on one path and launched on another
-    # is the drift this preflight cannot afford.
+    # Three entry points, one verdict: otherwise a load is refused on one path and launched
+    # on another.
     for arch, name in (("llama", "chat.gguf"), ("flux", "flux.gguf"), ("ltxv", "ltx.gguf")):
         header = _gguf_bytes(arch = arch)
         gguf = tmp_path / name
@@ -244,8 +243,7 @@ def test_the_repo_refusal_sits_above_the_teardown_in_source():
     remote = src.index("self._remote_non_chat_gguf_refusal(")
     teardown = src.index("# ── Phase 1: kill old process")
     assert remote < teardown
-    # And the post-download check stays as the backstop for everything the probe fails
-    # open on.
+    # And the post-download check stays as the backstop for what the probe fails open on.
     assert src.index("non_chat = self._non_chat_gguf_refusal(model_path)") > teardown
 
 
@@ -291,8 +289,7 @@ def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypa
 
 
 def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
-    # The other half: a prefix the probe cannot finish must not become a refusal, and the
-    # load has to carry on exactly as before.
+    # A prefix the probe cannot finish must not become a refusal: the load carries on.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -321,8 +318,8 @@ def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
 
 
 def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_path):
-    # When a GPU-pin preflight already fetched the file, the exact verdict is free -- and
-    # that path used to skip the refusal entirely.
+    # When a GPU-pin preflight already fetched the file the verdict is free, and that path
+    # used to skip the refusal entirely.
     media = tmp_path / "flux1-dev-Q4_K_S.gguf"
     media.write_bytes(_gguf_bytes(arch = "flux"))
     backend = LlamaCppBackend()
@@ -355,11 +352,10 @@ def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_
 
 
 def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_path):
-    # _download_gguf resolves its local copy through cached_gguf_for_load, which walks the
-    # cached variant candidates, and only then falls back to the current listing's filename.
-    # The probe has to use the same order: a repo that renamed the file for a quant while a
-    # complete older snapshot is still cached would otherwise let the probe judge one GGUF
-    # and the load open another, which is exactly the drift this preflight rules out.
+    # _download_gguf resolves its local copy through cached_gguf_for_load and only then
+    # falls back to the listing's filename. The probe uses the same order: a repo that
+    # renamed the file for a quant while a complete older snapshot is cached would otherwise
+    # let the probe judge one GGUF and the load open another.
     cached = tmp_path / "renamed-ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     stale = tmp_path / "listing-Q4_K_M.gguf"
@@ -390,11 +386,10 @@ def test_the_probe_falls_back_to_the_listing_when_nothing_is_cached(monkeypatch,
 
 
 def test_a_refused_load_leaves_the_resident_process_state_alone(monkeypatch):
-    # The refusal spares the resident server, so it has to spare what describes it too.
-    # Resetting the launch revision on the way past would say the live process launched
-    # from the binary installed NOW, so an Apply after `unsloth studio update` would dedupe
-    # against it instead of relaunching; clearing the DFlash verdict loses a retry the same
-    # way. Both are per-load resets, so they belong after the teardown commits.
+    # The refusal spares the resident server, so it has to spare what describes it. Resetting
+    # the launch revision would say the live process launched from the binary installed NOW,
+    # so an Apply after `unsloth studio update` would dedupe against it instead of
+    # relaunching; clearing the DFlash verdict loses a retry the same way.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -430,8 +425,8 @@ def test_the_per_load_resets_sit_below_the_teardown_in_source():
 
 def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch, tmp_path):
     # cached_gguf_for_load(verify_sizes = True) is what _download_gguf uses, so a snapshot
-    # truncated after its header is skipped there. Judging it here anyway would classify
-    # bytes the load never opens: a valid chat repo could be refused off a stale snapshot.
+    # truncated after its header is skipped there. Judging it here would classify bytes the
+    # load never opens, refusing a valid chat repo off a stale snapshot.
     cached = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     seen: list[bool] = []
@@ -455,15 +450,14 @@ def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch
 
 def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch, tmp_path):
     # general.architecture is KV #0 in every GGUF measured, so a repo with bulky later
-    # metadata can declare a media arch inside the 256 KiB prefix and still leave the KV
-    # walk unfinished. Discarding that verdict put the teardown and the full download back
-    # for exactly the files this preflight exists for.
+    # metadata can declare a media arch inside the 256 KiB prefix and still leave the KV walk
+    # unfinished. Discarding that verdict put the teardown and the full download back.
     header = _gguf_bytes(arch = "flux", declared_kv = 4096)
     message, _requests = _probe(monkeypatch, header = header, filename = "flux1-dev-Q4_K_M.gguf")
     assert message is not None and "Images page" in message
 
-    # The no-architecture fallback still needs the complete walk: an unfinished read there
-    # is indistinguishable from a file that declares nothing.
+    # The no-architecture fallback still needs the complete walk: an unfinished read is
+    # indistinguishable from a file that declares nothing.
     quiet = _probe(
         monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096), filename = "mystery-Q4_K_M.gguf"
     )[0]

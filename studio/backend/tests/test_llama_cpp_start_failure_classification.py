@@ -70,8 +70,7 @@ class TestDiffusionArchitectures:
         assert "Images page" in msg
         assert arch in msg
 
-    # A video arch must name the VIDEO page: Images cannot run it either, so routing
-    # there just costs the user a second dead end.
+    # A video arch must name the VIDEO page: Images cannot run it either.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
     def test_every_video_arch_routes_to_the_video_page(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
@@ -83,8 +82,7 @@ class TestDiffusionArchitectures:
         assert "enough memory" not in msg.lower()
 
     # An arch no page can run must promise NEITHER page: the picker tags these
-    # ``image-diffusion-unsupported``, which hides them from the Images and Video lists
-    # alike, so naming a page sends the user to an empty one.
+    # ``image-diffusion-unsupported``, hiding them from the Images and Video lists alike.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES))
     def test_unrunnable_media_arch_names_no_page(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
@@ -106,10 +104,9 @@ class TestDiffusionArchitectures:
         assert sum(len(s) for s in sets) == len(set().union(*sets))
         assert set().union(*sets) == LlamaCppBackend._DIFFUSION_ARCHES
 
-    # The video set must stay inside what the Video picker actually offers: an arch
-    # routes.models tags unsupported can never be picked on the page we name. Asserted
-    # for video only -- the image half (sd1/sd3/sdxl/aura/hidream) has named the Images
-    # page since before the video split and is left to its own change.
+    # The video set must stay inside what the Video picker offers: an arch routes.models
+    # tags unsupported can never be picked on the page we name. Video only -- the image half
+    # (sd1/sd3/sdxl/aura/hidream) predates the video split and is left to its own change.
     def test_no_runnable_video_arch_is_tagged_unsupported_by_the_picker(self):
         from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
         assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)

@@ -4076,12 +4076,11 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     a = arch.lower()
     if a in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
         # Not an architecture at all: gguf-connector writes these literals in place of one
-        # (gguf-org/flux2-dev-gguf and calcuis/cosmos-predict2-gguf both declare "pig"), and
-        # ComfyUI-GGUF special cases the same two. Being non-null they used to fall past
-        # every media branch to "text-generation", so a diffusion GGUF was offered to chat
-        # and only refused once the load reached llama_cpp's own placeholder handling.
-        # Only gguf-connector writes them and only for diffusion GGUFs, so the row is never
-        # a chat model: resolve the page by name, and stay unsupported when neither answers.
+        # (gguf-org/flux2-dev-gguf and calcuis/cosmos-predict2-gguf both declare "pig").
+        # Being non-null they used to fall past every media branch to "text-generation", so
+        # a diffusion GGUF was offered to chat and only refused at load. Only gguf-connector
+        # writes them and only for diffusion GGUFs, so the row is never a chat model:
+        # resolve the page by name, and stay unsupported when neither answers.
         from core.inference.video_families import detect_video_family
 
         for hint in name_hints:
@@ -4091,9 +4090,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                     return _VIDEO_GEN_TASK
                 return _UNSUPPORTED_DIFFUSION_TASK
         # An image family has to RESOLVE, not merely fail open: _gguf_family_buildable is
-        # permissive by design for a branch whose arch already says "image GGUF", and the
-        # placeholder says nothing, so leaning on it would advertise Images for a file
-        # nothing recognised.
+        # permissive by design for a branch whose arch already says "image GGUF", and a
+        # placeholder says nothing, so it would advertise Images for anything.
         from core.inference.diffusion_families import detect_family_for_pick
 
         if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):

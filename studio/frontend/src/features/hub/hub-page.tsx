@@ -1281,30 +1281,20 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      // An image / video model is run by its own page, not by chat. Loading it here started
-      // a llama.cpp load that could only fail ("llama-server failed to start") after evicting
-      // whatever chat had resident, and dropped the user in a chat that could never answer.
-      // Same destination and params the chat picker already routes its media picks to.
-      // pipelineTag alone would never fire for the rows this is FOR: only CachedModelRepo
-      // carries it, so every cached GGUF repo (the reported MiniMax-H3 case included)
-      // reports its modality on `task` instead and would have gone to chat regardless.
-      // Same resolution the chat picker uses, so both surfaces route a pick identically.
+      // An image / video model is run by its own page, not by chat: loading it here evicted
+      // the resident chat model for a llama.cpp load that could only fail. Same resolution
+      // and destination the chat picker uses, so both surfaces route a pick identically.
+      // `task` is not optional here: only CachedModelRepo carries pipelineTag, so every
+      // cached GGUF repo (the reported MiniMax-H3 case) reports its modality on `task`.
       const mediaPage = studioPageForTask(
         taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
       );
-      // A FILESYSTEM row's runId is a path, and the target pages read a routed `model` as
-      // a Hub id (their own local branch splits directory + filename first), so a path sent
-      // through here would arrive as a repo that does not exist. Those keep today's route;
-      // the backend preflight now refuses them by name instead of letting llama-server fail
-      // opaquely. An HF-cache row is local in kind only -- it is a complete Hub snapshot,
-      // and inventory dedup leaves it as the only row for its repo whenever the cached row
-      // beside it was partial -- so it routes like the cached row it replaced.
-      // A cached repo whose id does not resolve on its own -- one outside the active HF
-      // cache, or whose default ref names no whole quant -- is pinned by the inventory to
-      // its snapshot directory, so runId is an absolute path on a row that is not `local`.
-      // The target pages reject that: a snapshot entry is a symlink into the sibling blobs
-      // dir, and the containment check refuses a child resolving outside the repo root. The
-      // Hub id loads the SAME copy, since the loader reuses whichever cache root holds it.
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
       const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
       if (
         mediaPage &&

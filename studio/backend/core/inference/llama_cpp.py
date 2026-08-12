@@ -1880,12 +1880,10 @@ def _resolve_variant_gguf_files(
 ) -> tuple[Optional[str], list[str]]:
     """Which file in ``hf_repo`` this variant means, plus its extra shards.
 
-    The repo listing first, the local HF cache when the Hub cannot be asked, and finally a
-    name synthesised from the repo id. Every tier fails soft: ``(None, [])`` means "no
-    opinion", not "no such file". Lives out here rather than inside ``_download_gguf`` so
-    the pre-teardown header probe asks the question exactly the way the download will
-    answer it -- two implementations of this cascade would let the file the probe judged
-    drift from the file the load opens.
+    Repo listing, then the local HF cache, then a name synthesised from the repo id; every
+    tier fails soft (``(None, [])`` means "no opinion"). Module level, not inside
+    ``_download_gguf``, so the pre-teardown header probe resolves exactly the file the
+    download will open -- two copies of this cascade would let the two drift.
     """
     gguf_filename: Optional[str] = None
     gguf_extra_shards: list[str] = []
@@ -3371,8 +3369,7 @@ class LlamaCppBackend:
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
         self._is_diffusion: bool = False
-        # Whether the last _read_gguf_metadata walked the whole header without failing.
-        # Separates "declares no architecture" from "could not be read" (see the preflight).
+        # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
         self._gguf_declares_split: bool = False
         self._diffusion_visual_bin: Optional[str] = None
@@ -7197,14 +7194,11 @@ class LlamaCppBackend:
     def _non_chat_gguf_refusal_for_path(
         cls, gguf_path: str, model_identifier: Optional[str]
     ) -> Optional[str]:
-        """``_non_chat_gguf_refusal`` for a file on disk, WITHOUT touching the active
-        backend, so the refusal can be raised before Phase 1 tears the running model down.
-
-        Refusing after the teardown would still cost the user their resident chat model to
-        answer a question the header could have answered first, which is most of what this
-        preflight is for. Same probe-instance trick as ``_gguf_path_is_diffusion``: reading
-        the header into ``self`` here would overwrite the live model's metadata with a
-        file we are about to reject."""
+        """``_non_chat_gguf_refusal`` for a file on disk, so it can be raised before Phase 1
+        tears the running model down -- refusing after costs the user their resident chat
+        model to answer a question the header already answers. Same probe-instance trick as
+        ``_gguf_path_is_diffusion``: reading into ``self`` would overwrite the live model's
+        metadata with a file we are about to reject."""
         probe = object.__new__(cls)
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
@@ -7221,28 +7215,21 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """``_non_chat_gguf_refusal_for_path`` for a repo load, decided from a header-sized
         BYTE RANGE instead of the checkpoint, so the verdict lands before Phase 1 tears the
-        resident model down.
+        resident model down. The Model Hub sends a repo id for every Hub model, so leaving
+        this to the post-download check meant a media GGUF opened into a chat killed the
+        live model to answer a question its own header answers; downloading first would
+        trade the teardown for tens of GB.
 
-        A repo load reaches the same refusal after Phase 2, which is one teardown too late:
-        the Model Hub sends a repo id for every Hub model (the route, not the UI, decides
-        local-vs-remote), so a media GGUF opened into a chat kills the user's live model to
-        answer a question its own header answers. Downloading first to answer it earlier
-        would trade the teardown for tens of GB, so this reads the header only.
+        A 256 KiB prefix is decisive for exactly the files this refuses: measured over the
+        Hub, flux / flux2 / cosmos / wan / sd3 finish the KV walk in 144-145 bytes and
+        LTX-2, the largest seen, in 3,987, while a chat model's ``tokenizer.ggml.tokens``
+        pushes its KV block into the megabytes (Qwen3-0.6B 5.93 MB, Llama-3.2-1B 7.82 MB) --
+        so a chat prefix cuts mid-KV, ``_gguf_header_parsed`` stays False and there is no
+        verdict.
 
-        A 256 KiB prefix is enough for exactly the files this refuses. Media GGUFs carry a
-        handful of KV pairs -- measured over the Hub, flux / flux2 / cosmos / wan / sd3 all
-        finish the KV walk in 144-145 bytes and LTX-2, the largest seen, in 3,987 -- while a
-        chat model's ``tokenizer.ggml.tokens`` array pushes its KV block into the megabytes
-        (Qwen3-0.6B 5.93 MB, Llama-3.2-1B 7.82 MB). So the prefix completes the walk for a
-        media GGUF and cuts mid-KV for a chat one, where ``_gguf_header_parsed`` stays False
-        and ``_non_chat_gguf_refusal`` declines to have an opinion.
-
-        Fails open at every step -- no resolvable filename, an unreachable Hub, a proxy that
-        answers 200 instead of 206, a prefix too short to finish the walk -- because the
-        post-download check is still there as the backstop. This can only turn a refusal
-        that costs the resident model into one that does not; it can never refuse a load the
-        full-file check would have allowed, since it runs the same verdict on the same
-        bytes."""
+        Fails open at every step (no filename, unreachable Hub, a 200 instead of a 206, too
+        short a prefix) since the post-download check is the backstop. It can only make a
+        refusal cheaper, never refuse a load the full-file check would have allowed."""
         try:
             from core.inference.diffusion_compat import (
                 _local_gguf_path,
@@ -7256,18 +7243,14 @@ class LlamaCppBackend:
             gguf_filename, _shards = _resolve_variant_gguf_files(hf_repo, hf_variant, hf_token)
             if not gguf_filename:
                 return None
-            # A copy already in the cache answers this with no request at all, and is the
-            # only thing that can answer it while the Hub is unreachable. Resolved with the
-            # SAME precedence AND the same verification _download_gguf uses --
-            # cached_gguf_for_load over the cached variant candidates at
-            # verify_sizes = True -- because that is the file the load will open. A
-            # snapshot truncated after its header would otherwise be judged here and
-            # skipped there, which is the same drift under a different name. The size
-            # check retains its offline semantics (it fails open on unreachable
-            # metadata), so the probe still answers with the Hub down.
-            # Going by the current listing's filename instead would let the probe judge one
-            # GGUF while the load reuses another, whenever a repo renamed the file for a
-            # quant and a complete older snapshot is still cached.
+            # A cached copy answers this with no request, and is the only thing that can
+            # answer it with the Hub down. Resolved with the SAME precedence AND the same
+            # verification _download_gguf uses -- cached_gguf_for_load at
+            # verify_sizes = True, then the listing's filename -- because that is the file
+            # the load will open. Anything else (a truncated snapshot judged here but
+            # skipped there, a repo that renamed the file for a quant) lets the probe judge
+            # one GGUF and the load open another. verify_sizes fails open on unreachable
+            # metadata, so the probe still answers offline.
             local = cached_gguf_for_load(
                 hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token
             ) or _local_gguf_path(hf_repo, gguf_filename)
@@ -7276,13 +7259,12 @@ class LlamaCppBackend:
                 if local
                 else _read_gguf_header(hf_repo, gguf_filename, hf_token)
             )
-            # Magic, version and the two counts. Anything shorter cannot even be opened as
-            # a GGUF, so there is nothing to be right about.
+            # Magic, version and the two counts: anything shorter is not a GGUF at all.
             if len(prefix) < 24:
                 return None
             with tempfile.TemporaryDirectory(prefix = "unsloth-gguf-probe-") as probe_dir:
-                # Named after the real file: a GGUF that declares no architecture is refused
-                # on the strength of its name, and a temp name would lose the page pointer.
+                # Named after the real file: a GGUF declaring no architecture is judged by
+                # its name, and a temp name would lose the page pointer.
                 probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
                 with open(probe_path, "wb") as handle:
                     handle.write(prefix)
@@ -7373,8 +7355,7 @@ class LlamaCppBackend:
                 _version = struct.unpack("<I", f.read(4))[0]
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
-                # Set by the loop's `else` below: True only when every declared KV pair was
-                # walked, i.e. no truncation `break` fired.
+                # Set by the loop's `else` below: True only if no truncation `break` fired.
                 kv_complete = False
                 for _ in range(kv_count):
                     # Tolerate truncated input (e.g. a partial header from an
@@ -7393,13 +7374,11 @@ class LlamaCppBackend:
                         if len(vtype_bytes) < 4:
                             break
                         vtype = struct.unpack("<I", vtype_bytes)[0]
-                        # gguf-split writes the whole metadata block into shard 1 and gives
-                        # every later shard three keys and nothing else: split.no,
-                        # split.count, split.tensors.count. Measured on
-                        # unsloth/DeepSeek-R1-GGUF, shard 1 is 48 KV pairs starting at
-                        # general.architecture = "deepseek2" and shard 2 is those 3. Noted
-                        # here, where the key is already in hand, since none of them is
-                        # WANTED and the value reader skips them.
+                        # gguf-split puts the whole metadata block in shard 1 and gives every
+                        # later shard only split.no / split.count / split.tensors.count
+                        # (measured on unsloth/DeepSeek-R1-GGUF: shard 1 has 48 KV pairs from
+                        # general.architecture = "deepseek2", shard 2 has those 3). Caught
+                        # here since none is WANTED, so the value reader skips them.
                         if key.startswith("split."):
                             self._gguf_declares_split = True
                     except (struct.error, UnicodeDecodeError):
@@ -7547,9 +7526,8 @@ class LlamaCppBackend:
                     hf_repo_candidates,
                 )
 
-            # Every declared KV pair was walked. Only now does ``_architecture is None``
-            # mean "this GGUF declares no architecture" rather than "the read stopped
-            # early", which is the distinction the non-chat preflight below is built on.
+            # Only with the whole walk done does ``_architecture is None`` mean "declares no
+            # architecture" rather than "the read stopped early" -- what the preflight needs.
             self._gguf_header_parsed = kv_complete
 
             if self._context_length:
@@ -8983,17 +8961,14 @@ class LlamaCppBackend:
     # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
     # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
     # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
-    # repo id and the filename and tags anything that does not resolve
-    # ``image-diffusion-unsupported``, which hides the row from the Images picker -- so the
-    # refusal has to run the SAME resolution before it names that page. Reachable today:
-    # ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf`` declares "lumina2" and
-    # neither its repo id nor its filename resolves to a family ("lumina-2" is not aliased
-    # to bare "lumina"), so the picker refuses it while this branch was sending the user
-    # there. Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
+    # repo id and the filename and tags the rest ``image-diffusion-unsupported``, hiding
+    # them from the Images picker, so the refusal must run the SAME resolution before it
+    # names that page -- e.g. ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf``
+    # declares "lumina2" and resolves to no family ("lumina-2" is not aliased to bare
+    # "lumina"). Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
     _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
-    # Text-to-video architectures the Video page can actually offer. Split from the image
-    # set so the refusal names the Video page: sending someone with a Wan / LTX-2 GGUF to
-    # Images is a second dead end.
+    # Text-to-video archs the Video page can offer. Split from the image set so the refusal
+    # names Video: sending a Wan / LTX-2 GGUF to Images is a second dead end.
     _VIDEO_ARCHES = frozenset(
         (
             "ltxv",
@@ -9002,23 +8977,16 @@ class LlamaCppBackend:
     )
     # Media archs Studio recognises but NO page can run, so the refusal must not promise
     # one. Mirrors ``routes.models._UNSUPPORTED_DIFFUSION_GGUF_ARCHS``, which tags these
-    # GGUFs ``image-diffusion-unsupported`` and thereby hides them from the Images picker
-    # AND the Video one -- naming either page sends the user to an empty list.
+    # ``image-diffusion-unsupported`` and so hides them from the Images AND Video pickers.
     #   * "cosmos": no VideoFamily exists at all (``detect_video_family`` returns None for
-    #     every cosmos repo id and for override="cosmos"), and the cosmos GGUFs actually
-    #     published are Cosmos-Predict2-14B-Text2Image, an IMAGE model the Images page
-    #     cannot assemble either.
-    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the HunyuanVideo-1.5 GGUFs that
-    #     do map to one are still tagged unsupported by the picker (that family ships no
-    #     ``gguf_repo``), so no hyvid GGUF is selectable on the Video page today.
-    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": tagged unsupported for the same
-    #     reason on the image side. The Images page cannot assemble a pipeline around any
-    #     of them, so "use the Images page" was the same empty promise the video split was
-    #     opened to remove -- it just predates it.
-    # Kept inside _DIFFUSION_ARCHES: the pre-launch refusal still fires, it just stops
-    # naming a destination it cannot deliver. This set is the whole mirror rather than
-    # only the archs the video split moved, because a partial mirror leaves the identical
-    # dead end standing on the other half.
+    #     every cosmos repo id and for override="cosmos"), and the published cosmos GGUFs
+    #     are Cosmos-Predict2-14B-Text2Image, which Images cannot assemble either.
+    #   * "hyvid": HunyuanVideo 1.0 has no VideoFamily, and the 1.5 GGUFs that do map to
+    #     one are still tagged unsupported (that family ships no ``gguf_repo``).
+    #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
+    #     the same reason, so "use the Images page" was always an empty promise.
+    # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
+    # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
     _UNRUNNABLE_MEDIA_ARCHES = frozenset(
         (
             "cosmos",
@@ -9034,13 +9002,11 @@ class LlamaCppBackend:
         _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
     )
 
-    # Not architectures: the literal placeholders calcuis / gguf-org's "gguf-connector"
-    # writes into general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf
-    # and calcuis/cosmos-predict2-gguf both declare "pig"). ComfyUI-GGUF's loader special
-    # cases the same two strings -- ``if arch_str in [None, "pig", "cow"]`` -- and falls
-    # back to sniffing the tensor names. llama.cpp knows neither, so these GGUFs are just
-    # as unloadable as any other diffusion file; without this they slip past the arch sets
-    # and die in llama-server as the opaque failure this preflight exists to prevent.
+    # Not architectures: the literal placeholders gguf-connector writes into
+    # general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf and
+    # calcuis/cosmos-predict2-gguf both declare "pig"); ComfyUI-GGUF special cases the same
+    # two. llama.cpp knows neither, so without this they slip past the arch sets and die in
+    # llama-server as the opaque failure this preflight exists to prevent.
     _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
 
     @staticmethod
@@ -9049,13 +9015,12 @@ class LlamaCppBackend:
     ) -> bool:
         """Whether the Video page would actually OFFER this GGUF.
 
-        ``_arch_to_task`` asks in one fixed order and this has to ask in the same one:
-        the ARCHITECTURE first, since some map straight to a family
-        (``detect_video_family("", override = "ltxv")`` resolves LTX-2 with no name to go
-        on), then the repo id, then the filename. Whatever resolves, the family must not be
-        an MoE (the GGUF loader cannot assemble those) and the video engine must be able to
-        build it. Bare "wan" resolves nothing by itself, and
-        QuantStack/Wan2.2-T2V-A14B-GGUF resolves an MoE, so neither is promised the page."""
+        Same fixed order ``_arch_to_task`` asks in: the ARCHITECTURE first, since some map
+        straight to a family (``detect_video_family("", override = "ltxv")`` resolves LTX-2
+        with no name to go on), then the repo id, then the filename. Whatever resolves must
+        not be an MoE (the GGUF loader cannot assemble those) and must be buildable by the
+        video engine -- bare "wan" resolves nothing and QuantStack/Wan2.2-T2V-A14B-GGUF
+        resolves an MoE, so neither is promised the page."""
         try:
             from core.inference.video_families import detect_video_family
 
@@ -9084,19 +9049,15 @@ class LlamaCppBackend:
 
         The same three questions ``routes.models._arch_to_task`` asks in its
         ``_AMBIGUOUS_DIFFUSION_GGUF_ARCHS`` branch, over the same evidence (repo id, then
-        filename): does a family resolve at all, can a GGUF transformer be assembled for
-        it, and can an engine on THIS host build it. Answering differently here is the
-        thing to avoid -- the picker's answer is what decides whether the row the refusal
-        points at exists.
+        filename): does a family resolve, can a GGUF transformer be assembled for it, can an
+        engine on THIS host build it. Both sides must answer alike -- the picker's answer is
+        what decides whether the row the refusal points at exists.
 
-        Imported lazily, and inside the function: ``routes`` imports this module, so the
-        canonical classifier cannot be imported from here, but the helpers underneath it
-        (``core.inference.diffusion_families`` / ``diffusion_engine_router``) are already
-        reached this way by the no-architecture branch below.
+        Imported lazily inside the function since ``routes`` imports this module, so the
+        canonical classifier cannot be imported from here.
 
-        Fails OPEN on a probe error, like every other family probe on the listing side:
-        naming the page is a nicety, and losing it over a broken import would be a worse
-        answer than the one this method exists to stop."""
+        Fails OPEN on a probe error, like every family probe on the listing side: naming the
+        page is a nicety, not worth losing over a broken import."""
         try:
             from core.inference.diffusion_engine_router import family_buildable_here
             from core.inference.diffusion_families import (
@@ -9121,37 +9082,31 @@ class LlamaCppBackend:
         """Why this GGUF cannot be a chat model, decided from its own header BEFORE
         llama-server is launched; None when there is no such verdict.
 
-        Two things go wrong without it. A media GGUF opened in a chat spends the whole
-        download-and-launch path only to die in llama-server's loader, and what the user
-        sees is "llama-server failed to start" with no hint that the file was never a chat
-        model and no pointer to the page that does run it (the reported Video-model case:
-        loaded from the Model Hub into a chat, failed opaquely, no log in the UI).
+        Otherwise a media GGUF opened in a chat runs the whole download-and-launch path only
+        to die in llama-server as "llama-server failed to start", with no hint that the file
+        was never a chat model (the reported Video-model case).
 
         The header alone is enough to be certain, in two ways:
 
         * A declared architecture in the image / video sets. llama.cpp has no such
           architectures, so this is exactly the failure it would hit, one launch earlier.
-        * NO ``general.architecture`` at all. That key is mandatory for anything
-          llama.cpp can load, and the video GGUFs Unsloth publishes (MiniMax-H3) carry a
-          bare tensor header with zero KV pairs, so they never reach the arch test above.
-          Gated on ``_gguf_header_parsed`` so a read that FAILED -- truncated download,
-          I/O error, a format this parser does not understand -- is never mistaken for a
-          file that declares nothing, and still gets its chance in llama-server.
+        * NO ``general.architecture`` at all -- a mandatory key for anything llama.cpp can
+          load, and Unsloth's video GGUFs (MiniMax-H3) carry a bare tensor header with zero
+          KV pairs, so they never reach the arch test. Gated on ``_gguf_header_parsed`` so a
+          read that FAILED still gets its chance in llama-server.
 
         Naming the destination page is the point, so when the architecture does not say
         which it is, the family detectors are asked about the repo id and the filename."""
         arch = (self._architecture or "").strip().lower()
-        # A declared media architecture is the whole answer, and it is KV #0 in every GGUF
-        # measured, so the remote probe's 256 KiB prefix can carry it while a repo with
-        # bulkier later metadata leaves the walk unfinished. Requiring the walk there threw
-        # away a certain verdict and put the teardown back. The walk still gates the
-        # no-architecture fallback below, which is the case where an incomplete read is
-        # genuinely indistinguishable from a file that declares nothing.
+        # A declared media arch is the whole answer, and it is KV #0 in every GGUF measured,
+        # so the remote probe's prefix can carry it even where bulkier later metadata leaves
+        # the walk unfinished. The walk still gates the no-architecture fallback below, the
+        # one case where an incomplete read is indistinguishable from declaring nothing.
         if arch not in self._DIFFUSION_ARCHES and not getattr(self, "_gguf_header_parsed", False):
             return None
         if arch in self._PLACEHOLDER_ARCHES:
-            # A placeholder that names no architecture at all: treat it exactly like a GGUF
-            # that declares none, so the name-based branch below still names a page.
+            # Names no architecture, so treat it like a GGUF that declares none and let the
+            # name-based branch below name a page.
             arch = ""
         if arch:
             if arch in self._UNRUNNABLE_MEDIA_ARCHES:
@@ -9162,7 +9117,7 @@ class LlamaCppBackend:
                     "accepts it."
                 )
             if arch in self._VIDEO_ARCHES:
-                # Shared exactly like the image archs: the canonical classifier resolves a
+                # Shared like the image archs: the canonical classifier resolves a
                 # VideoFamily by name and rejects an MoE the GGUF loader cannot assemble,
                 # so "wan" alone does not mean the Video page will list it.
                 if self._video_arch_is_pickable(arch, gguf_path, self._model_identifier):
@@ -9194,13 +9149,10 @@ class LlamaCppBackend:
                 )
             return None
 
-        # A shard past the first of a gguf-split set: no architecture, because shard 1
-        # holds it, and no verdict to give. It is not a media GGUF, and llama.cpp has its
-        # own precise answer for opening one directly ("model must be loaded with the first
-        # split"), which is more use than being told the file carries no metadata. Every
-        # variant string a producer here emits already resolves to shard 1 (the shard suffix
-        # is stripped from the key and the matches are sorted), so this only covers a
-        # hand-written one.
+        # A shard past the first of a gguf-split set declares no architecture (shard 1 holds
+        # it) but is no media GGUF, and llama.cpp's own "model must be loaded with the first
+        # split" is more use than "carries no metadata". Only reachable with a hand-written
+        # variant: every producer here strips the shard suffix and sorts, landing on shard 1.
         if self._gguf_declares_split:
             return None
 
@@ -9471,9 +9423,8 @@ class LlamaCppBackend:
                     "GGUFs such as FLUX and Qwen-Image."
                 )
             if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
-                # Same shared-arch resolution as the pre-launch refusal: nothing in the
-                # repo id or filename says which family this is, so the Images picker
-                # tags it image-diffusion-unsupported and the row is not there to open.
+                # Same shared-arch resolution as the pre-launch refusal: unresolved means
+                # the Images picker tags it image-diffusion-unsupported and hides the row.
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
                     "llama-server cannot run as a chat/completion model. Unsloth Studio "
@@ -10725,9 +10676,9 @@ class LlamaCppBackend:
             ):
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
-            # An image / video GGUF already on disk is refused HERE, before the teardown
-            # below: the header answers the question without llama-server, so there is no
-            # reason to make the user pay their resident chat model for it.
+            # An image / video GGUF already on disk is refused HERE, before the teardown:
+            # the header answers this without llama-server, so there is no reason to make
+            # the user pay their resident chat model for it.
             if gguf_path and not hf_repo and Path(gguf_path).is_file():
                 _early_non_chat = self._non_chat_gguf_refusal_for_path(gguf_path, model_identifier)
                 if _early_non_chat:
@@ -10738,16 +10689,13 @@ class LlamaCppBackend:
                     )
                     raise ValueError(_early_non_chat)
 
-            # And the same refusal for a REPO load, which is the one the Model Hub actually
-            # sends: /load carries an opaque model_path that the route resolves to hf_repo
-            # for every Hub model, so leaving this to the post-download check meant the
-            # reported case -- a video model opened into a chat -- killed the live model
-            # first. The file does not exist yet, but the verdict does not need it: a
-            # header-sized byte range decides it (see _remote_non_chat_gguf_refusal), and
-            # downloading tens of GB just to refuse would cost more than the teardown this
-            # is saving. When a preflight above already fetched the file, judge that
-            # instead -- same verdict, no request. Fails open into the post-download check
-            # below, which stays as the backstop.
+            # The same refusal for a REPO load, which is what the Model Hub actually sends:
+            # the route resolves every Hub model to hf_repo, so leaving this to the
+            # post-download check killed the live model first in the reported case. The file
+            # does not exist yet, but a header-sized byte range decides it (see
+            # _remote_non_chat_gguf_refusal). When a preflight above already fetched the
+            # file, judge that instead -- same verdict, no request. Fails open into the
+            # post-download check below, which stays as the backstop.
             if hf_repo:
                 _early_non_chat = (
                     self._non_chat_gguf_refusal_for_path(_preflight_model_path, model_identifier)
@@ -10767,8 +10715,8 @@ class LlamaCppBackend:
                     )
                     raise ValueError(_early_non_chat)
 
-            # A probe can take a bounded moment on a slow Hub, so re-read the cancel flag
-            # rather than tearing down a healthy server for a load that was called off.
+            # The probe can take a moment on a slow Hub, so re-read the cancel flag rather
+            # than tearing down a healthy server for a load that was called off.
             if _load_cancelled():
                 logger.info("Load cancelled before teardown")
                 return False
@@ -10780,14 +10728,13 @@ class LlamaCppBackend:
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
-            # Both of these describe the process that was just killed, so they are reset
-            # HERE rather than where the binary is resolved: everything above can bail with
-            # the old server still running (a paravirtual or Vulkan stand-down, a non-chat
-            # refusal, a cancel), and resetting them on the way past would tell the next
-            # Apply that the resident process launched from the binary installed now and
-            # that it is owed no DFlash retry. An Apply after `unsloth studio update` or a
-            # retryable sidecar failure would then dedupe against that process instead of
-            # relaunching it. Nothing between the two points reads either field.
+            # Both describe the process just killed, so they are reset HERE rather than
+            # where the binary is resolved: everything above can bail with the old server
+            # still running (a stand-down, a non-chat refusal, a cancel), and resetting on
+            # the way past would tell the next Apply that the resident process launched from
+            # the binary installed now and is owed no DFlash retry -- so an Apply after
+            # `unsloth studio update` or a retryable sidecar failure would dedupe against it
+            # instead of relaunching. Nothing between the two points reads either field.
             #
             # Kept so a stand-down blamed on the binary can later tell a real update
             # from the same file still being installed.
@@ -10957,9 +10904,8 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
-            # An image / video GGUF cannot be a chat model. Refuse from the header rather
-            # than launching llama-server to watch it die as "llama-server failed to
-            # start", and name the page that does run it.
+            # Backstop for everything the pre-teardown probes fail open on: refuse from the
+            # header rather than watching llama-server die as "failed to start".
             non_chat = self._non_chat_gguf_refusal(model_path)
             if non_chat:
                 logger.error("Refusing non-chat GGUF: %s (%s)", non_chat, model_path)

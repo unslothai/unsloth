@@ -86,8 +86,7 @@ export interface SelectedModelView {
   license: string | null;
   pipelineTag?: string;
   /** The backend's inferred pipeline task for an on-device row. A cached GGUF repo carries
-   *  this and NOT `pipelineTag` (only `CachedModelRepo` has the latter), so anything
-   *  deciding a GGUF row's modality has to consult both. */
+   *  this and NOT `pipelineTag`, so deciding a GGUF row's modality needs both. */
   task?: string | null;
   libraryName?: string;
   gated?: false | "auto" | "manual";

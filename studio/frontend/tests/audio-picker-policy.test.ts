@@ -131,10 +131,9 @@ test("fresh Hub pipeline metadata routes media picks before stale inventory", ()
 });
 
 test("an unbuildable diffusion GGUF keeps its on-device verdict over its Hub tag", () => {
-  // gguf-org/stable-diffusion-v1-5-GGUF and friends: the Hub repo is tagged text-to-image,
-  // the backend tags the downloaded file image-diffusion-unsupported because it cannot
-  // assemble that arch. Routing on the tag would send Run at an Images picker that omits
-  // the row, and the load behind it would be refused.
+  // gguf-org/stable-diffusion-v1-5-GGUF and friends: tagged text-to-image on the Hub,
+  // image-diffusion-unsupported on device. Routing on the tag sends Run at an Images picker
+  // that omits the row.
   assert.equal(
     taskForMediaPick("text-to-image", "image-diffusion-unsupported"),
     "image-diffusion-unsupported",
