@@ -197,9 +197,7 @@ def read_workspace(state_dir: Path, *, resolve_paths: bool = True) -> Optional[C
     transcripts, subagents = find_transcripts(state_dir)
     if not transcripts:
         return None
-    project_path = (
-        resolve_state_slug(slug) if resolve_paths and slug != NO_FOLDER_SLUG else None
-    )
+    project_path = resolve_state_slug(slug) if resolve_paths and slug != NO_FOLDER_SLUG else None
     return CursorWorkspace(
         slug = slug,
         name = _workspace_name(slug, project_path),
