@@ -323,16 +323,20 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
 def _h3_replacement_hint(binary: str) -> str:
     """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
 
-    Only a binary in a layout the installer itself writes to is recovered by deleting the
-    directory: the next load finds it empty and puts the pinned prebuilt back. Anything PATH or an
-    env var named is elsewhere entirely. The refusal used to end with "or remove that directory"
-    whatever the binary was, which for the ``/usr/bin/sd`` PATH discovery picks up read as "remove
-    /usr/bin".
+    Only a binary in a layout the installer writes to can be recovered by clearing that layout:
+    ``install()`` refuses a non-empty unmarked target, so an empty one is what lets the next load
+    put the pinned prebuilt there. Anything PATH or an env var named is elsewhere entirely. The
+    refusal used to end with "or remove that directory" whatever the binary was, which for the
+    ``/usr/bin/sd`` PATH discovery picks up read as "remove /usr/bin".
 
-    ``in_tree_install_root`` is deliberately NOT one of them: the installer never writes to
-    ``<repo_root>/stable-diffusion.cpp``, so the hint would name the user's own checkout, which is
-    exactly what a ``git clone`` of leejet's repo leaves there. ``legacy_sibling_install_root`` is,
-    because it returns a tree only when it carries the ownership marker."""
+    MOVE, never remove. Only the caller's unowned branch reaches this, so a root that matches here
+    necessarily carries no ownership marker -- it is the user's own build sitting at the path the
+    installer would use, which ``is_managed_binary`` documents as a supported thing to do, and
+    which a ``git clone`` of leejet's repo produces verbatim. Moving it aside frees the path
+    without destroying anything, and the user can put it back.
+
+    ``in_tree_install_root`` is not consulted at all: the installer never writes to
+    ``<repo_root>/stable-diffusion.cpp``, so clearing it would buy nothing."""
     roots = [managed_install_root(), legacy_sibling_install_root()]
     for root in roots:
         if root is None:
@@ -341,7 +345,7 @@ def _h3_replacement_hint(binary: str) -> str:
             Path(binary).resolve().relative_to(root.resolve())
         except (OSError, ValueError):
             continue
-        return f", or remove {root} so Studio installs the pinned prebuilt"
+        return f", or move {root} aside so Studio can install the pinned prebuilt there"
     return ""
 
 

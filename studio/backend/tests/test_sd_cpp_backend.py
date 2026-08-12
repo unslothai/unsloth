@@ -1045,9 +1045,9 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
 
 
 def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatch, tmp_path):
-    # The one case where deleting IS the fix: an unmarked build in a layout the installer writes
-    # to. Not ours to unlink (install() refuses a non-empty unmarked target), but emptying it by
-    # hand lets the next load put the pinned prebuilt there.
+    # The one case where clearing the path IS the fix: a build in a layout the installer writes to.
+    # It has no ownership marker (or the branch above would own it), so it is the user's own build
+    # at the installer's path: offer to MOVE it, never to delete it.
     root = tmp_path / "studio" / "stable-diffusion.cpp"
     own = root / "sd-cli"
     root.mkdir(parents = True)
@@ -1059,7 +1059,8 @@ def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatc
 
     with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
-    assert f"remove {root}" in str(excinfo.value)
+    assert f"move {root} aside" in str(excinfo.value)
+    assert "remove" not in str(excinfo.value)
     assert own.exists()
 
 
