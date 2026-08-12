@@ -1071,12 +1071,7 @@ def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason:
 
 
 def _install_package_wheel_first(
-    *,
-    event_queue: Any,
-    import_name: str,
-    display_name: str,
-    pypi_name: str,
-    **kwargs: Any,
+    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
 ) -> bool:
     """Install a fast-path package, wheel first, and never leave an unusable one behind.
 
