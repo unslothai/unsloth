@@ -44,6 +44,8 @@ from core.inference.diffusion_convrot import (  # noqa: E402
     rotation_metadata_error,
 )
 
+from .conftest import pin_prequant_allowlist  # noqa: E402
+
 GROUP = 16  # a power of 4, small enough to keep the test model tiny
 
 
@@ -346,6 +348,9 @@ class _FakeTransformer(nn.Module):
 def _load_rotated(monkeypatch, tmp_path, ckpt):
     """Drive ``load_prequantized_transformer`` over ``ckpt`` with real torch."""
     _FakeTransformer.calls = {}
+    # The allowlist registration resolves real torchao classes, which a CPU-only host need not
+    # have; without this every load below declines for that reason rather than the rotation's.
+    pin_prequant_allowlist(monkeypatch)
     monkeypatch.setattr(torch, "load", lambda *a, **k: ckpt)
     accelerate = types.ModuleType("accelerate")
     accelerate.init_empty_weights = lambda: contextlib.nullcontext()
