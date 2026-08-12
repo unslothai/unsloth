@@ -107,5 +107,4 @@ def require_datasets_http() -> None:
         # Imported here rather than at module scope: this module is also read by
         # the installer-side tests, which have no FastAPI.
         from fastapi import HTTPException
-
         raise HTTPException(status_code = 503, detail = _UNAVAILABLE_MSG)

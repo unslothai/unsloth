@@ -71,7 +71,9 @@ class TestAvailabilityProbe:
         monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
         # This test environment has datasets installed; the point is that the
         # normal path is unchanged and no gate fires.
-        assert datasets_availability.datasets_available() is datasets_availability.DATASETS_AVAILABLE
+        assert (
+            datasets_availability.datasets_available() is datasets_availability.DATASETS_AVAILABLE
+        )
         datasets_availability.require_datasets_http()
 
 
@@ -131,9 +133,9 @@ class TestStartupDoesNotNeedDatasets:
             tree = ast.parse(source)
             for node in tree.body:
                 if isinstance(node, ast.ImportFrom) and node.module:
-                    assert "core.training.trainer" not in node.module, (
-                        f"{relative} imports the training worker at module scope"
-                    )
+                    assert (
+                        "core.training.trainer" not in node.module
+                    ), f"{relative} imports the training worker at module scope"
 
 
 class TestRoutesAreGated:

@@ -181,6 +181,7 @@ if _backend_dir not in sys.path:
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
+
 # Cheap and import-safe without the library present: find_spec only, no datasets import.
 from utils.datasets_availability import (
     datasets_available,

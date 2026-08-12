@@ -1038,7 +1038,7 @@ class TestWindowsArm64WheelGapParity:
         """install.ps1 decides the tier, setup.ps1 and install_python_stack.py have
         to honour it, and the marker keeps `unsloth studio update` inside it."""
         assert 'UNSLOTH_NO_DATASETS = "1"' in INSTALL_PS1.read_text(encoding = "utf-8")
-        assert 'UNSLOTH_NO_DATASETS' in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "UNSLOTH_NO_DATASETS" in SETUP_PS1.read_text(encoding = "utf-8")
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert 'os.environ.get("UNSLOTH_NO_DATASETS")' in stack
         assert "install_manifest.recorded_no_datasets()" in stack
@@ -1060,8 +1060,12 @@ class TestWindowsArm64WheelGapParity:
         only Windows may demand an x64 interpreter."""
         for path in (INSTALL_PS1, SETUP_PS1):
             source = path.read_text(encoding = "utf-8")
-            index = source.index("Test-CompatibleSetupPythonArch") if path is SETUP_PS1 else source.index("windows on arm: only a native ARM64")
-            assert 'Get-HostMachineArch' in source[max(0, index - 2000) : index + 2000]
+            index = (
+                source.index("Test-CompatibleSetupPythonArch")
+                if path is SETUP_PS1
+                else source.index("windows on arm: only a native ARM64")
+            )
+            assert "Get-HostMachineArch" in source[max(0, index - 2000) : index + 2000]
         stack = STACK_PY.read_text(encoding = "utf-8")
         gap = stack.index("IS_WINDOWS_ARM64_PYTHON = ")
         assert "IS_WINDOWS and" in stack[gap : gap + 200]
@@ -1094,8 +1098,17 @@ class TestArm64SkipListParity:
         """Pinned by name: each has been checked against PyPI and publishes no
         win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
         expected = {
-            "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
-            "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard",
+            "datasets",
+            "trl",
+            "sqlite-vec",
+            "tiktoken",
+            "hf-transfer",
+            "ddgs",
+            "pandas",
+            "pytorch-tokenizers",
+            "torch-c-dlpack-ext",
+            "mecab",
+            "tensorboard",
         }
         assert self._python_set() == expected
 
@@ -1117,14 +1130,18 @@ class TestArm64SkipListParity:
         file), and install_python_stack.py points UV_OVERRIDE at the file. Same
         lifts, or an ARM64 install compiles MuPDF from source on one path only."""
         overrides = (
-            REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "overrides-win-arm64.txt"
+            REPO_ROOT
+            / "studio"
+            / "backend"
+            / "requirements"
+            / "single-env"
+            / "overrides-win-arm64.txt"
         ).read_text(encoding = "utf-8")
         source = INSTALL_PS1.read_text(encoding = "utf-8")
         index = source.index("$script:ArmInferenceLiftPackages = @{")
         block = source[index : source.index("}", index)]
         powershell = {
-            name.lower(): spec
-            for name, spec in re.findall(r'"([^"]+)"\s*=\s*"([^"]+)"', block)
+            name.lower(): spec for name, spec in re.findall(r'"([^"]+)"\s*=\s*"([^"]+)"', block)
         }
         assert powershell == {
             name: entry for name, entry in self._requirement_names(overrides).items()
