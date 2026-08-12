@@ -7092,6 +7092,15 @@ class LlamaCppBackend:
             for _ in range(alen):
                 n = struct.unpack("<Q", f.read(8))[0]
                 raw = f.read(n)
+                # Only "<...>" / "[...]" entries survive delimiter_shaped_tokens, so skip
+                # the decode for the rest. UTF-8 is self-synchronising, so no multi-byte
+                # character starts with either byte and the first one settles it. The
+                # bytes are still read rather than seeked past: seeking would move the
+                # cursor differently on a short read, raise a different error on a bad
+                # length, and fail outright on a non-seekable stream. Decoding a
+                # six-figure vocabulary is the cost here, not reading it.
+                if raw[:1] != b"<" and raw[:1] != b"[":
+                    continue
                 # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
                 # entries are simply not markers.
                 try:
