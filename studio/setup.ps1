@@ -3819,7 +3819,10 @@ function Mark-StudioOwned {
 # no other way to know. Two sources, because the completion manifest is dropped
 # before every dependency pass and so cannot answer for a run killed mid-pass:
 # the manifest key first, then .unsloth-no-torch, which outlives the pass. Neither
-# present reads as "install torch" -- the pre-existing behavior.
+# present normally reads as "install torch". The one legacy exception is a
+# structurally complete manifest from before the key existed whose venv has no
+# torch package or metadata. That is durable evidence of a completed GGUF-only
+# install, while either artifact means a damaged torch install remains repairable.
 function Get-PersistedNoTorch {
     param([Parameter(Mandatory = $true)][string]$VenvPath)
     $manifestPath = Join-Path $VenvPath "unsloth_install_manifest.json"
@@ -3832,6 +3835,16 @@ function Get-PersistedNoTorch {
         }
         if ($null -ne $payload -and $null -ne $payload.no_torch) {
             return ("$($payload.no_torch)" -match '^\s*(?i:true|1|yes|on)\s*$')
+        }
+        if ($null -ne $payload -and $payload.schema -eq 1 -and
+            $null -ne $payload.completed_at_ms -and $null -ne $payload.requirement_files) {
+            $sitePackages = Join-Path $VenvPath "Lib\site-packages"
+            $torchArtifact = Test-Path -LiteralPath (Join-Path $sitePackages "torch")
+            if (-not $torchArtifact -and (Test-Path -LiteralPath $sitePackages -PathType Container)) {
+                $torchArtifact = $null -ne (Get-ChildItem -LiteralPath $sitePackages -Filter "torch-*.dist-info" -ErrorAction SilentlyContinue |
+                    Select-Object -First 1)
+            }
+            if (-not $torchArtifact) { return $true }
         }
     }
     return (Test-Path -LiteralPath (Join-Path $VenvPath $NoTorchMarker) -PathType Leaf)

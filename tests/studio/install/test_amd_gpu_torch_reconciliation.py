@@ -183,11 +183,11 @@ def test_visible_device_selection_keeps_a_record_with_a_blank_name(tmp_path, scr
 # The dependency fast path delegates to the same Python implementation that performs repair.
 
 
-def _repair_needed(
+def _plan(
     monkeypatch,
     *,
+    imports_as_rocm = False,
     version = "2.11.0+cpu",
-    hip = "",
     **state,
 ):
     defaults = {
@@ -199,10 +199,8 @@ def _repair_needed(
         "rocm_pin": None,
         "nvidia": False,
         "amd": True,
-        "assume_amd_detected": False,
-        "assume_nvidia_detected": False,
-        "detected_gfx_devices": [],
-        "detected_gfx_probe": None,
+        "gfx_devices": [],
+        "gfx_probe": None,
         "inferred_gfx": None,
         "rocm_version": (7, 2),
         "installed_rocm_family": None,
@@ -223,22 +221,21 @@ def _repair_needed(
     monkeypatch.setattr(
         stack, "_installed_rocm_wheel_family", lambda: defaults["installed_rocm_family"]
     )
-    monkeypatch.setattr(stack, "_installed_torch_build_metadata", lambda: (version, hip))
-    return stack._rocm_fast_path_needs_repair(
-        assume_amd_detected = defaults["assume_amd_detected"],
-        assume_nvidia_detected = defaults["assume_nvidia_detected"],
-        detected_gfx_devices = defaults["detected_gfx_devices"],
-        detected_gfx_probe = defaults["detected_gfx_probe"],
+    monkeypatch.setattr(stack, "_probe_rocm_torch", lambda: (imports_as_rocm, version))
+    monkeypatch.setattr(
+        stack, "_detect_amd_gfx_codes", lambda **_kwargs: list(defaults["gfx_devices"])
     )
+    monkeypatch.setattr(stack, "_LAST_AMD_GFX_PROBE", defaults["gfx_probe"])
+    return stack._linux_rocm_torch_plan()[0]
 
 
 @pytest.mark.parametrize("version", ["2.11.0+cpu", "2.10.0", "2.10.0+cu128"])
 def test_non_rocm_wheel_on_an_amd_host_forces_the_pass(monkeypatch, version):
-    assert _repair_needed(monkeypatch, version = version)
+    assert _plan(monkeypatch, version = version) is not None
 
 
 def test_untagged_hip_build_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(monkeypatch, version = "2.11.0", hip = "7.2.0")
+    assert _plan(monkeypatch, imports_as_rocm = True, version = "2.11.0") is None
 
 
 @pytest.mark.parametrize(
@@ -253,37 +250,25 @@ def test_untagged_hip_build_keeps_the_fast_path(monkeypatch):
     ids = ["no-torch", "aarch64", "nvidia", "no-amd", "custom-pin"],
 )
 def test_unrepairable_or_user_selected_states_keep_the_fast_path(monkeypatch, state):
-    assert not _repair_needed(monkeypatch, **state)
+    assert _plan(monkeypatch, **state) is None
 
 
 def test_unreadable_rocm_without_an_inferred_arch_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(monkeypatch, rocm_version = None)
+    assert _plan(monkeypatch, rocm_version = None) is None
 
 
 def test_inferred_arch_allows_repair_without_a_rocm_version(monkeypatch):
-    assert _repair_needed(monkeypatch, amd = False, rocm_version = None, inferred_gfx = "gfx1151")
+    assert _plan(monkeypatch, amd = False, rocm_version = None, inferred_gfx = "gfx1151")
 
 
-def test_setup_can_reuse_its_amd_vendor_verdict(monkeypatch):
-    """The delegated decision must not repeat NVIDIA or AMD hardware probes."""
-    assert _repair_needed(monkeypatch, assume_amd_detected = True, nvidia = True, amd = False)
-
-
-def test_setup_nvidia_verdict_skips_unpinned_rocm_repair(monkeypatch):
-    assert not _repair_needed(
-        monkeypatch,
-        amd = False,
-        nvidia = False,
-        assume_nvidia_detected = True,
-    )
-
-
-def test_missing_or_unreadable_torch_metadata_forces_the_pass(monkeypatch):
-    assert _repair_needed(monkeypatch, version = "", hip = "")
+@pytest.mark.parametrize("version", ["", "2.11.0+rocm7.2"])
+def test_missing_or_corrupt_torch_import_forces_the_pass(monkeypatch, version):
+    """A tag on disk cannot make an unimportable torch healthy."""
+    assert _plan(monkeypatch, imports_as_rocm = False, version = version) is not None
 
 
 def test_explicit_rocm_pin_repairs_without_a_hardware_probe(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
         amd = False,
         nvidia = True,
@@ -293,156 +278,147 @@ def test_explicit_rocm_pin_repairs_without_a_hardware_probe(monkeypatch):
 
 
 def test_explicit_rocm_family_mismatch_forces_the_pass(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.10.0+rocm6.4",
         rocm_pin = "https://download.pytorch.org/whl/rocm7.2",
     )
 
 
 def test_matching_explicit_rocm_family_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.10.0+rocm6.4",
         rocm_pin = "https://download.pytorch.org/whl/rocm6.4",
-    )
+    ) is None
 
 
 def test_explicit_gfx_sibling_family_forces_the_pass(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.13.0",
-        hip = "7.13.0",
         rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
         installed_rocm_family = "gfx1150",
-    )
+    ) is not None
 
 
 def test_matching_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.13.0",
-        hip = "7.13.0",
         rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
         installed_rocm_family = "gfx1151",
-    )
+    ) is None
 
 
 def test_unknown_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.13.0",
-        hip = "7.13.0",
         rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
         installed_rocm_family = None,
-    )
+    ) is None
 
 
 def test_strix_generic_rocm_wheel_forces_the_pass(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.2",
-        hip = "7.2.0",
-        detected_gfx_devices = ["gfx1151"],
-    )
+        gfx_devices = ["gfx1151"],
+    ) is not None
 
 
 def test_strix_matching_arch_wheel_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.13.0",
-        hip = "7.13.0",
-        detected_gfx_devices = ["gfx1151"],
+        gfx_devices = ["gfx1151"],
         installed_rocm_family = "gfx1151",
-    )
+    ) is None
 
 
 def test_strix_sibling_arch_wheel_forces_the_pass(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.13.0",
-        hip = "7.13.0",
-        detected_gfx_devices = ["gfx1151"],
+        gfx_devices = ["gfx1151"],
         installed_rocm_family = "gfx1150",
-    )
+    ) is not None
 
 
 def test_visible_non_strix_gpu_does_not_trigger_present_strix_repair(monkeypatch):
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.2",
-        hip = "7.2.0",
-        detected_gfx_devices = ["gfx1100", "gfx1151"],
-        detected_gfx_probe = "amd-smi",
-    )
+        gfx_devices = ["gfx1100", "gfx1151"],
+        gfx_probe = "amd-smi",
+    ) is None
 
 
 def test_gfx906_newer_rocm_wheel_forces_the_pass(monkeypatch):
-    assert _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.11.0+rocm7.2",
-        hip = "7.2.0",
-        detected_gfx_devices = ["gfx906"],
-    )
+        gfx_devices = ["gfx906"],
+    ) is not None
 
 
 def test_gfx906_legacy_rocm_wheel_keeps_the_fast_path(monkeypatch):
-    assert not _repair_needed(
+    assert _plan(
         monkeypatch,
+        imports_as_rocm = True,
         version = "2.7.0+rocm6.3",
-        hip = "6.3.0",
-        detected_gfx_devices = ["gfx906"],
-    )
+        gfx_devices = ["gfx906"],
+    ) is None
 
 
-def test_active_interpreter_metadata_ignores_a_stale_python_tree(tmp_path, monkeypatch):
-    active = tmp_path / "python3.12" / "site-packages"
-    stale = tmp_path / "python3.10" / "site-packages"
-    (active / "torch").mkdir(parents = True)
-    (stale / "torch").mkdir(parents = True)
-    (active / "torch" / "version.py").write_text(
-        "from typing import Optional\n__version__ = '2.11.0'\nhip: Optional[str] = '7.2.0'\n"
-    )
-    (stale / "torch" / "version.py").write_text("__version__ = '2.10.0+cpu'\n")
-    monkeypatch.setattr(stack.sysconfig, "get_path", lambda _name: str(active))
-    assert stack._installed_torch_build_metadata() == ("2.11.0", "7.2.0")
-
-
-def test_escape_precedes_the_dependency_pass_it_controls():
-    """The vendor probe must run before the fast path, or the escape reads unset variables."""
+def test_display_probe_does_not_duplicate_the_fast_path_decision():
     src = SETUP_SH.read_text(encoding = "utf-8")
     probe = src.find("if _setup_has_usable_nvidia_gpu; then")
     fast_path = src.find("# ── Check if Python deps need updating ──")
     decision = src.find('if [ "$_SKIP_PYTHON_DEPS" = false ]; then')
-    assert 0 <= probe < fast_path < decision, (
-        "setup.sh must classify the host before the dependency fast path decides "
-        "whether to reinstall PyTorch"
-    )
+    assert 0 <= fast_path < decision < probe
 
 
-def test_fast_path_probe_reads_metadata_without_importing_torch():
+def test_fast_path_checks_the_active_torch_import_with_a_timeout():
     source = STACK_PATH.read_text(encoding = "utf-8")
-    start = source.index("def _rocm_fast_path_needs_repair(")
-    end = source.index("\ndef _ensure_rocm_torch()", start)
-    assert "import torch" not in source[start:end]
+    start = source.index("def _probe_rocm_torch()")
+    end = source.index("\ndef _rocm_packages_for_index", start)
+    block = source[start:end]
+    assert "import torch" in block
+    assert "timeout = 90" in block
+
+
+def test_fast_path_and_repair_use_the_same_plan():
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    ensure = source[source.index("def _ensure_rocm_torch()") :]
+    main = source[source.index('if __name__ == "__main__":') :]
+    assert "plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()" in ensure
+    assert "_linux_rocm_torch_plan()[0] is not None" in main
 
 
 def test_shell_bounds_and_diagnoses_the_delegated_probe():
     source = SETUP_SH.read_text(encoding = "utf-8")
     start = source.index("            _setup_rocm_fast_path_probe()")
     block = source[start : start + 3500]
-    assert 'timeout 45 "$VENV_DIR/bin/python"' in block
+    assert 'timeout --kill-after=5 180 "$VENV_DIR/bin/python"' in block
     assert "--rocm-fast-path-needs-repair" in block
-    assert "--amd-detected --amd-gfx" in block
-    assert "--nvidia-detected" in block
-    assert (
-        'if [ "$_SKIP_PYTHON_DEPS" = true ] && [ "${_setup_nvidia_usable:-}" != true ]'
-        not in source
-    )
+    assert "--amd-detected" not in block
+    assert "--nvidia-detected" not in block
     assert 'verbose_substep "ROCm reconciliation probe failed' in block
     stack_source = STACK_PATH.read_text(encoding = "utf-8")
-    assert "else 3" in stack_source
+    assert "else 3" in stack_source or "else 3)" in stack_source
 
 
 # ── setup.sh: the GPU summary must report the runtime answer ──
@@ -457,7 +433,7 @@ def test_summary_probes_torch_and_has_a_warning_arm():
         "torch.cuda.is_available()" in block
     ), "the AMD summary must ask torch whether it can use the GPU it just announced"
     assert (
-        "signal.alarm(60)" in block and "timeout 60" in block
+        "signal.alarm(60)" in block and "timeout --kill-after=5 60" in block
     ), "the probe must be bounded: a faulted HIP runtime hangs inside `import torch`"
     assert (
         'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block
@@ -470,3 +446,13 @@ def test_summary_reports_an_intentional_all_hidden_mask_separately():
     assert "ROCR_VISIBLE_DEVICES+x" in src
     assert "CUDA_VISIBLE_DEVICES+x" in src
     assert 'substep "$_setup_vis_name intentionally hides every AMD device from PyTorch."' in src
+
+
+def test_summary_reports_an_explicit_non_rocm_backend_separately():
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    assert 'case "$_setup_non_rocm_backend" in cpu|cuda|xpu)' in src
+    assert "PyTorch GPU use is disabled by the explicit" in src
+    assert "amdgpu kernel driver" in src
+    assert src.index("PyTorch GPU use is disabled by the explicit") < src.index(
+        "Check that the amdgpu kernel driver"
+    )

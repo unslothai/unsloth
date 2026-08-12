@@ -11,7 +11,6 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
-import ast
 import glob
 import importlib.util
 import json
@@ -25,6 +24,7 @@ import sysconfig
 import tempfile
 import textwrap
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent / "backend"
@@ -2807,112 +2807,175 @@ def _selected_linux_strix_gfx(
     )
 
 
-def _installed_torch_build_metadata() -> tuple[str, str]:
-    """Read the active interpreter's torch version and HIP marker without importing torch."""
-    version_file = Path(sysconfig.get_path("purelib")) / "torch" / "version.py"
+@dataclass(frozen = True)
+class _LinuxRocmTorchPlan:
+    """One authoritative torch action shared by fast-path checks and repair."""
+
+    index_url: str
+    packages: tuple[str, str, str]
+    label: str
+    reason: str
+    clear_hsa_spoof_gfx: "str | None" = None
+
+
+def _probe_rocm_torch() -> tuple[bool, str]:
+    """Return whether torch imports as ROCm and its version, with a hard Python timeout."""
     try:
-        tree = ast.parse(version_file.read_text(encoding = "utf-8"))
-    except (OSError, SyntaxError, UnicodeError):
-        return "", ""
-
-    values: dict[str, object] = {}
-    for node in tree.body:
-        name = None
-        value = None
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target = node.targets[0]
-            if isinstance(target, ast.Name):
-                name = target.id
-                value = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            name = node.target.id
-            value = node.value
-        if name not in {"__version__", "hip"} or value is None:
-            continue
-        try:
-            values[name] = ast.literal_eval(value)
-        except (ValueError, TypeError):
-            continue
-
-    version = values.get("__version__")
-    hip = values.get("hip")
-    return (
-        version if isinstance(version, str) else "",
-        hip if isinstance(hip, str) else "",
-    )
-
-
-def _rocm_fast_path_needs_repair(
-    *,
-    assume_amd_detected: bool = False,
-    assume_nvidia_detected: bool = False,
-    detected_gfx_devices: "list[str] | None" = None,
-    detected_gfx_probe: "str | None" = None,
-) -> bool:
-    """Whether skipping the dependency pass would strand a repairable Linux AMD torch."""
-    if NO_TORCH or not IS_LINUX:
-        return False
-    if platform.machine().lower() not in {"x86_64", "amd64"}:
-        return False
-    if _TORCH_BACKEND in {"cuda", "cpu", "xpu"}:
-        return False
-    if _explicit_unknown_family_torch_index_url() is not None:
-        return False
-
-    rocm_pin = _explicit_rocm_torch_index_url()
-    inferred_gfx = _infer_linux_amd_gfx_arch() if rocm_pin is None else None
-    rocm_version = None
-    if rocm_pin is None:
-        if not assume_amd_detected:
-            if assume_nvidia_detected or _has_usable_nvidia_gpu():
-                return False
-            if not _has_rocm_gpu() and not inferred_gfx:
-                return False
-        rocm_version = _detect_rocm_version()
-        if rocm_version is None and not inferred_gfx:
-            return False
-
-    installed_version, hip = _installed_torch_build_metadata()
-    if not installed_version and not hip:
-        return True
-    if "+xpu" in installed_version.lower():
-        return False
-
-    is_rocm = bool(hip) or "+rocm" in installed_version.lower()
-    if not is_rocm:
-        return True
-    if rocm_pin is not None:
-        return _rocm_index_needs_reinstall(rocm_pin, installed_version)
-
-    # A working ROCm import is not enough for the hardware-specific exceptions.
-    # Strix needs AMD's per-arch 2.11 build, and gfx906 needs the last wheel family
-    # that still ships its BLAS kernels. Reuse the same target selection as repair.
-    if rocm_version is None:
-        return False
-    gfx906_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[
-        0
-    ] == "gfx906"
-    if _strix_needs_amd_arch_index(rocm_version) and not gfx906_override:
-        selected_gfx, _runtime_gfx, _physical_gfx, _detected_strix = _selected_linux_strix_gfx(
-            inferred_gfx,
-            gfx_devices = detected_gfx_devices,
-            probe_kind = detected_gfx_probe,
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch; "
+                    "hip=getattr(torch.version,'hip','') or ''; "
+                    "ver=getattr(torch,'__version__','').lower(); "
+                    "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
+                    "print(marker + '|' + ver)"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
         )
-        if selected_gfx is not None:
-            desired_url = _amd_arch_index_url(selected_gfx)
-            if desired_url is not None and _rocm_index_needs_reinstall(
-                desired_url, installed_version
-            ):
-                return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False, ""
+    lines = (
+        [
+            line.strip()
+            for line in probe.stdout.decode(errors = "replace").splitlines()
+            if line.strip()
+        ]
+        if probe.returncode == 0
+        else []
+    )
+    marker, separator, version = lines[-1].partition("|") if lines else ("", "", "")
+    return bool(separator and marker), version
 
-    gfx_codes = detected_gfx_devices
+
+def _rocm_packages_for_index(index_url: str) -> tuple[str, str, str]:
+    leaf = _torch_index_leaf(index_url)
+    if leaf in _ROCM_GFX_TORCH211_LEAVES:
+        return _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+    return _ROCM_TORCH_PKG_SPECS.get(leaf, _ROCM_TORCH_PKG_SPECS["_default"])
+
+
+def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
+    """Resolve the Linux ROCm action once.
+
+    The returned tuple is ``(plan, torch_ready, runtime_is_gfx906)``. A caller may
+    inspect ``plan`` for the setup fast path or execute it during dependency repair.
+    """
     if (
-        _runtime_target_is_gfx906(gfx_codes)
-        and _gfx906_needs_legacy_index(rocm_version)
-        and _GFX906_LEGACY_TAG not in installed_version.lower()
+        NO_TORCH
+        or not IS_LINUX
+        or platform.machine().lower() not in {"x86_64", "amd64"}
+        or _TORCH_BACKEND in {"cuda", "cpu", "xpu"}
+        or _explicit_unknown_family_torch_index_url() is not None
     ):
-        return True
-    return False
+        return None, False, False
+
+    pin = _explicit_rocm_torch_index_url()
+    inferred_gfx = _infer_linux_amd_gfx_arch() if pin is None else None
+    amd_visible = False
+    if pin is None:
+        if _has_usable_nvidia_gpu():
+            return None, False, False
+        amd_visible = _has_rocm_gpu()
+        if not amd_visible and not inferred_gfx:
+            return None, False, False
+
+    rocm_version = _detect_rocm_version()
+    if rocm_version is None:
+        if pin is None and not inferred_gfx:
+            _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
+            return None, False, False
+        rocm_version = (0, 0)
+
+    has_rocm_torch, installed_version = _probe_rocm_torch()
+    gfx_devices = _detect_amd_gfx_codes(dedup = False)
+    gfx_probe = _LAST_AMD_GFX_PROBE
+    gfx_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
+    gfx906_override = gfx_override.split(":")[0] == "gfx906"
+    runtime_is_gfx906 = gfx906_override or _runtime_target_is_gfx906(gfx_devices)
+
+    desired_url = pin
+    label = f"ROCm torch ({_torch_index_leaf(pin)})" if pin else ""
+    reason = "explicit ROCm index"
+    clear_spoof = None
+    selected_strix = False
+
+    if pin is None and inferred_gfx and not has_rocm_torch and (gfx_override or not amd_visible):
+        desired_url = _amd_arch_index_url(inferred_gfx)
+        label = f"ROCm torch (inferred {inferred_gfx})"
+        reason = f"{inferred_gfx} inferred while the ROCm runtime is not visible"
+
+    if (
+        pin is None
+        and desired_url is None
+        and _strix_needs_amd_arch_index(rocm_version)
+        and not gfx906_override
+    ):
+        selected, runtime_gfx, physical_gfx, detected = _selected_linux_strix_gfx(
+            inferred_gfx, gfx_devices = gfx_devices, probe_kind = gfx_probe
+        )
+        if selected is not None:
+            desired_url = _amd_arch_index_url(selected)
+            label = "ROCm torch (Strix arch-specific)"
+            reason = f"{selected} is the visible Strix runtime target"
+            clear_spoof = physical_gfx
+            selected_strix = True
+        elif detected:
+            _safe_print(
+                f"   Strix GPU ({', '.join(sorted(detected))}) present but HIP_VISIBLE_DEVICES "
+                f"selects a non-Strix runtime target ({runtime_gfx});\n"
+                f"   skipping AMD per-gfx index override.\n"
+            )
+
+    if (
+        pin is None
+        and desired_url is None
+        and runtime_is_gfx906
+        and _gfx906_needs_legacy_index(rocm_version)
+    ):
+        desired_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
+        label = f"ROCm torch (gfx906, {_GFX906_LEGACY_TAG})"
+        reason = "gfx906 requires the last wheel family that still ships its BLAS kernels"
+
+    if pin is None and desired_url is None:
+        tag = _generic_pytorch_rocm_tag(rocm_version)
+        if tag is not None:
+            desired_url = f"{_PYTORCH_WHL_BASE}/{tag}"
+            label = f"ROCm torch ({tag})"
+            reason = f"ROCm {rocm_version[0]}.{rocm_version[1]}"
+
+    if desired_url is None:
+        return None, has_rocm_torch, runtime_is_gfx906
+
+    reinstall = not has_rocm_torch
+    if has_rocm_torch and (pin is not None or selected_strix):
+        reinstall = _rocm_index_needs_reinstall(desired_url, installed_version)
+    elif (
+        has_rocm_torch
+        and runtime_is_gfx906
+        and _torch_index_leaf(desired_url) == _GFX906_LEGACY_TAG
+    ):
+        reinstall = _GFX906_LEGACY_TAG not in installed_version
+
+    # A confirmed HSA spoof is itself an action. The dependency pass must clear it
+    # even when the already-installed per-arch wheel matches.
+    if not reinstall and clear_spoof is None:
+        return None, True, runtime_is_gfx906
+    return (
+        _LinuxRocmTorchPlan(
+            index_url = desired_url,
+            packages = _rocm_packages_for_index(desired_url),
+            label = label,
+            reason = reason,
+            clear_hsa_spoof_gfx = clear_spoof,
+        ),
+        False,
+        runtime_is_gfx906,
+    )
 
 
 def _ensure_rocm_torch() -> None:
@@ -3059,297 +3122,25 @@ def _ensure_rocm_torch() -> None:
             )
         return
 
-    # ── Linux x86_64 only: PyTorch ROCm wheels are not published for aarch64 ──
-    if platform.machine().lower() not in {"x86_64", "amd64"}:
-        return
-    # An explicit ROCm pin commits to ROCm wheels regardless of the visible GPU (headless / CI).
-    # Mirror _ensure_cuda_torch: skip the NVIDIA/no-AMD/unreadable gates.
-    _rocm_pin = _explicit_rocm_torch_index_url()
-    _inferred_linux_gfx = (
-        _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
-    )
-    if _rocm_pin is None:
-        # NVIDIA takes precedence on mixed hosts (only if a GPU is usable).
-        if _has_usable_nvidia_gpu():
-            return
-        # _has_rocm_gpu() (rocminfo / amd-smi rows) is the authoritative AMD-host signal;
-        # the old /opt/rocm-or-hipcc gate broke runtime-only ROCm installs.
-        if not _has_rocm_gpu() and not _inferred_linux_gfx:
-            return  # no AMD GPU visible
+    plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()
 
-    ver = _detect_rocm_version()
-    if ver is None:
-        if _rocm_pin is None and not _inferred_linux_gfx:
-            _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
-            return
-        # Explicit pin or inferred gfx: the index drives the install.
-        ver = (0, 0)
-
-    # Probe whether torch links against HIP, capturing the installed ROCm tag for pin-mismatch
-    # detection. Emit ONE "<hip_marker>|<version>" line: marker (HIP version, "rocm" sentinel,
-    # or empty for CPU/CUDA) before "|", wheel version after.
-    try:
-        probe = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import torch; "
-                    "hip=getattr(torch.version,'hip','') or ''; "
-                    "ver=getattr(torch,'__version__','').lower(); "
-                    # HIP version if present, else a "rocm" sentinel when only the
-                    # version string flags ROCm; empty marker = CPU/CUDA torch.
-                    "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
-                    "print(marker + '|' + ver)"
-                ),
-            ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.DEVNULL,
-            timeout = 90,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        probe = None
-    # Last non-empty line, split on the FIRST "|" so the empty HIP field is preserved.
-    _marker_lines = (
-        [ln.strip() for ln in probe.stdout.decode(errors = "replace").splitlines() if ln.strip()]
-        if (probe is not None and probe.returncode == 0)
-        else []
-    )
-    _hip_marker, _sep, _installed_torch_ver = (
-        _marker_lines[-1].partition("|") if _marker_lines else ("", "", "")
-    )
-    # A "|"-delimited line is required; without it treat HIP as absent -> reinstall.
-    has_hip_torch = bool(_sep) and _hip_marker != ""
-
-    # An explicit ROCm pin whose family differs from the installed torch must reinstall, else a
-    # rocm7.2/gfx* pin over an older family never applies. Version tags cover generic-to-gfx and
-    # ROCm release changes; the installed AMD runtime metadata covers same-tag sibling gfx pins.
-    _rocm_pin_mismatch = (
-        _rocm_index_needs_reinstall(_rocm_pin, _installed_torch_ver)
-        if (has_hip_torch and _rocm_pin is not None)
-        else False
-    )
-
-    rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
-
-    # Inferred-gfx path: ROCm runtime missing but install.sh would route to AMD wheels.
-    # Gated on the runtime NOT enumerating a GPU: when it can, the runtime-visible
-    # arch (Strix override / generic below) decides, not cpuinfo -- a mixed Strix
-    # APU + dGPU box with HIP_VISIBLE_DEVICES on the dGPU must not get APU wheels.
-    # An explicit UNSLOTH_ROCM_GFX_ARCH is exempt from that runtime gate (mirrors
-    # install.sh): a visible GPU with an unreadable/unsupported ROCm version must
-    # not silently discard the user's named arch and leave CPU torch in place.
-    _gfx_override_env = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
-    if (
-        _inferred_linux_gfx
-        and not has_hip_torch
-        and _rocm_pin is None
-        and (_gfx_override_env or not _has_rocm_gpu())
-    ):
-        index_url = _amd_arch_index_url(_inferred_linux_gfx)
-        if index_url is not None:
-            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
-                _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
-            )
-            _safe_print(
-                f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
-                f"installing torch from {_strip_index_url_credentials(index_url)}\n"
-                f"   AMD wheels bundle their own ROCm runtime; install the kernel stack "
-                f"for native GPU compute.\n"
-            )
-            pip_install(
-                f"ROCm torch (inferred {_inferred_linux_gfx})",
-                "--force-reinstall",
-                "--no-cache-dir",
-                _torch_pkg,
-                _vision_pkg,
-                _audio_pkg,
-                "--index-url",
-                index_url,
-                constrain = False,
-            )
-            rocm_torch_ready = True
-
-    # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
-    # MI50 / Radeon VII path; it must win over the Strix probe-order detection
-    # below (a mixed Strix + MI50 host could otherwise route to gfx1151), so the
-    # Strix override is skipped when it is set.
-    _gfx906_arch_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(
-        ":"
-    )[0] == "gfx906"
-
-    # Strix Halo / Point (gfx1151 / gfx1150) need torch from AMD's per-gfx index
-    # (2.11+rocm7.13); any generic pytorch.org rocm index lacks the fixes (ROCm 7.1
-    # segfaults in _grouped_mm). See _strix_needs_amd_arch_index for the floor gate.
-    _strix_override_url: "str | None" = None
-    _strix_override_pkgs: "tuple[str, str, str] | None" = None
-    # An explicit ROCm pin is authoritative: never auto-reroute it.
-    if (
-        _strix_needs_amd_arch_index(ver)
-        and _explicit_rocm_torch_index_url() is None
-        and not _gfx906_arch_override
-    ):
-        _selected_gfx, _runtime_gfx, _physical_gfx, _detected_strix = _selected_linux_strix_gfx(
-            _inferred_linux_gfx
-        )
-        if _detected_strix:
-            if _selected_gfx is not None:
-                _amd_mirror = (
-                    os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
-                ).rstrip("/")
-                _strix_override_url = f"{_amd_mirror}/{_selected_gfx}/"
-                _strix_override_pkgs = (
-                    "torch>=2.11.0,<2.12.0",
-                    # Pin companions to the 2.11.x range: the exclusive --index-url could
-                    # otherwise resolve a build for a different torch major (ABI mismatch).
-                    "torchvision>=0.26.0,<0.27.0",
-                    "torchaudio>=2.11.0,<2.12.0",
-                )
-                _safe_print(
-                    f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
-                    f"{ver[0]}.{ver[1]}.\n"
-                    f"   Routing torch install to AMD's arch-specific index\n"
-                    f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
-                    f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
-                    f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
-                )
-                # Only on this branch: these wheels carry _selected_gfx kernels, so
-                # the runtime must stop reporting the spoofed arch or they have no
-                # code for the device (#7331). Never on the paths that keep generic
-                # wheels, where the override is the only source of usable kernels.
-                if _physical_gfx is not None:
-                    _clear_confirmed_hsa_spoof(_selected_gfx)
-            else:
-                _gfx_str = ", ".join(sorted(_detected_strix))
-                _safe_print(
-                    f"   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
-                    f"selects a non-Strix runtime target ({_runtime_gfx});\n"
-                    f"   skipping AMD per-gfx index override.\n"
-                )
-
-    # gfx906 (MI50 / Radeon VII): is this the runtime GPU target? Used below to skip
-    # the generic bitsandbytes wheel (no gfx906 kernels). This must hold even under
-    # an explicit torch-index pin: a gfx906 host that pins rocm6.3 (without also
-    # setting UNSLOTH_ROCM_GFX_ARCH) would otherwise reinstall the prebuilt bnb wheel
-    # over the user's source-built gfx906 bnb. So a pin suppresses only the torch
-    # reroute (_gfx906_override below), NOT the gfx906 detection for the bnb skip.
-    _runtime_is_gfx906 = _gfx906_arch_override or _runtime_target_is_gfx906()
-    # Reroute torch to the last gfx906-capable wheel family (rocm6.3) only when the
-    # host ROCm version would otherwise pick a newer, kernel-less index -- and never
-    # over an explicit pin or an active Strix reroute (the pin/Strix path installs
-    # its own index; only the bnb skip must still apply on those paths).
-    _gfx906_override = (
-        _runtime_is_gfx906
-        and _gfx906_needs_legacy_index(ver)
-        and _explicit_rocm_torch_index_url() is None
-        and _strix_override_url is None
-    )
-    if _gfx906_override:
+    if plan is not None:
         _safe_print(
-            f"   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
-            f"{ver[0]}.{ver[1]}.\n"
-            f"   Routing torch install to the {_GFX906_LEGACY_TAG} index: the last wheel\n"
-            f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
-            f"   kernels and fail at first use). gfx906 is a community-maintained legacy\n"
-            f"   path: 16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA\n"
-            f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+            f"   {plan.reason} -- installing torch from "
+            f"{_strip_index_url_credentials(plan.index_url)}"
         )
-
-    # The Strix override must fire even when has_hip_torch is True: an existing
-    # torch.version.hip == "7.1" is exactly the broken combo it repairs.
-    if _strix_override_url is not None and _strix_override_pkgs is not None:
-        index_url = _strix_override_url
-        _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
-        _safe_print(
-            f"   Strix arch-specific override -- installing torch from "
-            f"{_strip_index_url_credentials(index_url)}"
-        )
+        if plan.clear_hsa_spoof_gfx is not None:
+            _clear_confirmed_hsa_spoof(plan.clear_hsa_spoof_gfx)
         pip_install(
-            "ROCm torch (Strix arch-specific)",
+            plan.label,
             "--force-reinstall",
             "--no-cache-dir",
-            _torch_pkg,
-            _vision_pkg,
-            _audio_pkg,
+            *plan.packages,
             "--index-url",
-            index_url,
+            plan.index_url,
             constrain = False,
         )
         rocm_torch_ready = True
-    # gfx906 fires even when has_hip_torch is True: a +rocm7.x build IS the broken
-    # combo it repairs. A torch already on rocm6.3 wheels is left alone (the tag
-    # check below is False, and rocm_torch_ready is already True from has_hip_torch,
-    # so the generic fallback is skipped).
-    elif _gfx906_override and _GFX906_LEGACY_TAG not in _installed_torch_ver:
-        index_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
-        _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
-        _safe_print(
-            f"   gfx906 legacy override -- installing torch from "
-            f"{_strip_index_url_credentials(index_url)}"
-        )
-        pip_install(
-            f"ROCm torch (gfx906, {_GFX906_LEGACY_TAG})",
-            "--force-reinstall",
-            "--no-cache-dir",
-            _torch_pkg,
-            _vision_pkg,
-            _audio_pkg,
-            "--index-url",
-            index_url,
-            constrain = False,
-        )
-        rocm_torch_ready = True
-    elif not rocm_torch_ready:
-        # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from a pin.
-        # Gate on rocm_torch_ready (not has_hip_torch alone) so a successful inferred-gfx
-        # install above is not overwritten by the generic pytorch.org/rocmX.Y path -- that
-        # would undo the fresh-ROCm/no-/dev/kfd repair this path exists for (Codex P1 #7305).
-        # Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
-        _override_idx = _explicit_rocm_torch_index_url()
-        if _override_idx is not None:
-            index_url = _override_idx
-            tag = _torch_index_leaf(index_url)
-        else:
-            tag = next(
-                (
-                    t
-                    for (maj, mn), t in sorted(_ROCM_TORCH_INDEX.items(), reverse = True)
-                    if ver >= (maj, mn)
-                ),
-                None,
-            )
-        if tag is None:
-            _safe_print(
-                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
-            )
-        else:
-            if _override_idx is None:
-                index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            _safe_print(
-                f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}"
-            )
-            # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
-            # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
-            if tag in _ROCM_GFX_TORCH211_LEAVES:
-                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
-            elif tag.startswith("gfx"):
-                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
-            else:
-                _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS.get(
-                    tag, _ROCM_TORCH_PKG_SPECS["_default"]
-                )
-            pip_install(
-                f"ROCm torch ({tag})",
-                "--force-reinstall",
-                "--no-cache-dir",
-                _torch_pkg,
-                _vision_pkg,
-                _audio_pkg,
-                "--index-url",
-                index_url,
-                constrain = False,
-            )
-            rocm_torch_ready = True
 
     # gfx906 has no prebuilt bitsandbytes: the continuous-release/PyPI wheels ship
     # no gfx906 kernels, and force-reinstalling them would clobber a user's
@@ -3449,13 +3240,17 @@ def _infer_no_torch() -> bool:
 
     Precedence: UNSLOTH_NO_TORCH (install.sh / install.ps1 export it, "false"
     included, so an explicit value always wins) -> the mode recorded in this
-    venv's install manifest -> platform detection, so Intel Macs use GGUF-only
-    mode even when invoked from ``unsloth studio update``.
+    venv's install manifest (including legacy manifests whose completed venv has
+    no torch artifacts) -> platform detection, so Intel Macs use GGUF-only mode
+    even when invoked from ``unsloth studio update``.
 
     The manifest tier is what keeps ``unsloth studio update`` in no-torch mode:
     it injects no env var, so without it every update reinstalls torch into a
-    GGUF-only venv. Note setup.ps1 resolves the mode itself and re-exports
-    UNSLOTH_NO_TORCH, because it drops the manifest before invoking this script.
+    GGUF-only venv. Legacy inference is deliberately limited to a complete old
+    manifest with neither a torch package nor torch metadata; a damaged torch
+    install still reaches reconciliation. Note setup.ps1 resolves the mode itself
+    and re-exports UNSLOTH_NO_TORCH, because it drops the manifest before invoking
+    this script.
 
     An empty value counts as unset: PowerShell cannot represent a set-but-empty
     variable (assigning "" deletes it), so the two must mean the same thing here.
@@ -4874,35 +4669,9 @@ def install_python_stack() -> int:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--rocm-fast-path-needs-repair"]:
-        _args = sys.argv[2:]
-        _assume_amd = False
-        _assume_nvidia = False
-        _detected_gfx: "list[str] | None" = None
-        _detected_probe: "str | None" = None
-        while _args:
-            _arg = _args.pop(0)
-            if _arg == "--amd-detected":
-                _assume_amd = True
-            elif _arg == "--nvidia-detected":
-                _assume_nvidia = True
-            elif _arg == "--amd-gfx" and _args:
-                _detected_gfx = [line.strip() for line in _args.pop(0).splitlines() if line.strip()]
-            elif _arg == "--amd-probe-kind" and _args:
-                _detected_probe = _args.pop(0).strip() or None
-            else:
-                sys.exit(2)
-        if _assume_amd and _assume_nvidia:
+        if len(sys.argv) != 2:
             sys.exit(2)
         # Exit 3 means a successful "no repair" decision. Exit 1 remains available for an
         # import or startup failure, so setup.sh can distinguish that from a negative result.
-        sys.exit(
-            0
-            if _rocm_fast_path_needs_repair(
-                assume_amd_detected = _assume_amd,
-                assume_nvidia_detected = _assume_nvidia,
-                detected_gfx_devices = _detected_gfx,
-                detected_gfx_probe = _detected_probe,
-            )
-            else 3
-        )
+        sys.exit(0 if _linux_rocm_torch_plan()[0] is not None else 3)
     sys.exit(install_python_stack())

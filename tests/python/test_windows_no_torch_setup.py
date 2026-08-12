@@ -17,6 +17,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
+LEGACY_MANIFEST = {"schema": 1, "completed_at_ms": 1, "requirement_files": {}}
 
 
 def _powershell_block(source: str, marker: str) -> str:
@@ -115,8 +116,12 @@ def _no_torch_resolution_script() -> str:
             # the case that made a GGUF-only venv look stale and get deleted.
             (None, {"no_torch": True}, "True|true"),
             (None, {"no_torch": False}, "False|false"),
-            # Manifests written before the key existed, and unreadable ones, keep the
-            # pre-existing behaviour rather than switching an install to no-torch.
+            # A complete legacy manifest and no torch artifacts identifies an old
+            # GGUF-only install. A package or metadata artifact leaves it repairable.
+            (None, LEGACY_MANIFEST, "True|true"),
+            (None, {**LEGACY_MANIFEST, "torch_artifact": "package"}, "False|false"),
+            (None, {**LEGACY_MANIFEST, "torch_artifact": "metadata"}, "False|false"),
+            # Partial and unreadable manifests cannot establish the prior mode.
             (None, {}, "False|false"),
             (None, None, "False|false"),
             (None, "{not json", "False|false"),
@@ -138,11 +143,23 @@ def _no_torch_resolution_script() -> str:
 def test_no_torch_mode_survives_a_studio_update(tmp_path, env_value, manifest, marker, expected):
     venv_dir = tmp_path / "unsloth_studio"
     venv_dir.mkdir()
+    torch_artifact = None
+    if isinstance(manifest, dict):
+        manifest = dict(manifest)
+        torch_artifact = manifest.pop("torch_artifact", None)
     if manifest is not None:
         payload = manifest if isinstance(manifest, str) else json.dumps(manifest)
         (venv_dir / "unsloth_install_manifest.json").write_text(payload, encoding = "utf-8")
     if marker:
         (venv_dir / ".unsloth-no-torch").write_text("", encoding = "utf-8")
+
+    # "torch-package" and "torch-metadata" are compact fixture directives, not
+    # manifest fields. They exercise the two artifacts that distinguish a
+    # repairable legacy torch install from an intentional GGUF-only install.
+    if torch_artifact is not None:
+        site_packages = venv_dir / "Lib" / "site-packages"
+        name = "torch" if torch_artifact == "package" else "torch-2.11.0.dist-info"
+        (site_packages / name).mkdir(parents = True)
 
     env = os.environ.copy()
     env.pop("UNSLOTH_NO_TORCH", None)

@@ -197,12 +197,41 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
         pass
 
 
+def _has_torch_install_artifact(root: Optional[Path] = None) -> bool:
+    """Whether this venv contains a torch package or its install metadata.
+
+    A legacy completion manifest predates the ``no_torch`` key, so an entirely
+    absent torch is the only durable evidence that it described a GGUF-only
+    install. Keep dist-info in the test as well as the import package: metadata
+    without an importable package is a damaged torch install that the normal
+    repair path should handle, not a reason to switch modes.
+
+    An unreadable site-packages directory is treated as an artifact. That is the
+    conservative result because it avoids silently changing an unknown install
+    into GGUF-only mode.
+    """
+    prefix = root or venv_root()
+    patterns = (
+        "Lib/site-packages/torch",
+        "Lib/site-packages/torch-*.dist-info",
+        "lib/python*/site-packages/torch",
+        "lib/python*/site-packages/torch-*.dist-info",
+        "lib64/python*/site-packages/torch",
+        "lib64/python*/site-packages/torch-*.dist-info",
+    )
+    try:
+        return any(next(prefix.glob(pattern), None) is not None for pattern in patterns)
+    except OSError:
+        return True
+
+
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     """The mode this venv was installed with, or None when unknown.
 
-    None means nothing recorded it: no manifest key and no marker. Callers must
-    fall back to their own detection on None and never to False, so an install
-    made before either existed is not silently switched out of no-torch mode.
+    The manifest key and marker are authoritative. For manifests predating both,
+    a structurally complete install with no torch artifacts is inferred as
+    no-torch. None means the remaining evidence cannot establish the mode, so
+    callers must fall back to platform detection rather than assume False.
     """
     manifest = read_manifest(root)
     if manifest is not None:
@@ -219,6 +248,19 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
             return True
     except OSError:
         pass
+    # Builds before the key and marker existed still wrote a completion manifest.
+    # A complete legacy manifest plus no torch artifacts means the environment
+    # finished intentionally without torch. Preserve that choice on update. Do
+    # not infer from a missing, truncated, or hand-written partial manifest.
+    if (
+        manifest is not None
+        and "no_torch" not in manifest
+        and manifest.get("schema") == MANIFEST_SCHEMA
+        and isinstance(manifest.get("completed_at_ms"), int)
+        and isinstance(manifest.get("requirement_files"), dict)
+        and not _has_torch_install_artifact(root)
+    ):
+        return True
     return None
 
 

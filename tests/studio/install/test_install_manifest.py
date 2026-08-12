@@ -221,17 +221,35 @@ def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
         )
 
 
-def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
-    # Manifests written before the key existed must keep verifying, and must
-    # report None rather than False so callers fall back to their own detection
-    # instead of silently switching an install out of no-torch mode.
+def test_legacy_manifest_without_torch_preserves_no_torch_mode(install_root, req_root):
+    # A completed manifest from before the key existed plus an entirely absent
+    # torch is durable evidence of a GGUF-only install. Updates must not silently
+    # add torch to it.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
     assert "no_torch" not in payload
 
-    assert im.recorded_no_torch(root = install_root) is None
+    assert im.recorded_no_torch(root = install_root) is True
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
+
+
+@pytest.mark.parametrize("artifact", ("package", "metadata"))
+def test_legacy_manifest_with_a_torch_artifact_remains_repairable(
+    install_root, req_root, artifact
+):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    site_packages = install_root / "lib" / "python3.12" / "site-packages"
+    name = "torch" if artifact == "package" else "torch-2.11.0.dist-info"
+    (site_packages / name).mkdir(parents = True)
+
+    assert im.recorded_no_torch(root = install_root) is None
+
+
+def test_partial_manifest_without_torch_does_not_infer_no_torch(install_root):
+    (install_root / im.MANIFEST_NAME).write_text('{"schema": 1}', encoding = "utf-8")
+
+    assert im.recorded_no_torch(root = install_root) is None
 
 
 def test_recorded_no_torch_tolerates_a_hand_edited_manifest(install_root, req_root):
