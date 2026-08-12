@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export type MediaGenerationKind = "image" | "video";
-export type MediaPresetSource = "builtin-default" | "custom" | "modified";
 
 export interface MediaGenerationPreset<Params, LoadConfig> {
   name: string;
@@ -10,12 +9,15 @@ export interface MediaGenerationPreset<Params, LoadConfig> {
   loadConfig?: LoadConfig;
 }
 
-export interface MediaGenerationPresetSettings<Params, LoadConfig> {
+export interface MediaGenerationPresetState<Params, LoadConfig> {
   currentParams: Params;
   currentLoadConfig?: LoadConfig | null;
-  customPresets: MediaGenerationPreset<Params, LoadConfig>[];
   activePreset: string;
-  activePresetSource: MediaPresetSource;
+}
+
+export interface MediaGenerationPresetSettings<Params, LoadConfig>
+  extends MediaGenerationPresetState<Params, LoadConfig> {
+  customPresets: MediaGenerationPreset<Params, LoadConfig>[];
   saved?: boolean;
 }
 
@@ -29,12 +31,16 @@ export interface ImageGenerationPresetParams {
   runs: number;
 }
 
-export interface ImageGenerationPresetLoadConfig {
+export interface MediaGenerationPresetLoadConfig {
   speedMode: "auto" | "off" | "eager" | "default" | "max";
   transformerQuant: "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
   attentionBackend: "auto" | "native" | "cudnn" | "flash3" | "sage";
   memoryMode: "auto" | "fast" | "balanced" | "low_vram";
   transformerCache: "auto" | "off" | "fbcache";
+}
+
+export interface ImageGenerationPresetLoadConfig
+  extends MediaGenerationPresetLoadConfig {
   cpuOffload: boolean;
 }
 
@@ -49,10 +55,4 @@ export interface VideoGenerationPresetParams {
   audioFlowShift: number | null;
 }
 
-export interface VideoGenerationPresetLoadConfig {
-  memoryMode: "auto" | "fast" | "balanced" | "low_vram";
-  speedMode: "auto" | "off" | "eager" | "default" | "max";
-  attentionBackend: "auto" | "native" | "cudnn" | "flash3" | "sage";
-  transformerCache: "auto" | "off" | "fbcache";
-  transformerQuant: "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
-}
+export type VideoGenerationPresetLoadConfig = MediaGenerationPresetLoadConfig;

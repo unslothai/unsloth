@@ -1,87 +1,133 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from collections import OrderedDict
 from threading import RLock
 from typing import Literal
 
 
 MediaGenerationKind = Literal["image", "video"]
-PresetWriteOrder = tuple[str | None, int | None]
+PresetWriteOrder = tuple[int | None, str | None]
 _settings_lock = RLock()
-_latest_writes: OrderedDict[tuple[MediaGenerationKind, str, str], int] = OrderedDict()
+_WRITE_VERSIONS = "_writeVersions"
+_MAX_WRITE_VERSIONS = 1024
 
 
 def _setting_key(kind: MediaGenerationKind) -> str:
     return f"{kind}_generation_presets"
 
 
-def _accept_write(kind: MediaGenerationKind, scope: str, write: PresetWriteOrder) -> bool:
-    writer, sequence = write
-    if writer is None or sequence is None:
+def _version(write: PresetWriteOrder) -> tuple[int, str] | None:
+    timestamp, writer = write
+    if timestamp is None or writer is None:
+        return None
+    return timestamp, writer
+
+
+def _stored_settings(kind: MediaGenerationKind) -> dict:
+    from storage.studio_db import get_app_setting
+    stored = get_app_setting(_setting_key(kind), {})
+    return dict(stored) if isinstance(stored, dict) else {}
+
+
+def _public_settings(stored: dict) -> dict:
+    public = dict(stored)
+    public.pop(_WRITE_VERSIONS, None)
+    public.pop("activePresetSource", None)
+    return public
+
+
+def _is_newer(stored: dict, scope: str, write: PresetWriteOrder) -> bool:
+    version = _version(write)
+    if version is None:
         return True
-    key = (kind, scope, writer)
-    if sequence <= _latest_writes.get(key, -1):
-        return False
-    _latest_writes[key] = sequence
-    _latest_writes.move_to_end(key)
-    if len(_latest_writes) > 1024:
-        _latest_writes.popitem(last = False)
-    return True
+    versions = stored.get(_WRITE_VERSIONS, {})
+    current = versions.get(scope) if isinstance(versions, dict) else None
+    if not isinstance(current, list) or len(current) != 2:
+        return True
+    try:
+        current_version = int(current[0]), str(current[1])
+    except (TypeError, ValueError):
+        return True
+    return version > current_version
+
+
+def _record_write(stored: dict, scope: str, write: PresetWriteOrder) -> None:
+    version = _version(write)
+    if version is None:
+        return
+    raw = stored.get(_WRITE_VERSIONS, {})
+    versions = dict(raw) if isinstance(raw, dict) else {}
+    versions.pop(scope, None)
+    versions[scope] = list(version)
+    while len(versions) > _MAX_WRITE_VERSIONS:
+        versions.pop(next(iter(versions)))
+    stored[_WRITE_VERSIONS] = versions
 
 
 def get_media_generation_preset_settings(kind: MediaGenerationKind) -> dict:
-    from storage.studio_db import get_app_setting
     with _settings_lock:
-        stored = get_app_setting(_setting_key(kind), {})
-        return stored if isinstance(stored, dict) else {}
+        return _public_settings(_stored_settings(kind))
 
 
 def set_media_generation_preset_settings(
     kind: MediaGenerationKind,
     settings: dict,
     write: PresetWriteOrder = (None, None),
-) -> dict:
+) -> bool:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
-        stored = get_media_generation_preset_settings(kind)
-        if not _accept_write(kind, "settings", write):
-            return stored
-        settings["customPresets"] = stored.get("customPresets", [])
-        upsert_app_settings({_setting_key(kind): settings})
-        return settings
+        stored = _stored_settings(kind)
+        if not _is_newer(stored, "settings", write):
+            return False
+        updated = {
+            **settings,
+            "customPresets": stored.get("customPresets", []),
+        }
+        if _WRITE_VERSIONS in stored:
+            updated[_WRITE_VERSIONS] = stored[_WRITE_VERSIONS]
+        _record_write(updated, "settings", write)
+        upsert_app_settings({_setting_key(kind): updated})
+        return True
 
 
 def upsert_media_generation_preset(
     kind: MediaGenerationKind,
     preset: dict,
     write: PresetWriteOrder = (None, None),
-) -> None:
+) -> bool:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
-        if not _accept_write(kind, "custom", write):
-            return
-        stored = get_media_generation_preset_settings(kind)
+        stored = _stored_settings(kind)
+        scope = f"custom:{preset['name']}"
+        if not _is_newer(stored, scope, write):
+            return False
         presets = stored.get("customPresets", [])
+        presets = presets if isinstance(presets, list) else []
         replacing = any(item.get("name") == preset["name"] for item in presets)
         if not replacing and len(presets) >= 100:
             raise ValueError("Delete a preset before saving another one")
         stored["customPresets"] = [
             item for item in presets if item.get("name") != preset["name"]
         ] + [preset]
+        _record_write(stored, scope, write)
         upsert_app_settings({_setting_key(kind): stored})
+        return True
 
 
 def delete_media_generation_preset(
     kind: MediaGenerationKind,
     name: str,
     write: PresetWriteOrder = (None, None),
-) -> None:
+) -> bool:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
-        if not _accept_write(kind, "custom", write):
-            return
-        stored = get_media_generation_preset_settings(kind)
+        stored = _stored_settings(kind)
+        scope = f"custom:{name}"
+        if not _is_newer(stored, scope, write):
+            return False
         presets = stored.get("customPresets", [])
+        presets = presets if isinstance(presets, list) else []
         stored["customPresets"] = [item for item in presets if item.get("name") != name]
+        _record_write(stored, scope, write)
         upsert_app_settings({_setting_key(kind): stored})
+        return True

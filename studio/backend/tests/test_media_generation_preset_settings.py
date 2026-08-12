@@ -25,109 +25,47 @@ def _client(monkeypatch) -> TestClient:
 
 def test_image_and_video_presets_persist_independently(monkeypatch):
     client = _client(monkeypatch)
-    image = {
-        "currentParams": {
-            "negativePrompt": "blurry",
-            "width": 1280,
-            "height": 720,
-            "steps": 24,
-            "guidance": 3.5,
-            "batchSize": 2,
-            "runs": 3,
-        },
+    image_state = {
+        "currentParams": {"negativePrompt": "blurry", "width": 1280, "steps": 24},
         "currentLoadConfig": {
             "speedMode": "max",
             "transformerQuant": "fp8",
-            "attentionBackend": "flash3",
-            "memoryMode": "balanced",
-            "transformerCache": "fbcache",
             "cpuOffload": True,
         },
-        "customPresets": [
-            {
-                "name": "Landscape",
-                "params": {
-                    "negativePrompt": "blurry",
-                    "width": 1280,
-                    "height": 720,
-                    "steps": 24,
-                    "guidance": 3.5,
-                    "batchSize": 2,
-                    "runs": 3,
-                },
-                "loadConfig": {
-                    "speedMode": "max",
-                    "transformerQuant": "fp8",
-                    "attentionBackend": "flash3",
-                    "memoryMode": "balanced",
-                    "transformerCache": "fbcache",
-                    "cpuOffload": True,
-                },
-            }
-        ],
         "activePreset": "Landscape",
-        "activePresetSource": "custom",
     }
-    video = {
-        "currentParams": {
-            "negativePrompt": "flicker",
-            "width": 1216,
-            "height": 704,
-            "durationSeconds": 4.9,
-            "steps": 40,
-            "guidance": 4,
-            "flowShift": 12,
-            "audioFlowShift": 3,
-        },
-        "currentLoadConfig": {
-            "memoryMode": "low_vram",
-            "speedMode": "off",
-            "attentionBackend": "native",
-            "transformerCache": "off",
-            "transformerQuant": "none",
-        },
-        "customPresets": [],
+    image_preset = {
+        "name": "Landscape",
+        "params": image_state["currentParams"],
+        "loadConfig": image_state["currentLoadConfig"],
+    }
+    video_state = {
+        "currentParams": {"negativePrompt": "flicker", "steps": 40},
+        "currentLoadConfig": {"memoryMode": "low_vram", "speedMode": "off"},
         "activePreset": "Default",
-        "activePresetSource": "modified",
     }
 
-    image_preset = image["customPresets"][0]
-    image_without_presets = {**image, "customPresets": []}
-    assert (
-        client.put("/api/settings/generation-presets/image", json = image_without_presets).status_code
-        == 200
-    )
+    assert client.put("/api/settings/generation-presets/image", json = image_state).status_code == 200
     assert (
         client.put("/api/settings/generation-presets/image/custom", json = image_preset).status_code
         == 200
     )
-    assert client.put("/api/settings/generation-presets/video", json = video).status_code == 200
-    assert client.get("/api/settings/generation-presets/image").json() == {
-        **image,
-        "saved": True,
-    }
-    assert client.get("/api/settings/generation-presets/video").json() == {
-        **video,
-        "saved": True,
-    }
+    assert client.put("/api/settings/generation-presets/video", json = video_state).status_code == 200
+    image = client.get("/api/settings/generation-presets/image").json()
+    video = client.get("/api/settings/generation-presets/video").json()
+    assert image["saved"] is True
+    assert image["currentParams"]["steps"] == 24
+    assert image["customPresets"][0]["name"] == "Landscape"
+    assert video["saved"] is True
+    assert video["currentParams"]["steps"] == 40
+    assert video["customPresets"] == []
 
 
 def test_preset_payload_rejects_per_run_or_unknown_fields(monkeypatch):
     client = _client(monkeypatch)
     payload = {
-        "currentParams": {
-            "negativePrompt": "",
-            "width": 1024,
-            "height": 1024,
-            "steps": 9,
-            "guidance": 0,
-            "batchSize": 1,
-            "runs": 1,
-            "prompt": "must not be persisted",
-        },
-        "customPresets": [],
+        "currentParams": {"prompt": "must not be persisted"},
         "activePreset": "Default",
-        "activePresetSource": "builtin-default",
     }
     response = client.put("/api/settings/generation-presets/image", json = payload)
     assert response.status_code == 422
@@ -138,17 +76,8 @@ def test_preset_payload_bounds_names_and_values(monkeypatch):
     response = client.put(
         "/api/settings/generation-presets/video",
         json = {
-            "currentParams": {
-                "negativePrompt": "",
-                "width": 768,
-                "height": 512,
-                "durationSeconds": 0,
-                "steps": 8,
-                "guidance": 1,
-            },
-            "customPresets": [],
+            "currentParams": {"durationSeconds": 0},
             "activePreset": "Default",
-            "activePresetSource": "builtin-default",
         },
     )
     assert response.status_code == 422
@@ -159,117 +88,175 @@ def test_image_preset_payload_accepts_generation_control_limits(monkeypatch):
     response = client.put(
         "/api/settings/generation-presets/image",
         json = {
-            "currentParams": {
-                "negativePrompt": "",
-                "width": 1024,
-                "height": 1024,
-                "steps": 9,
-                "guidance": 0,
-                "batchSize": 32,
-                "runs": 128,
-            },
-            "customPresets": [],
+            "currentParams": {"batchSize": 32, "runs": 128},
             "activePreset": "Default",
-            "activePresetSource": "modified",
         },
     )
     assert response.status_code == 200
 
 
-def test_stale_settings_writes_cannot_add_or_remove_named_presets(monkeypatch):
+def test_state_writes_cannot_add_or_remove_named_presets(monkeypatch):
     client = _client(monkeypatch)
-    params = {
-        "negativePrompt": "",
-        "width": 1024,
-        "height": 1024,
-        "steps": 9,
-        "guidance": 0,
-        "batchSize": 1,
-        "runs": 1,
-    }
+    params = {"steps": 9}
     settings = {
         "currentParams": params,
-        "customPresets": [],
         "activePreset": "Default",
-        "activePresetSource": "builtin-default",
     }
     preset_x = {"name": "X", "params": params}
-    preset_y = {"name": "Y", "params": {**params, "steps": 24}}
 
     assert client.put("/api/settings/generation-presets/image", json = settings).status_code == 200
     assert (
         client.put("/api/settings/generation-presets/image/custom", json = preset_x).status_code
         == 200
     )
-    stale = {**settings, "customPresets": [preset_x]}
+    stale_snapshot = {**settings, "customPresets": []}
     assert (
-        client.put("/api/settings/generation-presets/image/custom", json = preset_y).status_code
-        == 200
+        client.put("/api/settings/generation-presets/image", json = stale_snapshot).status_code == 422
     )
-    assert client.put("/api/settings/generation-presets/image", json = stale).status_code == 200
     saved = client.get("/api/settings/generation-presets/image").json()
-    assert {preset["name"] for preset in saved["customPresets"]} == {"X", "Y"}
+    assert [preset["name"] for preset in saved["customPresets"]] == ["X"]
 
+
+def test_custom_preset_schema_is_selected_from_the_path_kind(monkeypatch):
+    client = _client(monkeypatch)
     assert (
-        client.delete(
-            "/api/settings/generation-presets/image/custom", params = {"name": "X"}
+        client.put(
+            "/api/settings/generation-presets/video/custom",
+            json = {"name": "Video", "params": {}},
         ).status_code
         == 200
     )
-    assert client.put("/api/settings/generation-presets/image", json = stale).status_code == 200
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = {"name": "Image", "params": {}},
+        ).status_code
+        == 200
+    )
+    video = client.get("/api/settings/generation-presets/video").json()
+    image = client.get("/api/settings/generation-presets/image").json()
+    assert video["customPresets"][0]["params"]["durationSeconds"] == 3
+    assert image["customPresets"][0]["params"]["batchSize"] == 1
+
+
+def test_custom_preset_names_are_canonical_and_cannot_replace_default(monkeypatch):
+    client = _client(monkeypatch)
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = {"name": "  Landscape  ", "params": {}},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = {"name": "Default", "params": {}},
+        ).status_code
+        == 422
+    )
     saved = client.get("/api/settings/generation-presets/image").json()
-    assert [preset["name"] for preset in saved["customPresets"]] == ["Y"]
+    assert [preset["name"] for preset in saved["customPresets"]] == ["Landscape"]
 
 
 def test_out_of_order_writes_keep_the_latest_browser_operation(monkeypatch):
     client = _client(monkeypatch)
     settings = {
         "currentParams": {"steps": 9},
-        "customPresets": [],
         "activePreset": "Default",
-        "activePresetSource": "builtin-default",
     }
 
-    def ordered(sequence: int) -> dict[str, str]:
+    def ordered(timestamp: int, writer: str) -> dict[str, str]:
         return {
-            "Preset-Writer": "out-of-order-test",
-            "Preset-Sequence": str(sequence),
+            "Preset-Timestamp": str(timestamp),
+            "Preset-Writer": writer,
         }
 
     assert (
         client.put(
             "/api/settings/generation-presets/image",
             json = {**settings, "currentParams": {"steps": 24}},
-            headers = ordered(2),
+            headers = ordered(200, "newer-tab"),
         ).status_code
         == 200
     )
-    assert (
-        client.put(
-            "/api/settings/generation-presets/image",
-            json = settings,
-            headers = ordered(1),
-        ).status_code
-        == 200
+    stale = client.put(
+        "/api/settings/generation-presets/image",
+        json = settings,
+        headers = ordered(100, "older-tab"),
     )
+    assert stale.status_code == 200
+    assert stale.json() == {"saved": False}
     saved = client.get("/api/settings/generation-presets/image").json()
     assert saved["currentParams"]["steps"] == 24
 
+    preset = {"name": "Transient", "params": {}}
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = preset,
+            headers = ordered(250, "older-tab"),
+        ).status_code
+        == 200
+    )
     assert (
         client.delete(
             "/api/settings/generation-presets/image/custom",
             params = {"name": "Transient"},
-            headers = ordered(4),
+            headers = ordered(400, "newer-tab"),
         ).status_code
         == 200
     )
     assert (
         client.put(
             "/api/settings/generation-presets/image/custom",
-            json = {"name": "Transient", "params": {}},
-            headers = ordered(3),
+            json = preset,
+            headers = ordered(300, "older-tab"),
         ).status_code
-        == 200
+        == 409
     )
     saved = client.get("/api/settings/generation-presets/image").json()
     assert saved["customPresets"] == []
+
+
+def test_rejected_capacity_write_does_not_consume_its_version(monkeypatch):
+    client = _client(monkeypatch)
+
+    def ordered(timestamp: int) -> dict[str, str]:
+        return {
+            "Preset-Timestamp": str(timestamp),
+            "Preset-Writer": "capacity-test",
+        }
+
+    for index in range(100):
+        response = client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = {"name": f"Preset {index}", "params": {}},
+        )
+        assert response.status_code == 200
+
+    new_preset = {"name": "New", "params": {}}
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = new_preset,
+            headers = ordered(500),
+        ).status_code
+        == 409
+    )
+    assert (
+        client.delete(
+            "/api/settings/generation-presets/image/custom",
+            params = {"name": "Preset 0"},
+            headers = ordered(400),
+        ).status_code
+        == 200
+    )
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image/custom",
+            json = new_preset,
+            headers = ordered(500),
+        ).status_code
+        == 200
+    )

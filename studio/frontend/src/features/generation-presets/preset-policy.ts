@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { MediaGenerationPreset, MediaPresetSource } from "./types";
+import {
+  type ResolvedControl,
+  isResolvedHonored,
+  resolvedSelectValue,
+} from "../../lib/resolved-precision.ts";
+import type {
+  ImageGenerationPresetLoadConfig,
+  VideoGenerationPresetLoadConfig,
+} from "./types";
 
 export const DEFAULT_PRESET_NAME = "Default";
 
@@ -16,6 +24,10 @@ type ResidentMediaStatus = {
   repo_id?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
+};
+
+type ResidentLoadStatus = {
+  resolved?: Record<string, ResolvedControl> | null;
 };
 
 export function reapplyTargetFromStatus(
@@ -41,24 +53,111 @@ export function reapplyTargetFromStatus(
   };
 }
 
-export type DynamicDefaultRollback<Params> = (
-  restore: (current: Params) => Params,
-) => boolean;
+export type DynamicDefaultRollback = () => boolean;
 
-export function chainDynamicDefaultRollback<Params>(
-  previous: DynamicDefaultRollback<Params> | undefined,
-  next: DynamicDefaultRollback<Params>,
-): DynamicDefaultRollback<Params> {
+export function chainDynamicDefaultRollback(
+  previous: DynamicDefaultRollback | undefined,
+  next: DynamicDefaultRollback,
+): DynamicDefaultRollback {
   if (!previous) {
     return next;
   }
-  return (restore) => next(restore) && previous(restore);
+  return () => next() && previous();
 }
 
-export function presetSource(
-  name: string,
-): Exclude<MediaPresetSource, "modified"> {
-  return name === DEFAULT_PRESET_NAME ? "builtin-default" : "custom";
+function resolvedOption<T extends string>(
+  control: ResolvedControl | undefined,
+  options: readonly T[],
+  aliases: Record<string, T> = {},
+): T | null {
+  return resolvedSelectValue(
+    control,
+    (value) =>
+      options.find((option) => option === value) ?? aliases[value] ?? null,
+  );
+}
+
+function commonLoadConfigFromStatus(
+  status: ResidentLoadStatus | null | undefined,
+): VideoGenerationPresetLoadConfig | null {
+  const record = status?.resolved;
+  if (!record) {
+    return null;
+  }
+  const speedMode = resolvedOption(record.speed_mode, [
+    "auto",
+    "off",
+    "eager",
+    "default",
+    "max",
+  ]);
+  const transformerQuant = resolvedOption(
+    record.transformer_quant,
+    ["auto", "none", "fp8", "int8", "nvfp4", "mxfp8"],
+    { off: "none" },
+  );
+  const attentionBackend = resolvedOption(
+    record.attention_backend,
+    ["auto", "native", "cudnn", "flash3", "sage"],
+    {
+      _native_cudnn: "cudnn",
+      _native_flash3: "flash3",
+      _native_sage: "sage",
+    },
+  );
+  const memoryMode = resolvedOption(record.memory_mode, [
+    "auto",
+    "fast",
+    "balanced",
+    "low_vram",
+  ]);
+  const transformerCache = resolvedOption(record.transformer_cache, [
+    "auto",
+    "off",
+    "fbcache",
+  ]);
+  if (
+    !speedMode ||
+    !transformerQuant ||
+    !attentionBackend ||
+    !memoryMode ||
+    !transformerCache
+  ) {
+    return null;
+  }
+  return {
+    speedMode,
+    transformerQuant,
+    attentionBackend,
+    memoryMode,
+    transformerCache,
+  };
+}
+
+export function imageLoadConfigFromStatus(
+  status: ResidentLoadStatus | null | undefined,
+): ImageGenerationPresetLoadConfig | null {
+  const common = commonLoadConfigFromStatus(status);
+  const control = status?.resolved?.cpu_offload;
+  if (!common || !control) {
+    return null;
+  }
+  const cpuRequest = control.requested;
+  const cpuOffload =
+    control.source === "explicit" &&
+    (isResolvedHonored(control) && cpuRequest !== undefined
+      ? cpuRequest === true
+      : control.value === true);
+  return {
+    ...common,
+    cpuOffload,
+  };
+}
+
+export function videoLoadConfigFromStatus(
+  status: ResidentLoadStatus | null | undefined,
+): VideoGenerationPresetLoadConfig | null {
+  return commonLoadConfigFromStatus(status);
 }
 
 export function configKey(value: unknown): string {
@@ -79,36 +178,14 @@ export function mergeUntouchedParams<Params extends object>(
   return merged;
 }
 
-export function getBuiltinVariantName(
-  usedNames: Set<string>,
-  baseName = DEFAULT_PRESET_NAME,
-): string {
+export function getBuiltinVariantName(usedNames: Set<string>): string {
   let suffix = 1;
-  let candidate = `${baseName} ${suffix}`;
+  let candidate = `${DEFAULT_PRESET_NAME} ${suffix}`;
   while (usedNames.has(candidate)) {
     suffix += 1;
-    candidate = `${baseName} ${suffix}`;
+    candidate = `${DEFAULT_PRESET_NAME} ${suffix}`;
   }
   return candidate;
-}
-
-export function normalizeCustomPresets<Params, LoadConfig>(
-  presets: MediaGenerationPreset<Params, LoadConfig>[],
-): MediaGenerationPreset<Params, LoadConfig>[] {
-  const usedNames = new Set([DEFAULT_PRESET_NAME]);
-  const normalized: MediaGenerationPreset<Params, LoadConfig>[] = [];
-  for (const preset of presets) {
-    const trimmed = preset.name.trim();
-    if (!trimmed) {
-      continue;
-    }
-    const name = usedNames.has(trimmed)
-      ? getBuiltinVariantName(usedNames, trimmed)
-      : trimmed;
-    usedNames.add(name);
-    normalized.push({ ...preset, name });
-  }
-  return normalized;
 }
 
 export function closestResolutionIndex(

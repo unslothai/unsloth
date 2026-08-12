@@ -10,45 +10,21 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { Bookmark, Check, ChevronDown, Trash2 } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
-import type { MediaGenerationPreset } from "./types";
 
-interface MediaGenerationPresetControlProps<Params, LoadConfig> {
+interface MediaGenerationPresetControlProps {
   kind: "image" | "video";
-  presets: MediaGenerationPreset<Params, LoadConfig>[];
+  presets: readonly { name: string }[];
   activePreset: string;
   hydrated: boolean;
   hasUnsavedChanges: boolean;
   onSelect: (name: string) => void;
-  onSave: (name: string) => string | null;
-  onDelete: () => void;
+  onSave: (name: string) => Promise<string | null>;
+  onDelete: () => Promise<boolean>;
 }
 
-function getSaveLabel({
-  isDefault,
-  hasMatch,
-  matchesActive,
-  hasUnsavedChanges,
-}: {
-  isDefault: boolean;
-  hasMatch: boolean;
-  matchesActive: boolean;
-  hasUnsavedChanges: boolean;
-}) {
-  if (isDefault) {
-    return "Save copy";
-  }
-  if (!hasMatch) {
-    return "Save";
-  }
-  if (!matchesActive) {
-    return "Overwrite";
-  }
-  return hasUnsavedChanges ? "Update" : "Saved";
-}
-
-export function MediaGenerationPresetControl<Params, LoadConfig>({
+export function MediaGenerationPresetControl({
   kind,
   presets,
   activePreset,
@@ -57,47 +33,70 @@ export function MediaGenerationPresetControl<Params, LoadConfig>({
   onSelect,
   onSave,
   onDelete,
-}: MediaGenerationPresetControlProps<Params, LoadConfig>) {
+}: MediaGenerationPresetControlProps) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(activePreset);
+  const [draftName, setDraftName] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const name = draftName ?? activePreset;
   const trimmed = name.trim();
-  const matching = useMemo(
-    () => presets.find((preset) => preset.name === trimmed),
-    [presets, trimmed],
-  );
+  const matching = presets.find((preset) => preset.name === trimmed);
   const activeIsCustom =
     activePreset !== DEFAULT_PRESET_NAME &&
     presets.some((preset) => preset.name === activePreset);
   const canSave =
     hydrated &&
+    !saving &&
     trimmed.length > 0 &&
     (trimmed !== activePreset ||
       hasUnsavedChanges ||
       !matching ||
       trimmed === DEFAULT_PRESET_NAME);
-  const saveLabel = getSaveLabel({
-    isDefault: trimmed === DEFAULT_PRESET_NAME,
-    hasMatch: Boolean(matching),
-    matchesActive: matching?.name === activePreset,
-    hasUnsavedChanges,
-  });
+  let saveLabel = "Saved";
+  if (trimmed === DEFAULT_PRESET_NAME) {
+    saveLabel = "Save copy";
+  } else if (!matching) {
+    saveLabel = "Save";
+  } else if (matching.name !== activePreset) {
+    saveLabel = "Overwrite";
+  } else if (hasUnsavedChanges) {
+    saveLabel = "Update";
+  }
+  const changeOpen = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    if (!nextOpen) setDraftName(null);
+  };
 
-  const save = () => {
-    const saved = onSave(name);
-    if (saved) {
-      setName(saved);
-      setOpen(false);
+  const save = async () => {
+    setSaving(true);
+    try {
+      const saved = await onSave(name);
+      if (saved) {
+        changeOpen(false);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    setSaving(true);
+    try {
+      if (await onDelete()) {
+        changeOpen(false);
+      }
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={changeOpen}>
       <PopoverTrigger asChild={true}>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          disabled={!hydrated}
+          disabled={!hydrated || saving}
           aria-label={`Manage ${kind} generation presets`}
           className={cn(
             "relative size-8 shrink-0 gap-1.5 rounded-full border-border/60 bg-background/70 p-0 text-xs font-medium shadow-none backdrop-blur-sm hover:bg-muted/70 sm:h-8 sm:w-auto sm:max-w-40 sm:px-2.5",
@@ -141,9 +140,6 @@ export function MediaGenerationPresetControl<Params, LoadConfig>({
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Switch between saved configurations for this page.
-          </p>
         </div>
 
         <div className="max-h-48 shrink-0 overflow-y-auto p-2">
@@ -157,9 +153,10 @@ export function MediaGenerationPresetControl<Params, LoadConfig>({
                 ) : null}
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => {
                     onSelect(preset.name);
-                    setOpen(false);
+                    changeOpen(false);
                   }}
                   className={cn(
                     "flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-xs transition-colors hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
@@ -192,11 +189,12 @@ export function MediaGenerationPresetControl<Params, LoadConfig>({
             <Input
               id={`${kind}-generation-preset-name`}
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              disabled={saving}
+              onChange={(event) => setDraftName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && canSave) {
                   event.preventDefault();
-                  save();
+                  save().catch(() => undefined);
                 }
               }}
               placeholder="Preset name"
@@ -208,28 +206,17 @@ export function MediaGenerationPresetControl<Params, LoadConfig>({
               type="button"
               size="sm"
               disabled={!canSave}
-              onClick={save}
+              onClick={() => save().catch(() => undefined)}
               className="h-9 shrink-0 rounded-lg px-3"
             >
               {saveLabel}
             </Button>
           </div>
-          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            Saves generation controls, negative prompt, output settings, and
-            advanced load settings. Prompt, seed, model, adapters, and media are
-            kept separate.
-            {kind === "video"
-              ? " Resolution and duration map to the closest supported option when you switch models."
-              : ""}
-          </p>
-
           {activeIsCustom ? (
             <button
               type="button"
-              onClick={() => {
-                onDelete();
-                setOpen(false);
-              }}
+              disabled={saving}
+              onClick={() => remove().catch(() => undefined)}
               className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               <Trash2 className="size-3.5" />

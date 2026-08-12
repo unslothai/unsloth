@@ -106,12 +106,12 @@ logger = get_logger(__name__)
 
 
 def _preset_write_order(
-    preset_writer: Optional[str] = Header(default = None, max_length = 80),
-    preset_sequence: Optional[int] = Header(default = None, ge = 0),
+    preset_timestamp: Optional[int] = Header(default = None, ge = 0, le = 9_007_199_254_740_991),
+    preset_writer: Optional[str] = Header(default = None, min_length = 1, max_length = 80),
 ) -> PresetWriteOrder:
-    if (preset_writer is None) != (preset_sequence is None):
+    if (preset_timestamp is None) != (preset_writer is None):
         raise HTTPException(status_code = 422, detail = "Incomplete preset write order")
-    return preset_writer, preset_sequence
+    return preset_timestamp, preset_writer
 
 
 class ImageGenerationPresetParams(BaseModel):
@@ -162,6 +162,14 @@ class MediaGenerationPreset(BaseModel):
 
     name: str = Field(..., min_length = 1, max_length = 80)
 
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name or name == "Default":
+            raise ValueError("Preset name is reserved or empty")
+        return name
+
 
 class ImageGenerationPreset(MediaGenerationPreset):
     params: ImageGenerationPresetParams
@@ -173,24 +181,37 @@ class VideoGenerationPreset(MediaGenerationPreset):
     loadConfig: Optional[VideoGenerationPresetLoadConfig] = None
 
 
-class MediaGenerationPresetSettings(BaseModel):
+class MediaGenerationPresetState(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
-    activePresetSource: Literal["builtin-default", "custom", "modified"] = "builtin-default"
+
+
+class ImageGenerationPresetState(MediaGenerationPresetState):
+    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
+    currentLoadConfig: Optional[ImageGenerationPresetLoadConfig] = None
+
+
+class VideoGenerationPresetState(MediaGenerationPresetState):
+    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
+    currentLoadConfig: Optional[VideoGenerationPresetLoadConfig] = None
+
+
+class ImageGenerationPresetSettings(ImageGenerationPresetState):
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list, max_length = 100)
     saved: bool = False
 
 
-class ImageGenerationPresetSettings(MediaGenerationPresetSettings):
-    currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
-    currentLoadConfig: Optional[ImageGenerationPresetLoadConfig] = None
-    customPresets: list[ImageGenerationPreset] = Field(default_factory = list, max_length = 100)
-
-
-class VideoGenerationPresetSettings(MediaGenerationPresetSettings):
-    currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
-    currentLoadConfig: Optional[VideoGenerationPresetLoadConfig] = None
+class VideoGenerationPresetSettings(VideoGenerationPresetState):
     customPresets: list[VideoGenerationPreset] = Field(default_factory = list, max_length = 100)
+    saved: bool = False
+
+
+def _get_generation_preset_settings(kind, schema):
+    stored = get_media_generation_preset_settings(kind)
+    response = schema.model_validate(stored)
+    response.saved = bool(stored)
+    return response
 
 
 @router.get(
@@ -200,27 +221,21 @@ class VideoGenerationPresetSettings(MediaGenerationPresetSettings):
 def get_image_generation_preset_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> ImageGenerationPresetSettings:
-    stored = get_media_generation_preset_settings("image")
-    response = ImageGenerationPresetSettings.model_validate(stored)
-    response.saved = bool(stored)
-    return response
+    return _get_generation_preset_settings("image", ImageGenerationPresetSettings)
 
 
-@router.put(
-    "/generation-presets/image",
-    response_model = ImageGenerationPresetSettings,
-)
+@router.put("/generation-presets/image")
 def update_image_generation_preset_settings(
-    payload: ImageGenerationPresetSettings,
+    payload: ImageGenerationPresetState,
     write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
-) -> ImageGenerationPresetSettings:
-    stored = set_media_generation_preset_settings(
+) -> dict[str, bool]:
+    saved = set_media_generation_preset_settings(
         "image",
-        payload.model_dump(exclude = {"saved"}),
+        payload.model_dump(),
         write,
     )
-    return ImageGenerationPresetSettings.model_validate({**stored, "saved": True})
+    return {"saved": saved}
 
 
 @router.get(
@@ -230,44 +245,53 @@ def update_image_generation_preset_settings(
 def get_video_generation_preset_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> VideoGenerationPresetSettings:
-    stored = get_media_generation_preset_settings("video")
-    response = VideoGenerationPresetSettings.model_validate(stored)
-    response.saved = bool(stored)
-    return response
+    return _get_generation_preset_settings("video", VideoGenerationPresetSettings)
 
 
-@router.put(
-    "/generation-presets/video",
-    response_model = VideoGenerationPresetSettings,
-)
+@router.put("/generation-presets/video")
 def update_video_generation_preset_settings(
-    payload: VideoGenerationPresetSettings,
-    write: PresetWriteOrder = Depends(_preset_write_order),
-    current_subject: str = Depends(get_current_subject),
-) -> VideoGenerationPresetSettings:
-    stored = set_media_generation_preset_settings(
-        "video",
-        payload.model_dump(exclude = {"saved"}),
-        write,
-    )
-    return VideoGenerationPresetSettings.model_validate({**stored, "saved": True})
-
-
-@router.put("/generation-presets/{kind}/custom")
-def upsert_custom_generation_preset(
-    kind: Literal["image", "video"],
-    payload: ImageGenerationPreset | VideoGenerationPreset,
+    payload: VideoGenerationPresetState,
     write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    expected = ImageGenerationPreset if kind == "image" else VideoGenerationPreset
-    if not isinstance(payload, expected):
-        raise HTTPException(status_code = 422, detail = f"Invalid {kind} preset")
+    saved = set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(),
+        write,
+    )
+    return {"saved": saved}
+
+
+def _upsert_custom_generation_preset(
+    kind: Literal["image", "video"],
+    payload: ImageGenerationPreset | VideoGenerationPreset,
+    write: PresetWriteOrder,
+) -> dict[str, bool]:
     try:
-        upsert_media_generation_preset(kind, payload.model_dump(), write)
+        saved = upsert_media_generation_preset(kind, payload.model_dump(), write)
     except ValueError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    return {"saved": True}
+    if not saved:
+        raise HTTPException(status_code = 409, detail = "A newer preset change was already saved")
+    return {"saved": saved}
+
+
+@router.put("/generation-presets/image/custom")
+def upsert_custom_image_generation_preset(
+    payload: ImageGenerationPreset,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("image", payload, write)
+
+
+@router.put("/generation-presets/video/custom")
+def upsert_custom_video_generation_preset(
+    payload: VideoGenerationPreset,
+    write: PresetWriteOrder = Depends(_preset_write_order),
+    current_subject: str = Depends(get_current_subject),
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("video", payload, write)
 
 
 @router.delete("/generation-presets/{kind}/custom")
@@ -277,9 +301,11 @@ def delete_custom_generation_preset(
     write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    if not name or len(name) > 80:
+    name = name.strip()
+    if not name or name == "Default" or len(name) > 80:
         raise HTTPException(status_code = 422, detail = "Invalid preset name")
-    delete_media_generation_preset(kind, name, write)
+    if not delete_media_generation_preset(kind, name, write):
+        raise HTTPException(status_code = 409, detail = "A newer preset change was already saved")
     return {"deleted": True}
 
 

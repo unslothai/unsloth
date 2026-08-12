@@ -6,18 +6,19 @@ import type {
   MediaGenerationKind,
   MediaGenerationPreset,
   MediaGenerationPresetSettings,
+  MediaGenerationPresetState,
 } from "./types";
 
 type OrderedWrite = {
+  timestamp: number;
   writer: string;
-  sequence: number;
   keepalive?: boolean;
 };
 
-function orderedWriteHeaders({ writer, sequence }: OrderedWrite) {
+function orderedWriteHeaders({ timestamp, writer }: OrderedWrite) {
   return {
+    "Preset-Timestamp": String(timestamp),
     "Preset-Writer": writer,
-    "Preset-Sequence": String(sequence),
   };
 }
 
@@ -43,10 +44,10 @@ export async function getMediaGenerationPresetSettings<Params, LoadConfig>(
 
 export async function saveMediaGenerationPresetSettings<Params, LoadConfig>(
   kind: MediaGenerationKind,
-  settings: MediaGenerationPresetSettings<Params, LoadConfig>,
+  settings: MediaGenerationPresetState<Params, LoadConfig>,
   options: OrderedWrite,
 ) {
-  return parseResponse<MediaGenerationPresetSettings<Params, LoadConfig>>(
+  return parseResponse<{ saved: boolean }>(
     await authFetch(`/api/settings/generation-presets/${kind}`, {
       method: "PUT",
       headers: {
@@ -84,10 +85,13 @@ export async function deleteMediaGenerationPreset(
 ) {
   const query = new URLSearchParams({ name });
   return parseResponse<{ deleted: boolean }>(
-    await authFetch(`/api/settings/generation-presets/${kind}/custom?${query}`, {
-      method: "DELETE",
-      headers: orderedWriteHeaders(options),
-      keepalive: true,
-    }),
+    await authFetch(
+      `/api/settings/generation-presets/${kind}/custom?${query}`,
+      {
+        method: "DELETE",
+        headers: orderedWriteHeaders(options),
+        keepalive: true,
+      },
+    ),
   );
 }

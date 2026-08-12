@@ -9,10 +9,30 @@ import {
   closestDurationIndex,
   closestResolutionIndex,
   getBuiltinVariantName,
+  imageLoadConfigFromStatus,
   mergeUntouchedParams,
-  normalizeCustomPresets,
   reapplyTargetFromStatus,
+  videoLoadConfigFromStatus,
 } from "../src/features/generation-presets/preset-policy.ts";
+
+const explicitControl = (
+  requested: string | boolean,
+  value: string | boolean | null = requested,
+) => ({
+  value,
+  requested,
+  source: "explicit" as const,
+  status: "applied" as const,
+  reason: "",
+});
+
+const automaticControl = (value: string | boolean | null = "off") => ({
+  value,
+  requested: null,
+  source: "auto" as const,
+  status: "applied" as const,
+  reason: "",
+});
 
 test("pending model defaults preserve only fields the user edited", () => {
   const baseline = { negativePrompt: "", width: 768, steps: 8 };
@@ -36,21 +56,21 @@ test("dynamic default rollbacks unwind newest-first to the original baseline", (
     calls.push("next");
     return true;
   };
-  const rollback = chainDynamicDefaultRollback<number>(previous, next);
-  assert.equal(rollback((current: number) => current), true);
+  const rollback = chainDynamicDefaultRollback(previous, next);
+  assert.equal(rollback(), true);
   assert.deepEqual(calls, ["next", "previous"]);
 });
 
 test("a stale newer rollback cannot continue into an older transaction", () => {
   let previousCalled = false;
-  const rollback = chainDynamicDefaultRollback<number>(
+  const rollback = chainDynamicDefaultRollback(
     () => {
       previousCalled = true;
       return true;
     },
     () => false,
   );
-  assert.equal(rollback((current: number) => current), false);
+  assert.equal(rollback(), false);
   assert.equal(previousCalled, false);
 });
 
@@ -110,25 +130,73 @@ test("resident checkpoint status without an exact filename is not reloadable", (
   );
 });
 
+test("resident image status reconstructs every load option Reapply submits", () => {
+  assert.deepEqual(
+    imageLoadConfigFromStatus({
+      resolved: {
+        speed_mode: explicitControl("max"),
+        transformer_quant: explicitControl("off"),
+        attention_backend: explicitControl("flash3", "_native_flash3"),
+        memory_mode: explicitControl("low_vram", "sequential"),
+        transformer_cache: explicitControl("fbcache"),
+        cpu_offload: explicitControl(true),
+      },
+    }),
+    {
+      speedMode: "max",
+      transformerQuant: "none",
+      attentionBackend: "flash3",
+      memoryMode: "low_vram",
+      transformerCache: "fbcache",
+      cpuOffload: true,
+    },
+  );
+});
+
+test("resident video status retains explicit speed and step-cache choices", () => {
+  const auto = automaticControl();
+  assert.deepEqual(
+    videoLoadConfigFromStatus({
+      resolved: {
+        speed_mode: explicitControl("eager"),
+        transformer_quant: auto,
+        attention_backend: auto,
+        memory_mode: auto,
+        transformer_cache: explicitControl("off"),
+      },
+    }),
+    {
+      speedMode: "eager",
+      transformerQuant: "auto",
+      attentionBackend: "auto",
+      memoryMode: "auto",
+      transformerCache: "off",
+    },
+  );
+});
+
+test("automatic resident offload does not become an explicit legacy flag", () => {
+  const auto = automaticControl();
+  const config = imageLoadConfigFromStatus({
+    resolved: {
+      speed_mode: auto,
+      transformer_quant: auto,
+      attention_backend: auto,
+      memory_mode: auto,
+      transformer_cache: auto,
+      cpu_offload: automaticControl(true),
+    },
+  });
+  assert.equal(config?.cpuOffload, false);
+});
+
 test("saving over Default creates a protected custom variant", () => {
   const used = new Set(["Default", "Default 1", "Portrait"]);
   assert.equal(getBuiltinVariantName(used), "Default 2");
 });
 
-test("hydration protects built-in names and drops empty names", () => {
-  const normalized = normalizeCustomPresets([
-    { name: " Default ", params: { steps: 10 } },
-    { name: "", params: { steps: 20 } },
-    { name: "Portrait", params: { steps: 30 } },
-  ]);
-  assert.deepEqual(
-    normalized.map((preset) => preset.name),
-    ["Default 1", "Portrait"],
-  );
-});
-
 test("video resolution mapping prioritizes aspect before area", () => {
-  const options: Array<[number, number]> = [
+  const options: [number, number][] = [
     [1024, 1024],
     [1216, 704],
     [704, 1216],

@@ -77,6 +77,8 @@ import {
   closestResolutionIndex,
   reapplyTargetFromStatus,
   useMediaGenerationPresets,
+  useResidentPresetLoadConfig,
+  videoLoadConfigFromStatus,
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
@@ -93,8 +95,6 @@ import {
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
-  resolvedSeedKey,
-  resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
   routedGgufFilename,
@@ -719,9 +719,7 @@ function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boole
 // label and the generation recipe move together at pick time, so they have to roll back together too.
 type PickRevert = {
   prev: string | null;
-  steps: number;
-  guidance: number;
-  presetDefaultRollback?: DynamicDefaultRollback<VideoGenerationPresetParams>;
+  presetDefaultRollback?: DynamicDefaultRollback;
 };
 // Resolved Advanced controls pinned across preflight, staging, and load.
 type VideoLoadAdvanced = Pick<
@@ -797,11 +795,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    r.presetDefaultRollback?.((current) => ({
-      ...current,
-      steps: r.steps,
-      guidance: r.guidance,
-    }));
+    r.presetDefaultRollback?.();
   }, []);
   const [seed, setSeed] = useState("");
   // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
@@ -1212,6 +1206,24 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     modelLoaded: Boolean(status?.loaded),
     normalizeParams: normalizeVideoPresetParams,
   });
+  const residentLoadConfig = useResidentPresetLoadConfig({
+    residentKey: status?.loaded
+      ? `${status.repo_id ?? ""}\0${status.model_kind ?? ""}\0${status.gguf_filename ?? ""}\0${status.h3_task ?? ""}`
+      : null,
+    resolved: status?.resolved,
+    parse: videoLoadConfigFromStatus,
+    apply: applyVideoPresetLoadConfig,
+    hydrated: videoPresets.hydrated,
+    hasPersistedSettings: videoPresets.hasPersistedSettings,
+    pageOwnsResident: canReapply,
+    busy,
+  });
+  const residentReapplyReady =
+    residentReapplyTarget &&
+    videoPresets.hydrated &&
+    (videoPresets.hasPersistedSettings || residentLoadConfig)
+      ? residentReapplyTarget
+      : null;
   const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
   const applyVideoModelDefaults = useCallback(
     (repoId: string) => {
@@ -1234,16 +1246,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   useEffect(() => {
     setResolutionIdx((current) => {
       if (current === MATCH_SOURCE_RESOLUTION) return current;
-      if (videoPresets.activePresetSourceRef.current === "builtin-default") {
-        return 0;
-      }
       return closestResolutionIndex(
         resolutionPresets,
         resolutionIntent[0],
         resolutionIntent[1],
       );
     });
-  }, [resolutionIntent, resolutionPresets, videoPresets.activePresetSourceRef]);
+  }, [resolutionIntent, resolutionPresets]);
 
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
@@ -1254,9 +1263,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     hadKeyframeRef.current = has;
     setResolutionIdx((idx) => {
       if (has) return MATCH_SOURCE_RESOLUTION;
-      return idx === MATCH_SOURCE_RESOLUTION ? 0 : idx;
+      return idx === MATCH_SOURCE_RESOLUTION
+        ? closestResolutionIndex(
+            resolutionPresets,
+            resolutionIntent[0],
+            resolutionIntent[1],
+          )
+        : idx;
     });
-  }, [canvasKeyframe, matchedResolution]);
+  }, [canvasKeyframe, matchedResolution, resolutionIntent, resolutionPresets]);
 
   const loadedFamily = status?.loaded ? status.family : null;
   const prevFamilyRef = useRef<string | null>(null);
@@ -1269,7 +1284,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         familyChanged &&
         loadedFamily &&
         familyDefaultFrames &&
-        videoPresets.activePresetSourceRef.current === "builtin-default"
+        videoPresets.isDefaultUnmodifiedRef.current
       ) {
         // The loaded-model effect below applies the complete dynamic Default recipe in one batch.
         return cur;
@@ -1288,7 +1303,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         ]?.frames ?? cur
       );
     });
-  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, loadedFamily, videoPresets.activePresetSourceRef]);
+  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, loadedFamily, videoPresets.isDefaultUnmodifiedRef]);
 
   // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs, so the
   // controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip. Keyed on the resolved
@@ -1320,45 +1335,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Precision dropdown can never go on advertising a scheme the loaded DiT is not running. Keyed on
   // the LOAD-TIME half of the record: the backend rewrites the transformer_cache entry at GENERATION
   // time, so serializing the whole record let a step-cache toggle discard a pending Advanced edit.
-  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
-  const initialResolvedSeedHandled = useRef(false);
-  useEffect(() => {
-    const record = status?.loaded ? status.resolved : null;
-    if (
-      !videoPresets.hydrated ||
-      busy === "loading" ||
-      busy === "unloading" ||
-      !record
-    ) {
-      return;
-    }
-    if (!initialResolvedSeedHandled.current) {
-      initialResolvedSeedHandled.current = true;
-      if (videoPresets.hasPersistedSettings && !canReapply) return;
-    }
-    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
-      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
-      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
-        (o) => o === v || (o === "none" && v === "off"),
-      ) ?? null,
-    );
-    if (quant) setTransformerQuant(quant);
-    const memory = resolvedSelectValue(record.memory_mode, (v) =>
-      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
-    );
-    if (memory) setMemoryMode(memory);
-    const attention = resolvedSelectValue(record.attention_backend, (v) =>
-      // The engaged value uses the dispatcher's own name; map it back to the option.
-      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
-        (o) => o === v || `_native_${o}` === v,
-      ) ?? null,
-    );
-    if (attention) setAttentionBackend(attention);
-    // resolvedKey stands for the record. busy and canReapply are sampled only when that record or
-    // hydration changes, so unrelated work cannot replay a resident seed over a pending edit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedKey, videoPresets.hasPersistedSettings, videoPresets.hydrated]);
-
   // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download
   // the file: the link goes straight into the <video> element, which streams ranges, so playback starts and seeking works.
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
@@ -2167,7 +2143,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
-      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant };
       return runGgufRepoPick({
         isCurrent,
         resolve: () =>
@@ -2196,7 +2172,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [applyVideoModelDefaults, guidance, loadOrStage, pickGuard, quant, revertPick, steps],
+    [applyVideoModelDefaults, loadOrStage, pickGuard, quant, revertPick],
   );
 
   // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
@@ -2332,7 +2308,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model. The ref remains
     // the fallback while this page's own load is committing and status has not caught up yet.
-    const l = residentReapplyTarget ?? lastLoad.current;
+    const l = residentReapplyReady ?? lastLoad.current;
     if (l) {
       void handleLoad(l.repoId, {
         kind: l.kind,
@@ -2340,7 +2316,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         h3Task: l.h3Task,
       });
     }
-  }, [handleLoad, residentReapplyTarget]);
+  }, [handleLoad, residentReapplyReady]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
@@ -2371,7 +2347,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // Registers its own rollback like every other branch. Leaving the previous pick's entry in
         // place would let that older staged download, on cancelling, revert to state from before it
         // -- over a selection this pick already replaced -- and leave this one with no rollback.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant };
         quantRevert.current = revert;
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
@@ -2401,7 +2377,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
@@ -2437,7 +2413,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           );
           return;
         }
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant };
         quantRevert.current = revert;
         setQuant(filename);
         applyVideoModelDefaults(id);
@@ -2455,7 +2431,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant };
         quantRevert.current = revert;
         setQuant(filename);
         applyVideoModelDefaults(id);
@@ -2487,7 +2463,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
       // older staged download revert over a selection this pick already replaced.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant };
       quantRevert.current = revert;
       setQuant(null);
       applyVideoModelDefaults(id);
@@ -2514,14 +2490,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       applyVideoModelDefaults,
       beginPick,
       busy,
-      guidance,
       handleLoad,
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
       quant,
       revertPick,
-      steps,
     ],
   );
 
@@ -2790,7 +2764,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         ]}
       />
       <LoadedBuildSummary status={status} />
-      {status?.loaded && (canReapply || residentReapplyTarget) && (
+      {status?.loaded && (canReapply || residentReapplyReady) && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button
@@ -2954,7 +2928,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             </div>
 
             <MediaGenerationPresetControl
-              key={videoPresets.activePreset}
               kind="video"
               presets={videoPresets.presets}
               activePreset={videoPresets.activePreset}
