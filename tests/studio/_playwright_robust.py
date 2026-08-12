@@ -23,8 +23,14 @@ from typing import Any, Callable
 # headless window is backgrounded (run 25586583024 stalled inference + render).
 # TranslateUI strips a pointer-intercepting popup; ipc-flooding-protection off
 # lets rapid clicks through during the slider sweep.
-# `--single-process` is darwin-only (fixes the pipeTransport.js JSON-RPC crash);
-# on Win/Linux it destabilises the renderer.
+# No `--single-process`. It was darwin-only, for a pipeTransport.js JSON-RPC crash,
+# and it caps Chromium at exactly ONE BrowserContext: opening a second one kills the
+# browser with SIGTRAP, and the next new_page() raises "Target page, context or
+# browser has been closed". Closing a context does it too, even with another still
+# open. That is what made "Update banner layout regression" red on every macos-14 run
+# (it needs a context per viewport), and it is why playwright_chat_ui.py had to keep
+# every step inside one context. Measured with chromium-headless-shell 151: with the
+# flag, a second context dies immediately; without it, 12 open/close cycles pass.
 _BASE_CHROMIUM_ARGS = (
     "--disable-dev-shm-usage",
     "--no-sandbox",
@@ -38,13 +44,10 @@ _BASE_CHROMIUM_ARGS = (
 
 
 def chromium_launch_args(platform: str | None = None) -> list[str]:
-    """Chromium launch args for `platform` (defaults to `sys.platform`; pass a
-    string to test the darwin branch on Linux)."""
-    p = sys.platform if platform is None else platform
-    args = list(_BASE_CHROMIUM_ARGS)
-    if p == "darwin":
-        args.append("--single-process")
-    return args
+    """Chromium launch args. Same on every platform; `platform` is accepted so
+    callers that pass one keep working."""
+    del platform
+    return list(_BASE_CHROMIUM_ARGS)
 
 
 # Init script injected into every Playwright context.
@@ -234,8 +237,8 @@ BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
-    # macos-14 buffer-exhaustion under --single-process; the test catches the
-    # underlying request failure via expect_response and retries.
+    # macos-14 buffer exhaustion; the test catches the underlying request
+    # failure via expect_response and retries.
     "net::ERR_NO_BUFFER_SPACE",
     # Intentional fetch aborts (unmount, route change) log a console.error.
     "AbortError",
