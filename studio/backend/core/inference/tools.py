@@ -8939,6 +8939,107 @@ def _build_sandbox_paths_note() -> str:
     )
 
 
+# Full access (permission_mode='full') edits, applied to the sandboxed text
+# rather than writing a second copy of it. Everything the two modes share -- the
+# relative-path advice, the persisted workdir, the download-link note -- is prose
+# that gets tuned over time, and a parallel copy would drift out of sync in
+# silence. Only the claims the sandbox makes true are touched. A rewording that
+# stops one of these matching is caught by test_full_access_tool_prompt.py, which
+# asserts the sandboxed markers are gone from the result on both platforms.
+_FULL_ACCESS_SUBSTITUTIONS = (
+    # The only sentence in the python description that names the sandbox. Just
+    # dropped, not reworded: where the code runs is said once, by the paths note
+    # below, which both tools carry.
+    ("Execute Python code in a sandbox and", "Execute Python code and"),
+    # POSIX: a blanket denial is wrong with the sandbox off, and so is a blanket
+    # promise. POSIX has no sentence saying where the code runs, so it is added
+    # here; Windows already has one.
+    (
+        "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
+        ". This runs wherever Unsloth Studio is running, which may be a remote host "
+        "or a container with only some paths mounted.{clause}",
+    ),
+    # Windows already says where the code runs and never denies absolute paths,
+    # so there is nothing false to remove; state the capability instead. "the
+    # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
+    # are documented remote modes (README), and the tools run on the host serving
+    # Studio, which is then not the device the user is looking at.
+    (
+        " You are on Windows, and this runs on the user's own machine.",
+        " You are on Windows, and this runs wherever Unsloth Studio is running, "
+        "which may be a remote host or a container with only some paths "
+        "mounted.{clause}",
+    ),
+)
+
+
+# What "the sandbox is off" actually means for paths, per tool. Shared by both
+# platform substitutions: the split is the shim, not the OS. _build_bypass_env
+# keeps _SANDBOX_SITE_DIR on PYTHONPATH for BOTH tools, so sitecustomize.py still
+# loads, and being a CPython startup hook is what separates them. Measured:
+#
+#   python, parent exists    -> writes the real absolute path
+#   python, absent prefix    -> _remap keeps the SUFFIX under the workdir
+#                               (/mnt/data/reports/out.csv -> ./reports/out.csv)
+#                               and returns before the generic fallback, so no
+#                               basename collapse and no anti-clobber
+#   python, other missing parent -> the fallback keeps only the base name, and
+#                               raises when an UNRELATED file holds it; the
+#                               .unsloth_sandbox_remap.json sidecar lets a rewrite
+#                               of the same invented path re-serve its own target
+#   python, prefix present   -> a real /mnt/data mount is never shadowed, so a
+#                               prefix is special only while absent, which is why
+#                               the clause names one inside a conditional and
+#                               never categorically
+#   python, unpatched API    -> only open/io.open/os.open and the mkdir family are
+#                               wrapped: os.rename and os.symlink raise, while
+#                               shutil.copy writes the rewritten file through open
+#                               and then raises in copymode
+#   terminal                 -> the shell's own rules, except for Python it
+#                               launches, which is patched like the python tool
+_FULL_ACCESS_CLAUSE = {
+    "python": (
+        " The code sandbox is disabled, so absolute paths under a directory that "
+        "exists do resolve. Two different rewrites apply when the directory does "
+        "not exist: under a code-interpreter convention prefix (/mnt/data, "
+        "/mnt/outputs, /tmp/outputs, /home/sandbox, /workspace) the rest of the "
+        "path is kept relative to the working directory, replacing any file "
+        "already sitting there; under any other missing directory only the base "
+        "name is kept, and the write fails outright if that name is taken by an "
+        "unrelated file, though rewriting the same absolute path just replaces "
+        "what your own earlier call left there. Both reach only open() and the "
+        "mkdir calls, so os.rename, os.symlink and the like are never rewritten "
+        "and simply fail, and a helper such as shutil.copy can write the "
+        "rewritten file and still raise on a later step. Report where a file "
+        "actually landed rather than the path you asked for."
+    ),
+    "terminal": (
+        " The code sandbox is disabled, so absolute paths do resolve as the shell "
+        "resolves them. Python you launch from here is the exception: it loads the "
+        "same shim as the python tool and gets the same rewrites, so a create "
+        "under a directory that does not exist lands in the working directory."
+    ),
+}
+
+
+def _to_full_access(description: str, tool_name: str) -> str:
+    """Rewrite a sandboxed tool description for Full access.
+
+    Under bypass_permissions the loops pass disable_sandbox=True:
+    _build_bypass_env / _bypass_preexec skip the static analysis, the command
+    blocklist and the rlimits, so the host filesystem really is reachable.
+    Handing a model the sandboxed text in that mode makes it answer "I am
+    sandboxed and cannot see your files" to a question one tool call would have
+    answered. Untouched clauses are the ones still true in both modes: the
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
+    TMPDIR / TEMP / TMP at it), and so is the download-link note.
+    """
+    clause = _FULL_ACCESS_CLAUSE[tool_name]
+    for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
+        description = description.replace(sandboxed, full_access.format(clause = clause))
+    return description
+
+
 def _build_terminal_shell_note() -> str:
     """Shell-specific note, on the TERMINAL description only.
 
@@ -9006,6 +9107,57 @@ TERMINAL_TOOL = {
         },
     },
 }
+
+# Full access runs these two without the sandbox, so it gets its own pair of
+# schemas rather than a per-request rebuild: the descriptions are
+# platform-derived constants either way. The sandboxed pair stays the module
+# default, so every existing importer keeps the safe wording. The shell note is
+# unaffected by the substitutions and carries through as-is.
+PYTHON_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **PYTHON_TOOL["function"],
+        "description": _to_full_access(PYTHON_TOOL["function"]["description"], "python"),
+    },
+}
+
+TERMINAL_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": _to_full_access(TERMINAL_TOOL["function"]["description"], "terminal"),
+    },
+}
+
+_FULL_ACCESS_TOOL_BY_NAME = {
+    "python": PYTHON_TOOL_FULL_ACCESS,
+    "terminal": TERMINAL_TOOL_FULL_ACCESS,
+}
+
+
+def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Swap python/terminal for their Full access schemas.
+
+    Only the two sandboxed built-ins are touched; web_search, render_html,
+    search_knowledge_base and MCP tools are passed through untouched, and a list
+    without either built-in is returned as-is so callers can apply this
+    unconditionally. The input list is never mutated -- ALL_TOOLS entries are
+    module globals shared across requests.
+    """
+    if not tools:
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        replacement = _FULL_ACCESS_TOOL_BY_NAME.get(name)
+        if replacement is None:
+            out.append(tool)
+        else:
+            out.append(replacement)
+            swapped = True
+    return out if swapped else tools
+
 
 RENDER_HTML_TOOL = {
     "type": "function",
