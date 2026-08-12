@@ -660,6 +660,188 @@ def fast_save_pickle(shard, name):
     return
 
 
+_UNRESOLVABLE_TOKENIZER_CLASSES = frozenset(
+    {
+        "TokenizersBackend",
+    }
+)
+
+
+def _read_tokenizer_class_from_source(source, tokenizer = None, token = None):
+    if not isinstance(source, str) or not source:
+        return None
+
+    if os.path.isdir(source):
+        config_path = os.path.join(source, "tokenizer_config.json")
+        if os.path.isfile(config_path):
+            try:
+                with open(config_path, "r", encoding = "utf-8") as file:
+                    return json.load(file).get("tokenizer_class")
+            except Exception:
+                return None
+        return None
+
+    cache_dir = _tokenizer_cache_dir(tokenizer) if tokenizer is not None else None
+    if not cache_dir:
+        cache_dir = os.environ.get("HF_HUB_CACHE")
+    if not cache_dir:
+        hf_home = os.environ.get("HF_HOME")
+        if hf_home:
+            cache_dir = os.path.join(hf_home, "hub")
+
+    revision = _tokenizer_revision(tokenizer) if tokenizer is not None else None
+    cached_path = _resolve_hub_repo_cached_file(
+        source,
+        "tokenizer_config.json",
+        token = token,
+        local_files_only = True,
+        cache_dir = cache_dir,
+        revision = revision,
+    )
+    if cached_path is not None:
+        try:
+            with open(cached_path, "r", encoding = "utf-8") as file:
+                return json.load(file).get("tokenizer_class")
+        except Exception:
+            return None
+
+    if tokenizer is not None and _tokenizer_wants_local_only(tokenizer):
+        return None
+
+    try:
+        from huggingface_hub import hf_hub_download
+
+        downloaded_path = hf_hub_download(
+            repo_id = source,
+            filename = "tokenizer_config.json",
+            token = token,
+            local_files_only = False,
+            cache_dir = cache_dir,
+            revision = revision,
+        )
+        with open(downloaded_path, "r", encoding = "utf-8") as file:
+            return json.load(file).get("tokenizer_class")
+    except Exception:
+        return None
+
+
+def _is_loadable_tokenizer_class_name(class_name):
+    if not isinstance(class_name, str) or not class_name:
+        return False
+    if class_name in _UNRESOLVABLE_TOKENIZER_CLASSES:
+        return False
+    return class_name == "PreTrainedTokenizerFast" or "Tokenizer" in class_name
+
+
+def _normalize_export_tokenizer_class(class_name, tokenizer = None):
+    if not _is_loadable_tokenizer_class_name(class_name):
+        return None
+    if (
+        class_name.endswith("Fast")
+        and tokenizer is not None
+        and getattr(tokenizer, "can_save_slow_tokenizer", False)
+    ):
+        class_name = class_name[:-4]
+    return class_name
+
+
+def _resolve_export_tokenizer_class(tokenizer, save_directory, token = None):
+    source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    if source_tokenizer is None:
+        return None
+
+    candidates = []
+
+    live_class = _normalize_export_tokenizer_class(
+        type(source_tokenizer).__name__,
+        tokenizer = source_tokenizer,
+    )
+    if live_class:
+        candidates.append(live_class)
+
+    init_kwargs = getattr(source_tokenizer, "init_kwargs", None) or {}
+    init_class = _normalize_export_tokenizer_class(
+        init_kwargs.get("tokenizer_class"),
+        tokenizer = source_tokenizer,
+    )
+    if init_class:
+        candidates.append(init_class)
+
+    source = getattr(source_tokenizer, "name_or_path", None)
+    if isinstance(source, str) and source:
+        base_class = _normalize_export_tokenizer_class(
+            _read_tokenizer_class_from_source(
+                source,
+                tokenizer = source_tokenizer,
+                token = token,
+            ),
+            tokenizer = source_tokenizer,
+        )
+        if base_class:
+            candidates.append(base_class)
+
+    for candidate in candidates:
+        if candidate not in _UNRESOLVABLE_TOKENIZER_CLASSES:
+            return candidate
+
+    if os.path.isfile(os.path.join(str(save_directory), "tokenizer.json")):
+        return "PreTrainedTokenizerFast"
+
+    return None
+
+
+def _preserve_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+    token = None,
+):
+    """Replace unresolvable tokenizer_class values in exported tokenizer_config.json.
+
+    Transformers 5.x can serialize ``TokenizersBackend`` when the runtime tokenizer is
+    the generic fast-tokenizer wrapper. Downstream tools (AutoTokenizer, llama.cpp,
+    mlx_lm) need a concrete, loadable class name instead.
+    """
+    if tokenizer is None or save_directory is None:
+        return
+
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config_path = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config_path):
+        return
+
+    try:
+        with open(tokenizer_config_path, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+
+        current_class = config.get("tokenizer_class")
+        if current_class not in _UNRESOLVABLE_TOKENIZER_CLASSES:
+            return
+
+        resolved_class = _resolve_export_tokenizer_class(
+            tokenizer,
+            save_directory,
+            token = token,
+        )
+        if not resolved_class or resolved_class == current_class:
+            return
+
+        config["tokenizer_class"] = resolved_class
+        with open(tokenizer_config_path, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+        logger.warning_once(
+            f"Unsloth: Replaced unresolvable tokenizer_class `{current_class}` with "
+            f"`{resolved_class}` in {tokenizer_config_path}."
+        )
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not preserve tokenizer_class in {tokenizer_config_path}: {error}"
+        )
+
+
 def _preserve_tokenizer_eos_token(
     tokenizer,
     save_directory,
@@ -1370,6 +1552,12 @@ def unsloth_save_model(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        _preserve_tokenizer_class(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            token = tokenizer_save_settings.get("token", None),
         )
 
         # Revert back padding side
@@ -7878,6 +8066,12 @@ def patch_saving_functions(model, vision = False):
             self,
             save_directory,
             filename_prefix = filename_prefix,
+        )
+        _preserve_tokenizer_class(
+            self,
+            save_directory,
+            filename_prefix = filename_prefix,
+            token = kwargs.get("token", None),
         )
         if push_to_hub:
             push_kwargs = dict(kwargs)
