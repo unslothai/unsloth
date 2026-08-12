@@ -6523,11 +6523,9 @@ class TestRocmWslSupplyChainPins:
         # install.sh runs only a helper declaring this contract, so the level it requires and
         # the level the helper declares must move together, and the helper must actually
         # implement both guarantees the level stands for.
-        install_sh = _INSTALL_SH_PATH.read_text(encoding="utf-8")
-        helper = _STRIXHALO_WSL_PATH.read_text(encoding="utf-8")
-        required = re.search(
-            r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh
-        )
+        install_sh = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        helper = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        required = re.search(r'grep -q "\^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)\$"', install_sh)
         declared = re.search(r"^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=(\d+)$", helper, re.M)
         assert required is not None and declared is not None
         assert required.group(1) == declared.group(1)
