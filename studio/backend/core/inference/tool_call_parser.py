@@ -681,10 +681,12 @@ def strip_segment(
     """Strip tool-call markup from one non-``<think>`` segment.
 
     The single definition of the scan order. It used to be copy-pasted into
-    ``llama_cpp.py``, ``safetensors_agentic.py`` and ``routes/inference.py``; those call
-    here now, so the order cannot drift between the GGUF, safetensors and passthrough
-    paths. ``seg_final`` enables the end-of-turn arms (markerless Gemma, open tails,
-    trailing partial rehearsal) that must not run mid-segment.
+    ``llama_cpp.py`` and ``safetensors_agentic.py``; both call here now, so the order
+    cannot drift between the GGUF and safetensors paths. ``routes/inference.py`` keeps a
+    deliberately different order for the passthrough path, pinned by
+    ``tests/test_route_strip_drift.py``. ``seg_final`` enables the end-of-turn arms
+    (markerless Gemma, open tails, trailing partial rehearsal) that must not run
+    mid-segment.
     """
     seg = _strip_mistral_closed_calls(segment)
     # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form go through the shared
