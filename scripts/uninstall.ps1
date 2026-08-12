@@ -204,7 +204,7 @@ Environment:
             # Unreadable proves nothing, and "proves nothing" must not mean "delete it".
             return $false
         }
-        return ($text -like "*from unsloth_cli import app*")
+        return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
     }
 
     # A path is an Unsloth-owned root iff one of install.ps1's sentinels exists:

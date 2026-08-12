@@ -24,7 +24,20 @@ pub fn new_update_state() -> UpdateState {
 
 // ── Spawn ──
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
-    crate::process::build_managed_cli_command(bin, &["studio", "update"])
+    let mut cmd = crate::process::build_managed_cli_command(bin, &["studio", "update"])?;
+    // The updater keeps the scrubbing it has always had, and is the only managed
+    // invocation that does. Everywhere else inheriting these is the point: the console
+    // script being replaced honours them, so scrubbing would make the swap observable.
+    // Here the shipped behaviour was already to drop them, and the failure they cause
+    // is the one an update cannot recover from -- a foreign PYTHONHOME stops the
+    // managed interpreter finding its own site-packages, and a PYTHONPATH pointing at
+    // another checkout makes `from unsloth_cli import app` update the wrong install.
+    #[cfg(windows)]
+    {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+    Ok(cmd)
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
@@ -534,6 +547,39 @@ mod tests {
     }
 
     // The Windows trampoline moved into process.rs; nothing about the POSIX
+    // The one managed invocation that still scrubs. A foreign PYTHONHOME stops the
+    // managed interpreter finding its own site-packages and a foreign PYTHONPATH can
+    // point `from unsloth_cli import app` at another checkout, so an update would fail
+    // or update the wrong install. Dropping -I made this load bearing rather than
+    // belt and braces, since without -E the child would now read both.
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_still_scrubs_the_python_search_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-update-scrub-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(&bin, "").unwrap();
+
+        let cmd = build_update_command(&bin).unwrap();
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(
+                cmd.get_envs()
+                    .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()),
+                "{name} is not scrubbed for the updater"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     // command may move with it. macOS and Linux still exec the console script.
     #[cfg(not(windows))]
     #[test]

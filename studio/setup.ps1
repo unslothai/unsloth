@@ -524,7 +524,7 @@ function Test-UnslothCmdShimFile {
         # Unreadable proves nothing, and "proves nothing" must not mean "deletable".
         return $false
     }
-    return ($text -like "*from unsloth_cli import app*")
+    return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
 }
 
 # Shared default cache, or the custom Studio home's llama.cpp tree.

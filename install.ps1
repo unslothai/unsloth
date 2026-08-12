@@ -1112,6 +1112,9 @@ public static class UnslothStudioFinalPathV2
     #   is a no-op under -P or PYTHONSAFEPATH. -I would drop it too, but -I implies -E,
     #   and discarding PYTHONPATH, PYTHONWARNINGS and user site-packages diverges from
     #   the console script on machines with no policy at all.
+    # Written into every generated bin\unsloth.cmd and required by every ownership
+    # check that accepts one. Mirrored in scripts/uninstall.ps1 and studio/setup.ps1.
+    $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
     # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
@@ -1253,6 +1256,23 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
+    # Which launcher should the printed instructions name? The .cmd, when the .exe
+    # cannot be used: either a policy denies it, or it is not there at all. The second
+    # case is real -- antivirus quarantine takes the unsigned .exe, and the hardlink and
+    # its copy fallback can both fail -- and Test-ShimLaunchBlocked answers $false for a
+    # missing file, since nothing refused to start it. Naming a path that does not exist
+    # is the one outcome worse than naming a blocked one.
+    function Test-UnslothCmdShimPreferred {
+        param(
+            [Parameter(Mandatory = $true)][string]$ShimExe,
+            [Parameter(Mandatory = $true)][string]$ShimCmd
+        )
+
+        if (-not (Test-Path -LiteralPath $ShimCmd -PathType Leaf)) { return $false }
+        if (-not (Test-Path -LiteralPath $ShimExe -PathType Leaf)) { return $true }
+        return (Test-ShimLaunchBlocked -Path $ShimExe)
+    }
+
     # Relative path from $From (a directory) to $To, or $null with no common root
     # (different volumes, UNC vs local). Longhand because Path.GetRelativePath is .NET
     # Core only and Uri.MakeRelativeUri percent-encodes the spaces, '#' and '%' that
@@ -1303,6 +1323,11 @@ public static class UnslothStudioFinalPathV2
             "rem Runs the Unsloth CLI through the managed interpreter. The generated",
             "rem unsloth.exe beside it is unsigned, and Windows Application Control",
             "rem denies it on managed machines; this file is the way through.",
+            # The ownership marker, and the only reason a .cmd may stand in for the other
+            # sentinels. It gates a recursive delete, so it has to be something nobody
+            # writes by accident: `from unsloth_cli import app` is a plausible line in
+            # anyone's hand-rolled wrapper, this is not.
+            "rem $script:UnslothCmdShimMarker",
             # With delayed expansion on (cmd /V:ON, or the machine-wide default) a '!'
             # is eaten out of every argument. exit /b ends the scope, so nothing leaks.
             "setlocal DisableDelayedExpansion",
@@ -1363,7 +1388,7 @@ public static class UnslothStudioFinalPathV2
             # Unreadable proves nothing, and "proves nothing" must not mean "deletable".
             return $false
         }
-        return ($text -like "*from unsloth_cli import app*")
+        return ($text -like "*unsloth-studio-managed-launcher*" -and $text -like "*from unsloth_cli import app*")
     }
 
     function New-StudioShortcuts {
@@ -5303,9 +5328,9 @@ exit 0
             # PATHEXT resolves .EXE before .CMD, so bare `unsloth` picks the generated
             # console script, which a denying machine cannot run. Probed, not assumed:
             # an unaffected machine must see the line it has always seen.
-            if (Test-ShimLaunchBlocked -Path $ShimExe) {
+            if (Test-UnslothCmdShimPreferred -ShimExe $ShimExe -ShimCmd $ShimCmd) {
                 substep "unsloth.cmd studio -p 8888"
-                substep "(Windows Application Control denies the generated unsloth.exe on this machine;"
+                substep "(the generated unsloth.exe is not usable on this machine;"
                 substep " unsloth.cmd beside it runs the same CLI through the managed Python)"
             } else {
                 substep "unsloth studio -p 8888"
@@ -5322,7 +5347,7 @@ exit 0
         # Activating the venv puts Scripts\unsloth.exe first and PATHEXT prefers .EXE,
         # so every bare `unsloth` below is unusable where the policy denies it. Same
         # probe, same reason: unaffected machines must see unchanged text.
-        $_shimBlocked = Test-ShimLaunchBlocked -Path $ShimExe
+        $_shimBlocked = Test-UnslothCmdShimPreferred -ShimExe $ShimExe -ShimCmd $ShimCmd
         $_bareLaunch = if ($_shimBlocked) { "unsloth.cmd studio -p 8888" } else { "unsloth studio -p 8888" }
         if ($StudioRedirectMode -eq 'env') {
             # Env-mode skips registry PATH; print the absolute shim path. The .cmd
@@ -5340,7 +5365,7 @@ exit 0
             substep $_bareLaunch
         }
         if ($_shimBlocked) {
-            substep "(Windows Application Control denies the generated unsloth.exe on this machine;"
+            substep "(the generated unsloth.exe is not usable on this machine;"
             substep " unsloth.cmd runs the same CLI through the managed Python)"
         }
         substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"

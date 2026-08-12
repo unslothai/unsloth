@@ -22,6 +22,9 @@ $install = Join-Path $repo "install.ps1"
 # unsloth_cli/commands/studio.py. Written out here rather than read from any of them, so a
 # silent edit on any side fails a check instead of being copied into the expectation. Both
 # halves are load bearing; the rationale is on WINDOWS_CLI_ENTRYPOINT in process.rs.
+# Written out for the same reason as the trampoline: an edit on either side has to fail a
+# check rather than be copied into the expectation. This one gates a recursive delete.
+$ShimMarker = "unsloth-studio-managed-launcher"
 $Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
 function Get-FunctionText {
@@ -50,6 +53,7 @@ $contentFn  = Get-FunctionText $install "Get-UnslothCmdShimContent"
 $writeFn    = Get-FunctionText $install "Write-UnslothCmdShim"
 $probeFn    = Get-FunctionText $install "Test-ShimLaunchBlocked"
 $shimFileFn = Get-FunctionText $install "Test-UnslothCmdShimFile"
+$preferFn   = Get-FunctionText $install "Test-UnslothCmdShimPreferred"
 
 # An empty or wrong extraction would make every case below pass vacuously.
 Check "extraction kept the policy code"    ($blockFn -match '1260')
@@ -60,6 +64,7 @@ Check "extraction kept the dp0 prefix"     ($contentFn -match '%~dp0')
 Check "extraction kept the compare"        ($writeFn -match '\$existing -eq \$content')
 Check "extraction kept the probe start"    ($probeFn -match 'ProcessStartInfo')
 Check "extraction kept the content marker" ($shimFileFn -match 'from unsloth_cli import app')
+Check "extraction kept the exe test"       ($preferFn -match 'ShimExe')
 
 # The whole point of the classifier: the value it must NOT consult.
 Check "the classifier never reads LASTEXITCODE" (-not ($blockFn -match 'LASTEXITCODE'))
@@ -121,6 +126,7 @@ function Invoke-CommandLine {
     param([string[]] $Arguments = @())
     $sb = [scriptblock]::Create(@"
 param(`$Arguments)
+`$script:UnslothCmdShimMarker = "$ShimMarker"
 `$script:UnslothCliTrampoline = "$Trampoline"
 $cmdlineFn
 Get-ManagedUnslothCliCommandLine -Arguments `$Arguments
@@ -223,6 +229,7 @@ function Invoke-Content {
     param([string] $ShimDir, [string] $PythonPath)
     $sb = [scriptblock]::Create(@"
 param(`$ShimDir, `$PythonPath)
+`$script:UnslothCmdShimMarker = "$ShimMarker"
 `$script:UnslothCliTrampoline = "$Trampoline"
 $relFn
 $contentFn
@@ -265,6 +272,7 @@ function Invoke-Write {
     $sb = [scriptblock]::Create(@"
 param(`$ShimDir, `$PythonPath)
 function substep { param(`$Message, `$Color) Write-Output "SUBSTEP: `$Message" }
+`$script:UnslothCmdShimMarker = "$ShimMarker"
 `$script:UnslothCliTrampoline = "$Trampoline"
 $relFn
 $contentFn
@@ -354,8 +362,8 @@ Check "and the env-mode export too"    ($installText -match "StudioRedirectMode 
 Write-Host "the launch instructions are probed, not assumed"
 # PATHEXT resolves .EXE before .CMD, so bare `unsloth` picks the blocked file. Printing the
 # .cmd unconditionally would change what every unaffected machine sees, so it is gated.
-Check "the decline branch probes"      ($installText -match 'if \(Test-ShimLaunchBlocked -Path \$ShimExe\) \{\n\s*substep "unsloth\.cmd studio -p 8888"')
-Check "the manual branch probes"       ($installText -match '\$_shimBlocked = Test-ShimLaunchBlocked -Path \$ShimExe')
+Check "the decline branch probes"      ($installText -match 'if \(Test-UnslothCmdShimPreferred -ShimExe \$ShimExe -ShimCmd \$ShimCmd\) \{\n\s*substep "unsloth\.cmd studio -p 8888"')
+Check "the manual branch probes"       ($installText -match '\$_shimBlocked = Test-UnslothCmdShimPreferred -ShimExe \$ShimExe -ShimCmd \$ShimCmd')
 Check "and prints the bare form otherwise" ($installText -match '\$_bareLaunch = if \(\$_shimBlocked\) \{ "unsloth\.cmd studio -p 8888" \} else \{ "unsloth studio -p 8888" \}')
 
 Write-Host "the trampoline is the one the desktop already uses"
@@ -470,6 +478,67 @@ Test-ShimLaunchBlocked -Path `$Path
     Check "and it did not hit the timeout"   ($sw.ElapsedMilliseconds -lt 10000)
 } finally {
     Remove-Item -LiteralPath $probeTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- Test-UnslothCmdShimPreferred -----------------------------------------------------------
+# Which launcher the printed instructions name. Test-ShimLaunchBlocked answers $false for a
+# file that is not there, because nothing refused to start it, so a quarantined or never-created
+# .exe used to leave the installer printing a path that does not exist.
+$prefTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-pref-" + [guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $prefTmp
+try {
+    $prefSb = [scriptblock]::Create(@"
+param(`$ShimExe, `$ShimCmd)
+$blockFn
+$probeFn
+$preferFn
+Test-UnslothCmdShimPreferred -ShimExe `$ShimExe -ShimCmd `$ShimCmd
+"@)
+    $exe = Join-Path $prefTmp "unsloth.exe"
+    $cmd = Join-Path $prefTmp "unsloth.cmd"
+
+    Write-Host "the instructions name the .cmd only when the .exe cannot serve"
+    # Nothing written yet: no .cmd to name.
+    Check "no .cmd, no preference"     (-not (& $prefSb $exe $cmd))
+    [System.IO.File]::WriteAllText($cmd, "@echo off`r`n")
+    # This is the regression: the .exe is gone, so naming it prints a dead path.
+    Check "quarantined .exe prefers it" (& $prefSb $exe $cmd)
+    # A runnable .exe wins, which is what every unaffected machine has.
+    Copy-Item -LiteralPath (Get-Command pwsh).Source -Destination $exe -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $exe) {
+        Check "a runnable .exe keeps it"   (-not (& $prefSb $exe $cmd))
+    }
+} finally {
+    Remove-Item -LiteralPath $prefTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --- the .cmd ownership marker ---------------------------------------------------------------
+# _IsStudioRoot accepts a bin\unsloth.cmd as proof that a user-named root is ours, and that
+# answer gates a recursive delete. `from unsloth_cli import app` alone is a line anyone could
+# have in a hand-rolled wrapper, so the generated shim carries a marker nobody writes by
+# accident and every check requires it.
+$markerSb = [scriptblock]::Create(@"
+param(`$Path)
+`$script:UnslothCmdShimMarker = "$ShimMarker"
+$shimFileFn
+Test-UnslothCmdShimFile -Path `$Path
+"@)
+$markerTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-marker-" + [guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $markerTmp
+try {
+    $ours = Join-Path $markerTmp "ours.cmd"
+    [System.IO.File]::WriteAllText($ours, "@echo off`r`nrem unsloth-studio-managed-launcher`r`n... from unsloth_cli import app ...`r`n")
+    $theirs = Join-Path $markerTmp "theirs.cmd"
+    [System.IO.File]::WriteAllText($theirs, "@echo off`r`npython -c `"from unsloth_cli import app; app()`" %*`r`n")
+
+    Write-Host "only the shim this installer generated proves ownership"
+    Check "our shim is recognised"      (& $markerSb $ours)
+    Check "a hand-rolled wrapper is not" (-not (& $markerSb $theirs))
+    Check "the generator emits the marker" ($installText -match 'rem \$script:UnslothCmdShimMarker')
+    # The uninstaller gates a recursive delete on the same answer.
+    Check "the uninstaller requires it too" ($uninstallText -match 'unsloth-studio-managed-launcher')
+} finally {
+    Remove-Item -LiteralPath $markerTmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
