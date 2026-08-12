@@ -224,7 +224,6 @@ def _xet_health_from(module: Any, **kwargs: Any) -> Any:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
-
         _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
 
