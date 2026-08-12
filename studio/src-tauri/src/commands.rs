@@ -813,10 +813,8 @@ mod tests {
         } else {
             String::new()
         };
-        // Only an owned backend can advertise lease support: the secret comes
-        // from the desktop spawn. `ready_health(false)` stands in for a server
-        // the user started from a terminal, so giving it the capability would
-        // model a backend that does not exist.
+        // Only an owned backend can advertise lease support; ready_health(false)
+        // stands in for a terminal-started server, which never can.
         let leases = if include_owner {
             r#""native_path_leases_supported":true,"#
         } else {

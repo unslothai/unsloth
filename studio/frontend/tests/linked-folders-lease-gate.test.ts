@@ -1,20 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The picker used to be gated on `isTauri` alone. Inside the desktop app that is
-// true even when the backend the app ATTACHED to was not the one it spawned, and
-// only a spawned backend holds UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET. So the
-// button was live, the folder lease was signed, and the backend answered
-// `400 Native path grants require the managed desktop backend.` -- issue 8416.
-//
-// Two things therefore have to hold together, and neither is worth much alone:
-// the button must be dead when the capability is missing, AND `link()` must
-// refuse even if something clicks it anyway, because a disabled attribute is not
-// a guarantee.
-//
-// There is no React renderer in this suite, so this asserts on the source the
-// way ~50 sibling tests do. That catches the gate being dropped, which is the
-// regression that put the 400 in front of users.
+// Issue 8416: gated on `isTauri` alone, the picker stayed live when the app
+// attached to a backend it had not spawned, and only a spawned backend holds
+// UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET, so the lease came back 400. The
+// button must be dead without the capability AND `link()` must refuse anyway.
+// No React renderer here, so this asserts on source, like ~50 sibling tests.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -65,8 +56,7 @@ test("link() refuses without the capability, not just the button", () => {
     /if\s*\([^)]*!nativePathLeasesSupported[^)]*\)\s*return/,
     "link() must bail before pickNativeDocumentFolder when leases are unsupported",
   );
-  // A stale closure would re-enable the old behaviour the moment the capability
-  // flipped, so the dependency has to be declared.
+  // A stale closure would restore the old behaviour once the capability flips.
   assert.ok(
     body.includes("nativePathLeasesSupported") &&
       HOOK.slice(HOOK.indexOf("const link = useCallback("))
@@ -76,9 +66,7 @@ test("link() refuses without the capability, not just the button", () => {
 });
 
 test("the unsupported branch names the managed backend, not the desktop app", () => {
-  // The old copy told a desktop user to "link new folders in the desktop app"
-  // while they were standing in the desktop app. Whatever the wording becomes,
-  // it must not say that again.
+  // The old copy told a desktop user to use the desktop app they were already in.
   assert.ok(
     !MANAGER.includes("link new folders in the desktop app"),
     "the unsupported copy must not tell a desktop user to use the desktop app",
