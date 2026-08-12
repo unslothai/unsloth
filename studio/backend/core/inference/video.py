@@ -3585,6 +3585,13 @@ class VideoBackend:
                         ),
                         text_encoder_outcome.status,
                     ),
+                    "family_override": (
+                        family_override,
+                        fam.name,
+                        "explicit family override applied"
+                        if family_override
+                        else "auto-detected from repository name and metadata",
+                    ),
                 }
             )
 

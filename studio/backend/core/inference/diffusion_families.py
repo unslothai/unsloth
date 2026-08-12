@@ -156,7 +156,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.2-klein-4B-FP8"),
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
-        aliases = ("flux2-klein",),
+        aliases = ("flux2-klein", "flux-klein", "klein"),
         # Train the undistilled bases, then preview their adapters on the matching 4-step models.
         # Both vendor ids resolve through the ungated mirrors at fetch time.
         trainable = True,
@@ -457,11 +457,20 @@ def excluded_model_reason(repo_id: str) -> Optional[str]:
 _EDIT_KEYWORDS = ("edit", "kontext", "inpaint", "layered")
 
 
+def _token_regex(token: str) -> str:
+    parts = re.split(r"[-_.]+", token)
+    if len(parts) > 1:
+        inner = r"[-_.]+".join(re.escape(p) for p in parts)
+    else:
+        inner = re.escape(token)
+    return r"(?:^|[-_./\\])" + inner + r"(?:$|[-_./\\])"
+
+
 def _token_in_needle(token: str, needle: str) -> bool:
     """True when ``token`` appears in ``needle`` as a whole segment (delimited by ``- _ . / \\`` or
     a boundary), not a raw substring, so 'qwen-image-edit' matches '...-2511' but 'kontext' doesn't
     match 'kontextual'."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    return re.search(_token_regex(token), needle) is not None
 
 
 def _best_family_match(needle: str) -> Optional[DiffusionFamily]:

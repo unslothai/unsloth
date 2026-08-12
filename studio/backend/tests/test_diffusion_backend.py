@@ -142,7 +142,19 @@ def test_detect_family_edit_keyword_scoped_to_basename():
 def test_detect_family_override():
     assert detect_family("local/path", override = "z-image").name == "z-image"
     assert detect_family("local/path", override = "zimage").name == "z-image"
+    assert detect_family("local/path", override = "flux.2-klein").name == "flux.2-klein"
     assert detect_family("local/path", override = "not-a-family") is None
+
+
+def test_detect_family_delimiter_flexibility():
+    assert detect_family("user/FLUX.2_klein_9B").name == "flux.2-klein"
+    assert detect_family("user/flux2_klein").name == "flux.2-klein"
+    assert detect_family("user/flux-klein-v1").name == "flux.2-klein"
+    assert detect_family("user/klein-4b-lora").name == "flux.2-klein"
+    assert detect_family("user/FLUX.2_dev").name == "flux.2-dev"
+    assert detect_family("user/flux-2-dev").name == "flux.2-dev"
+    assert detect_family("user/qwen_image_lora").name == "qwen-image"
+    assert detect_family("user/z_image_turbo").name == "z-image"
 
 
 def test_supported_family_names():

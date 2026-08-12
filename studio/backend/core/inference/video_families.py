@@ -336,10 +336,19 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 )
 
 
+def _token_regex(token: str) -> str:
+    parts = re.split(r"[-_.]+", token)
+    if len(parts) > 1:
+        inner = r"[-_.]+".join(re.escape(p) for p in parts)
+    else:
+        inner = re.escape(token)
+    return r"(?:^|[-_./\\])" + inner + r"(?:$|[-_./\\])"
+
+
 def _token_in_needle(token: str, needle: str) -> bool:
     """Whole path/name segment match, as in diffusion_families (a short alias like
     'ltx' must not match inside an unrelated word)."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    return re.search(_token_regex(token), needle) is not None
 
 
 def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optional[VideoFamily]:

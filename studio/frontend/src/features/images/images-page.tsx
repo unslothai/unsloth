@@ -1107,6 +1107,12 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
               : "Native SDPA"
         }
       />
+      {status.family ? (
+        <BuildRow
+          label="Family"
+          value={formatResolvedValue("family", status.family)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1142,6 +1148,7 @@ type LoadAdvanced = Pick<
   | "memory_mode"
   | "transformer_cache"
   | "loras"
+  | "family_override"
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
@@ -1237,6 +1244,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [familyOverride, setFamilyOverride] = useState<string>("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
   const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
@@ -2249,6 +2257,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+        family_override: familyOverride === "auto" ? undefined : familyOverride,
         loras: baked.length > 0 ? baked : undefined,
       };
     },
@@ -2260,6 +2269,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
+      familyOverride,
     ],
   );
 
@@ -2331,6 +2341,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
+          family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
         });
         await startRequest;
@@ -2470,6 +2481,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
         // planned a quantized file set and staged too little. Same list handleLoad bakes.
         loras: advanced.loras,
@@ -3299,9 +3311,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const activeWorkflowTab =
     WORKFLOW_TABS.find((t) => t.id === workflow) ?? WORKFLOW_TABS[0];
 
+  const DIFFUSION_FAMILY_OPTIONS: Array<[string, string]> = [
+    ["auto", "Auto (detect)"],
+    ["flux.1", "FLUX.1"],
+    ["flux.2-klein", "FLUX.2 Klein"],
+    ["flux.2-dev", "FLUX.2 Dev"],
+    ["flux.1-kontext", "FLUX.1 Kontext"],
+    ["qwen-image", "Qwen-Image"],
+    ["qwen-image-edit", "Qwen-Image-Edit"],
+    ["z-image", "Z-Image"],
+    ["krea-2", "Krea 2"],
+    ["lumina-2", "Lumina 2"],
+    ["hunyuanimage-2.1", "HunyuanImage 2.1"],
+    ["hidream-i1", "HiDream-I1"],
+    ["ideogram-4", "Ideogram 4"],
+    ["sdxl", "SDXL"],
+  ];
+
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="Family"
+        hint="Diffusion model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune or merge whose name does not contain the standard family keywords."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={(v) => setFamilyOverride(v)}
+        options={DIFFUSION_FAMILY_OPTIONS}
+      />
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."

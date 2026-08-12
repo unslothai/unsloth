@@ -500,6 +500,12 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
             : "Native SDPA"
         }
       />
+      {status.family ? (
+        <BuildRow
+          label="Family"
+          value={formatResolvedValue("family", status.family)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -732,6 +738,7 @@ type VideoLoadAdvanced = Pick<
   | "attention_backend"
   | "transformer_cache"
   | "transformer_quant"
+  | "family_override"
 >;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
@@ -838,6 +845,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
+  const [familyOverride, setFamilyOverride] = useState<string>("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
   const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
@@ -1874,6 +1882,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     attentionBackend,
     transformerCache,
     transformerQuant,
+    familyOverride,
   };
   const currentLoadAdvanced = useCallback(
     (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
@@ -1889,6 +1898,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           kind === "pipeline" && controls.transformerQuant !== "auto"
             ? controls.transformerQuant
             : undefined,
+        family_override:
+          controls.familyOverride === "auto" ? undefined : controls.familyOverride,
       };
     },
     [],
@@ -1904,6 +1915,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         hf_token: hfApiToken(getHfToken()),
         transformer_quant: advanced.transformer_quant,
         memory_mode: advanced.memory_mode,
+        family_override: advanced.family_override,
       });
       const requiredBytes = plan.required_bytes ?? 0;
       if (requiredBytes <= 0) return null;
@@ -1967,6 +1979,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           attention_backend: advanced.attention_backend,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          family_override: advanced.family_override,
           // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
           // than joining the pinned set.
           h3_task: opts.h3Task,
@@ -2126,6 +2139,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // The route preflights the same values used by the eventual load.
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
+          family_override: advanced.family_override,
           // And the partition, for the same reason: the two H3 denoisers are separate downloads,
           // so a plan asked without it stages the default fl2va weights for a References pick.
           h3_task: opts.h3Task,
@@ -2741,9 +2755,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     startGenPoll,
   ]);
 
+  const VIDEO_FAMILY_OPTIONS: Array<[string, string]> = [
+    ["auto", "Auto (detect)"],
+    ["minimax-h3", "MiniMax-H3"],
+    ["ltx-2", "LTX-2"],
+    ["wan2.2-ti2v-5b", "Wan2.2-TI2V-5B"],
+    ["wan2.2-t2v-a14b", "Wan2.2-T2V-A14B"],
+    ["hunyuanvideo-1.5", "HunyuanVideo-1.5"],
+  ];
+
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="Family"
+        hint="Video model architecture family. Auto detects from the repository name and metadata. Specify an override if loading a custom fine-tune whose name does not contain the standard family keywords."
+        badge={<ResolvedBadge status={status} controlKey="family_override" />}
+        value={familyOverride}
+        onValueChange={(v) => setFamilyOverride(v)}
+        options={VIDEO_FAMILY_OPTIONS}
+      />
       <AdvancedSelect
         label="Memory"
         hint="auto measures free VRAM. fast keeps everything resident. balanced streams the transformer. low_vram offloads every component (lowest VRAM, slower)."
