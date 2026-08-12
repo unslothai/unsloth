@@ -1979,8 +1979,14 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             # `outputs.logits` is the return value now, and we asked for a single
             # position because we meant to throw the logits away. GRPO drops the
             # last one and slices the completion window out of what is left, so
-            # one position leaves it nothing. Re-run on the caller's arguments.
-            return original_forward(*args, **kwargs)
+            # one position leaves it nothing. Put the caller's own limit back --
+            # absent means every position, which is what a model that ignores
+            # `logits_to_keep` would have returned anyway -- and re-run.
+            if logits_kwarg in kwargs:
+                forward_kwargs[logits_kwarg] = kwargs[logits_kwarg]
+            else:
+                forward_kwargs.pop(logits_kwarg, None)
+            return original_forward(*args, **forward_kwargs)
 
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
