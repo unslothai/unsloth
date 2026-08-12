@@ -38,7 +38,17 @@ ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
 # GPU arch: empty = auto-detect from rocminfo after install (override UNSLOTH_WSL_GFX=gfx1200).
 # The ROCm + librocdxg setup is arch-agnostic; only verify + the smoke test need the arch.
 GFX="${UNSLOTH_WSL_GFX:-}"
-LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-develop}"    # ROCm/librocdxg git ref to build
+# ROCm/librocdxg source to build. This is compiled and `sudo make install`ed, so it is
+# pinned to a release tag AND verified against that tag's immutable commit SHA (tags can
+# be moved; a branch like develop is rewritten by definition). v1.2.2 is what develop
+# points at today, so this builds exactly what it did before. Bump both together.
+LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-v1.2.2}"     # ROCm/librocdxg git ref to build
+LIBROCDXG_SHA="${UNSLOTH_LIBROCDXG_SHA:-4955d12888a3ec57057f1cf8660c2485e415e74c}"
+# An explicit UNSLOTH_LIBROCDXG_REF with no SHA is a deliberate operator choice (e.g.
+# testing a fix branch) -- honour it and skip the pin check rather than hard-failing.
+if [ -n "${UNSLOTH_LIBROCDXG_REF:-}" ] && [ -z "${UNSLOTH_LIBROCDXG_SHA:-}" ]; then
+    LIBROCDXG_SHA=""
+fi
 # AMD's wheel index for the (optional) smoke test; resolved after arch detection.
 TORCH_INDEX=""
 # Optional torch smoke test (throwaway venv). OFF by default: install.sh installs
@@ -202,6 +212,12 @@ else
     (
         cd "$_src"
         git checkout "$LIBROCDXG_REF" 2>/dev/null || true
+        # Verify the pin BEFORE cmake/make/`sudo make install` run anything from this
+        # tree: a moved tag or a mirror serving something else stops here.
+        if [ -n "$LIBROCDXG_SHA" ]; then
+            _got_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+            [ "$_got_sha" = "$LIBROCDXG_SHA" ] || die "librocdxg ${LIBROCDXG_REF} resolved to ${_got_sha:-unknown}, expected ${LIBROCDXG_SHA}. Refusing to build and install unverified source as root. Set UNSLOTH_LIBROCDXG_REF (and optionally UNSLOTH_LIBROCDXG_SHA) to build a different revision on purpose."
+        fi
         mkdir -p build && cd build
         cmake .. -DWIN_SDK="${_win_sdk}/shared"
         make -j"$(nproc)"

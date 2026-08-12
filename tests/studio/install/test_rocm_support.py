@@ -6455,5 +6455,35 @@ class TestLlamaCppRuntimeWslOrdering:
         assert idx_helper < idx_binary
 
 
+class TestRocmWslSupplyChainPins:
+    """The ROCm-on-WSL bootstrap runs unattended and installs with sudo, so every piece of
+    code it fetches must come from an immutable ref: a moving branch would turn any rewrite
+    of that branch into root code execution on affected WSL hosts."""
+
+    def test_helper_is_fetched_from_a_pinned_commit_not_a_branch(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_bootstrap_rocm_wsl()")
+        assert start != -1
+        body = source[start : source.find("\n}", start)]
+        assert "unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" not in body, \
+            "the helper must not be fetched from the mutable main branch"
+        ref = re.search(r'_ROCM_WSL_HELPER_REF="([0-9a-f]+)"', body)
+        assert ref is not None, "the helper fetch must pin a full commit SHA"
+        assert len(ref.group(1)) == 40
+        assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
+
+    def test_librocdxg_ref_is_pinned_and_verified_before_build(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        assert 'UNSLOTH_LIBROCDXG_REF:-develop' not in source, \
+            "librocdxg must not default to a moving branch"
+        sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', source)
+        assert sha is not None, "librocdxg must default to a pinned commit SHA"
+        # The SHA check must run before anything from the clone is built or installed.
+        idx_check = source.find("git rev-parse HEAD")
+        idx_cmake = source.find("cmake .. -DWIN_SDK")
+        idx_install = source.find("$SUDO make install")
+        assert idx_check != -1 and idx_check < idx_cmake < idx_install
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

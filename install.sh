@@ -3867,11 +3867,18 @@ _maybe_bootstrap_rocm_wsl() {
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
     # copy counts only for a --local checkout run, since this executes with no prompt and
     # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
+    #
+    # PINNED, never a branch: this runs unattended and the helper installs with sudo, so
+    # fetching it from a moving ref (main) would make any rewrite of that branch arbitrary
+    # root code on every affected WSL box. A raw URL with a full commit SHA is immutable.
+    # When the helper changes, bump this to the merge commit that carries the change (a
+    # stale pin only means an older helper, never a broken install).
+    _ROCM_WSL_HELPER_REF="6d8c18cd1a630a231cb282799be13f8bb0b5ff3b"
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
-        if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
+        if download "https://raw.githubusercontent.com/unslothai/unsloth/${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
         else
             substep "Could not fetch the ROCm-on-WSL helper; using CPU fallback." "$C_WARN"
