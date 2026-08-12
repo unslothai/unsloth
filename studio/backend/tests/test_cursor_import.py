@@ -220,6 +220,9 @@ def test_a_second_import_updates_rather_than_duplicates(cursor_home):
     assert summary.chats == 1
     # Nothing new arrived, which is what lets the UI say "up to date".
     assert summary.new_chats == 0
+    # Untouched sessions are not rewritten either, so a second import over a
+    # large history is mostly a read.
+    assert summary.messages == 0
     assert len(studio_db.list_chat_projects()) == 1
     assert len(studio_db.list_chat_threads()) == 1
 
@@ -242,6 +245,112 @@ def test_a_renamed_chat_keeps_the_name_the_user_gave_it(cursor_home):
     import_cursor_chats()
 
     assert studio_db.get_chat_thread(thread_id)["title"] == "Header work"
+
+
+def test_a_chat_continued_here_does_not_drop_back_down_the_sidebar(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    later = studio_db.get_chat_thread(thread_id)["updatedAt"] + 60_000
+    studio_db.update_chat_thread(thread_id, {"updatedAt": later})
+
+    import_cursor_chats()
+
+    # Sidebar order comes from updatedAt, so the transcript's mtime must not
+    # overwrite the more recent turn the user added in Studio.
+    assert studio_db.get_chat_thread(thread_id)["updatedAt"] == later
+
+
+def test_a_chat_moved_out_of_its_project_stays_where_it_was_put(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    studio_db.update_chat_thread(thread_id, {"projectId": None})
+
+    import_cursor_chats()
+
+    assert studio_db.get_chat_thread(thread_id)["projectId"] is None
+
+
+def test_state_only_studio_knows_about_survives_a_re_import(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    # A chat continued here can hold a code-execution container and a fork
+    # origin. The transcript knows about neither, and a full upsert nulls every
+    # column it is not handed.
+    studio_db.update_chat_thread(
+        thread_id,
+        {
+            "openaiCodeExecContainerId": "container-42",
+            "forkedFromThreadId": "thread-origin",
+            "modelId": "some-model",
+        },
+    )
+
+    import_cursor_chats()
+
+    thread = studio_db.get_chat_thread(thread_id)
+    assert thread["openaiCodeExecContainerId"] == "container-42"
+    assert thread["forkedFromThreadId"] == "thread-origin"
+    assert thread["modelId"] == "some-model"
+
+
+def test_a_message_edited_here_is_not_overwritten(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    first = studio_db.list_chat_messages(thread_id)[0]
+    studio_db.upsert_chat_message(
+        {**first, "content": [{"type": "text", "text": "Fix the header, carefully"}]}
+    )
+
+    import_cursor_chats()
+
+    messages = studio_db.list_chat_messages(thread_id)
+    assert messages[0]["content"] == [{"type": "text", "text": "Fix the header, carefully"}]
+
+
+def test_a_message_deleted_here_is_not_recreated(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    kept = studio_db.list_chat_messages(thread_id)[:1]
+    studio_db.sync_chat_messages(thread_id, kept, prune_missing = True)
+
+    summary = import_cursor_chats()
+
+    assert len(studio_db.list_chat_messages(thread_id)) == 1
+    assert summary.messages == 0
+
+
+def test_a_chat_no_longer_in_studio_is_imported_whole_again(cursor_home):
+    # The ledger outlives the chats it describes -- a cleared history, a rolled
+    # back database -- and must not leave those conversations half imported.
+    studio_db.record_cursor_import_mark("session-one", 2**62, 99)
+
+    summary = import_cursor_chats()
+
+    assert summary.messages == 2
+    assert len(studio_db.list_chat_messages(thread_id_for("session-one"))) == 2
+
+
+def test_turns_cursor_appended_reach_an_already_imported_chat(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    write_transcript(
+        cursor_home,
+        "Users-me-app",
+        "session-one",
+        [
+            turn("user", "<user_query>Fix the header</user_query>"),
+            turn("assistant", "Fixed it."),
+            turn("user", "<user_query>And the footer</user_query>"),
+        ],
+    )
+
+    summary = import_cursor_chats()
+
+    texts = [message["content"][0]["text"] for message in studio_db.list_chat_messages(thread_id)]
+    assert texts == ["Fix the header", "Fixed it.", "And the footer"]
+    # Only the new turn was written, and it hangs off the one before it.
+    assert summary.messages == 1
+    assert summary.new_chats == 0
 
 
 def test_a_renamed_project_keeps_the_name_the_user_gave_it(cursor_home):
