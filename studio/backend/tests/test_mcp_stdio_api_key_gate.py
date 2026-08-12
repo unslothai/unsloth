@@ -421,10 +421,8 @@ def test_data_recipe_validate_refuses_stdio_recipe_from_api_key():
 
 
 def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
-    """A key that may not define a command may not read one back either. Both
-    fields of a stdio row are secrets: `url` is the argv, which carries
-    credentials often enough that it is never logged raw, and `headers` is the
-    subprocess env."""
+    """A key that may not define a command may not read one back: `url` is the
+    argv (carries credentials) and `headers` is the subprocess env."""
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
@@ -469,8 +467,7 @@ def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
 def test_studio_mcp_surface_refuses_stdio_recipes():
     """mcp_server.py calls the validate route function directly, so the ViaApiKey
     dependency never runs and its `= False` default would read as a UI session.
-    That surface is a remote static bearer, so the call site must pass True
-    itself; otherwise the gate is dead there."""
+    That remote static bearer surface must pass True itself or the gate is dead."""
     import inspect
 
     import mcp_server

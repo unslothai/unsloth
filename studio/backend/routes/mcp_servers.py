@@ -137,12 +137,9 @@ async def list_mcp_servers(
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key:
-        # Both fields of a stdio row are secrets: `url` is the argv, which
-        # carries credentials often enough that we never log it raw, and
-        # `headers` is the subprocess env. A key that may not define a local
-        # command does not get to read one back. Drop the whole row rather than
-        # blank the fields, so a redacted url cannot round-trip into update as a
-        # bogus command.
+        # Drop the row, not just its fields: `url` is the argv (carries
+        # credentials), `headers` is the subprocess env, and a blanked url would
+        # round-trip into update as a bogus command.
         rows = [row for row in rows if not is_stdio(row["url"])]
     return [_row_to_response(row) for row in rows]
 
