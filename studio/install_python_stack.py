@@ -4208,7 +4208,7 @@ def _download_pinned_wheel_resumable(spec: str, index_url: str, dest_dir: Path) 
         wheel_url = f"{index_url.rstrip('/')}/{package}/{href.lstrip('./')}"
     from urllib.parse import unquote
 
-    wheel_name = unquote(wheel_url.split("?")[0].split("/")[-1])
+    wheel_name = unquote(wheel_url.split("?")[0].split("#")[0].split("/")[-1])
     dest = dest_dir / wheel_name
     download_file_resumable(wheel_url, dest)
     return dest if dest.is_file() else None

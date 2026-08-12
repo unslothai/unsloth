@@ -65,6 +65,11 @@ _LISTING='<a href="torch-2.10.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl"><
 assert_eq "newest torch 2.11 wheel" \
     "torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl" \
     "$(_pick_simple_index_wheel "$_LISTING" "torch" "2.11." "cp312" "x86_64")"
+_HREF='torch-2.11.0%2Bcu130-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=abc123'
+_NAME=$(printf '%s' "${_HREF##*/}" | sed 's/%2[Bb]/+/g; s/[?#].*//')
+assert_eq "wheel basename strips sha256 fragment" \
+    "torch-2.11.0+cu130-cp312-cp312-manylinux_2_28_x86_64.whl" \
+    "$_NAME"
 
 echo "=== _install_torch_default_index falls back to resumable path ==="
 assert_contains "uv failure warns" "$(cat "$INSTALL_SH")" \

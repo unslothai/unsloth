@@ -3987,6 +3987,33 @@ _resolve_simple_index_wheel_url() {
     esac
 }
 
+# Resolve the exact torch/torchvision/torchaudio releases uv would pick (dry-run).
+# Prints three lines: torch=2.11.0, torchvision=0.26.0, torchaudio=2.11.0
+_resolve_torch_wheel_versions() {
+    _rtwv_torch_con="$1"
+    _rtwv_tv_con="$2"
+    _rtwv_ta_con="$3"
+    shift 3
+    uv pip install --dry-run --python "$_VENV_PY" \
+        "$_rtwv_torch_con" "$_rtwv_tv_con" "$_rtwv_ta_con" \
+        --default-index "$TORCH_INDEX_URL" "$@" 2>&1 \
+        | "$_VENV_PY" -c "
+import re, sys
+want = ('torch', 'torchvision', 'torchaudio')
+found = {}
+for line in sys.stdin:
+    m = re.match(r'\s*\+ (torch(?:vision|audio)?)==(\S+)', line)
+    if not m:
+        continue
+    ver = m.group(2).split('+', 1)[0]
+    found[m.group(1)] = ver
+if set(want) - set(found):
+    sys.exit(1)
+for pkg in want:
+    print(f'{pkg}={found[pkg]}')
+"
+}
+
 # Download torch/torchvision/torchaudio wheels with resume, install locally, then fetch
 # runtime deps from the index without re-pulling the trio (#8456).
 _install_torch_resumable_wheels() {
@@ -4005,9 +4032,10 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
 " 2>/dev/null) || return 1
     _itr_arch=$(_pytorch_wheel_arch_suffix)
 
-    _itr_torch_p=$(_constraint_ver_prefix "$_itr_torch_con")
-    _itr_tv_p=$(_constraint_ver_prefix "$_itr_tv_con")
-    _itr_ta_p=$(_constraint_ver_prefix "$_itr_ta_con")
+    _itr_versions=$(_resolve_torch_wheel_versions "$_itr_torch_con" "$_itr_tv_con" "$_itr_ta_con" "$@") || return 1
+    _itr_torch_p=$(printf '%s\n' "$_itr_versions" | sed -n 's/^torch=\([0-9]*\.[0-9]*\)\.[0-9]*/\1./p')
+    _itr_tv_p=$(printf '%s\n' "$_itr_versions" | sed -n 's/^torchvision=\([0-9]*\.[0-9]*\)\.[0-9]*/\1./p')
+    _itr_ta_p=$(printf '%s\n' "$_itr_versions" | sed -n 's/^torchaudio=\([0-9]*\.[0-9]*\)\.[0-9]*/\1./p')
 
     _itr_tl=$(_pytorch_simple_listing "$_itr_base" "torch") || return 1
     _itr_vl=$(_pytorch_simple_listing "$_itr_base" "torchvision") || return 1
@@ -4024,7 +4052,7 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
         _itr_pkg=${_itr_pair%%:*}
         _itr_href=${_itr_pair#*:}
         _itr_url=$(_resolve_simple_index_wheel_url "$_itr_base/$_itr_pkg" "$_itr_href") || return 1
-        _itr_name=$(printf '%s' "${_itr_href##*/}" | sed 's/%2[Bb]/+/g')
+        _itr_name=$(printf '%s' "${_itr_href##*/}" | sed 's/%2[Bb]/+/g; s/[?#].*//')
         _itr_dest="$_itr_cache/$_itr_name"
         substep "resumable download $_itr_name..."
         download_resumable "$_itr_url" "$_itr_dest" || return 1
@@ -4038,25 +4066,36 @@ print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
     run_install_cmd_retry "install PyTorch (resumable wheels)" uv pip install --python "$_VENV_PY" \
         --no-deps "$_itr_tw" "$_itr_vw" "$_itr_aw" "$@" || return 1
 
-    _itr_deps=$("$_VENV_PY" -c "
+    _itr_dep_file=$(mktemp)
+    "$_VENV_PY" -c "
 import importlib.metadata as m
+import re
 seen = set()
+skip = {'torch', 'torchvision', 'torchaudio'}
 for pkg in ('torch', 'torchvision', 'torchaudio'):
     try:
         reqs = m.requires(pkg) or []
     except Exception:
         continue
     for req in reqs:
-        spec = req.split(';')[0].strip()
-        if spec and spec not in seen:
+        base, _, marker = req.partition(';')
+        spec = base.strip()
+        if not spec:
+            continue
+        if marker.strip() and 'extra ==' in marker.lower():
+            continue
+        name = re.split(r'[\s\[(<>=!]', spec, maxsplit=1)[0].lower().replace('_', '-')
+        if name in skip:
+            continue
+        if spec not in seen:
             seen.add(spec)
             print(spec)
-" 2>/dev/null)
-    if [ -n "$_itr_deps" ]; then
-        # shellcheck disable=SC2086
+" >"$_itr_dep_file" 2>/dev/null || true
+    if [ -s "$_itr_dep_file" ]; then
         run_install_cmd_retry "install PyTorch runtime deps" uv pip install --python "$_VENV_PY" \
-            --default-index "$TORCH_INDEX_URL" $_itr_deps || return 1
+            --extra-index-url "$TORCH_INDEX_URL" -r "$_itr_dep_file" || { rm -f "$_itr_dep_file"; return 1; }
     fi
+    rm -f "$_itr_dep_file"
     return 0
 }
 
