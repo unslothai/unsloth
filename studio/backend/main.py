@@ -502,8 +502,13 @@ def _warm_rag_embedder() -> None:
         from core.rag import embeddings
 
         embeddings.warm()
-    except Exception:
-        pass
+    except Exception as _rag_exc:
+        # Warming is an optimization: the first real request loads the embedder itself.
+        # Logged rather than swallowed so a host that never gets a warm embedder says why
+        # once. A driver fault is NOT reachable here -- it is not an exception, which is
+        # the whole point of the isolated probe in utils/device_allocation_probe.py.
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("RAG embedder warm skipped: %s", _rag_exc)
 
 
 _post_warm_thread: Optional[threading.Thread] = None

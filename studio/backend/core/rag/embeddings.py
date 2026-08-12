@@ -50,6 +50,58 @@ def _device() -> str:
     return _TORCH_DEVICE.get(get_device(), "cpu")
 
 
+def _rocm_gpu_is_fatal() -> bool:
+    """True when this host's ROCm stack faults on its first real GPU allocation.
+
+    ROCm is ``DeviceType.CUDA`` internally, so nothing above this point distinguishes a
+    healthy CUDA host from a ROCm wheel built for the wrong gfx arch. That distinction
+    cannot be made in this process: the mismatch does not raise, it SIGSEGVs inside the
+    HIP runtime, and it does so from a daemon thread where it takes uvicorn with it
+    (#8474, host in #7331). So a child is asked to allocate first, and its death is the
+    answer. Asked once per process; nothing is asked off ROCm, so a CUDA, XPU, Apple, CPU
+    or ``--no-torch`` host spawns nothing and behaves exactly as it did before.
+    """
+    try:
+        from utils.hardware import hardware as hardware_mod
+
+        # Read the flag, never force the detection that sets it: detection imports torch,
+        # and this is reachable from active_backend_is_llama() well before the coordinated
+        # warm is meant to pay that cost. Nothing is lost by declining here -- the place
+        # that actually allocates, _safe_torch_device, calls _device() first, which
+        # settles detection, so the guard that matters is never the one skipped.
+        if not hardware_mod.DETECTION_COMPLETE.is_set():
+            return False
+        if not hardware_mod.IS_ROCM:
+            return False
+    except Exception:  # noqa: BLE001 - if we cannot even tell, leave behaviour untouched
+        return False
+    from utils.device_allocation_probe import probe_torch_device_allocation
+
+    return not probe_torch_device_allocation("cuda:0").ok
+
+
+def _safe_torch_device() -> str:
+    """``_device()``, except that a ROCm GPU which cannot allocate resolves to CPU.
+
+    Degrading to CPU rather than to the llama-server GGUF embedder is deliberate: it is
+    the same backend and the same model, so the vectors are unchanged and no knowledge
+    base needs reindexing. bge-small is small enough that CPU is a slowdown, not a loss
+    of function.
+    """
+    device = _device()
+    if device != "cuda":
+        return device
+    if _rocm_gpu_is_fatal():
+        logger.warning(
+            "this host's ROCm GPU crashed an isolated allocation probe, so it cannot be "
+            "used in this process without killing the backend; loading the embedding "
+            "model on CPU instead. Embeddings are unchanged, so no knowledge base needs "
+            "reindexing. Usually a torch wheel built for a different gfx arch."
+        )
+        return "cpu"
+    return device
+
+
 _torchao_stub_done = False
 
 
@@ -355,13 +407,17 @@ def _get(model_name: str | None = None):
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
 
-            device = _device()
+            device = _safe_torch_device()
+            # A GPU we were pushed off is not the same as a host that never had one: fp16
+            # is a win on the GPU and a slow, patchily supported path on CPU. Only the
+            # degraded case switches, so a genuine CPU/Apple host loads exactly as before.
+            degraded_to_cpu = device == "cpu" and _device() == "cuda"
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name, local_only)
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs("float16"),
+                model_kwargs = dtype_kwargs("float32" if degraded_to_cpu else "float16"),
             )
             load_target = name
             if local_only:
@@ -497,7 +553,20 @@ _AUTO_ALIASES = frozenset({"auto", ""})
 def _resolve_auto() -> str:
     """Pick a backend for ``auto``: sentence-transformers when a CUDA/ROCm GPU is
     present (torch fp16 wins bulk indexing), else the torch-free GGUF llama-server
-    -- or ST if its binary is missing. GPU check is torch-free (nvidia-smi)."""
+    -- or ST if its binary is missing.
+
+    The GPU check is torch-free on NVIDIA (nvidia-smi) but NOT on AMD, where
+    ``_get_gpu_free_memory`` falls back to torch ``mem_get_info`` in this process. So the
+    allocation probe has to be consulted FIRST on ROCm: a condemned host used to be
+    steered by this function straight into the crash it was trying to route around.
+    """
+    if _rocm_gpu_is_fatal():
+        # Stay on sentence-transformers, which _safe_torch_device() will place on CPU.
+        # Picking llama-server here would embed into a different vector space and force a
+        # reindex, for a host whose only problem is that it cannot use its GPU. Returning
+        # before the import below also keeps the llama.cpp plumbing out of this process.
+        return "sentence-transformers"
+
     from core.inference.llama_cpp import LlamaCppBackend
 
     if LlamaCppBackend._get_gpu_free_memory():

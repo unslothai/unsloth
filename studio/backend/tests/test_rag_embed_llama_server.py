@@ -99,6 +99,71 @@ def test_explicit_backend_overrides_auto(monkeypatch):
     assert isinstance(embeddings._get_backend(), LlamaServerBackend)
 
 
+def _mock_rocm_probe(monkeypatch, *, is_rocm, probe_ok):
+    """Pin ROCm-ness and the isolated allocation probe's verdict (#8474)."""
+    import threading
+
+    from utils import device_allocation_probe as probe_mod
+    from utils.hardware import hardware as hardware_mod
+    from utils.hardware.hardware import DeviceType
+
+    monkeypatch.setattr(embeddings, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(hardware_mod, "IS_ROCM", is_rocm)
+    detected = threading.Event()
+    detected.set()
+    monkeypatch.setattr(hardware_mod, "DETECTION_COMPLETE", detected)
+    monkeypatch.setattr(
+        probe_mod,
+        "probe_torch_device_allocation",
+        lambda device = "cuda:0": probe_mod.DeviceAllocationProbeResult(
+            ok = probe_ok,
+            device = device,
+            returncode = 0 if probe_ok else -11,
+            reason = None if probe_ok else "killed by SIGSEGV",
+            duration_seconds = 0.1,
+        ),
+    )
+
+
+def test_auto_does_not_query_gpu_memory_after_a_failed_rocm_probe(monkeypatch):
+    # _get_gpu_free_memory falls back to torch mem_get_info in THIS process on AMD, so on
+    # a condemned host auto-resolution used to steer into the very crash it should avoid.
+    # The probe has to be consulted first.
+    _stub_st_load(monkeypatch)
+    _mock_rocm_probe(monkeypatch, is_rocm = True, probe_ok = False)
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+
+    def _must_not_run():
+        raise AssertionError("_get_gpu_free_memory reached on a condemned ROCm host")
+
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_must_not_run))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+
+    # Sentence-transformers, not llama-server: the model and therefore the vector space
+    # stays the same, so no knowledge base needs reindexing. The device moves, not the
+    # backend.
+    assert embeddings._resolve_auto() == "sentence-transformers"
+
+
+def test_auto_is_unchanged_after_a_passing_rocm_probe(monkeypatch):
+    _stub_st_load(monkeypatch)
+    _mock_rocm_probe(monkeypatch, is_rocm = True, probe_ok = True)
+    _mock_auto(monkeypatch, gpus = [(0, 40000)], binary = "/bin/llama-server")
+    assert embeddings._resolve_auto() == "sentence-transformers"
+
+
+def test_auto_on_a_non_rocm_host_still_asks_gpu_memory(monkeypatch):
+    # The NVIDIA path must be byte-identical to before: nvidia-smi decides, no probe.
+    _stub_st_load(monkeypatch)
+    _mock_rocm_probe(monkeypatch, is_rocm = False, probe_ok = False)
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings._resolve_auto() == "llama-server"
+
+
 def test_llama_backend_imports_no_torch():
     # Clean subprocess so the parent's imports don't mask a regression.
     backend_dir = Path(__file__).resolve().parents[1]

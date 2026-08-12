@@ -1,0 +1,287 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Isolated device-allocation probe (#8474), every boundary mocked.
+
+The fault this guards against cannot be provoked in CI -- there is no AMD silicon and no
+ROCm here -- so the child is faked and the thing under test is the CLASSIFICATION: that a
+child killed by a signal, a Windows native fault, any nonzero exit, a timeout and a failed
+spawn all come back as "do not allocate in this process", and that a healthy child is the
+only thing that comes back ok.
+"""
+
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
+from utils import device_allocation_probe as probe_mod  # noqa: E402
+from utils.device_allocation_probe import (  # noqa: E402
+    DeviceAllocationProbeResult,
+    describe_exit,
+    probe_torch_device_allocation,
+)
+
+
+@pytest.fixture(autouse = True)
+def _clear_cache():
+    probe_mod._clear_probe_cache()
+    yield
+    probe_mod._clear_probe_cache()
+
+
+class _FakeProc:
+    """Popen stand-in. ``timeouts`` is how many communicate() calls raise before one
+    returns, so a test can drive the terminate -> grace -> kill ladder."""
+
+    def __init__(
+        self,
+        returncode = 0,
+        stderr = "",
+        timeouts = 0,
+    ):
+        self.returncode = returncode
+        self.pid = 4242
+        self._stderr = stderr
+        self._timeouts = timeouts
+        self.calls: list[str] = []
+
+    def communicate(self, timeout = None):
+        self.calls.append("communicate")
+        if self._timeouts > 0:
+            self._timeouts -= 1
+            raise subprocess.TimeoutExpired(cmd = "probe", timeout = timeout or 0)
+        return "ok\n", self._stderr
+
+    def terminate(self):
+        self.calls.append("terminate")
+
+    def kill(self):
+        self.calls.append("kill")
+
+
+def _patch_popen(
+    monkeypatch,
+    proc,
+    recorder = None,
+):
+    def fake_popen(argv, **kwargs):
+        if recorder is not None:
+            recorder.append((argv, kwargs))
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    return recorder
+
+
+# --- the passing case -------------------------------------------------------------
+
+
+def test_healthy_child_passes(monkeypatch):
+    _patch_popen(monkeypatch, _FakeProc(returncode = 0))
+    result = probe_torch_device_allocation("cuda:0")
+    assert isinstance(result, DeviceAllocationProbeResult)
+    assert result.ok is True
+    assert result.device == "cuda:0"
+    assert result.returncode == 0
+    assert result.reason is None
+
+
+def test_child_runs_this_interpreter_with_hidden_window_kwargs(monkeypatch):
+    from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:1")
+
+    argv, kwargs = calls[0]
+    assert argv[0] == sys.executable
+    assert argv[1] == "-c"
+    assert argv[-1] == "cuda:1"  # the device is passed as argv, never interpolated
+    for key, value in windows_hidden_subprocess_kwargs().items():
+        assert key in kwargs
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["stderr"] is subprocess.PIPE
+    assert "shell" not in kwargs
+
+
+def test_child_allocates_writes_and_synchronizes(monkeypatch):
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:0")
+
+    script = calls[0][0][2]
+    assert "torch.empty(1, device = device)" in script
+    assert "tensor.zero_()" in script  # an allocation that is never written can be elided
+    assert "torch.cuda.synchronize" in script  # else an async fault escapes the child
+
+
+def test_child_env_strips_the_native_path_secret(monkeypatch):
+    from utils import native_path_leases
+
+    monkeypatch.setenv(native_path_leases.LEASE_SECRET_ENV, "super-secret")
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:0")
+
+    env = calls[0][1]["env"]
+    assert native_path_leases.LEASE_SECRET_ENV not in env
+    assert env["PYTHONIOENCODING"] == "utf-8"
+
+
+# --- every way it fails closed ---------------------------------------------------
+
+
+def test_sigsegv_fails_closed(monkeypatch):
+    _patch_popen(monkeypatch, _FakeProc(returncode = -int(signal.SIGSEGV)))
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert "SIGSEGV" in result.reason
+
+
+@pytest.mark.parametrize("returncode", [-int(signal.SIGABRT), -int(signal.SIGILL), -4, -7, -8])
+def test_other_hard_faults_fail_closed(monkeypatch, returncode):
+    _patch_popen(monkeypatch, _FakeProc(returncode = returncode))
+    assert probe_torch_device_allocation("cuda:0").ok is False
+
+
+def test_windows_unsigned_access_violation_fails_closed(monkeypatch):
+    _patch_popen(monkeypatch, _FakeProc(returncode = 0xC0000005))
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert "0xC0000005" in result.reason
+
+
+def test_windows_signed_access_violation_fails_closed(monkeypatch):
+    # The same status handed back as a signed 32-bit int, which is how it can arrive.
+    _patch_popen(monkeypatch, _FakeProc(returncode = 0xC0000005 - 0x100000000))
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert "0xC0000005" in result.reason
+
+
+def test_ordinary_nonzero_exit_fails_closed(monkeypatch):
+    # No torch, a bad device string, an ImportError: not a driver fault, but still no
+    # evidence this device can allocate, so it must not be used in-process either.
+    _patch_popen(monkeypatch, _FakeProc(returncode = 1, stderr = "ModuleNotFoundError: torch"))
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert "exit code 1" in result.reason
+
+
+def test_timeout_fails_closed_and_is_not_reported_as_a_fault(monkeypatch):
+    # One timeout on the real wait, then terminate is enough. The returncode after our
+    # own terminate must NOT be described as the driver's doing.
+    proc = _FakeProc(returncode = -int(signal.SIGTERM), timeouts = 1)
+    _patch_popen(monkeypatch, proc)
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert result.reason == "probe timed out"
+    assert "SIGTERM" not in result.reason
+    assert "terminate" in proc.calls
+
+
+def test_timeout_escalates_to_kill_and_always_reaps(monkeypatch):
+    proc = _FakeProc(returncode = -int(signal.SIGKILL), timeouts = 3)
+    _patch_popen(monkeypatch, proc)
+    assert probe_torch_device_allocation("cuda:0").ok is False
+    assert proc.calls.count("terminate") == 1
+    assert proc.calls.count("kill") == 1
+    # terminate drain, kill drain: the child is waited on, never left as a zombie.
+    assert proc.calls.count("communicate") == 3
+
+
+def test_spawn_failure_fails_closed_without_raising(monkeypatch):
+    def boom(argv, **kwargs):
+        raise OSError("no fork headroom")
+
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    result = probe_torch_device_allocation("cuda:0")
+    assert result.ok is False
+    assert result.returncode is None
+    assert "could not start" in result.reason
+
+
+# --- memoization ------------------------------------------------------------------
+
+
+def test_result_is_cached_per_process(monkeypatch):
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    first = probe_torch_device_allocation("cuda:0")
+    second = probe_torch_device_allocation("cuda:0")
+    assert first is second
+    assert len(calls) == 1
+
+
+def test_each_device_is_probed_separately(monkeypatch):
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:0")
+    probe_torch_device_allocation("cuda:1")
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "var",
+    [
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ],
+)
+def test_device_identity_env_change_invalidates_the_verdict(monkeypatch, var):
+    # HSA_OVERRIDE_GFX_VERSION is the spoof behind #7331: the same "cuda:0" can mean
+    # different kernels before and after it changes, so a cached verdict cannot stand.
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    monkeypatch.delenv(var, raising = False)
+    probe_torch_device_allocation("cuda:0")
+    monkeypatch.setenv(var, "11.0.0")
+    probe_torch_device_allocation("cuda:0")
+    assert len(calls) == 2
+
+
+def test_unrelated_env_change_does_not_invalidate_the_verdict(monkeypatch):
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:0")
+    monkeypatch.setenv("SOME_UNRELATED_VARIABLE", "1")
+    probe_torch_device_allocation("cuda:0")
+    assert len(calls) == 1
+
+
+def test_no_verdict_is_written_to_disk(monkeypatch, tmp_path):
+    # A cached negative that outlived a driver repair would pin a healthy host to CPU.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    _patch_popen(monkeypatch, _FakeProc(returncode = -int(signal.SIGSEGV)))
+    probe_torch_device_allocation("cuda:0")
+    assert list(tmp_path.rglob("*")) == []
+
+
+# --- exit description -------------------------------------------------------------
+
+
+def test_describe_exit_is_quiet_about_success():
+    assert describe_exit(0) is None
+    assert describe_exit(None) is None
+
+
+def test_describe_exit_names_the_signal():
+    assert "SIGSEGV" in describe_exit(-int(signal.SIGSEGV))
+
+
+def test_parent_side_never_imports_torch():
+    # This module is imported by the RAG embedder, which is deliberately torch-optional
+    # and runs in the lean main process (see tests/test_startup_defers_torch.py).
+    source = (_BACKEND_DIR / "utils" / "device_allocation_probe.py").read_text(encoding = "utf-8")
+    module_level = source.split('_CHILD_SCRIPT = """')[0]
+    assert "import torch" not in module_level
