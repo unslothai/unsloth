@@ -275,10 +275,9 @@ export function useTauriBackend() {
           if (preflight.can_auto_repair) {
             await startRepair();
           } else if (preflight.reason === "working_directory_unavailable") {
-            // The install is fine; the folder Unsloth runs from is not reachable
-            // (a roaming or network profile that is not mounted yet). Telling
-            // this user to update would send them to a command that needs the
-            // same folder.
+            // The install is fine; the folder Unsloth runs from is not
+            // reachable (an unmounted roaming profile). Telling this user to
+            // update points them at a command that needs the same folder.
             setBackendError(
               "Unsloth cannot reach your user folder, so it has nowhere to run from. This usually means a network or roaming profile is not available yet. Reconnect and try again.",
             );

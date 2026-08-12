@@ -98,8 +98,8 @@ fn spawn_update(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
-    // to run from; the Windows branch above reaches the same guard through the
-    // managed interpreter, so pin the directory for both.
+    // to run from, and the Windows branch above reaches the same guard through
+    // the managed interpreter. Pin the directory for both.
     crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
         format!(
             "Failed to pick a working directory for the update: {}",

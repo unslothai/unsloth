@@ -938,9 +938,8 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 
 /// Whether the user's profile is reachable at all.
 ///
-/// A roaming or network profile that is not mounted yet at login makes the managed
-/// install look absent, since it lives under that profile. The two are worth telling
-/// apart: one is fixed by reconnecting, the other by installing.
+/// The managed install lives under it, so an unmounted roaming profile looks
+/// like no install. One is fixed by reconnecting, the other by installing.
 pub(crate) fn home_dir_available() -> Result<(), String> {
     match dirs::home_dir() {
         Some(home) if home.is_dir() => Ok(()),
@@ -994,9 +993,8 @@ pub(crate) fn managed_cli_working_dir_from(
     Ok(work_dir)
 }
 
-// Windows path comparison: case-insensitive, either separator, no trailing one,
-// and without the \\?\ extended-length form. Applied on every platform so the
-// check stays unit-testable from Linux CI.
+// Case-insensitive, either separator, no trailing one, no \\?\ prefix. Not
+// cfg-gated, so the check stays unit-testable from Linux CI.
 fn normalize_windows_path(path: &std::path::Path) -> String {
     let text = path.to_string_lossy().replace('/', "\\");
     let text = match text.strip_prefix("\\\\?\\UNC\\") {
@@ -1018,14 +1016,11 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
 
 /// Directory a desktop-spawned `unsloth` CLI child should run from.
 ///
-/// Only overrides the inherited directory when that directory is unusable, which
-/// on Windows means a system folder: `./models` and other cwd-relative defaults
-/// keep resolving where a manually launched desktop resolved them, and only the
-/// login-start case moves. Resolved per call so a roaming or network profile that
-/// becomes available a moment after login recovers without restarting the app.
-///
-/// The replacement never falls back to a temp directory: that would scatter state
-/// and hide a broken profile.
+/// The inherited one, unless it is unusable (on Windows, a system folder), so
+/// `./models` and other cwd-relative defaults keep resolving where a manually
+/// launched desktop resolved them and only the login start moves. Resolved per
+/// call, so a profile that mounts late recovers without an app restart. Never
+/// falls back to a temp dir: that scatters state and hides a broken profile.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
     if let Ok(cwd) = std::env::current_dir() {
@@ -1038,12 +1033,10 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
 
 /// Every real Windows directory, empty off Windows.
 ///
-/// Candidates are checked rather than trusted. Reading one variable means whoever
-/// can set it can point the check somewhere harmless, but believing every variable
-/// is worse: WINDIR is an ordinary value that anything writing HKCU\Environment can
-/// shadow, and a WINDIR aimed at the user's own profile would make this reject that
-/// profile and stop the backend from starting at all. A directory only counts if it
-/// actually contains System32.
+/// Candidates are checked, not trusted. Trusting one variable lets whoever sets
+/// it aim the check somewhere harmless; trusting all of them is worse, since a
+/// WINDIR aimed at the user's profile would reject that profile and leave the
+/// backend nowhere to start. So a directory counts only if it holds System32.
 fn windows_roots() -> Vec<std::path::PathBuf> {
     if !cfg!(windows) {
         return Vec::new();
@@ -1086,9 +1079,8 @@ fn windows_roots_from(
     roots
 }
 
-/// Pin the working directory and mark the child as desktop-managed.
-/// Leaves every other part of the command (env scrubbing, creation flags,
-/// ownership handshake) to the caller.
+/// Pin the working directory and mark the child as desktop-managed. Env
+/// scrubbing, creation flags and the ownership handshake stay with the caller.
 pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
     apply_managed_cli_context_at(cmd, &managed_cli_working_dir()?);
     Ok(())
@@ -2412,10 +2404,9 @@ fn stop_backend_inner(
     result
 }
 
-// A login-started desktop on Windows inherits C:\Windows\system32 as its working
-// directory (issue #8510), and every CLI child inherited it too, where the Python
-// CLI refuses to run. These pin the replacement directory and the fact that each
-// command actually carries it.
+// A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
+// and so did every CLI child, where the Python CLI refuses to run. These pin the
+// replacement directory and that each command carries it.
 #[cfg(test)]
 mod managed_cli_working_dir_tests {
     use super::*;

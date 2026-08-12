@@ -4,34 +4,30 @@
 """Windows system-folder guard for the `unsloth` console script.
 
 Running from C:\\Windows\\System32 breaks Unsloth: the folder is unwritable for a
-normal user, and cwd-relative paths (the default `./models` scan, an output dir,
+normal user, and cwd-relative paths (`./models`, an output dir,
 `unsloth_compiled_cache`) would resolve inside the Windows tree.
 
-Two ways in are common. A user opens a terminal with "Run as administrator",
-which starts there. And "Run Unsloth at login" starts Unsloth Desktop from an
-HKCU Run registry value, which cannot carry a working directory, so the desktop
-and every CLI child it spawns inherit System32 (issue #8510).
+Two ways in. "Run as administrator" opens a terminal there, which is a mistake
+and still stops with an actionable error. And "Run Unsloth at login" starts the
+desktop from an HKCU Run value, which carries no working directory, so it and
+every CLI child inherit System32 (issue #8510). That one is not the user's
+mistake: the desktop's own commands take no paths from the user, so they move to
+~/.unsloth rather than leaving a tray icon and no server.
 
-The first case is a real mistake and still stops with an actionable error. The
-second is not: the desktop's own commands take no paths from the user, so they
-move to ~/.unsloth (the directory the desktop itself pins for its children) and
-carry on rather than leaving the user with a tray icon and no server.
-
-Import-time work here is deliberately limited to `os`: `unsloth_cli/__init__.py`
-runs this before it imports any command module, because several of those resolve
-STUDIO_HOME against the working directory at import time.
+Imports stay at `os`, since `unsloth_cli/__init__.py` runs this before the
+command modules, which resolve STUDIO_HOME against the working directory.
 """
 
 import os as _os
 
-# Set by Unsloth Desktop on every CLI child it owns
-# (studio/src-tauri/src/process.rs, apply_managed_cli_context). Forging it grants
-# nothing: anyone who can set a child's environment can already set its working
-# directory, and the move only ever lands inside the caller's own account.
+# Set by Unsloth Desktop on every CLI child it owns (process.rs,
+# apply_managed_cli_context). Forging it grants nothing: anyone who can set a
+# child's environment can set its working directory, and the move lands inside
+# the caller's own account.
 DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
 
-# Same directory studio/src-tauri/src/process.rs pins, so a desktop that predates
-# that fix ends up where a current one would have put it.
+# The directory process.rs pins, so a desktop that predates that fix lands where
+# a current one would have put it.
 WORK_DIR_NAME = ".unsloth"
 
 
@@ -51,12 +47,10 @@ def windows_roots(
 ):
     """Every real Windows directory.
 
-    Candidates are checked rather than trusted. Reading one variable means
-    whichever is read first can be shadowed to point the guard somewhere
-    harmless, but believing every variable is worse: a WINDIR aimed at the user's
-    own profile would make this treat their ordinary folders as system ones. A
-    directory only counts if it actually contains System32. install.ps1 reads
-    SystemRoot for the same reason.
+    Candidates are checked, not trusted. Trusting one variable lets whoever sets
+    it aim the guard somewhere harmless; trusting all of them is worse, since a
+    WINDIR aimed at the user's profile would make their ordinary folders look
+    like system ones. So a directory counts only if it holds System32.
     """
     if isdir is None:
         isdir = pathmod.isdir
@@ -168,17 +162,13 @@ def safe_user_dir(
 
 
 # Commands the desktop runs that take no path from a user: Studio resolves its
-# venv, llama.cpp, auth, pid files and logs from UNSLOTH_STUDIO_HOME /
-# ~/.unsloth/studio. `update` is here so a user whose desktop build predates the
-# Rust-side fix can still upgrade out of the situation from the tray.
+# venv, llama.cpp, auth, pid files and logs from the Studio home. `update` is
+# here so a desktop that predates the Rust-side fix can still upgrade from the
+# tray. Everything else keeps the hard error, `studio run` above all: it declares
+# its own --api-only and takes --model ./x plus a raw llama-server tail.
 #
-# Everything else keeps the hard error. `studio run` in particular declares its
-# own --api-only and takes --model ./x plus a raw llama-server tail, so a silent
-# move would rebase paths the user typed.
-#
-# Matched whole, not on the first word: `studio update --local <path>` resolves
-# that path against the working directory, so only the exact argument vectors the
-# desktop itself issues qualify.
+# Matched whole, not on the first word, since `studio update --local <path>`
+# resolves that path against the working directory.
 _STUDIO_COMMANDS = (
     ("provision-desktop-auth",),
     ("desktop-capabilities",),
@@ -223,10 +213,10 @@ def is_relocatable_invocation(argv, environ):
     if all(arg in _HELP_FLAGS for arg in args):
         return True
     if args[0] != "studio":
-        # The marker is inherited by everything the desktop's backend goes on to
-        # spawn, so it authorises the studio commands the desktop actually runs
-        # and nothing else. Rebasing `train --dataset .\data.json` under a stray
-        # marker would be worse than the refusal it replaced.
+        # Everything the backend spawns inherits the marker, so it authorises
+        # the studio commands the desktop runs and nothing else: rebasing
+        # `train --dataset .\data.json` under a stray one would be worse than
+        # the refusal it replaced.
         return False
     if environ.get(DESKTOP_MANAGED_ENV) == "1":
         return True
@@ -254,9 +244,8 @@ def relocation_target(
     try:
         makedirs(work_dir, exist_ok = True)
     except OSError:
-        # A home this process cannot write to is a broken profile, and Studio
-        # needs to write there anyway. Stop, as the Rust half does, rather than
-        # starting somewhere that will fail later and less clearly.
+        # An unwritable home is a broken profile, and Studio must write there
+        # anyway. Stop, as the Rust half does, rather than failing later.
         return None
     return work_dir
 
@@ -327,9 +316,8 @@ def check_working_directory(
     try:
         cwd = getcwd()
     except OSError:
-        # The launch directory was deleted or its drive went away. There is
-        # nothing to compare and nothing to go back to, so say that plainly
-        # rather than naming a Windows folder the user was never in.
+        # The launch directory was deleted or its drive went away: nothing to
+        # compare, so say that rather than name a folder they were never in.
         return (
             (
                 "Unsloth cannot determine its current folder. It may have been deleted,\n"
@@ -361,9 +349,8 @@ def check_working_directory(
             except OSError:
                 target = None
     if target is None:
-        # Fail closed: no usable folder outside the Windows tree, so continuing
-        # would break later and less clearly than stopping here does. This text
-        # reaches the desktop's own logs, so it describes that case, not a shell.
+        # Fail closed: nowhere usable outside the Windows tree. This text lands
+        # in the desktop's logs, so it describes that case, not a shell.
         return (
             (
                 f"Unsloth cannot run from {cwd}, and no folder outside {windir} was\n"

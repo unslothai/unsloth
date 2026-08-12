@@ -473,10 +473,9 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
 
-    // A home that is not mounted yet (roaming or network profile at login) makes
-    // every probe below fail. That is not a broken install, so report it under its
-    // own reason: "cli_unusable" would send the user through an automatic repair
-    // that needs the same directory and fails the same way.
+    // An unmounted roaming profile makes every probe below fail, which is not a
+    // broken install: "cli_unusable" would start an automatic repair that needs
+    // the same directory and fails the same way.
     if let Err(error) = crate::process::managed_cli_working_dir() {
         info!(
             "Managed preflight: no usable working directory for {:?}: {}",
@@ -557,9 +556,9 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     let started = Instant::now();
     let result = match crate::process::find_unsloth_binary() {
         Some(bin) => probe_managed_bin(bin).await,
-        // The managed install lives under the user's profile, so an unreachable
-        // profile looks exactly like no install at all. Say which it is, or a
-        // user whose network profile is late at login is sent to reinstall.
+        // The managed install lives under the profile, so an unreachable one
+        // looks like no install. Say which, or a user whose network profile is
+        // late at login is sent to reinstall.
         None => match crate::process::home_dir_available() {
             Ok(()) => ManagedProbe::Missing,
             Err(error) => {
