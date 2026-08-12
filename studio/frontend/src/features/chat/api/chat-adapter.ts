@@ -1676,12 +1676,15 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn
   ) {
-    // No pill is on, but a CLI policy (unsloth run --enable-tools) can still make
-    // the backend inject python/terminal, and the completion sends the permission
-    // level on every local chat. Carry the flag so that count renders the same
-    // Full access prompt the completion will. Without a policy the backend never
-    // builds a tool list for a count, so the flag is inert.
-    return { bypass_permissions: bypassPermissions };
+    // Explicit false, not an omitted field: the server defaults tools on for a
+    // request that never mentions them, so every pill being off has to say so.
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request; the completion sends the level
+    // on every local chat, and without it here the count would price the
+    // sandboxed schemas against an unsandboxed completion. Inert whenever the
+    // false stands and no tool list is built.
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
   return {
@@ -5100,7 +5103,10 @@ export function createOpenAIStreamAdapter(
                           : []),
                       ],
                     }
-                  : {}),
+                  : // Explicit false: an omitted field falls back to the
+                    // server's tools-on default, which would bill provider
+                    // server tools.
+                    { enable_tools: false }),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5280,7 +5286,10 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              : {}),
+              : // Explicit false, not an omitted field: the server defaults tools
+                // on for a request that never mentions them, so a model with no
+                // tool pill lit has to say so.
+                { enable_tools: false }),
           };
         };
 

@@ -105,7 +105,7 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default for slow macos-14 --single-process Chromium (second Unsloth boot of the job).
+    # 60s default for the slow macos-14 runner (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
