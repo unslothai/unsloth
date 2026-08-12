@@ -246,7 +246,6 @@ class LlamaServerBackend:
         every installed card needs no pin. Same helper the chat launch uses when
         the fit leaves it unpinned, so both llama-server children agree."""
         from core.inference.llama_cpp import LlamaCppBackend
-
         return LlamaCppBackend._arch_gate_survivors(binary)
 
     def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:

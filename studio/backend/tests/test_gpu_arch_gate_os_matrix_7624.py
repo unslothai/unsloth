@@ -987,9 +987,7 @@ class TestEveryDeviceUncoveredDownstream:
             vendor = "amd",
         )
         capture: dict = {}
-        _run_auto_load(
-            monkeypatch, tmp_path, torch, GFX103X, returncode = None, capture = capture
-        )
+        _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None, capture = capture)
         assert capture["backend"]._gpu_offload_active is not False
 
     def test_all_uncovered_names_the_devices_in_the_warning(self, tmp_path, monkeypatch, probe_env):

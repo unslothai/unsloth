@@ -646,6 +646,7 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
             staticmethod(lambda _b = None: (_ for _ in ()).throw(RuntimeError("marker"))),
         )
         from core.rag.embed_llama_server import LlamaServerBackend
+
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
 
     @staticmethod

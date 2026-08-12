@@ -5483,9 +5483,9 @@ class LlamaCppBackend:
                 return []
             if cls._installed_llama_gfx_archs(binary) is None:
                 return []  # unknown coverage: fail open, same as the probe
-            gated = [idx for idx, _free, _total in cls._get_gpu_memory(
-                binary, for_llama_server = True
-            )]
+            gated = [
+                idx for idx, _free, _total in cls._get_gpu_memory(binary, for_llama_server = True)
+            ]
             everything = [idx for idx, _free, _total in cls._get_gpu_memory(binary)]
             return gated if gated and len(gated) < len(everything) else []
         except Exception as e:
