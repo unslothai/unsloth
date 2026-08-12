@@ -4097,7 +4097,11 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         from core.inference.diffusion_families import detect_family_for_pick
 
         if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):
-            return "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
+            return (
+                "text-to-image"
+                if _gguf_family_buildable(name_hints)
+                else _UNSUPPORTED_DIFFUSION_TASK
+            )
         return _UNSUPPORTED_DIFFUSION_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.

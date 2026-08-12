@@ -9411,9 +9411,7 @@ class LlamaCppBackend:
                     "page accepts it."
                 )
             if arch in LlamaCppBackend._VIDEO_ARCHES:
-                if LlamaCppBackend._ambiguous_video_arch_is_pickable(
-                    gguf_path, model_identifier
-                ):
+                if LlamaCppBackend._ambiguous_video_arch_is_pickable(gguf_path, model_identifier):
                     return (
                         f"'{arch}' is a text-to-video GGUF, which llama-server "
                         "cannot run as a chat/completion model. Open it from "

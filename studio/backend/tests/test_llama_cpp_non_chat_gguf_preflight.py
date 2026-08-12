@@ -277,7 +277,6 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
     # repo id and filename, and they have to agree: naming the Images page for a file the
     # Images picker drops is the empty promise the runnable split exists to remove.
     from routes.models import _arch_to_task
-
     for identifier, name, page_named in (
         ("gguf-org/flux2-dev-gguf", "flux2-dev-iq4_nl.gguf", True),
         ("calcuis/cosmos-predict2-gguf", "cosmos-predict2-q4_0.gguf", False),
@@ -298,7 +297,6 @@ def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
     # "wan" for all three, so the refusal has to consult the same family resolution rather
     # than trusting the arch.
     from routes.models import _arch_to_task
-
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),

@@ -364,9 +364,7 @@ def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_p
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     stale = tmp_path / "listing-Q4_K_M.gguf"
     stale.write_bytes(_gguf_bytes(arch = "llama"))
-    monkeypatch.setattr(
-        llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached)
-    )
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached))
     message, requests = _probe(
         monkeypatch,
         header = b"",
