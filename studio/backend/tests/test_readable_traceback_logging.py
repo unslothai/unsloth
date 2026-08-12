@@ -128,3 +128,44 @@ def test_every_echoed_line_carries_the_prefix_including_exotic_separators():
     assert echoed
     assert all(line.startswith(log_config._TRACEBACK_ECHO_PREFIX) for line in echoed)
     assert not any("\r" in line for line in echoed)
+
+
+def test_a_lone_surrogate_cannot_break_the_log_write():
+    # json.loads('"\ud800"') yields a lone surrogate, so a request body can put one in an
+    # exception message. JSONRenderer escaped it to ASCII for free; printing it raw raises
+    # UnicodeEncodeError on a UTF-8 stdout, which inside an exception handler loses the
+    # traceback and replaces the original exception with the encoding error.
+    import io
+
+    surrogate = json.loads('"\\ud800"')
+    out = _render(
+        {"event": "request_failed", "exception": f"ValueError: bad prompt: {surrogate}"}
+    )
+    assert surrogate not in out
+    assert "\\ud800" in out
+    # The real test: it survives an actual strict UTF-8 stream, which is what PrintLogger
+    # writes to.
+    stream = io.TextIOWrapper(io.BytesIO(), encoding = "utf-8")
+    print(out, file = stream)  # must not raise
+    out.encode("utf-8")
+
+
+def test_terminal_controls_are_neutralised():
+    # Raw ESC sequences would let request-derived text clear or rewrite what the reader
+    # sees, and a backspace run would rub out the prefix that stops record forgery.
+    exception = "ValueError: \x1b[2Jcleared\x08\x08\x08\x7f and \x9b more"
+    out = _render({"event": "request_failed", "exception": exception})
+    _, _, echoed = out.partition("\n")
+    for raw in ("\x1b", "\x08", "\x7f", "\x9b"):
+        assert raw not in echoed
+    assert "\\u001b" in echoed and "\\u0008" in echoed
+    assert echoed.startswith(log_config._TRACEBACK_ECHO_PREFIX)
+
+
+def test_ordinary_text_is_left_readable():
+    # The escape must not turn a traceback quoting non-English text into hex soup, and a
+    # tab shifts alignment but cannot move the cursor back or erase, so it stays.
+    exception = "ValueError: 中文 café — tab:\there"
+    echoed = _render({"event": "e", "exception": exception}).partition("\n")[2]
+    assert "中文" in echoed and "café" in echoed and "—" in echoed
+    assert "\there" in echoed

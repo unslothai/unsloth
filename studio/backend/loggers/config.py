@@ -122,13 +122,48 @@ def _plain_tracebacks_enabled() -> bool:
 _TRACEBACK_ECHO_PREFIX = "| "
 
 
+def _escape_unprintable(text: str) -> str:
+    """Replace what a terminal would ACT on, and what stdout cannot encode, with their
+    ``\\uXXXX`` spellings. Ordinary non-ASCII text is left alone, so a traceback quoting a
+    non-English string still reads as that string.
+
+    Two things the JSON renderer used to handle for free, which the echo has to do itself:
+
+    * **Lone surrogates.** ``json.loads('"\\ud800"')`` yields one, so a request body can
+      put it in an exception message. JSONRenderer escapes it to ASCII; printing it raw
+      raises ``UnicodeEncodeError`` on a UTF-8 stdout, which inside an exception handler
+      loses the traceback AND replaces the original exception with the encoding error.
+    * **Terminal controls.** ESC sequences and backspaces were previously escaped inside
+      the JSON string. Emitted raw they let request-derived text clear or rewrite what the
+      reader sees, and a backspace run can rub out the prefix in front of it, which is the
+      one thing that prefix exists to guarantee.
+
+    Tab is deliberately kept: it shifts alignment but cannot move the cursor back or erase.
+    """
+    out = []
+    for ch in text:
+        code = ord(ch)
+        if ch == "\t":
+            out.append(ch)
+        elif code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F or 0xD800 <= code <= 0xDFFF:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _echoable(exception: str) -> str:
-    """The traceback as lines that can never be read as a log record.
+    """The traceback as lines that can never be read as a log record, nor act on the
+    terminal reading them.
 
     ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
     \\n normalises every separator a message could smuggle in, including the \\r the
-    export worker's log reader treats as a line break."""
-    return "\n".join(f"{_TRACEBACK_ECHO_PREFIX}{part}" for part in exception.rstrip().splitlines())
+    export worker's log reader treats as a line break. Whatever control characters survive
+    that are escaped per line, so the prefix is the first thing on the line and stays."""
+    return "\n".join(
+        f"{_TRACEBACK_ECHO_PREFIX}{_escape_unprintable(part)}"
+        for part in exception.rstrip().splitlines()
+    )
 
 
 def with_readable_traceback(renderer):
