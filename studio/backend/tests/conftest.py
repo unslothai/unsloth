@@ -158,6 +158,34 @@ def _isolate_xet_health_state():
 
 
 @pytest.fixture(autouse = True)
+def _confine_prequant_registration_memo():
+    """Keep one test's answer about the pre-quant allowlist from becoming every later test's.
+
+    ``diffusion_prequant`` asks once whether this torch can register the constructor allowlist and
+    memoises the answer, INCLUDING the failure, in a module global. That is right in a process
+    where torch never changes. It is wrong in this suite, where several files put a fake torch in
+    ``sys.modules``: the question gets asked while the fake is installed, the answer is False, and
+    ``monkeypatch`` restores ``sys.modules`` but not the memo. Every later real load then refuses.
+
+    Measured on main: after ``test_diffusion_backend.py`` the memo reads False, where it reads None
+    when that file runs alone. In a full-suite run that turned 20 tests across
+    ``test_diffusion_prequant.py`` and ``test_diffusion_convrot.py`` red, all with the same
+    ``assert None is not None``, while every one of them passed when its file ran by itself.
+
+    Restored rather than cleared, so nothing re-registers 22k times and a test that sets the memo
+    deliberately still sees its own value.
+    """
+    from core.inference import diffusion_prequant
+
+    registered = diffusion_prequant._SAFE_GLOBALS_REGISTERED
+    resolved = set(diffusion_prequant._RESOLVED_SAFE_GLOBALS)
+    yield
+    diffusion_prequant._SAFE_GLOBALS_REGISTERED = registered
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.clear()
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.update(resolved)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_audio_gallery(monkeypatch, tmp_path):
     """Keep generated-clip persistence out of the developer's real gallery.
 
