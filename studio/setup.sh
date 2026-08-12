@@ -37,11 +37,10 @@ fi
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
 #
-#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
-#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
-#                           selects Vulkan even when CUDA or ROCm is detected.
-#                           "hip"/"rocm" keeps the detected HIP backend and opts
-#                           out of automatic Vulkan fallback.
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
+#                           "hip", or "rocm". Concrete values select and persist a
+#                           backend across updates; "auto" restores detection.
+#                           Overrides Studio's Settings > Resources selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -2169,12 +2168,13 @@ else
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
-        ""|auto|hip|rocm) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+        # The installer reads these selections directly from the environment.
+        ""|auto|cuda|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
     if [ "$_HOST_SYSTEM" != "Darwin" ]; then
         case "$_llama_backend" in
-            cpu|vulkan|hip|rocm) ;;
+            cpu|cuda|vulkan|hip|rocm) ;;
             *)
                 case "$_legacy_force_vulkan" in
                     1|true|yes|on) _explicit_vulkan_backend=true ;;
@@ -2228,7 +2228,8 @@ else
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
             setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
-    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
+    elif [ "$_PREBUILT_STATUS" -eq 2 ] || [ "$_PREBUILT_STATUS" -eq 5 ]; then
+        # Exit 5 adds a specific reason to the ordinary source-build fallback.
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"

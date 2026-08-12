@@ -401,6 +401,118 @@ def _install_latest_while_blocked(
     }
 
 
+def _installed_llama_backend() -> Optional[str]:
+    """The backend the managed llama.cpp install currently runs on."""
+    try:
+        from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
+        from utils.llama_cpp_update import _find_binary as find_llama_binary
+        from utils.prebuilt.llama_backend import marker_backend
+        return marker_backend(read_llama_marker(find_llama_binary()))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("whisper repair: llama backend lookup failed", error = str(exc))
+        return None
+
+
+def repair_pairing_plan(backend: str) -> dict:
+    """Plan re-pairing for a slim whisper install that borrows llama's ggml."""
+    plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
+    binary = _find_binary()
+    if _active_install_is_local_link(binary):
+        plan["skip_reason"] = "local_link"
+        return plan
+    marker = read_install_marker(binary)
+    if marker is None:
+        plan["skip_reason"] = "source_build" if binary else "not_installed"
+        return plan
+    if marker.get("install_kind") != "slim":
+        # Carries its own ggml, so llama's backend is not its backend.
+        plan["skip_reason"] = "self_contained"
+        return plan
+    if backend != "auto" and marker.get("backend") == backend:
+        plan["skip_reason"] = "already_paired"
+        return plan
+    script = _installer_script()
+    if script is None:
+        plan["skip_reason"] = "installer_missing"
+        return plan
+    install_dir = _install_dir_for(binary)
+    if install_dir is None:
+        plan["skip_reason"] = "no_install_dir"
+        return plan
+    plan["update_available"] = True
+    plan["phase"] = {
+        "install_dir": install_dir,
+        "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
+        "asset": marker.get("asset"),
+        # The runner reads the backend that the llama phase actually installed.
+        "requested_backend": backend,
+        "installed_backend": marker.get("backend"),
+        "script": script,
+        # Resolve the whisper release paired with the installed llama release.
+        "pin_release_tag": None,
+        "repair": True,
+    }
+    return plan
+
+
+def run_repair_phase(phase: dict, set_progress) -> dict:
+    """Best-effort re-pair whisper after a successful llama backend switch."""
+    backend = _installed_llama_backend()
+    if backend is None:
+        logger.info("whisper repair: skipped, llama backend unknown")
+        return {}
+    if backend == phase.get("installed_backend"):
+        # Automatic selection may land on the backend already paired with whisper.
+        return {}
+    phase = {**phase, "backend": backend}
+    try:
+        result = _install_latest_while_blocked_with_maintenance(phase, set_progress)
+    except _flow.InstallerExit as exc:
+        # 2 is the installer's "no compatible release", the ordinary case here.
+        logger.info(
+            "whisper repair: skipped",
+            backend = backend,
+            returncode = exc.returncode,
+            detail = str(exc)[-500:],
+        )
+        return {
+            "message": (
+                f"Dictation still uses the previous backend; no whisper.cpp build is "
+                f"published for this llama.cpp release on {backend} yet."
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - the switch already landed
+        logger.warning("whisper repair: failed", backend = backend, error = str(exc))
+        return {
+            "message": "Dictation still uses the previous backend; re-pairing it failed.",
+        }
+    # Describe the backend change instead of an incidental version change.
+    result["message"] = f"Re-paired whisper.cpp with the {backend} backend."
+    return result
+
+
+def _install_latest_while_blocked_with_maintenance(phase: dict, set_progress) -> dict:
+    """Install a phase, reading the new ROCm arch after llama switches."""
+    asset = phase.get("asset")
+    if phase.get("backend") == "rocm":
+        try:
+            from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
+            from utils.llama_cpp_update import _find_binary as find_llama_binary
+            llama_marker = read_llama_marker(find_llama_binary()) or {}
+            asset = llama_marker.get("asset") or asset
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("whisper repair: llama asset lookup failed", error = str(exc))
+    return _install_latest(
+        phase["install_dir"],
+        phase["repo"],
+        asset,
+        phase["backend"],
+        phase["script"],
+        set_progress,
+        pin_release_tag = phase.get("pin_release_tag"),
+    )
+
+
 def chained_phase_plan(
     *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> dict:

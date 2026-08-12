@@ -3,6 +3,10 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
+import {
+  signalRunningLlamaJob,
+  subscribeToLlamaJobStarted,
+} from "@/lib/llama-job-events";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -15,6 +19,8 @@ const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
+  operation: "update" | "switch" | null;
+  requested_backend: "auto" | "cpu" | "cuda" | "rocm" | "vulkan" | null;
   message: string;
   from_tag: string | null;
   to_tag: string | null;
@@ -22,6 +28,8 @@ export interface LlamaUpdateJob {
   error: string | null;
   // Download fraction while running, 1 on success.
   progress: number | null;
+  // Identifies the accepted job when notifying other surfaces and tabs.
+  started_at: string | null;
   // Set once the job leaves "running"; identifies a completed job so a
   // repeated fetch of the same success can be told apart from the next one.
   finished_at: string | null;
@@ -42,6 +50,18 @@ function parseJob(value: unknown): LlamaUpdateJob {
   const job = (value ?? {}) as Record<string, unknown>;
   return {
     state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
+    operation:
+      job.operation === "update" || job.operation === "switch"
+        ? job.operation
+        : null,
+    requested_backend:
+      job.requested_backend === "auto" ||
+      job.requested_backend === "cpu" ||
+      job.requested_backend === "cuda" ||
+      job.requested_backend === "rocm" ||
+      job.requested_backend === "vulkan"
+        ? job.requested_backend
+        : null,
     message: typeof job.message === "string" ? job.message : "",
     from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
     to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
@@ -49,6 +69,7 @@ function parseJob(value: unknown): LlamaUpdateJob {
       typeof job.reload_required === "boolean" ? job.reload_required : null,
     error: typeof job.error === "string" ? job.error : null,
     progress: typeof job.progress === "number" ? job.progress : null,
+    started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
   };
 }
@@ -241,6 +262,12 @@ export function useLlamaUpdateCheck({
       if (!next) return;
       setStatus(next);
       if (next.job.state === "running") {
+        if (next.job.operation === "switch") {
+          setApplying(false);
+          setVisible(false);
+          if (!pollTimer.current) startJobPoll();
+          return;
+        }
         // Another tab is applying; show progress here too.
         setApplying(true);
         setVisible(true);
@@ -251,6 +278,7 @@ export function useLlamaUpdateCheck({
       // a tab that missed the running window entirely (mounted, or only checks
       // hourly and misses both the running and just-finished moments) still
       // needs to resync here, not just from the poll path above.
+      setApplying(false);
       notifyReloadIfNeeded(next.job);
       if (next.update_available) {
         setVisible(true);
@@ -262,8 +290,6 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     if (!enabled) {
       // Re-enabling will rediscover any still-running job.
-      setVisible(false);
-      setApplying(false);
       return;
     }
     let canceled = false;
@@ -312,6 +338,13 @@ export function useLlamaUpdateCheck({
     return () => window.removeEventListener("storage", onStorage);
   }, [enabled, surfaceIfAvailable]);
 
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeToLlamaJobStarted(() => {
+      fetchStatus().then(surfaceIfAvailable);
+    });
+  }, [enabled, surfaceIfAvailable]);
+
   const dismiss = useCallback(() => {
     setVisible(false);
   }, []);
@@ -351,6 +384,12 @@ export function useLlamaUpdateCheck({
       return { ok: false, error: String(e) };
     }
 
+    const actionJob = parseJob(action?.job);
+    // The response job is authoritative. Signal both a newly accepted update
+    // and an already-running job this tab discovered through the POST, so every
+    // open Settings surface disables and follows the same install immediately.
+    signalRunningLlamaJob(actionJob);
+
     // Non-started jobs stay idle; already_running is tracked below.
     if (
       action &&
@@ -361,7 +400,7 @@ export function useLlamaUpdateCheck({
       // update (e.g. "up_to_date"): the response still carries that tab's
       // completed job, so process reload_required here too, not just from the
       // poll path -- otherwise this rejection silently drops it.
-      notifyReloadIfNeeded(parseJob(action.job));
+      notifyReloadIfNeeded(actionJob);
       setApplying(false);
       return {
         ok: false,
@@ -377,7 +416,7 @@ export function useLlamaUpdateCheck({
   return {
     status: enabled ? status : null,
     visible: enabled && visible,
-    applying,
+    applying: enabled && applying,
     apply,
     dismiss,
     snooze,

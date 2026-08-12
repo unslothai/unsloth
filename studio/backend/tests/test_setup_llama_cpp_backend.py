@@ -98,8 +98,11 @@ def test_backend_vulkan_is_accepted(value):
 
 
 @_SKIP_NO_BASH
-@pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM "])
-def test_backend_hip_opt_out_is_accepted(value):
+@pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM ", "cuda", " CUDA "])
+def test_backend_gpu_opt_out_is_accepted(value):
+    # These name the backend detection already picks here, so setup.sh adds no flag;
+    # install_llama_prebuilt.py reads the variable itself to hold the selection to
+    # that backend and record it.
     args, stderr = _run(value)
     assert "--force-cpu" not in args
     assert "--llama-backend" not in args
@@ -107,7 +110,7 @@ def test_backend_hip_opt_out_is_accepted(value):
 
 
 @_SKIP_NO_BASH
-@pytest.mark.parametrize("value", ["gpu", "cuda"])
+@pytest.mark.parametrize("value", ["gpu", "sycl"])
 def test_backend_unknown_warns_and_no_flag(value):
     args, stderr = _run(value)
     assert "--force-cpu" not in args
