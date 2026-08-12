@@ -8984,7 +8984,10 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                              anti-clobber branch declines and open raises
 #   python, prefix present  -> a real /mnt/data mount is never shadowed, so the
 #                              rule is the parent directory, not a prefix list
-#   terminal                -> no shim in a plain shell, so the shell's own rules
+#   terminal, plain shell   -> no shim, so the shell's own rules
+#   terminal, launching python -> _build_bypass_env sets PYTHONPATH for the
+#                              terminal subprocess too, so that Python is patched
+#                              exactly like the python tool
 #
 # Hence no categorical claim about /mnt/data in either: on a host where it is a
 # real mount, Full access can read and write it like any other directory, and
@@ -8998,8 +9001,10 @@ _FULL_ACCESS_CLAUSE = {
         "actually landed rather than assuming the path you asked for."
     ),
     "terminal": (
-        " The code sandbox is disabled, so absolute paths do resolve, exactly as "
-        "the shell resolves them."
+        " The code sandbox is disabled, so absolute paths do resolve as the shell "
+        "resolves them. Python you launch from here is the exception: it loads the "
+        "same shim as the python tool, so a create under a directory that does not "
+        "exist lands in the working directory under its base name instead."
     ),
 }
 

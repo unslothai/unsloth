@@ -126,8 +126,11 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         assert "redirected into the working directory under the same base name" in full
         assert "fails outright if that name is already taken" in full
     else:
-        assert "absolute paths do resolve, exactly as the shell resolves them" in full
-        assert "redirect" not in full
+        assert "absolute paths do resolve as the shell resolves them" in full
+        # _build_bypass_env sets PYTHONPATH for the terminal subprocess too, so
+        # python launched from a shell command carries the same shim.
+        assert "Python you launch from here is the exception" in full
+        assert "lands in the working directory under its base name" in full
     # No categorical claim about the convention paths in either: on a host where
     # /mnt/data is a real mount the shim never shadows it, so "not real" is wrong,
     # and the parent-directory rule already covers the absent case.
