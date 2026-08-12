@@ -635,3 +635,38 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
+    """The Responses API puts the type in the SSE ``event:`` line and the data
+    object need not repeat it. Reading only the JSON leaves the type missing, and
+    since an unreadable frame is skipped rather than fatal, the event would be
+    dropped silently: usage from response.completed would never surface. Frame is
+    written raw, not through _openai_sse, which always repeats the type in data."""
+    body = (
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1, usages

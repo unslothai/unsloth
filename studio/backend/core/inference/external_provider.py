@@ -5453,13 +5453,20 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The Responses API carries the event type in the SSE `event:` field and
+                    # may pair it with an empty data object, so the name has to survive to
+                    # the data line that follows it.
+                    sse_event_name = ""
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                continue
+                            if line.startswith("event:"):
+                                sse_event_name = line[len("event:") :].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5498,7 +5505,21 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = response_event_type(event)
+                            # Falls back to the SSE name, which is where the type
+                            # lives when the data object carries none; without it a
+                            # `event: response.completed` + `data: {}` frame raises
+                            # and kills the whole completion.
+                            try:
+                                event_type = response_event_type(event, sse_event_name)
+                            except ValueError:
+                                # An OpenAI-compatible endpoint behind this base URL can
+                                # answer a Responses request with Chat Completions frames.
+                                # Skipping one unrecognisable frame is the pre-existing
+                                # behaviour and beats failing the whole completion; the
+                                # ChatGPT path stays strict, where the shape is guaranteed.
+                                sse_event_name = ""
+                                continue
+                            sse_event_name = ""
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
