@@ -11107,6 +11107,7 @@ async def _proxy_to_external_provider(
                 model = model,
                 reasoning_effort = payload.reasoning_effort,
                 response_format = _extract_response_format(payload),
+                tool_choice = payload.tool_choice,
                 continue_final_message = _continue_final_message(payload),
             )
             policy = (

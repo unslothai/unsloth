@@ -82,6 +82,7 @@ class CodexRunContext:
     model: str
     reasoning_effort: str | None
     response_format: dict[str, Any] | None = None
+    tool_choice: Any = None
     continue_final_message: bool = False
 
 
@@ -113,6 +114,15 @@ async def stream_codex_with_studio_tools(
     model = run.model
     reasoning_effort = run.reasoning_effort
     tools = policy.tools
+    tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
+    allowed_tool_names = {
+        name
+        for tool in tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("function"), dict)
+        and isinstance((name := tool["function"].get("name")), str)
+        and name
+    }
     tool_call_timeout = policy.timeout
     permission_mode = policy.permission_mode
     confirm_tool_calls = policy.confirm_calls
@@ -140,7 +150,7 @@ async def stream_codex_with_studio_tools(
         reasoning_extra: dict[str, Any] | None = None
         finish_reason: str | None = None
 
-        tools_available = unlimited or remaining > 0
+        tools_available = tool_choice != "none" and (unlimited or remaining > 0)
         generator = client.stream(
             provider_id = provider_id,
             thread_id = thread_id,
@@ -150,7 +160,7 @@ async def stream_codex_with_studio_tools(
             reasoning_effort = reasoning_effort,
             response_format = run.response_format,
             tools = tools if tools_available else None,
-            tool_choice = "auto" if tools_available else "none",
+            tool_choice = tool_choice if tools_available else "none",
             cancel_event = cancel_event,
         )
         async for line in generator:
@@ -218,14 +228,19 @@ async def stream_codex_with_studio_tools(
         conversation.append(assistant_message)
 
         for call in calls:
-            within_budget = unlimited or remaining > 0
-            if within_budget and not unlimited:
-                remaining -= 1
             call_id = call["id"]
             name = call["function"]["name"]
             arguments = call["arguments"]
+            allowed_call = tool_choice != "none" and name in allowed_tool_names
+            has_budget = unlimited or remaining > 0
+            within_budget = allowed_call and has_budget
+            if within_budget and not unlimited:
+                remaining -= 1
             needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+                allowed_call
+                and confirm_tool_calls
+                and not bypass_permissions
+                and permission_mode != "off"
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
@@ -246,8 +261,10 @@ async def stream_codex_with_studio_tools(
                     "awaiting_confirmation": needs_confirmation and within_budget,
                 }
             )
-            if not within_budget:
+            if not has_budget:
                 result = _TOOL_BUDGET_EXHAUSTED
+            elif not allowed_call:
+                result = "Studio did not execute this tool call because the tool is disabled."
             else:
                 try:
                     decision = (

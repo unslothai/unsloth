@@ -21,6 +21,7 @@ from auth.authentication import get_current_subject
 from core.inference.message_content import content_to_text
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
+from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 
 router = APIRouter()
@@ -213,6 +214,14 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             raise HTTPException(
                 status_code = 400,
                 detail = "Durable research supports only a saved ChatGPT/Codex connection",
+            )
+        provider = providers_db.get_provider(provider_id)
+        if provider is None:
+            raise HTTPException(status_code = 404, detail = "Provider config not found")
+        if provider["provider_type"] != "openai_codex" or not provider["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Durable research requires an enabled ChatGPT/Codex connection",
             )
 
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
