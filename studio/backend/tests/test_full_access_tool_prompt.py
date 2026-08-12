@@ -18,9 +18,11 @@ other mode keeps the sandboxed wording verbatim.
 """
 
 import asyncio
+import sys
 
 import pytest
 
+from core.inference import tools
 from core.inference.tools import (
     ALL_TOOLS,
     PYTHON_TOOL,
@@ -80,6 +82,36 @@ def test_full_access_schemas_keep_name_and_parameters():
         assert full["type"] == sandboxed["type"]
         assert full["function"]["name"] == sandboxed["function"]["name"]
         assert full["function"]["parameters"] == sandboxed["function"]["parameters"]
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_the_substitutions_land_on_every_platform(monkeypatch, platform):
+    """The module constants are built once for the host platform, so a Linux
+    runner would never exercise the Windows branch. Rebuild the note per
+    platform and re-derive, which is also the guard against a rewording of
+    _build_sandbox_paths_note silently turning the substitutions into no-ops:
+    the sandboxed markers would survive into the result below."""
+    monkeypatch.setattr(sys, "platform", platform)
+    sandboxed = "Execute Python code in a sandbox and return stdout/stderr." + (
+        tools._build_sandbox_paths_note()
+    )
+    full = tools._to_full_access(sandboxed)
+
+    assert full != sandboxed
+    assert "in a sandbox" not in full
+    assert "do not exist" not in full
+    assert "sandbox is disabled" in full
+    assert "absolute paths do resolve" in full
+    # True in both modes, so untouched.
+    assert "persists for this conversation" in full
+    assert "download link" in full
+    if platform == "win32":
+        assert "You are on Windows" in full
+        assert "/mnt/data" not in full
+    else:
+        # The POSIX clause naming ChatGPT's /mnt/data is what gets rewritten.
+        assert "/mnt/data" in sandboxed
+        assert "/mnt/data" not in full
 
 
 def test_python_full_access_description_still_omits_the_shell():

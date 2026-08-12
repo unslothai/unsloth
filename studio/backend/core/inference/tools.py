@@ -8909,16 +8909,6 @@ WEB_SEARCH_TOOL = {
 }
 
 
-# Without this a model assumes its output vanished into a scratch dir and says
-# so, which reads as "the file was not really created". Shared by the sandboxed
-# and Full access notes: the workdir is the per-session dir in both modes.
-_CREATED_FILES_NOTE = (
-    " Any file you create here is kept and shown to the user with a download "
-    "link, so name the files you created in your reply -- by file name only, "
-    "since you do not know their absolute path."
-)
-
-
 def _build_sandbox_paths_note() -> str:
     """Platform and working-directory note, on BOTH tool descriptions.
 
@@ -8929,41 +8919,70 @@ def _build_sandbox_paths_note() -> str:
     instead: without it a model assumes the pipe is its only output and declines
     to open a window it believes nobody can see.
     """
+    # Without this a model assumes its output vanished into a scratch dir and
+    # says so, which reads as "the file was not really created".
+    created = (
+        " Any file you create here is kept and shown to the user with a download "
+        "link, so name the files you created in your reply -- by file name only, "
+        "since you do not know their absolute path."
+    )
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
-            "/mnt/data or /tmp/outputs do not exist." + _CREATED_FILES_NOTE
+            "/mnt/data or /tmp/outputs do not exist." + created
         )
     return (
         " You are on Windows, and this runs on the user's own machine. Read and "
         "write files using relative paths in the current working directory, which "
-        "persists for this conversation." + _CREATED_FILES_NOTE
+        "persists for this conversation." + created
     )
 
 
-def _build_full_access_paths_note() -> str:
-    """The same note for Full access (permission_mode='full'), where the
-    sandbox is genuinely off.
+# Full access (permission_mode='full') edits, applied to the sandboxed text
+# rather than writing a second copy of it. Everything the two modes share -- the
+# relative-path advice, the persisted workdir, the download-link note -- is prose
+# that gets tuned over time, and a parallel copy would drift out of sync in
+# silence. Only the claims the sandbox makes true are touched. A rewording that
+# stops one of these matching is caught by test_full_access_tool_prompt.py, which
+# asserts the sandboxed markers are gone from the result on both platforms.
+_FULL_ACCESS_SUBSTITUTIONS = (
+    # The only sentence in the python description that names the sandbox. Just
+    # dropped, not reworded: where the code runs is said once, by the paths note
+    # below, which both tools carry.
+    ("Execute Python code in a sandbox and", "Execute Python code and"),
+    # POSIX: absolute paths DO resolve with the sandbox off, so the clause is not
+    # merely unhelpful, it is wrong.
+    (
+        "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
+        ". The code sandbox is disabled, so this runs directly on the user's own "
+        "machine and absolute paths do resolve.",
+    ),
+    # Windows already says where the code runs and never denies absolute paths,
+    # so there is nothing false to remove; state the capability instead.
+    (
+        " You are on Windows, and this runs on the user's own machine.",
+        " You are on Windows, and this runs on the user's own machine. The code "
+        "sandbox is disabled, so absolute paths do resolve.",
+    ),
+)
 
-    _build_sandbox_paths_note describes the sandboxed run, and every claim in it
-    is false under Full access: _build_bypass_env/_bypass_preexec skip the
-    static analysis, the command blocklist and the rlimits, so absolute paths do
-    resolve and the host filesystem is reachable. Handing the sandboxed text to
-    a model in that mode makes it answer "I am sandboxed and cannot see your
-    files" to a question it could have answered with one tool call, so the
-    working-directory advice stays (the workdir really is still the per-session
-    dir) and the isolation claim goes.
+
+def _to_full_access(description: str) -> str:
+    """Rewrite a sandboxed tool description for Full access.
+
+    Under bypass_permissions the loops pass disable_sandbox=True:
+    _build_bypass_env / _bypass_preexec skip the static analysis, the command
+    blocklist and the rlimits, so the host filesystem really is reachable.
+    Handing a model the sandboxed text in that mode makes it answer "I am
+    sandboxed and cannot see your files" to a question one tool call would have
+    answered. Untouched clauses are the ones still true in both modes: the
+    workdir is the per-session dir either way (_build_bypass_env repoints HOME /
+    TMPDIR / TEMP / TMP at it), and so is the download-link note.
     """
-    platform_note = " You are on Windows." if sys.platform == "win32" else ""
-    return (
-        " The code sandbox is disabled for this conversation and this runs "
-        "directly on the user's own machine, so absolute paths do resolve and "
-        "you can read and write anywhere that account can."
-        + platform_note
-        + " Relative paths still resolve in a working directory that persists "
-        "for this conversation." + _CREATED_FILES_NOTE
-    )
+    for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
+        description = description.replace(sandboxed, full_access)
+    return description
 
 
 def _build_terminal_shell_note() -> str:
@@ -8993,7 +9012,6 @@ def _build_terminal_shell_note() -> str:
 
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
-_FULL_ACCESS_PATHS_NOTE = _build_full_access_paths_note()
 _TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
 
 PYTHON_TOOL = {
@@ -9035,16 +9053,16 @@ TERMINAL_TOOL = {
     },
 }
 
-# Full access (permission_mode='full') runs these two without the sandbox, so it
-# gets its own pair of schemas rather than a per-request rebuild: the notes are
-# platform-derived constants, and the sandboxed pair stays the module default so
-# every existing importer keeps the safe wording.
+# Full access runs these two without the sandbox, so it gets its own pair of
+# schemas rather than a per-request rebuild: the descriptions are
+# platform-derived constants either way. The sandboxed pair stays the module
+# default, so every existing importer keeps the safe wording. The shell note is
+# unaffected by the substitutions and carries through as-is.
 PYTHON_TOOL_FULL_ACCESS = {
     "type": "function",
     "function": {
         **PYTHON_TOOL["function"],
-        "description": "Execute Python code on the user's own machine and return stdout/stderr."
-        + _FULL_ACCESS_PATHS_NOTE,
+        "description": _to_full_access(PYTHON_TOOL["function"]["description"]),
     },
 }
 
@@ -9052,9 +9070,7 @@ TERMINAL_TOOL_FULL_ACCESS = {
     "type": "function",
     "function": {
         **TERMINAL_TOOL["function"],
-        "description": "Execute a terminal command on the user's own machine and return stdout/stderr."
-        + _FULL_ACCESS_PATHS_NOTE
-        + _TERMINAL_SHELL_NOTE,
+        "description": _to_full_access(TERMINAL_TOOL["function"]["description"]),
     },
 }
 
