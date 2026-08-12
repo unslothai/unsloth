@@ -170,10 +170,28 @@ def test_from_pretrained_accepts_processor_kwargs():
     assert params["processor_kwargs"].default is None
 
 
+def _synthetic_image(seed):
+    """A deterministic, network-free RGB image with enough structure that two different
+    seeds cannot collapse to the same embedding."""
+    from PIL import Image
+
+    img = Image.new("RGB", (112, 112), color=(16 * seed % 256, 96, 200 - 16 * seed % 256))
+    for x in range(0, 112, 16):
+        for y in range(0, 112, 16):
+            if (x // 16 + y // 16 + seed) % 2:
+                img.paste((240, 240, 30), (x, y, x + 16, y + 16))
+    return img
+
+
 def test_vlm_embedding_matches_stock_st():
     """End-to-end parity: FastSentenceTransformer must match a stock SentenceTransformer
-    load of the same VLM embedding checkpoint, and must NOT swap in a logits-returning
-    *ForConditionalGeneration model. Opt-in + GPU-only, so default CI is unaffected."""
+    load of the same VLM embedding checkpoint on BOTH text and image inputs, and must NOT
+    swap in a logits-returning *ForConditionalGeneration model. Opt-in + GPU-only.
+
+    The image half is the point of the feature: stock sentence-transformers encodes this
+    checkpoint's images today (see its model card), so a text-only parity check would pass
+    while the vision path stays unreachable -- exactly the bug this file exists to prevent.
+    """
     model_id = os.environ.get("UNSLOTH_VLM_EMBEDDING_PARITY_MODEL")
     if not model_id:
         pytest.skip(
@@ -186,16 +204,24 @@ def test_vlm_embedding_matches_stock_st():
         pytest.skip("FastSentenceTransformer requires CUDA; skipping on CPU-only runner")
     np = pytest.importorskip("numpy")
     pytest.importorskip("sentence_transformers")
+    pytest.importorskip("PIL")
     from sentence_transformers import SentenceTransformer
 
     device = "cuda"
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     texts = ["a photo of a cat", "the capital of France is Paris"]
+    image_inputs = [
+        {"image": _synthetic_image(1), "text": "a yellow checkerboard"},
+        {"image": _synthetic_image(5)},
+    ]
 
     # Control FIRST, before importing unsloth, so its global patches never touch the ref.
     ctrl = SentenceTransformer(model_id, device=device, model_kwargs={"torch_dtype": dtype})
     ctrl_emb = np.asarray(
         ctrl.encode(texts, normalize_embeddings=True, batch_size=2), dtype=np.float32
+    )
+    ctrl_img_emb = np.asarray(
+        ctrl.encode(image_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
     )
 
     import unsloth  # noqa: F401
@@ -212,6 +238,14 @@ def test_vlm_embedding_matches_stock_st():
         f"returns logits and corrupts the Pooling layer. Expected the base model."
     )
 
+    # The processor, not the tokenizer: on sentence-transformers >= 5.4 `.tokenizer`
+    # unwraps to the inner text tokenizer either way, so it cannot detect the failure.
+    processor = fast[0].processor
+    assert hasattr(processor, "image_processor"), (
+        f"FastSentenceTransformer kept {type(processor).__name__} as the processor; a text "
+        f"tokenizer cannot turn images into pixel_values, so the vision tower is unreachable."
+    )
+
     fast_emb = np.asarray(
         fast.encode(texts, normalize_embeddings=True, batch_size=2), dtype=np.float32
     )
@@ -220,5 +254,27 @@ def test_vlm_embedding_matches_stock_st():
         np.linalg.norm(ctrl_emb, axis=1) * np.linalg.norm(fast_emb, axis=1)
     )
     assert float(cos.min()) > 0.99, (
-        f"VLM embedding parity regressed: min cosine {float(cos.min()):.5f} <= 0.99"
+        f"VLM embedding text parity regressed: min cosine {float(cos.min()):.5f} <= 0.99"
+    )
+
+    fast_img_emb = np.asarray(
+        fast.encode(image_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+    )
+
+    img_cos = (ctrl_img_emb * fast_img_emb).sum(1) / (
+        np.linalg.norm(ctrl_img_emb, axis=1) * np.linalg.norm(fast_img_emb, axis=1)
+    )
+    assert float(img_cos.min()) > 0.99, (
+        f"VLM image parity regressed: min cosine {float(img_cos.min()):.5f} <= 0.99"
+    )
+
+    # Two structurally different images must not collapse to the same vector -- that would
+    # mean the image is being dropped and only the prompt/text is reaching the model.
+    pair_cos = float(
+        (fast_img_emb[0] * fast_img_emb[1]).sum()
+        / (np.linalg.norm(fast_img_emb[0]) * np.linalg.norm(fast_img_emb[1]))
+    )
+    assert pair_cos < 0.999, (
+        f"Distinct images produced near-identical embeddings (cos {pair_cos:.5f}); the image "
+        f"input is not reaching the vision tower."
     )
