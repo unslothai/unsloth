@@ -1129,7 +1129,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
 /// Windows rules are applied on every platform, and deliberately: a Windows
 /// value is what reaches this code, and hard-coding the rules keeps the check
 /// testable from Linux CI. Matches `_is_rooted` in the CLI guard, down to
-/// leaving a drive-relative "C:sub" to be joined like the relative path it is.
+/// treating a drive-relative "C:sub" as naming no directory of its own.
 fn is_rooted(value: &str) -> bool {
     let value = match value.strip_prefix("\\\\?\\UNC\\") {
         Some(rest) => rest,
@@ -1144,10 +1144,17 @@ fn is_rooted(value: &str) -> bool {
     drive_rooted || std::path::Path::new(value).is_absolute()
 }
 
+/// Whether a value is relative to a drive's own current directory ("D:cache").
+fn is_drive_relative(value: &str) -> bool {
+    matches!(value.as_bytes(), [drive, b':', rest @ ..]
+        if drive.is_ascii_alphabetic() && !matches!(rest.first(), Some(b'\\') | Some(b'/')))
+}
+
 fn relative_override_pins_from(
     cwd: Option<std::path::PathBuf>,
     work_dir: &std::path::Path,
     lookup: impl Fn(&str) -> Option<String>,
+    absolute: impl Fn(&str) -> Option<std::path::PathBuf>,
 ) -> Vec<(&'static str, std::path::PathBuf)> {
     let Some(cwd) = cwd else {
         return Vec::new();
@@ -1169,6 +1176,12 @@ fn relative_override_pins_from(
             if is_rooted(value) {
                 return None;
             }
+            if is_drive_relative(value) {
+                // "D:cache" is relative to the current directory on drive D,
+                // which is not the one being left and which only Windows
+                // tracks, so join() would hand the value straight back.
+                return Some((*name, absolute(value)?));
+            }
             Some((*name, cwd.join(value)))
         })
         .collect()
@@ -1176,9 +1189,14 @@ fn relative_override_pins_from(
 
 /// Relative overrides, anchored to the directory the child is being moved out of.
 fn relative_override_pins(work_dir: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
-    relative_override_pins_from(std::env::current_dir().ok(), work_dir, |name| {
-        std::env::var(name).ok()
-    })
+    relative_override_pins_from(
+        std::env::current_dir().ok(),
+        work_dir,
+        |name| std::env::var(name).ok(),
+        // GetFullPathNameW on Windows, which is what knows each drive's own
+        // current directory.
+        |value| std::path::absolute(value).ok(),
+    )
 }
 
 /// Pin the working directory and mark the child as desktop-managed. Env
@@ -2595,23 +2613,43 @@ mod managed_cli_working_dir_tests {
             "HF_HUB_CACHE" => Some("~/hub".to_string()),
             "XDG_CACHE_HOME" => Some("   ".to_string()),
             "LLAMA_SERVER_PATH" => Some("\\srv\\llama-server".to_string()),
+            // Relative to drive D's own current directory, not to the cwd.
+            "HF_DATASETS_CACHE" => Some("D:datasets".to_string()),
             _ => None,
         };
+        let absolute = |value: &str| match value {
+            "D:datasets" => Some(PathBuf::from("D:\\work\\datasets")),
+            other => panic!("unexpected drive-relative value {other}"),
+        };
 
-        let pins = relative_override_pins_from(Some(cwd.clone()), &work_dir, env);
+        let pins = relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute);
         assert_eq!(
             pins,
             vec![
                 ("UNSLOTH_STUDIO_HOME", cwd.join("studio")),
                 ("HF_HOME", cwd.join("cache")),
+                (
+                    "HF_DATASETS_CACHE",
+                    PathBuf::from("D:\\work\\datasets")
+                ),
             ],
             "only relative values are rewritten, and against the directory being left"
         );
 
+        // A drive-relative value the OS cannot resolve is left alone rather
+        // than rewritten to something that means a different folder.
+        assert!(
+            !relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None)
+                .iter()
+                .any(|(name, _)| *name == "HF_DATASETS_CACHE")
+        );
+
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
-        assert!(relative_override_pins_from(Some(work_dir.clone()), &work_dir, env).is_empty());
-        assert!(relative_override_pins_from(None, &work_dir, env).is_empty());
+        assert!(
+            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute).is_empty()
+        );
+        assert!(relative_override_pins_from(None, &work_dir, env, absolute).is_empty());
     }
 
     #[test]

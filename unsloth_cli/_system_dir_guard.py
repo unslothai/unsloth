@@ -112,9 +112,11 @@ def is_system_dir(
 def _is_rooted(path, pathmod):
     """Absolute, or at least rooted at a drive.
 
-    "." and "C:sub" are resolved against the folder being escaped, so they are no
-    escape at all. A leading separator is drive-relative rather than absolute, but
-    it can never resolve back inside System32.
+    "." and "C:sub" name no directory on their own, so they are no escape at all
+    (pin_relative_overrides resolves the drive-relative form separately, since
+    only Windows knows where drive C currently sits). A leading separator is
+    drive-relative rather than absolute, but it can never resolve back inside
+    System32.
     """
     stripped = _strip_extended_prefix(path)
     return pathmod.isabs(stripped) or stripped.startswith(("\\", "/"))
@@ -270,6 +272,7 @@ def pin_relative_overrides(
     environ,
     cwd,
     pathmod = _os.path,
+    abspath = None,
 ):
     """Rewrite relative path overrides so they keep meaning the folder they did.
 
@@ -281,7 +284,14 @@ def pin_relative_overrides(
         value = (environ.get(name) or "").strip()
         if not value or value.startswith("~") or _is_rooted(value, pathmod):
             continue
-        environ[name] = pathmod.join(cwd, value)
+        if pathmod.splitdrive(value)[0]:
+            # "D:cache" means the current directory on drive D, which is not the
+            # one being left and which only Windows knows. join() would hand it
+            # back unchanged, so the move would retarget it. Ask the OS, and let
+            # a failure reach the caller, which then refuses to move at all.
+            environ[name] = (abspath or pathmod.abspath)(value)
+        else:
+            environ[name] = pathmod.join(cwd, value)
         pinned.append(name)
     return pinned
 
@@ -360,6 +370,7 @@ def check_working_directory(
     expanduser = None,
     makedirs = _os.makedirs,
     isdir = None,
+    abspath = None,
 ):
     """Decide what to do about the current working directory.
 
@@ -397,7 +408,7 @@ def check_working_directory(
         try:
             # Before moving, or a relative override the caller wrote would end up
             # naming a folder under the new directory instead of theirs.
-            pin_relative_overrides(environ, cwd, pathmod)
+            pin_relative_overrides(environ, cwd, pathmod, abspath)
         except Exception:
             # An environment we cannot pin is one we must not move underneath.
             target = None

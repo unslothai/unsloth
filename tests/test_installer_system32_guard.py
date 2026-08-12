@@ -330,6 +330,7 @@ def _guard_outcome(
     makedirs_error: OSError | None = None,
     windows_dirs: tuple[str, ...] = (r"C:\Windows",),
     environ_out: dict[str, str] | None = None,
+    drive_cwd: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -348,8 +349,17 @@ def _guard_outcome(
         normpath = ntpath.normpath,
         join = ntpath.join,
         isabs = ntpath.isabs,
+        splitdrive = ntpath.splitdrive,
         expanduser = lambda _p: userprofile,
     )
+
+    def _abspath(value):
+        """Windows keeps a current directory per drive; only it can resolve these."""
+        drive, tail = ntpath.splitdrive(value)
+        base = (drive_cwd or {}).get(drive.upper())
+        if base is None:
+            raise OSError(f"no current directory for {drive}")
+        return ntpath.join(base, tail)
 
     chdir_calls: list[str] = []
     # The guard re-reads the directory after moving, so the fake has to move too.
@@ -382,6 +392,7 @@ def _guard_outcome(
         makedirs = _makedirs,
         # Only a folder that really holds System32 counts as a Windows directory.
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
+        abspath = _abspath,
     )
     if environ_out is not None:
         environ_out.clear()
@@ -780,6 +791,33 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
     )
     assert colour == "yellow"
     assert environ_out[name] == r"C:\Windows\System32\cache"
+
+
+def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
+    """"D:cache" means the current directory on drive D, which join() cannot know
+    and which the move changes, so Windows itself has to resolve it first."""
+    environ_out: dict[str, str] = {}
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": "D:cache"},
+        environ_out = environ_out,
+        drive_cwd = {"D:": r"D:\work"},
+    )
+    assert (colour, chdir_calls) == ("yellow", [_RELOCATED])
+    assert environ_out["HF_HOME"] == r"D:\work\cache"
+
+
+def test_cli_guard_refuses_to_move_when_a_drive_relative_override_cannot_be_resolved():
+    """Moving anyway would silently retarget it, which is what the pinning exists
+    to prevent, so the guard fails closed instead."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {"HF_HOME": "D:cache"},
+        drive_cwd = {},
+    )
+    assert (colour, chdir_calls) == ("red", [])
 
 
 def test_cli_guard_pins_every_storage_root_override_studio_reads():
