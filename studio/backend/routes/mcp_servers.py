@@ -133,8 +133,7 @@ def _row_to_response(row: dict) -> McpServerResponse:
 
 @router.get("/", response_model = list[McpServerResponse])
 async def list_mcp_servers(
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: ViaApiKey = False,
+    current_subject: str = Depends(get_current_subject), via_api_key: ViaApiKey = False
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key:
