@@ -3522,13 +3522,15 @@ def _installer_bundled_candidates(installer_name: str) -> List[Path]:
     """
     candidates: List[Path] = []
     roots = [
+        # The managed venv leads. A pip-installed CLI can update INTO it rather than into
+        # its own (_studio_deps.running_outside_managed_venv), and setup writes the new
+        # data files there, so it holds the release-matched installer while that foreign
+        # CLI's own bundled copy is whatever version IT is. Running inside the managed
+        # venv this is just sys.prefix again, and the dedup below drops the repeat.
+        STUDIO_HOME / "unsloth_studio",
         sysconfig.get_path("data"),
         sys.prefix,
         getattr(site, "USER_BASE", None),
-        # A pip-installed CLI can update INTO the managed venv rather than its own
-        # (_studio_deps.running_outside_managed_venv), and setup writes the new data files
-        # there, so that root counts too.
-        STUDIO_HOME / "unsloth_studio",
     ]
     for root in roots:
         if not root:

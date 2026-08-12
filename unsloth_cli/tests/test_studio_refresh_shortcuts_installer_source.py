@@ -267,8 +267,11 @@ def test_http_framing_errors_are_fetch_failures_not_crashes(monkeypatch, tmp_pat
         assert studio._fetch_installer("install.sh") is None, exc
 
 
-def test_the_managed_venv_is_searched_for_the_bundled_installer(monkeypatch):
-    """A CLI outside the managed venv updates INTO it, so that data root counts."""
+def test_the_managed_venv_leads_the_bundled_candidates(monkeypatch):
+    """A CLI outside the managed venv updates INTO it, so that root holds the
+    release-matched installer and must outrank the foreign CLI's own bundled copy."""
     studio = _studio()
+    candidates = studio._installer_bundled_candidates("install.sh")
     managed = studio.STUDIO_HOME / "unsloth_studio" / "share" / "unsloth" / "install.sh"
-    assert managed in studio._installer_bundled_candidates("install.sh")
+    assert candidates[0] == managed
+    assert len(candidates) == len(set(candidates)), "duplicate roots"
