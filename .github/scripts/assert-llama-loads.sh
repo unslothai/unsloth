@@ -52,14 +52,11 @@ if ! "$SERVER" --version >/tmp/llama-server-version.txt 2>&1; then
   fail "llama-server failed to launch on macOS $HOST_VER (dyld load / symbol error)"
 fi
 
-# The launch above uses this shell's environment, which says nothing about the
-# one Studio builds for its own child. That environment was Linux-shaped on
-# macOS for a long time (LD_LIBRARY_PATH, which dyld ignores), and the
-# installer's own validation set DYLD_LIBRARY_PATH, so the defect could not
-# show up at install time (#8566). Assert the launch environment here, where a
-# real runtime is installed, since a monkeypatched sys.platform unit test
-# cannot. Runs under the interpreter the `unsloth` shim points at, so the
-# backend's imports resolve without reinstalling anything.
+# The launch above uses this shell's environment, not the one Studio builds for
+# its child. That one was Linux-shaped on macOS (LD_LIBRARY_PATH, which dyld
+# ignores) while the installer's own validation set DYLD_LIBRARY_PATH, so the
+# defect could not show up at install time (#8566). A unit test with a
+# monkeypatched sys.platform cannot prove the real thing; this can.
 # Resolve the interpreter from STUDIO_HOME first, not from PATH. The
 # clean-machine lane scrubs PATH down to system directories and puts the shim
 # under its own UNSLOTH_STUDIO_HOME, so `command -v unsloth` is empty there and

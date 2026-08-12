@@ -121,9 +121,8 @@ class LlamaServerBackend:
                 "llama-server. Install llama.cpp or set LLAMA_SERVER_PATH / "
                 "UNSLOTH_LLAMA_CPP_PATH."
             )
-        # Resolve before the probe, so both the `--help` capability check and
-        # the later spawn run the real executable rather than an entrypoint
-        # that would lose DYLD_* to SIP.
+        # Before the probe, so the --help check and the spawn both run the real
+        # executable rather than an entrypoint that loses DYLD_* to SIP.
         binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
@@ -302,13 +301,12 @@ class LlamaServerBackend:
         env = child_env_without_native_path_secret()
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
         # _llama_lib_dir, not Path(binary).parent: the managed install puts an
-        # entrypoint in front of the real server (~/.unsloth/llama.cpp/llama-server
-        # -> build/bin/llama-server), and the dylibs sit next to the target.
+        # entrypoint in front of the real server, and the dylibs sit next to
+        # the target, not next to the wrapper.
         lib_dir = _binary_lib_dir(binary)
         if sys.platform == "darwin":
-            # Unconditional, unlike the CUDA branch: a CPU start (EMBED_DEVICE=cpu,
-            # or the retry after a failed GPU start) loads the same sibling
-            # dylibs, and dyld ignores LD_LIBRARY_PATH either way (#8566).
+            # Unconditional, unlike the CUDA branch: a CPU start loads the same
+            # sibling dylibs (#8566).
             _add_dyld_path(env, lib_dir)
         elif use_gpu:
             self._add_linux_cuda_libs(env, lib_dir)

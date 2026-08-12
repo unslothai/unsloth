@@ -4532,11 +4532,10 @@ class LlamaCppBackend:
         ``--spec-draft-n-max`` post-rename, ``--draft-max`` on legacy.
         ``None`` means n_max cannot be set.
         """
-        # Resolve here, not only in load_model: the startup, status and
-        # preflight routes probe directly, and on macOS a shell entrypoint
-        # loses DYLD_* to SIP before it reaches the real server. The probe then
-        # reports inconclusive capabilities, which clamps slots and disables
-        # DSpark/DFlash sizing for a server that supports both (#8566).
+        # Not only in load_model: startup, status and preflight probe directly,
+        # and a wrapper loses DYLD_* to SIP before reaching the real server. The
+        # inconclusive capabilities that follow clamp slots and disable
+        # DSpark/DFlash sizing on a server that supports both (#8566).
         bin_path = cls._exec_path_for_launch(binary or cls._find_llama_server_binary())
         if not bin_path or not Path(bin_path).is_file():
             return {
@@ -5950,15 +5949,11 @@ class LlamaCppBackend:
                 if os.path.isdir(_rocblas_lib):
                     env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
         elif sys.platform == "darwin":
-            # macOS: DYLD_LIBRARY_PATH for the dylibs next to the binary
-            # (libllama, libggml*, libmtmd). dyld ignores LD_LIBRARY_PATH, so
-            # falling into the Linux branch below left the child with no search
-            # path at all -- while the installer's own staged-binary validation
-            # does set DYLD_LIBRARY_PATH, so that check passes on a path the
-            # real launch never takes (#8566). A healthy prebuilt resolves via
-            # @loader_path and does not need this; a bundle whose install names
-            # or runpaths are off dies in dyld before main() without it.
-            # No CUDA/ROCm/WSL discovery: none of it exists on macOS.
+            # dyld ignores LD_LIBRARY_PATH, so the Linux branch below left the
+            # child with no search path at all, while the installer's own
+            # validation sets DYLD_LIBRARY_PATH and so never saw it (#8566).
+            # A healthy prebuilt resolves via @loader_path and does not need
+            # this; one with wrong install names dies in dyld without it.
             _dyld = _loader_path_var()
             _inherited = [p for p in env.get(_dyld, "").split(os.pathsep) if p]
             env[_dyld] = os.pathsep.join(dict.fromkeys([binary_dir, *_inherited]))
@@ -9019,9 +9014,8 @@ class LlamaCppBackend:
             else "reinstall or rebuild that custom llama.cpp"
         )
 
-    # dyld's reason can run to kilobytes (a "tried:" list names every searched
-    # path). The glibc branch is capped to one line; cap this one too, since it
-    # is quoted verbatim into an API error.
+    # A "tried:" list names every searched path, so the reason can run to
+    # kilobytes. The glibc branch is capped to one line; cap this one too.
     _MACOS_REASON_CHARS = 300
 
     @staticmethod
@@ -9033,9 +9027,8 @@ class LlamaCppBackend:
         restore a file at a directory that does not exist. The soname is what
         they can act on, and _is_bundled_llama_library already matches on it.
         """
-        # Basename, not just the directive: "@loader_path/../Frameworks/libomp.dylib"
-        # still carries a relative path that _is_library_path would read as an
-        # exact location, which is the same unusable advice one level in.
+        # Basename, not just the directive: "@loader_path/../Frameworks/x.dylib"
+        # still reads as an exact location to _is_library_path.
         if lib.startswith(("@rpath/", "@loader_path/", "@executable_path/")):
             return os.path.basename(lib)
         return lib
@@ -9092,10 +9085,9 @@ class LlamaCppBackend:
             return None
         lowered = output.lower()
 
-        # The prebuilt was built for a newer macOS than the host. Same two
-        # markers install_llama_prebuilt.looks_like_macos_incompatibility uses
-        # (the MTLResidency symbol is what a Tahoe-built libggml-metal drags
-        # in), so the installer and the runtime agree on the wording.
+        # Built for a newer macOS than the host. Same two markers as
+        # install_llama_prebuilt.looks_like_macos_incompatibility, so the
+        # installer and the runtime agree on the wording.
         if ("built for macos" in lowered and "newer than running os" in lowered) or (
             "symbol not found" in lowered and "mtlresidency" in lowered
         ):
@@ -9115,11 +9107,9 @@ class LlamaCppBackend:
         if not_loaded:
             lib = LlamaCppBackend._plain_dyld_lib_name(not_loaded.group(1).strip())
             reason = LlamaCppBackend._dyld_reason_after(output, not_loaded.end())
-            # dyld4 lists every path it searched with a per-path verdict, so
-            # judge the candidate that is actually ours. Scanning the whole
-            # list would let a stale Intel /usr/local/lib copy ("incompatible
-            # architecture") or a policy-blocked one ("code signature") decide
-            # the diagnosis for a dylib that is simply absent from our install.
+            # dyld4 gives a per-path verdict for every path it searched, so
+            # judge ours. Scanning the flattened list would let a stale Intel
+            # /usr/local copy decide the diagnosis for a dylib simply absent.
             verdict = LlamaCppBackend._dyld_tried_verdict(reason, binary)
             verdict_l = verdict.lower()
             # macOS refused the Mach-O itself. Unsigned or altered code is a
@@ -9146,15 +9136,13 @@ class LlamaCppBackend:
                 lib, verdict[: LlamaCppBackend._MACOS_REASON_CHARS], binary
             )
 
-        # A symbol mismatch with no missing file. Where the symbol was expected
-        # decides the diagnosis: a system framework means the build wants a
-        # newer macOS than this one (reinstalling the same build cannot make
-        # the OS export it), while a llama.cpp dylib means our own files are
-        # from different builds.
-        # Only with dyld's own framing. "Symbol not found" on its own is
-        # ordinary English that a wrapper or a plugin loader on any platform
-        # can print, and diagnosing that as a mixed macOS runtime both misleads
-        # and suppresses the output tail the fallback would have carried.
+        # A symbol mismatch with no missing file. Where it was expected decides
+        # the remedy: a system framework means the build wants a newer macOS
+        # (reinstalling cannot make the OS export it); one of ours means our
+        # own files are from different builds.
+        # Only with dyld's own framing: "Symbol not found" is ordinary English
+        # any wrapper on any platform can print, and claiming it would also
+        # suppress the output tail the fallback carries.
         if "symbol not found" in lowered and any(
             marker in lowered for marker in ("dyld[", "dyld:", "referenced from:", "expected in:")
         ):
@@ -9242,12 +9230,8 @@ class LlamaCppBackend:
             return LlamaCppBackend._unloadable_library_message(_lib, _reason, binary)
 
         # macOS. dyld shares no wording with glibc, so every loader failure on
-        # Apple Silicon fell past the branch above into the generic
-        # GGUF/memory message (#8566). dyld prints "Library not loaded: <path>"
-        # and then a "Reason:" that carries the real cause -- "tried: ... (no
-        # such file)", "(code signature ... not valid ...)", "(mach-o file, but
-        # is an incompatible architecture ...)" -- or, on older macOS, a bare
-        # "image not found". None of these are about the GGUF or about memory.
+        # Apple Silicon fell past the branch above into the generic GGUF/memory
+        # message, and none of them is about either (#8566).
         macos_detail = LlamaCppBackend._classify_macos_loader_failure(output or "", binary)
         if macos_detail:
             return macos_detail
@@ -9336,13 +9320,11 @@ class LlamaCppBackend:
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
         # large for the WSL VM's RAM cap); name it actionably.
         if returncode == -9:
-            # On macOS the same signal is also how the kernel kills a binary
-            # whose code signature is invalid, before it can print anything, so
-            # do not present memory as the only reading there (#8566).
+            # macOS also SIGKILLs an invalid code signature before the process
+            # can print, so memory is not the only reading there (#8566).
             if sys.platform == "darwin":
-                # A signature kill happens before the process can print, so the
-                # log is often empty here: offer both readings rather than
-                # promising the log settles it, and carry whatever there is.
+                # The log is often empty here, so offer both readings rather
+                # than promise it settles which.
                 return LlamaCppBackend._with_startup_diagnostics(
                     "llama-server was stopped by macOS (signal 9) before it "
                     "started. That is either out of memory -- try a smaller or "
@@ -9379,11 +9361,10 @@ class LlamaCppBackend:
                 "localhost bypasses it (NO_PROXY=127.0.0.1,localhost)."
             )
 
-        # Fallback: genuinely unknown failure (OOM, missing binary ...). By
-        # definition nothing above recognised the output, so carry the evidence
-        # instead of dropping it: the tail llama-server actually printed, and
-        # the log holding all of it. Without this a report of this message is
-        # unactionable and costs a round trip to ask for the log (#8566).
+        # Fallback: genuinely unknown failure (OOM, missing binary ...).
+        # Nothing above recognised the output, so carry the evidence rather
+        # than drop it; without the tail and the log path a report of this
+        # message is unactionable and costs a round trip (#8566).
         return LlamaCppBackend._with_startup_diagnostics(
             "llama-server failed to start. "
             "Check that the GGUF file is valid and you have enough memory.",
@@ -9405,10 +9386,9 @@ class LlamaCppBackend:
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
         re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+"),
-        # Our own --api-key, echoed by a wrapper or diagnostic build that dumps
-        # its argv. The value is secrets.token_urlsafe(32), so it matches no
-        # token shape and is in no environment variable to look up; catch it by
-        # its flag, the way _redacted_cmd_for_log does for the log.
+        # Our own --api-key, if a wrapper dumps its argv. token_urlsafe(32)
+        # matches no shape and is in no env var, so catch it by its flag, as
+        # _redacted_cmd_for_log already does for the log.
         re.compile(r"(?<=--api-key )\S+"),
         re.compile(r"(?<=--api-key=)\S+"),
         # scheme://user:secret@host, which is what DATABASE_URL / REDIS_URL and
@@ -9428,16 +9408,14 @@ class LlamaCppBackend:
         if not text:
             return text
         cleaned = text
-        # Secrets we minted ourselves and therefore know exactly (the
-        # --api-key value); no pattern can be relied on to recognise a
-        # token_urlsafe blob.
+        # Secrets we minted and therefore know exactly: no pattern recognises
+        # a token_urlsafe blob.
         for literal in extra:
             if literal and len(literal) >= 8:
                 cleaned = cleaned.replace(literal, "***")
-        # By name, using the same predicate that decides what to strip from a
-        # managed server's own environment, so the two cannot drift: anything
-        # we refuse to hand the child must not come back out of it either.
-        # Values carrying URL userinfo count whatever they are named.
+        # By name, reusing what decides which vars a managed server is denied,
+        # so the two cannot drift: what we withhold must not come back out of
+        # the child either. URL userinfo counts whatever it is named.
         try:
             from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
             for name, value in os.environ.items():
