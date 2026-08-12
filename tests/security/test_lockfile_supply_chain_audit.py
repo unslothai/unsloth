@@ -170,8 +170,7 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
 
 
 def test_malicious_cargo_lockfile_default_mode_blocks(tmp_path):
-    """Default (non-strict) mode must also refuse a non-registry cargo source: this is a
-    pre-install fetch gate, so provenance findings block without needing --strict."""
+    """Default mode refuses a non-registry cargo source; provenance blocks without --strict."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -200,8 +199,8 @@ def test_provenance_kinds_block_by_default():
 
 
 def test_non_registry_npm_tarball_blocks_by_default(tmp_path):
-    """A file:/git: tarball with a valid-looking integrity must not pass the default
-    audit; otherwise `npm ci` runs its lifecycle scripts on the runner."""
+    """A file: tarball with a valid-looking integrity must not pass the default audit,
+    or `npm ci` runs its lifecycle scripts on the runner."""
     lockfile = tmp_path / "package-lock.json"
     lockfile.write_text(
         json.dumps(
@@ -266,8 +265,7 @@ def test_gha_escape_collapses_finding_to_one_line():
 
 
 def test_blocking_finding_emitted_as_single_line_annotation(tmp_path):
-    """The ::error:: annotation must be one physical line (%0A-escaped). Regression for
-    PR #5604, which emitted this same finding as an advisory ::warning::."""
+    """The ::error:: annotation must be one physical line (%0A-escaped)."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -290,7 +288,7 @@ def test_blocking_finding_emitted_as_single_line_annotation(tmp_path):
 
 def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
     """The advisory ::warning:: path stays %0A-escaped too. `missing-resolved-url` is
-    incompleteness, not a fetchable source, so it remains advisory and exits 0."""
+    incompleteness, not a fetchable source, so it stays advisory."""
     lockfile = tmp_path / "package-lock.json"
     lockfile.write_text(
         json.dumps(
