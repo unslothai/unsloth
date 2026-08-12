@@ -12,6 +12,7 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
+  PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -63,7 +64,25 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { MediaPageLink } from "@/components/media-page-link";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
+  type NewRecordProbeBaseline,
+  applyPin,
+  fetchNextPage,
+  fetchWhileStable,
+  hasUnknownRecord,
+  mergeGenerated,
+  newRecordProbeBaseline,
+  nextSelectedId,
+  pinnedOrder,
+  removeGalleryItem,
+  restorePinOrder,
+  serializeById,
+  sortGalleryItems,
+  subscribeGalleryChanged,
+} from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_TABS } from "./workflows";
@@ -76,6 +95,11 @@ import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import {
+  downloadFile,
+  downloadUrl,
+  isDownloadCancelled,
+} from "@/lib/native-files";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
@@ -113,6 +137,7 @@ import {
   GenerateResponseLostError,
   cancelDiffusionGeneration,
   deleteGalleryImage,
+  fetchGalleryBlob,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
   getDiffusionLoadProgress,
@@ -121,6 +146,7 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
   unloadDiffusionModel,
@@ -306,6 +332,10 @@ const galleryCache: {
 // Images loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
+// Passes a window resync may make before giving up. Each extra pass only happens when pagination
+// moved while it was fetching, which cannot repeat indefinitely without the user scrolling along.
+const RESYNC_MAX_ATTEMPTS = 3;
+
 // Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
@@ -320,52 +350,81 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
   return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-function saveBlobUrl(href: string, filename: string) {
-  const link = document.createElement("a");
-  link.href = href;
-  link.download = filename;
-  link.click();
+// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
+async function reencodeImage(
+  src: string,
+  format: Exclude<ImageExportFormat, "png">,
+): Promise<Blob> {
+  const el = new Image();
+  el.decoding = "async";
+  el.src = src;
+  await el.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = el.naturalWidth;
+  canvas.height = el.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("canvas 2d context unavailable");
+  }
+  if (format === "jpeg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  ctx.drawImage(el, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, `image/${format}`, 0.95),
+  );
+  if (!blob) {
+    throw new Error(`could not encode ${format}`);
+  }
+  if (blob.type !== `image/${format}`) {
+    // WebKit can silently return PNG bytes when an encoder is unavailable.
+    // Treat that as a failed conversion so the caller uses a matching .png name.
+    throw new Error(`${format} encoding is unavailable`);
+  }
+  return blob;
 }
 
-// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
 async function downloadImage(
   src: string,
   image: GalleryImage,
   format: ImageExportFormat = "png",
 ) {
-  if (format === "png") {
-    saveBlobUrl(src, exportFilename(image, format));
-    return;
-  }
-  try {
-    const el = new Image();
-    el.decoding = "async";
-    el.src = src;
-    await el.decode();
-    const canvas = document.createElement("canvas");
-    canvas.width = el.naturalWidth;
-    canvas.height = el.naturalHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("canvas 2d context unavailable");
-    if (format === "jpeg") {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    ctx.drawImage(el, 0, 0);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, `image/${format}`, 0.95),
-    );
-    if (!blob) throw new Error(`could not encode ${format}`);
-    const url = URL.createObjectURL(blob);
+  let outputFormat = format;
+  let outputBlob: Blob | null = null;
+
+  if (format !== "png") {
     try {
-      saveBlobUrl(url, exportFilename(image, format));
-    } finally {
-      // Give the click a tick to start before revoking.
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      outputBlob = await reencodeImage(src, format);
+    } catch {
+      // Conversion failed, so preserve the original PNG instead.
+      outputFormat = "png";
+      outputBlob = null;
     }
-  } catch {
-    // Conversion failed (decode/encode); fall back to the original PNG bytes.
-    saveBlobUrl(src, exportFilename(image, "png"));
+  }
+
+  const filename = exportFilename(image, outputFormat);
+  try {
+    if (outputBlob) {
+      await downloadFile(outputBlob, filename, outputBlob.type);
+    } else if (isTauri) {
+      // WebKit can display the cached object URL but fail to fetch it again with
+      // "Load failed". Re-fetch the authenticated original for the native save.
+      const originalBlob = await fetchGalleryBlob(image.url);
+      await downloadFile(originalBlob, filename, originalBlob.type);
+    } else {
+      await downloadUrl(src, filename);
+    }
+    if (isTauri) {
+      toast.success("Image saved", { description: filename });
+    }
+  } catch (error) {
+    if (isDownloadCancelled(error)) {
+      return;
+    }
+    toast.error("Could not save image", {
+      description: error instanceof Error ? error.message : undefined,
+    });
   }
 }
 
@@ -390,7 +449,7 @@ const SETTLE_MAX_FAILS = 5; // consecutive progress failures before calling the 
 /** Wait out a generation that outlived its POST. Idle progress alone is ambiguous, so success needs evidence (progress seen active, or a gallery record that was not there when the POST went out); otherwise report a failed submission. Throws past SETTLE_MAX_MS, or if the backend stays unreachable, so a wedged generation surfaces. */
 async function settleLostGeneration(
   isCurrent: () => boolean,
-  knownIds: ReadonlySet<string>,
+  baseline: NewRecordProbeBaseline,
 ): Promise<void> {
   const start = Date.now();
   let fails = 0;
@@ -412,8 +471,15 @@ async function settleLostGeneration(
     if (sawActive) return;
     // Idle on the very first look: the run may already have finished or never started. A gallery record we had not seen is the proof.
     try {
-      const page = await getGallery(0, 1);
-      if (page.images.some((image) => !knownIds.has(image.id))) return;
+      const sawNew = await hasUnknownRecord(
+        baseline,
+        async (offset) => {
+          const p = await getGallery(offset, PAGE_SIZE);
+          return { items: p.images, hasMore: p.has_more };
+        },
+        PAGE_SIZE,
+      );
+      if (sawNew) return;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
@@ -1455,9 +1521,29 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  // Bumped by every LOCAL change to the strip (pin, archive, delete, merged generation). A resync
+  // started before one holds a snapshot the listing cannot reconcile with what the user just did.
+  const stripEpoch = useRef(0);
+  // Bumped by the window growing from the server (a load, an appended page). Not a conflict: the
+  // resync just sized itself against a smaller window, so it refetches.
+  const pageEpoch = useRef(0);
+  // Only the newest resync may apply: two restores in a row would otherwise let the older snapshot
+  // land last and drop what the newer one showed.
+  const resyncSeq = useRef(0);
+  // Shelf mutations in flight. The epoch is an EDGE, so a page starting after the bump and landing
+  // before the row is dropped sees it hold still. A page is only trusted while this is zero.
+  const pendingShelfMutations = useRef(0);
+
   const loadGallery = useCallback(async () => {
     try {
-      const page = await getGallery(0, PAGE_SIZE);
+      // Fenced: this page renders from the module cache while the load runs, so its tiles are
+      // actionable, and a pre-pin snapshot would undo the action with nothing to correct it.
+      const page = await fetchWhileStable(
+        () => stripEpoch.current,
+        () => getGallery(0, PAGE_SIZE),
+      );
+      if (!page) return;
+      pageEpoch.current += 1;
       galleryCache.images = page.images;
       galleryCache.hasMore = page.has_more;
       setImages(page.images);
@@ -1476,7 +1562,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      const page = await getGallery(galleryCache.images.length, PAGE_SIZE);
+      // Guarded on all three counters: an archive landing anywhere across this GET shortens the
+      // shelf, and the record that shifts over the page boundary is returned by no page at all.
+      const result = await fetchNextPage(
+        () => galleryCache.images.length,
+        () => stripEpoch.current,
+        () => pendingShelfMutations.current,
+        (offset) => getGallery(offset, PAGE_SIZE),
+      );
+      if (!result) return;
+      const page = result.page;
+      pageEpoch.current += 1;
       setImages((prev) => {
         const seen = new Set(prev.map((i) => i.id));
         const next = [...prev, ...page.images.filter((i) => !seen.has(i.id))];
@@ -1535,25 +1631,217 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await deleteGalleryImage(id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete image");
-      return;
+
+  // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
+  // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
+  // archived image keeps both, since the archived view shows the same thumbnail.
+  const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
+    if (discardBlob) {
+      galleryCache.srcById.delete(id); // revokes the URL with the entry
+      galleryCache.deleted.add(id);
+      setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
-    galleryCache.srcById.delete(id); // revokes the URL with the entry
     visibleIds.current.delete(id);
-    // A fetch still in flight for this id must discard its blob rather than cache it.
-    galleryCache.deleted.add(id);
-    setSrcById((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setImages((prev) => prev.filter((i) => i.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
+    stripEpoch.current += 1;
+    // Read the list from the cache (kept in sync with state every render) rather than nesting a
+    // setSelectedId inside a setImages updater, which would run a side effect during dispatch.
+    const at = galleryCache.images.findIndex((i) => i.id === id);
+    const next = removeGalleryItem(galleryCache.images, id);
+    galleryCache.images = next;
+    setImages(next);
+    setSelectedId((cur) => nextSelectedId(next, id, cur, at));
   }, []);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
+      try {
+        await deleteGalleryImage(id);
+      } catch (err) {
+        pendingShelfMutations.current -= 1;
+        toast.error(err instanceof Error ? err.message : "Failed to delete image");
+        return;
+      }
+      dropFromStrip(id, true);
+      pendingShelfMutations.current -= 1;
+    },
+    [dropFromStrip],
+  );
+
+  /**
+   * Refetch the loaded window from offset 0.
+   *
+   * Unpinning can drop an image past the end of the loaded window and promote a previously
+   * unloaded one into it. The local reorder cannot know about the promoted image, and the next
+   * loadMore still pages from the unchanged length, so that image would be skipped entirely until
+   * a reload. Re-reading the window is the only way to see it.
+   */
+  const resyncWindow = useCallback(
+    async (count: number, stillFresh?: () => boolean) => {
+      const ticket = (resyncSeq.current += 1);
+      for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
+        const paged = pageEpoch.current;
+        // Sized against the live window, so a page appended while this ran is covered rather than
+        // cut back off the bottom of the strip when the snapshot lands.
+        const wanted = Math.max(count, galleryCache.images.length, PAGE_SIZE);
+        const collected: GalleryImage[] = [];
+        let more = false;
+        while (collected.length < wanted) {
+          // The REMAINDER, not a whole page: a window of 51 (a page plus one new generation) would
+          // otherwise ask for 100 and grow the strip to match, reading 49 recipes off disk and
+          // rendering their tiles for a one-row shortfall.
+          const page = await getGallery(
+            collected.length,
+            Math.min(PAGE_SIZE, wanted - collected.length),
+          );
+          collected.push(...page.images);
+          more = page.has_more;
+          if (!page.has_more || page.images.length === 0) break;
+        }
+        // Checked here, not by the caller: by the time this returns the window is already applied,
+        // so a stale snapshot has to be dropped before it overwrites a newer local change.
+        if (stillFresh && !stillFresh()) return;
+        if (resyncSeq.current !== ticket) return;
+        // Pagination moved under this pass. That is only server data, so cover it with another
+        // pass instead of giving up: giving up is what left an unpin's promoted image missing.
+        if (pageEpoch.current !== paged) continue;
+        galleryCache.images = collected;
+        galleryCache.hasMore = more;
+        setImages(collected);
+        setHasMore(more);
+        if (typeof IntersectionObserver === "undefined") {
+          collected.forEach((image) => void ensureSrc(image));
+        }
+        return;
+      }
+    },
+    [ensureSrc],
+  );
+
+  // This page stays mounted across route changes, so a restore from the Settings archive would
+  // otherwise not reach the strip until a full reload. Resync the window that is actually loaded:
+  // loadGallery would cut it back to the first page and throw away everything scrolled to.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("images", () => {
+        // Bumped FIRST: a restore changes the shelf, so reads already in flight must be discarded.
+        // Capturing without advancing let them pass their own checks and land on the new window.
+        stripEpoch.current += 1;
+        // Fenced like the unpin resync: a generation or a new page landing while this GET runs
+        // would otherwise be overwritten by a snapshot taken before it.
+        const epoch = stripEpoch.current;
+        void resyncWindow(
+          galleryCache.images.length,
+          () => stripEpoch.current === epoch,
+        ).catch(() => void loadGallery());
+      }),
+    [loadGallery, resyncWindow],
+  );
+
+  // The pin state each id was last CLICKED into, so a failing request can tell whether it is still
+  // the current intent. Without it, a slow first click failing after a later click succeeded would
+  // roll the strip back onto the state the user has since moved off.
+  const pinAttempt = useRef(new Map<string, number>());
+  const pinSeq = useRef(0);
+
+  const handleTogglePin = useCallback(
+    async (id: string, pinned: boolean) => {
+      const loadedCount = galleryCache.images.length;
+      // The pinned order as it stands BEFORE the click, so a failed unpin can put the image back
+      // where it was instead of at the front of the pins.
+      const orderBefore = pinnedOrder(galleryCache.images);
+      // A per-attempt token, not the target boolean: pin, unpin, pin stores true twice, so the FIRST
+      // attempt's failure would roll back the THIRD attempt's pin and leave the two disagreeing.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      stripEpoch.current += 1;
+      const epoch = stripEpoch.current;
+      // Optimistic: the reorder should land on the click, not a round trip later.
+      setImages((prev) => {
+        const next = applyPin(prev, id, pinned);
+        galleryCache.images = next;
+        return next;
+      });
+      try {
+        // One queue for the whole gallery, not one per image. The server stamps `pinned_at` when
+        // it runs the PATCH and orders pins by that stamp, so two requests in flight together can
+        // be stamped in either order and the strip disagrees with the next load. Issuing them one
+        // at a time makes the stamps follow the clicks.
+        await serializeById("image-pin", () => setGalleryImageFlags(id, { pinned }));
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to pin image");
+        // Put the old order back rather than leave the strip lying about server state, but only
+        // while this is still what the user last asked for.
+        if (pinAttempt.current.get(id) === attempt) {
+          pinAttempt.current.delete(id);
+          stripEpoch.current += 1;
+          setImages((prev) => {
+            // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
+            // old position among the pins, which applyPin cannot do (it means "freshly pinned").
+            const next = pinned
+              ? applyPin(prev, id, false)
+              : restorePinOrder(prev, id, orderBefore);
+            galleryCache.images = next;
+            return next;
+          });
+        }
+        return;
+      }
+      if (pinAttempt.current.get(id) !== attempt) return; // superseded by a later click
+      pinAttempt.current.delete(id);
+      // Pinning keeps the same set in the window (it only moves an already-loaded image to the
+      // front), so only unpinning can open a gap.
+      if (!pinned && loadedCount > 0) {
+        try {
+          // Fenced: a pin clicked while this GET is in flight would otherwise be overwritten by a
+          // snapshot taken before it, leaving the strip unpinned while the server is pinned.
+          await resyncWindow(loadedCount, () => stripEpoch.current === epoch);
+        } catch {
+          // Best-effort: the strip is still usable, just possibly short one image until a reload.
+        }
+      }
+    },
+    [resyncWindow],
+  );
+
+  const handleArchive = useCallback(
+    async (id: string) => {
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
+      try {
+        await setGalleryImageFlags(id, { archived: true });
+      } catch (err) {
+        pendingShelfMutations.current -= 1;
+        toast.error(err instanceof Error ? err.message : "Failed to archive image");
+        return;
+      }
+      dropFromStrip(id, false);
+      pendingShelfMutations.current -= 1;
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("images");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived images in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropFromStrip],
+  );
 
   // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
@@ -2338,18 +2626,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   }, [active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
-  const routeSearch = useSearch({ strict: false }) as {
-    model?: string;
-    quant?: string;
-    ggufQuant?: string;
-  };
+  // This route's own match, never `strict: false`: that resolves to the ROOT match, whose search is whatever route is live, and
+  // /hub names its selection with the same param. `active` cannot fence that off, since it lags the matches by a render.
+  const routeSearch = useSearch({ from: "/images", shouldThrow: false });
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
-    // Only the page being shown consumes the query: this hook is loose and both diffusion pages stay mounted, so the hidden one
-    // saw /video?model= too and raced this one, loading the other page's checkpoint as its own kind of model.
+    // A hidden page owns no query: both diffusion pages stay mounted.
     if (!active) return;
-    const wanted = routeSearch.model;
+    const wanted = routeSearch?.model;
     // Key on the model AND the quant, and release the marker once the query is gone: this page stays mounted, so a marker that
     // outlived the query made re-picking the same checkpoint a click that neither loaded nor cleared the URL.
     if (!wanted) {
@@ -2358,10 +2643,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
     // `quant` is used verbatim as a filename; a label there (a hand-built link, an older producer) is resolved instead.
     // The two fields, not the object: `routeSearch` is rebuilt every render, so it would churn the deps.
-    const routed = { quant: routeSearch.quant, ggufQuant: routeSearch.ggufQuant };
+    const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
     const routedFilename = routedGgufFilename(routed);
     const routedLabel = routedGgufLabel(routed);
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}`;
+    const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
@@ -2390,9 +2675,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadOrStage(pick.repoId, pick.opts, "hub", token);
   }, [
     active,
-    routeSearch.model,
-    routeSearch.quant,
-    routeSearch.ggufQuant,
+    routeSearch?.model,
+    routeSearch?.quant,
+    routeSearch?.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
@@ -2841,6 +3126,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           })
         )
           break;
+        // Frozen BEFORE the POST goes out, because both halves of it have to describe the same
+        // moment. `knownIds` is from before the request, so deriving the window half in the catch
+        // mixes the two: scrolling while the request is in flight pages in historical unpinned
+        // records, and a window that was all pinned (which refuses to judge) then looks like one
+        // that can, with the newest historical row reading as proof the generation landed.
+        // Sharing the `knownIds` set is deliberate: it only ever grows, and a larger set can only
+        // make the probe more conservative.
+        const probeBaseline = newRecordProbeBaseline(
+          galleryCache.images,
+          galleryCache.hasMore,
+          knownIds,
+        );
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -2884,8 +3181,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps the response near 100s).
           // Retrying would duplicate the work, so wait the run out and read its images off the gallery.
           if (!(err instanceof GenerateResponseLostError)) throw err;
-          // The ids known before the POST went out: a record outside them proves the request reached the backend.
-          await settleLostGeneration(() => isMounted.current, knownIds);
+          // A record outside the baseline proves the request reached the backend. Taken per
+          // attempt, so it reflects what the client could see when THIS post went out.
+          await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.
@@ -2894,8 +3192,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           continue;
         }
         if (!isMounted.current) break;
-        // Prepend this run's records (newest first) and load their blobs.
-        setImages((prev) => [...res.images, ...prev]);
+        // Merge this run's records and load their blobs. Sorted, not prepended: a new image is
+        // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
+        // ahead of pins until the next reload.
+        stripEpoch.current += 1;
+        // Deduplicated: a resync in flight can fetch the saved record first, and prepending it
+        // again duplicates a React key and inflates the next page's offset, skipping a record.
+        setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         res.images.forEach((image) => void ensureSrc(image));
@@ -3220,16 +3523,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
          spacing belongs inside each pane. The same 50rem page-container breakpoint
          drives this body and the header above, regardless of sidebar width. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              // pb-20 at every width: the floating Generate button below is absolutely
-              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
-              // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3768,15 +4068,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             </AdvancedDisclosure>
 
           </div>
-          {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-10 pb-7">
+          {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
+          <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
                  (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
                  same handler, so one control stops all of them. */
               <Button
-                // Opaque hover: this one floats over the settings too.
-                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -3785,7 +4084,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </Button>
             ) : (
               <Button
-                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={handleGenerate}
                 disabled={busy !== null || !status?.loaded}
               >
@@ -3832,20 +4131,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Delete image"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => void handleDelete(selected.id)}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
+                  <GalleryItemMenu
+                    noun="image"
+                    active={active}
+                    pinned={Boolean(selected.pinned)}
+                    archived={Boolean(selected.archived)}
+                    onTogglePin={() =>
+                      void handleTogglePin(selected.id, !selected.pinned)
+                    }
+                    onToggleArchive={() => void handleArchive(selected.id)}
+                    onDelete={() => void handleDelete(selected.id)}
+                  />
                 </div>
               </>
             ) : selected ? (
@@ -3909,30 +4205,55 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
+              {/* The tile is a wrapper, not a button: the actions menu has to be the select
+                  button's SIBLING, since a button inside a button is invalid and would swallow
+                  its own clicks. data-image-id rides the wrapper so the observer still sees it. */}
               {images.map((image) => (
-                <button
+                <div
                   key={image.id}
-                  type="button"
                   data-image-id={image.id}
-                  onClick={() => setSelectedId(image.id)}
-                  className="relative size-16 shrink-0 overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="group relative size-16 shrink-0"
                 >
-                  {srcById[image.id] ? (
-                    <img
-                      src={srcById[image.id]}
-                      alt={image.prompt}
-                      className="size-full object-cover"
-                    />
-                  ) : (
-                    <span className="flex size-full items-center justify-center">
-                      <Spinner className="size-4 text-muted-foreground" />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(image.id)}
+                    className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {srcById[image.id] ? (
+                      <img
+                        src={srcById[image.id]}
+                        alt={image.prompt}
+                        className="size-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex size-full items-center justify-center">
+                        <Spinner className="size-4 text-muted-foreground" />
+                      </span>
+                    )}
+                    {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
+                    {image.id === selected?.id && (
+                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    )}
+                  </button>
+                  {/* Pin marker, bottom-left so it never sits under the menu. */}
+                  {image.pinned && (
+                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
+                      <HugeiconsIcon icon={PinIcon} className="size-3" />
                     </span>
                   )}
-                  {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
-                  {image.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
-                  )}
-                </button>
+                  <div className="absolute right-0.5 top-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    <GalleryItemMenu
+                      variant="overlay"
+                      noun="image"
+                      active={active}
+                      pinned={Boolean(image.pinned)}
+                      archived={Boolean(image.archived)}
+                      onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
+                      onToggleArchive={() => void handleArchive(image.id)}
+                      onDelete={() => void handleDelete(image.id)}
+                    />
+                  </div>
+                </div>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (

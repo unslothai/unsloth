@@ -933,8 +933,10 @@ class TestPerDeviceSplitReserve:
         import inspect
 
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Native-context loop and the reduced-to-4096 fallback below it.
-        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 2
+        # Native-context loop, the reduced-to-4096 fallback below it, and the
+        # Auto drafter-drop probe above them, which caps to the same reserve so
+        # it cannot price a drafter at a context the weakest card never holds.
+        assert compact.count("ifnotself._every_gpu_holds_reserve(") == 3
         # Gated on the chosen context, and only reachable after the pooled test.
         assert "_usable_mib=[_gpu_usable(g,pin_fraction)forginsubset]" in compact
         assert "(_gpu_usable(g,pin_fraction)forginsubset)," in compact

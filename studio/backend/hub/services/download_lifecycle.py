@@ -460,6 +460,7 @@ def _try_transport_retry(
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
     bytes_before: "Optional[int]" = _UNSAMPLED,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Reclaim *key* under *retry_transport* and spawn a recovery worker.
 
@@ -473,6 +474,9 @@ def _try_transport_retry(
     purges the XET partial an HTTP resume would corrupt. ``TRANSPORT_XET`` is
     the stall retry: same transport, same marker, one more child, bounded by
     *xet_attempt* rather than by the transport check that stops the HTTP one.
+
+    *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick
+    the backend's own HF_TOKEN up on a lower rung.
 
     *pending_xet_failure* is a stall verdict held back from the health tracker
     and carried into the next worker, so a download that recovers on its second
@@ -649,6 +653,7 @@ def _try_transport_retry(
         spawn_kwargs = {
             "use_xet": retry_over_xet,
             "protected_blob_hashes": peer_hashes or None,
+            "allow_ambient_token": allow_ambient_token,
         }
         if cache_env is not None:
             spawn_kwargs["cache_env"] = cache_env
@@ -691,6 +696,7 @@ def _try_transport_retry(
                 xet_attempt = xet_attempt,
                 pending_xet_failure = pending_xet_failure,
                 bytes_before = bytes_before,
+                allow_ambient_token = allow_ambient_token,
             )
         _give_up()
         _set_retry_failure_state(
@@ -721,6 +727,7 @@ def _try_transport_retry(
         xet_attempt = xet_attempt,
         pending_xet_failure = pending_xet_failure,
         bytes_before = bytes_before,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
@@ -930,13 +937,15 @@ def register_worker(
     bytes_before: "Optional[int]" = _UNSAMPLED,
     xet_attempt: int = 1,
     pending_xet_failure: Optional[str] = None,
+    allow_ambient_token: bool = True,
 ) -> bool:
     """Watch *proc* to completion and drive the recovery ladder off its exit.
 
     *xet_attempt* (1-based) bounds the XET->XET stall retry, the way ``transport == TRANSPORT_XET``
     bounds the terminal XET->HTTP one. *pending_xet_failure* is an earlier attempt's stall verdict,
     held back from the health tracker until the XET phase ends so one download can never spend the
-    two consecutive failures that demote a machine.
+    two consecutive failures that demote a machine. *allow_ambient_token* is the token policy this
+    job was started under, carried onto every rung of the ladder.
     """
     if not registry.register_process(key, proc):
         kill_and_reap_process(proc, label = label, logger = logger)
@@ -1102,6 +1111,7 @@ def register_worker(
                     # The ORIGINAL pre-Xet baseline: resampling would fold the killed worker's
                     # partial writes in, so a recovered attempt would read as a cached no-op.
                     bytes_before = _bytes_before,
+                    allow_ambient_token = allow_ambient_token,
                 )
         except Exception:
             if watchdog_stop is not None:
@@ -1191,6 +1201,7 @@ def launch_worker(
     repo_id: str,
     transport: str,
     watch_name: str,
+    allow_ambient_token: bool = True,
 ) -> str:
     # Only the Xet success-recording consumes this, and sampling lazy-loads unsloth_zoo (so torch
     # and transformers) on the request path. An HTTP start skips it entirely.
@@ -1237,6 +1248,7 @@ def launch_worker(
         transport = transport,
         watch_name = watch_name,
         bytes_before = _baseline,
+        allow_ambient_token = allow_ambient_token,
     )
     return registry.get_job(key).state
 

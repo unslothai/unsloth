@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections import deque
 from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
@@ -27,6 +28,13 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = "Opaque client attempt ID for scoped in-flight cancellation",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -106,13 +114,15 @@ class LoadRequest(BaseModel):
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
             "'auto' (platform-aware: DSpark when the model ships a sidecar, "
-            "else MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "
+            "else DFlash when it ships one, else MTP on MTP GGUFs, ngram-mod "
+            "fallback for sub-3B), "
             "'mtp' (force draft-mtp only on both GPU and CPU), "
             "'dspark' (force a draft-dspark sidecar), "
+            "'dflash' (force a draft-dflash sidecar), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
-            "'draft-dspark' (-> dspark), "
+            "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. Ignored for non-GGUF models."
         ),
@@ -122,11 +132,12 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP or DSpark speculative decoding "
-            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
-            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
-            "quants). Only applied when speculative_type resolves to "
-            "'mtp', 'mtp+ngram', or 'dspark'."
+            "Max draft tokens per step for MTP, DSpark or DFlash speculative "
+            "decoding (--spec-draft-n-max). Defaults to 2 on GPU and 3 on "
+            "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
+            "MTP quants, and the measured sweet spot for DFlash too). Only "
+            "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
+            "'dspark' or 'dflash'."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -273,6 +284,13 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    cancel_load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = ("Cancel only this in-flight load attempt; never unload a resident model"),
+    )
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -842,7 +860,8 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spec_drafter_kind: Optional[str] = Field(
         None,
         description = (
-            "Which drafter the resolution was about, 'mtp' or 'dspark'. Needed "
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash'. Needed "
             "because Auto resolves the kind itself, so speculative_type still "
             "reads 'auto', and a fallback leaves the engaged type at 'default': "
             "neither still says which file the UI should tell the user to fix."
@@ -856,6 +875,9 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
             "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
             "'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
@@ -1467,57 +1489,100 @@ class ChatCompletionRequest(BaseModel):
         unconsumed tool_call; synth a random id only if none exists. A user
         turn breaks the lookup.
         """
+        # Both passes below were a backwards rescan per tool result, O(n^2) for one assistant
+        # with n calls. Each is now one forward pass with an index -- the same search, since
+        # the backward walk never left the current user-delimited segment.
+        messages = self.messages
+        # The first pass only feeds the second, so with every tool_call_id present there is
+        # nothing to do (the common case).
+        for msg in messages:
+            if msg.role == "tool" and not msg.tool_call_id:
+                break
+        else:
+            return self
+
         # Pre-mark explicit ids so a missing-id sibling can't steal a claimed one.
         consumed: set[tuple[int, int]] = set()
 
-        def _mark_consumed(start_idx: int, tool_call_id: str) -> None:
-            for asst_idx in range(start_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role == "user":
-                    break
-                if prev.role != "assistant" or not prev.tool_calls:
+        # Newest assistant call per explicit id in this segment; within one assistant the
+        # first index wins, matching the old first-match-nearest-assistant walk. Only
+        # ``str`` ids are indexed: ``tool_call_id`` is a ``str``, so nothing else matches.
+        latest_by_id: dict = {}
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                latest_by_id.clear()
+            elif role == "assistant":
+                if not msg.tool_calls:
                     continue
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if isinstance(tc, dict) and tc.get("id") == tool_call_id:
-                        consumed.add((asst_idx, tc_idx))
-                        return
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role == "tool" and msg.tool_call_id:
-                _mark_consumed(tool_idx, msg.tool_call_id)
-
-        for tool_idx, msg in enumerate(self.messages):
-            if msg.role != "tool" or msg.tool_call_id:
-                continue
-            picked: str | None = None
-            for asst_idx in range(tool_idx - 1, -1, -1):
-                prev = self.messages[asst_idx]
-                if prev.role != "assistant" or not prev.tool_calls:
-                    if prev.role == "user":
-                        break
-                    continue
-                name_match = None
-                fallback = None
-                for tc_idx, tc in enumerate(prev.tool_calls):
-                    if (asst_idx, tc_idx) in consumed:
-                        continue
+                here: set = set()
+                for tc_idx, tc in enumerate(msg.tool_calls):
                     if not isinstance(tc, dict):
                         continue
                     tc_id = tc.get("id")
-                    if not tc_id:
+                    if isinstance(tc_id, str) and tc_id not in here:
+                        here.add(tc_id)
+                        latest_by_id[tc_id] = (asst_idx, tc_idx)
+            elif role == "tool" and msg.tool_call_id:
+                claimed = latest_by_id.get(msg.tool_call_id)
+                if claimed is not None:
+                    consumed.add(claimed)
+
+        # Assistants in this segment with an unclaimed call, oldest first, so the nearest is
+        # on top. A drained assistant never refills, so popping it is permanent and the walk
+        # past it happens once overall, not once per tool result. Each frame keeps its calls
+        # in order plus the same indexes bucketed by function name; one consumed out of turn
+        # is dropped when it reaches a queue front.
+        stack: list = []
+        for asst_idx, msg in enumerate(messages):
+            role = msg.role
+            if role == "user":
+                stack.clear()
+                continue
+            if role == "assistant":
+                if not msg.tool_calls:
+                    continue
+                in_order: deque = deque()
+                by_name: dict = {}
+                for tc_idx, tc in enumerate(msg.tool_calls):
+                    if (asst_idx, tc_idx) in consumed or not isinstance(tc, dict):
+                        continue
+                    if not tc.get("id"):
                         continue
                     function = tc.get("function")
                     function_name = function.get("name") if isinstance(function, dict) else None
-                    if msg.name and function_name == msg.name:
-                        name_match = (tc_id, asst_idx, tc_idx)
-                        break
-                    if fallback is None:
-                        fallback = (tc_id, asst_idx, tc_idx)
-                chosen = name_match or fallback
-                if chosen is not None:
-                    picked, a, t = chosen
-                    consumed.add((a, t))
-                    break
+                    in_order.append(tc_idx)
+                    # ``name`` is a ``str``, so only a ``str`` function name can match it.
+                    if isinstance(function_name, str):
+                        by_name.setdefault(function_name, deque()).append(tc_idx)
+                if in_order:
+                    stack.append((asst_idx, msg.tool_calls, in_order, by_name))
+                continue
+            if role != "tool" or msg.tool_call_id:
+                continue
+            picked = None
+            while stack:
+                frame_idx, tool_calls, in_order, by_name = stack[-1]
+                while in_order and (frame_idx, in_order[0]) in consumed:
+                    in_order.popleft()
+                if not in_order:
+                    stack.pop()
+                    continue
+                # Name match anywhere in this assistant, else its first remaining call,
+                # exactly as the old in-order scan did.
+                chosen = None
+                if msg.name:
+                    named = by_name.get(msg.name)
+                    if named is not None:
+                        while named and (frame_idx, named[0]) in consumed:
+                            named.popleft()
+                        if named:
+                            chosen = named.popleft()
+                if chosen is None:
+                    chosen = in_order.popleft()
+                consumed.add((frame_idx, chosen))
+                picked = tool_calls[chosen].get("id")
+                break
             if picked is None:
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
@@ -2497,7 +2562,7 @@ class DiffusionLoadRequest(BaseModel):
         "scheme. Loads the already-quantized weights with the dense bf16 never on the "
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
         "checkpoint if configured, else quantises the dense transformer at load time. "
-        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "A local path installs arbitrary weights into the served model, so it is "
         "ignored unless the path resolves inside a directory the operator allowlisted "
         "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
         "the OS path separator). A bare on/off value such as '1' is deliberately not "
@@ -2881,6 +2946,16 @@ class GalleryImage(BaseModel):
         None, description = "How many reference images the reference workflow used"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
+    # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+
+
+class GalleryFlagsPatch(BaseModel):
+    """Partial update of one gallery item's pin/archive flags; omitted fields are left alone."""
+
+    pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the item")
+    archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the item")
 
 
 class DiffusionGenerateResponse(BaseModel):
@@ -3161,6 +3236,54 @@ class ImageGenerationResponse(BaseModel):
 
     created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
     data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+
+
+# ── OpenAI-compatible audio API (POST /v1/audio/speech) ──
+
+
+class AudioSpeechRequest(BaseModel):
+    """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
+
+    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
+    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+
+    input: str = Field(..., min_length = 1, description = "The text to synthesize.")
+    model: Optional[str] = Field(
+        None, description = "Model id (informational; the loaded audio model is used)."
+    )
+    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
+    response_format: Optional[str] = Field(
+        "wav", description = "Output container. Only 'wav' is supported."
+    )
+    speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+
+    @field_validator("response_format", mode = "before")
+    @classmethod
+    def _null_format_means_default(cls, value):
+        # openai marks response_format nullable with a default, so an explicit null means wav
+        return "wav" if value is None else value
+
+
+class AudioGalleryItem(BaseModel):
+    """One persisted TTS clip. ``url`` serves the WAV bytes (auth required)."""
+
+    id: str
+    url: str
+    prompt: str
+    model: str
+    audio_type: str
+    sample_rate: int
+    duration_s: float
+    created_at: str
+
+
+class AudioGalleryListResponse(BaseModel):
+    """A newest-first window of the audio gallery for infinite scroll."""
+
+    audio: List[AudioGalleryItem] = Field(default_factory = list)
+    has_more: bool = False
+    next_before_mtime: Optional[float] = None
+    next_before_id: Optional[str] = None
 
 
 # ── Video (local text-to-video) ──
@@ -3522,6 +3645,9 @@ class GalleryVideo(BaseModel):
         None, description = "Offload policy actually engaged: none | group | model | sequential"
     )
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
+    # Library state, not recipe: stored beside the clip, so older sidecars simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
 
 
 class VideoGenerateResponse(BaseModel):

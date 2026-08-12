@@ -272,6 +272,53 @@ def test_native_reasoning_streamer_selected_and_errors_raise():
         list(backend.generate_stream("prompt", max_new_tokens = 4))
 
 
+def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
+    """A post-tool prompt opens the channel, so generation emits only its close."""
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        chat_template = "<|channel>thought\n...<channel|>"
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+        pieces = {11: "reasoned", 12: "<channel|>", 13: "answer"}
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+        def decode(self, ids, **_kwargs):
+            return "".join(self.pieces.get(int(token_id), "") for token_id in ids)
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def generate(self, **kwargs):
+            streamer = kwargs["streamer"]
+            streamer.put(torch.zeros((1, 1), dtype = torch.long))
+            for token_id in [11, 12, 13]:
+                streamer.put(torch.tensor([token_id]))
+
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "gemma-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
+
+    post_tool_prompt = "<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    assert list(backend.generate_stream(post_tool_prompt, max_new_tokens = 4))[-1] == (
+        "<think>reasoned</think>answer"
+    )
+
+
 def test_text_only_vlm_fallback_resolves_native_markers_off():
     import threading
     import pytest
@@ -347,3 +394,5 @@ def test_text_only_vlm_fallback_resolves_native_markers_off():
     )
     assert captured["reasoning_channel_markers"] is None
     assert captured["reasoning_channel_markers_resolved"] is True
+    # No markers on this branch, so this pins forwarding only.
+    assert captured["prompt"] == "manual text-only prompt"
