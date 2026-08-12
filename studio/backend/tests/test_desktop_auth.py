@@ -843,10 +843,9 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     _settled = threading.Event()
     _settled.set()
     monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
-    # On an Apple Silicon host the settled "mlx_unavailable" verdict is one the MLX
-    # self-heal may still overturn, so health_check() drops the snapshot and the authed
-    # fields below go missing again. Pin the host predicate that gate starts from, so this
-    # test measures the same thing on a Mac as it does in CI.
+    # On Apple Silicon the MLX self-heal may still overturn the settled "mlx_unavailable"
+    # verdict, so health_check() drops the snapshot and the authed fields go missing again.
+    # Pin the host predicate that gate starts from, so a Mac measures what CI does.
     monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
@@ -1071,11 +1070,10 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """The fake ``routes`` module above is a hardcoded dict, so a router added to
-    main.py's ``from routes import (...)`` block without a matching stub entry
-    makes every test in this file die with an ImportError rather than a useful
-    message. That is how ``openai_codex_auth_router`` broke main after #8511.
-    Comparing the two lists keeps the omission local to this assertion."""
+    """The fake ``routes`` module above is a hardcoded dict, so a router added to main.py's
+    ``from routes import (...)`` block without a matching stub entry kills every test in this
+    file with an ImportError rather than a useful message, as ``openai_codex_auth_router`` did
+    after #8511. Comparing the two lists keeps that omission local to this assertion."""
     import inspect
     import re
     from pathlib import Path
@@ -1099,10 +1097,9 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"define them, so the routes stand-in will not satisfy that import"
     )
 
-    # The same drift through the other import form: `from routes.<sub> import router`
-    # needs a sys.modules entry, not a dict key. routes.whisper and routes.profile_stats
-    # were both missing while only the first was visible, because the import dies on the
-    # earliest one and hides the rest.
+    # The same drift through the other import form: `from routes.<sub> import router` needs a
+    # sys.modules entry, not a dict key. routes.whisper and routes.profile_stats were both
+    # missing but only the first was visible: the import dies on the earliest and hides the rest.
     submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
     assert submodules, "main.py imports no routes submodule; re-derive this"
     registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
