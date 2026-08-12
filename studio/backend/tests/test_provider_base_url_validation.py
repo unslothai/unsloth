@@ -44,6 +44,8 @@ _SUPPORTED = [
     "https://gw.example/v1?tenant=a",
     # A numeric host that canonicalizes to a public address is untouched.
     "http://1681207502/v1",
+    # A DNS name is not link-local just because it starts with those digits.
+    "http://169.254.gateway.example.com/v1",
     "https://[2606:4700:4700::1111]/v1",
     # Self-hosted gateways behind basic auth keep working.
     "https://user:pass@gw.example/v1",

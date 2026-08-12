@@ -412,7 +412,10 @@ _METADATA_HOST_LITERALS = frozenset(
         "instance-data.ec2.internal",
     }
 )
-_METADATA_HOST_PREFIXES = ("169.254.",)
+# Link-local, where the IPv4 metadata services live. Matched as a network so a
+# DNS name that merely starts with those digits (169.254.gateway.example.com) is
+# not mistaken for one.
+_METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 
 # Opt-in for operators who expose Studio on a shared host: also refuse provider
 # URLs that resolve to a non-public address. Off by default, because loopback and
@@ -444,7 +447,7 @@ def _canonical_host(hostname: str) -> str:
 def _metadata_host(hostname: str) -> bool:
     """True when ``hostname`` names a cloud metadata service."""
     hostname = _canonical_host(hostname)
-    if hostname in _METADATA_HOST_LITERALS or hostname.startswith(_METADATA_HOST_PREFIXES):
+    if hostname in _METADATA_HOST_LITERALS:
         return True
     try:
         ip = ipaddress.ip_address(hostname)
@@ -454,7 +457,7 @@ def _metadata_host(hostname: str) -> bool:
     for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
         if candidate is not None and _metadata_host(candidate.compressed):
             return True
-    return ip.compressed in _METADATA_HOST_LITERALS
+    return ip.version == 4 and ip in _METADATA_NETWORK
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
