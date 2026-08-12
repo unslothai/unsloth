@@ -212,36 +212,47 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   return results;
 }
 
+// Last built index, kept across opens so reopening paints the previous rows at
+// once and revalidates in place instead of collapsing back to the empty state.
+let cachedIndex: ChatSearchItem[] | null = null;
+
 export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
 } {
-  const [items, setItems] = useState<ChatSearchItem[]>([]);
+  const [items, setItems] = useState<ChatSearchItem[]>(() => cachedIndex ?? []);
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 
   useEffect(() => {
     if (!enabled) {
-      // Clear stale results so the next open doesn't flash old items.
-      setItems([]);
       setLoading(false);
-      return;
+      // History can change while the dialog is closed, so drop the cache rather
+      // than reopening onto rows for chats that no longer exist.
+      const invalidate = () => {
+        cachedIndex = null;
+        setItems([]);
+      };
+      window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
+      return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
     }
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     const run = () => {
       const seq = ++requestSeqRef.current;
-      setLoading(true);
+      // Only the first build has nothing to show; later ones refresh silently.
+      if (cachedIndex === null) setLoading(true);
       buildIndex()
         .then((result) => {
+          cachedIndex = result;
           // Drop out-of-order responses so a slower rebuild can't clobber a fresher one.
           if (cancelled || seq !== requestSeqRef.current) return;
           setItems(result);
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
-          setItems([]);
+          setItems(cachedIndex ?? []);
         })
         .finally(() => {
           if (cancelled || seq !== requestSeqRef.current) return;

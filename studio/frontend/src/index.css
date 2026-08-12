@@ -1584,6 +1584,9 @@ html[data-chat-font] .aui-root {
 		/* Prominent, wide ChatGPT-style elevation. */
 		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
 			0 8px 24px -12px rgba(0, 0, 0, 0.18);
+		/* Keep the open zoom on its own layer; the Tauri WebKit view otherwise
+		   repaints the wide shadow on every frame of the animation. */
+		will-change: transform, opacity;
 	}
 
 	/* Dark: page-bg shadow so the dialog does not merge into same-color

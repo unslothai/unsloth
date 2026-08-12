@@ -8,13 +8,19 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
+
+// Rows mounted while the dialog animates open; the rest follow once it settles,
+// so a long history never lays out hundreds of rows mid-transition.
+const INITIAL_ROW_COUNT = 24;
+const FULL_ROW_REVEAL_MS = 220;
 
 // Lowercased whitespace tokens of the query (haystacks are lowercased in the index).
 function queryTokens(search: string): string[] {
@@ -56,14 +62,26 @@ export function ChatSearchDialog() {
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
   const [query, setQuery] = useState("");
+  // Filtering scans every conversation's text, so keep it off the keystroke path.
+  const deferredQuery = useDeferredValue(query);
+  const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
 
   const visibleItems = useMemo(
-    () => selectVisibleChats(items, query),
-    [items, query],
+    () => selectVisibleChats(items, deferredQuery),
+    [items, deferredQuery],
   );
 
   useEffect(() => {
-    if (!isOpen) setQuery("");
+    if (!isOpen) {
+      setQuery("");
+      setRowLimit(INITIAL_ROW_COUNT);
+      return;
+    }
+    const timer = setTimeout(
+      () => setRowLimit(Number.POSITIVE_INFINITY),
+      FULL_ROW_REVEAL_MS,
+    );
+    return () => clearTimeout(timer);
   }, [isOpen]);
 
   useEffect(() => {
@@ -83,7 +101,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
+      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 duration-[180ms] ease-[cubic-bezier(0.16,1,0.3,1)] sm:max-w-[635px]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <Command className="rounded-3xl p-0" shouldFilter={false}>
@@ -107,7 +125,16 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="cmd-native-scrollbar hover-scrollbar max-h-[420px] p-1">
+        <CommandList
+          className={cn(
+            "cmd-native-scrollbar hover-scrollbar p-1",
+            // Hold the height steady once any chat exists: the dialog is centered, so a
+            // list that grows as results arrive or filter re-lays it out mid-animation.
+            loading || items.length > 0
+              ? "h-[420px] max-h-[60dvh]"
+              : "max-h-[420px]",
+          )}
+        >
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"
@@ -116,7 +143,7 @@ export function ChatSearchDialog() {
                 : "No chats match."}
           </CommandEmpty>
           <CommandGroup className="p-0">
-            {visibleItems.map((item) => (
+            {visibleItems.slice(0, rowLimit).map((item) => (
               <CommandPrimitive.Item
                 key={item.id}
                 value={item.id}
