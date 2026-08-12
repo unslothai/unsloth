@@ -3,30 +3,24 @@
 
 """Ask a short-lived child process whether a torch device can actually allocate.
 
-A GPU runtime that does not match the silicon it is driving does not raise: it
-faults. On the gfx1151 host in #7331 a ROCm 6.3 wheel built for gfx1100 reported
-``torch.cuda.is_available() == True``, enumerated the device correctly, and then
-died with SIGSEGV inside ``libamdhip64`` on the first real allocation. Signal
-disposition is per process, so that fault killed uvicorn -- from a daemon thread,
-past an ``except Exception``, because a signal never becomes a Python exception
-(#8474).
+A GPU runtime that does not match its silicon does not raise, it faults. On the
+gfx1151 host in #7331 a gfx1100 ROCm wheel reported ``is_available() == True``,
+enumerated the device, then died with SIGSEGV in ``libamdhip64`` on the first real
+allocation, past an ``except Exception`` because a signal is not an exception, and
+took uvicorn with it since signal disposition is per process (#8474).
 
-So the question "can this device allocate" cannot be answered in the process that
-has to survive the answer. It is answered in a child, and the child dying IS the
-answer. The parent side of this module imports only the standard library: it must
-stay importable on a ``--no-torch`` install, and it must not be what finally drags
-torch into the lean main process (see ``tests/test_startup_defers_torch.py``).
+So the question cannot be answered in the process that must survive the answer. It
+is answered in a child, and the child dying IS the answer. The parent side imports
+only the standard library: it must stay importable on ``--no-torch``, and must not
+be what drags torch into the lean main process (tests/test_startup_defers_torch.py).
 
 Deliberately NOT here:
-  * no ``multiprocessing`` -- uvicorn is multithreaded and HIP/CUDA are
-    fork-hostile, and ``set_start_method`` is process-global state we do not own
-  * no model load -- the caller would have to load it again in-process, paying the
-    download, the deserialization and the security gate twice
-  * no on-disk cache -- a negative verdict that outlived a driver or wheel repair
-    would pin a healthy machine to CPU with no way to tell why
-
-The verdict is memoized for the process only, keyed by the device and by every
-environment variable that can change which silicon that device names.
+  * no ``multiprocessing`` -- uvicorn is multithreaded, HIP/CUDA are fork-hostile,
+    and ``set_start_method`` is process-global state we do not own
+  * no model load -- the parent would load it again, paying the download, the
+    deserialization and the security gate twice
+  * no on-disk cache -- a negative verdict outliving a driver or wheel repair would
+    pin a healthy machine to CPU with no way to tell why
 """
 
 from __future__ import annotations
@@ -40,28 +34,23 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-# Plain stdlib logging, as in core/rag/embeddings.py: the caller is the torch-optional
-# embedder, and this module should add no import weight of its own.
+# stdlib logging, as in core/rag/embeddings.py: this must add no import weight.
 logger = logging.getLogger(__name__)
 
-# A cold ROCm torch import on a slow host is minutes, not seconds, and every caller of
-# this probe is off the request/boot critical path. Being generous here costs a late
-# warm; being stingy condemns a healthy host to CPU.
+# A cold ROCm torch import runs to minutes. Being generous costs a late load; being
+# stingy condemns a healthy host to CPU.
 PROBE_TIMEOUT_SECONDS = 120.0
-# The child's own deadline. Comfortably past the parent's, so in a normal run the parent
-# always decides first and this only ever fires for a child whose parent is gone.
+# Past the parent's deadline, so it only ever fires for a child whose parent is gone.
 _CHILD_SELF_LIMIT_SECONDS = 300.0
 # Grace between terminate and kill when the child overran, mirroring the sidecars.
 _TERMINATE_GRACE_SECONDS = 5.0
 # Child stderr is a torch traceback or a driver's parting words; keep the tail only.
 _STDERR_TAIL_CHARS = 600
-# Above this, a negative exit code is a signed Windows status rather than a signal.
-# POSIX signal numbers stop at 64 (NSIG); the headroom costs nothing.
+# Above this a negative exit code is a signed Windows status, not a signal (NSIG is 64).
 _MAX_SIGNAL_NUMBER = 128
 
-# Variables that decide WHICH physical device a device string names, or which kernels
-# the runtime believes it should emit. A change to any of them invalidates the verdict:
-# HSA_OVERRIDE_GFX_VERSION is exactly the spoof that produced #7331.
+# These decide which physical device a device string names, or which kernels the runtime
+# emits, so a change invalidates the verdict. HSA_OVERRIDE_GFX_VERSION is the #7331 spoof.
 _DEVICE_IDENTITY_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -72,27 +61,21 @@ _DEVICE_IDENTITY_ENV_VARS = (
 # Windows ROCm bin directories for the child, os.pathsep-joined. See _rocm_dll_directories.
 ROCM_DLL_DIRS_ENV_VAR = "UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS"
 
-# Allocate, WRITE, then synchronize. Device execution is asynchronous, so an allocation
-# that faults in the kernel can outlive the statement that queued it -- without the
-# synchronize the child can exit 0 while the fault is still in flight, which is the one
-# way this probe could report a false pass. torch.empty alone is too weak for the same
-# reason: it need not touch the device at all.
-#
-# The DLL block runs BEFORE ``import torch``: Python 3.8+ ignores PATH for extension
-# modules, and os.add_dll_directory registrations are process-local, so a fresh child does
-# not inherit the parent's. Without it a healthy Windows AMD GPU fails to import torch at
-# all and this probe would report the host as condemned. main.py and core/training/worker.py
-# do the same thing at their own process starts, for the same reason.
+# Allocate, WRITE, then synchronize: execution is asynchronous, so without the sync a
+# fault can still be in flight when the child exits 0, which is the one way this reports a
+# false pass. torch.empty alone is too weak for the same reason -- it need not touch the
+# device. The DLL block precedes the import because Python ignores PATH for extension
+# modules and add_dll_directory does not survive into a child, so a healthy Windows AMD GPU
+# would fail to import torch at all. main.py and core/training/worker.py do the same.
 _CHILD_SCRIPT = """
 import os
 import sys
 import threading
 
-# Self-limit. The parent cannot bind this child to its own death without a pre-exec hook,
-# and that hook is what makes a fork of a multithreaded server able to deadlock, so the
-# child bounds itself instead: a Studio killed mid-probe leaves something that exits on its
-# own rather than an orphan holding the GPU. Daemon timer, so a normal run is unaffected,
-# and os._exit because a wedged driver is exactly where a clean shutdown will not run.
+# Self-limit: binding to the parent's death needs a pre-exec hook, and that hook is what
+# lets a fork of a multithreaded server deadlock, so a Studio killed mid-probe leaves
+# something that exits on its own. os._exit because a wedged driver will not shut down
+# cleanly.
 _watchdog = threading.Timer(float(sys.argv[2]), lambda: os._exit(70))
 _watchdog.daemon = True  # a Timer is a Thread and is NOT daemon by default; without this
 _watchdog.start()        # the child cannot exit until it fires and every probe times out
@@ -122,9 +105,9 @@ print("ok")
 def _rocm_dll_directories() -> list[str]:
     """Windows ROCm ``bin`` directories, newest version first. Empty off Windows.
 
-    Same discovery as ``main.py`` and ``core/training/worker.py``; it lives here too
-    because the child is a bare ``-c`` script with no backend directory on its path (that
-    isolation is deliberate), and computing the list parent-side keeps it testable.
+    Same discovery as ``main.py`` and ``core/training/worker.py``, repeated because the
+    child is a bare ``-c`` script with no backend directory on its path. Computing it
+    parent-side keeps it testable.
     """
     if sys.platform != "win32":
         return []
@@ -184,18 +167,15 @@ def _cache_key(device: str) -> tuple:
 def describe_exit(returncode: Optional[int]) -> Optional[str]:
     """A human-readable cause for a nonzero child exit, for logs only.
 
-    Mirrors ``LlamaCppBackend._is_signal_crash`` rather than importing it: that lives in
-    the llama.cpp inference plumbing, and the RAG embedder which calls this probe is
-    deliberately torch-optional and must not pull that module in to read one predicate.
+    Mirrors ``LlamaCppBackend._is_signal_crash`` rather than importing it: the caller is
+    torch-optional and must not pull in llama.cpp plumbing to read one predicate.
     """
     if returncode is None or returncode == 0:
         return None
 
-    # A POSIX signal arrives as a small negative number. Windows reports a native fault as
-    # an NTSTATUS-shaped status instead, and can hand it over signed or unsigned. The two
-    # cannot be told apart by sign alone: -11 (SIGSEGV) and -1073741819 (0xC0000005 signed)
-    # are both negative, and masking either to 32 bits lands above 0xC0000000. Magnitude is
-    # what separates them -- no signal number comes near _MAX_SIGNAL_NUMBER.
+    # Sign alone cannot separate a POSIX signal from a Windows NTSTATUS: -11 (SIGSEGV) and
+    # -1073741819 (0xC0000005 signed) are both negative, and masking either to 32 bits lands
+    # above 0xC0000000. Magnitude can.
     if returncode < 0 and -returncode <= _MAX_SIGNAL_NUMBER:
         signal_number = -returncode
         try:
@@ -231,15 +211,12 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
             encoding = "utf-8",
             errors = "replace",
             env = env,
-            # Deliberately NO preexec_fn, so no child_popen_kwargs() here. The other GPU
-            # children take the PDEATHSIG hook from it, but that hook forks this
-            # multithreaded, possibly torch-initialised server and runs Python before exec;
-            # a lock another uvicorn thread held at fork time is still held in the child,
-            # which can hang it before exec while the parent waits inside Popen, where the
-            # timeout below does not yet apply. Python's own docs call preexec_fn unsafe in
-            # the presence of threads for exactly this. It also disables subprocess's vfork
-            # fast path. The child self-limits instead, which bounds an orphan without
-            # forking a hook, and adopt_pid still gives shutdown its backstop.
+            # Deliberately NO preexec_fn, hence no child_popen_kwargs(). The long-lived GPU
+            # children take its PDEATHSIG hook, but that forks this multithreaded server and
+            # runs Python before exec, where a lock another uvicorn thread held at fork time
+            # is still held; the child can hang there while the parent waits inside Popen,
+            # ahead of the timeout below. Python's docs call it unsafe with threads, and it
+            # also disables the vfork fast path. The child self-limits instead.
             **windows_hidden_subprocess_kwargs(),
         )
     except OSError as spawn_error:
@@ -268,12 +245,10 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
 def _reap_later(process: subprocess.Popen) -> None:
     """Wait on a child that outlived SIGKILL, on a daemon thread, forever.
 
-    SIGKILL cannot be caught, but it also cannot land while the process sits in an
-    uninterruptible driver wait: the signal is only delivered once the ioctl returns, and a
-    wedged GPU is precisely how a task ends up there. Since that is the scenario this
-    module exists to survive, dropping the last reference to such a child is the one way it
-    becomes an unreaped stray. Hold it and let the thread collect the corpse whenever the
-    driver finally lets go. Daemon, so it never delays shutdown.
+    SIGKILL cannot land while a task sits in an uninterruptible driver wait -- it is
+    delivered once the ioctl returns, and a wedged GPU is how a task gets there. That being
+    the scenario this module exists to survive, dropping the last reference is the one way
+    such a child becomes an unreaped stray.
     """
     threading.Thread(
         target = _wait_forever,
