@@ -78,7 +78,17 @@ def iter_text(path: Path):
 
 
 def collect_chunks(streams) -> tuple[dict[int, str], int]:
-    """{index: chunk} and the declared total, from any number of streams."""
+    """{index: chunk} and the declared total, from any number of streams.
+
+    The same chunk arrives twice, because the executed notebook and Kaggle's
+    kernel log are two copies of one stdout. Either copy can be cut off mid
+    line, and a cut only ever shortens: the survivor is a prefix of the whole
+    chunk, and it still parses as ``i/n <payload>``. Overwriting on every
+    sighting therefore let a truncated second copy replace a complete first
+    one, and the reassembled bundle then failed base64 or tar validation with
+    every chunk index present -- evidence lost with the complete source on
+    disk. So a later sighting is taken only when it EXTENDS what is held.
+    """
     chunks: dict[int, str] = {}
     total = 0
     for text in streams:
@@ -90,7 +100,9 @@ def collect_chunks(streams) -> tuple[dict[int, str], int]:
                 continue
             index, declared, payload = int(match.group(1)), int(match.group(2)), match.group(3)
             total = max(total, declared)
-            chunks[index] = payload
+            held = chunks.get(index)
+            if held is None or (len(payload) > len(held) and payload.startswith(held)):
+                chunks[index] = payload
     return chunks, total
 
 

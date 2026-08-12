@@ -715,6 +715,55 @@ def test_chunks_are_reassembled_in_order_regardless_of_the_order_seen():
     assert "".join(chunks[i] for i in (1, 2)) == "PPQQ"
 
 
+def test_a_truncated_duplicate_does_not_overwrite_the_complete_chunk(tmp_path):
+    """The executed notebook and the kernel log are two copies of one stdout.
+    When Kaggle cuts the log inside a chunk line, the survivor still parses as
+    `i/n <payload>`, so overwriting on every sighting replaced the notebook's
+    complete chunk with the log's partial one. Every index was then present,
+    the missing-chunk guard passed, and the bundle died in base64 with the
+    complete source sitting on disk."""
+    blob = _bundle({"studio_gpu_report.json": b'{"passed": true}', "shot.png": b"\x89PNG"})
+    lines = _chunk_lines(blob)
+    assert len(lines) > 2, "need a chunk that is neither first nor last"
+
+    evidence = tmp_path / "kaggle_evidence" / "unsloth-t4-ci-deadbeef"
+    evidence.mkdir(parents = True)
+    (evidence / "studio_gpu_output.ipynb").write_text(
+        json.dumps({"cells": [{"outputs": [{"text": "\n".join(lines)}]}]}), encoding = "utf-8"
+    )
+    (evidence / "kernel.log").write_text(
+        "\n".join(lines[:-2] + [lines[-2][:-9]]), encoding = "utf-8"
+    )
+
+    outdir = tmp_path / "studio_evidence"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(CI_DIR / "collect_evidence.py"),
+            "--evidence",
+            str(tmp_path / "kaggle_evidence"),
+            "--outdir",
+            str(outdir),
+        ],
+        capture_output = True,
+        text = True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (outdir / "studio_gpu_report.json").read_bytes() == b'{"passed": true}'
+    assert (outdir / "shot.png").read_bytes() == b"\x89PNG"
+
+
+def test_a_complete_later_copy_repairs_a_truncated_earlier_one():
+    """The cut can land in either copy, so a later sighting that EXTENDS what
+    is held is taken."""
+    prefix = collect_evidence.EVIDENCE_PREFIX
+    chunks, total = collect_evidence.collect_chunks(
+        [f"{prefix}1/2 PP\n{prefix}2/2 QQ", f"{prefix}1/2 PPPP\n{prefix}2/2 QQ"]
+    )
+    assert total == 2
+    assert "".join(chunks[i] for i in (1, 2)) == "PPPPQQ"
+
+
 # ---------------------------------------------------------------- workflow
 
 
