@@ -360,6 +360,8 @@ def test_capabilities_report_what_auto_resolves_to(monkeypatch):
         use_xet = False,
         reason = "Xet failed 2 times in a row on this machine",
     )
+
+    fake.xet_health = fake.cached_xet_health
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
     caps = download_registry.get_download_transport_capabilities()
     if not caps.xet.available:
@@ -375,6 +377,8 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
         raise RuntimeError("no")
 
     fake.cached_xet_health = _boom
+
+    fake.xet_health = _boom
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
     caps = download_registry.get_download_transport_capabilities()
     if not caps.xet.available:
@@ -457,36 +461,40 @@ def test_capabilities_read_does_not_load_zoo(monkeypatch):
     assert loaded == [], "a read-only capability request imported Unsloth Zoo"
 
 
-def test_cached_capabilities_forward_probe_without_loading_zoo(monkeypatch):
-    """An explicit probe may refresh an already-loaded health module, but cannot load Zoo."""
+def test_download_start_probe_loads_health_after_cached_browse(monkeypatch):
+    """Auto's probe resolves the submitted xet/http mode, so it must load fresh health."""
     from hub.utils import download_registry
 
-    seen: list[bool] = []
+    seen: list[tuple[str, bool]] = []
 
     class _Health:
         use_xet = False
         reason = "probed: CAS unreachable"
 
-    def _fake_health(*, probe = True):
-        seen.append(probe)
+    def _cached_health(*, probe = True):
+        seen.append(("cached", probe))
+        return None
+
+    def _loading_health(*, probe = True):
+        seen.append(("loading", probe))
         return _Health()
 
-    # Patch sys.modules because the endpoint imports cached_xet_health locally.
+    # Patch sys.modules because the endpoint imports both helpers locally.
     import sys
     import types
 
     stub = types.ModuleType("utils.hf_xet_fallback")
-    stub.cached_xet_health = _fake_health
+    stub.cached_xet_health = _cached_health
+    stub.xet_health = _loading_health
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
 
-    caps = download_registry.get_download_transport_capabilities()
-    if not caps.xet.available:
-        # The health lookup sits behind an hf_xet availability check, so with no hf_xet installed
-        # neither call reaches it.
-        pytest.skip("hf_xet is not installed in this environment")
-    download_registry.get_download_transport_capabilities(probe = True)
+    browse = download_registry.get_download_transport_capabilities()
+    download = download_registry.get_download_transport_capabilities(probe = True)
 
-    assert seen == [False, True]
+    assert browse.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert download.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert seen == [("cached", False), ("loading", True)]
 
 
 def test_gpu_init_override_is_serialized(monkeypatch):

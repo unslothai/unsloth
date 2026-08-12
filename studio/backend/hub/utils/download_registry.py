@@ -104,11 +104,13 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
     auto_reason: Optional[str] = None
     if xet_available:
         try:
-            from utils.hf_xet_fallback import cached_xet_health
+            from utils.hf_xet_fallback import cached_xet_health, xet_health
 
-            # The UI polls this endpoint on render. Read an existing verdict, but never load Zoo:
-            # the first actual download owns that optional GPU initialization boundary.
-            health = cached_xet_health(probe = probe)
+            # Ordinary UI polls are read-only and must not load Zoo. `probe=True` is different:
+            # the frontend sends it only while resolving Auto for a download, then submits the
+            # concrete answer as xet/http, so this is the actual first-download decision.
+            health_fn = xet_health if probe else cached_xet_health
+            health = health_fn(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
