@@ -6502,7 +6502,10 @@ class TestRocmWslSupplyChainPins:
         own_sha = re.search(r'LIBROCDXG_SHA="\$\{UNSLOTH_LIBROCDXG_SHA:-([0-9a-f]{40})\}"', helper)
         assert None not in (fwd_ref, fwd_sha, own_ref, own_sha)
         assert fwd_ref.group(1) == own_ref.group(1) == own_sha.group(1)
-        # A user-set ref must reach the helper untouched, so the operator override still works.
+        # A SHA, whether ours or the operator's, is forwarded AS the ref, so even a helper
+        # that ignores UNSLOTH_LIBROCDXG_SHA resolves exactly the authorised commit.
+        assert 'if [ -n "$_rw_dxg_sha" ]; then\n        _rw_dxg_ref="$_rw_dxg_sha"' in install_sh
+        # A ref-only override must reach the helper untouched, so that path still works.
         assert '_rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"' in install_sh
         assert (
             'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"'

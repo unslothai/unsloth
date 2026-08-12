@@ -3889,6 +3889,13 @@ _maybe_bootstrap_rocm_wsl() {
         _rw_dxg_ref="4955d12888a3ec57057f1cf8660c2485e415e74c"
         [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="$_rw_dxg_ref"
     fi
+    # Whenever a SHA is known it is authoritative, so forward it AS the ref. That covers the
+    # operator who pins a branch/tag plus its expected SHA: a helper old enough to ignore the
+    # SHA would otherwise clone that symbolic ref unverified, whereas a commit ref resolves
+    # to the one revision they authorised on every helper vintage.
+    if [ -n "$_rw_dxg_sha" ]; then
+        _rw_dxg_ref="$_rw_dxg_sha"
+    fi
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
