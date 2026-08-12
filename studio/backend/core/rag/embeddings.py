@@ -127,11 +127,56 @@ def _rocm_is_possible() -> bool:
             if not isinstance(version_string, str) or not version_string:
                 return True
             return "rocm" in version_string.lower()
-        if sys.platform in ("darwin", "win32"):
+        installed = _installed_torch_is_rocm()
+        if installed is not None:
+            return installed
+        if sys.platform == "darwin":
             return False
+        if sys.platform == "win32":
+            # Nothing torch-free left to read, and Windows has no KFD node. An installed
+            # HIP SDK is not evidence (main.py makes the same point), but neither is its
+            # absence, so keep the caution rather than the convenience.
+            return True
         return os.path.isdir("/sys/class/kfd/kfd/topology/nodes")
     except Exception:  # noqa: BLE001 - unsure means possible; the caution is the safe side
         return True
+
+
+@lru_cache(maxsize = 1)
+def _installed_torch_is_rocm() -> bool | None:
+    """Is the INSTALLED torch a ROCm build, answered without importing it.
+
+    ``torch/version.py`` is a generated file holding literals -- ``__version__`` and
+    ``hip`` -- and ``find_spec`` locates the package without executing it, so this reads
+    the same two facts hardware detection reads, minutes before torch is imported. That
+    matters on Windows, where there is no KFD node and an installed HIP SDK proves nothing
+    about which wheel is present.
+
+    None means "no answer": torch is missing (in which case the AMD query cannot run at
+    all) or the file is unreadable. Cached, since it is filesystem I/O on a request path
+    and an install does not change under a running backend.
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return None
+        version_py = os.path.join(os.path.dirname(spec.origin), "version.py")
+        with open(version_py, encoding = "utf-8") as handle:
+            source = handle.read()
+    except Exception:  # noqa: BLE001 - no answer, and the caller decides what that means
+        return None
+
+    # hip = '6.3.42134' on a ROCm build, hip: Optional[str] = None otherwise.
+    if re.search(r"^hip\b[^=\n]*=\s*['\"]", source, re.MULTILINE):
+        return True
+    match = re.search(r"^__version__\s*=\s*['\"]([^'\"]+)", source, re.MULTILINE)
+    if match:
+        # AMD SDK wheels leave hip unset and only say rocm here; same fallback as
+        # utils/hardware/hardware.py.
+        return "rocm" in match.group(1).lower()
+    return None
 
 
 def _safe_torch_device() -> str:

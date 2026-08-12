@@ -239,8 +239,11 @@ def test_settings_gate_never_waits_on_hardware_detection(monkeypatch):
     assert embeddings.active_backend_is_llama() is True
 
 
-def _no_torch_loaded(monkeypatch):
+def _no_torch_loaded(monkeypatch, *, installed = None):
+    """torch not imported. ``installed`` is what the torch-free on-disk read reports."""
     monkeypatch.delitem(sys.modules, "torch", raising = False)
+    embeddings._installed_torch_is_rocm.cache_clear()
+    monkeypatch.setattr(embeddings, "_installed_torch_is_rocm", lambda: installed)
 
 
 def test_rocm_is_possible_is_false_on_macos(monkeypatch):
@@ -266,11 +269,63 @@ def test_rocm_is_possible_follows_the_kfd_node_on_linux(monkeypatch):
 
 def test_an_installed_hip_sdk_alone_is_not_a_rocm_host(monkeypatch):
     # main.py makes the same point where it refuses to let HIP_PATH/ROCM_PATH pick a
-    # backend: a CUDA or CPU box can carry the SDK. Claiming ROCm from it would strand
-    # such a host on the provisional answer and cost it its GGUF handling.
-    _no_torch_loaded(monkeypatch)
+    # backend: a CUDA or CPU box can carry the SDK. What decides is the installed wheel,
+    # which is readable before torch is imported.
+    _no_torch_loaded(monkeypatch, installed = False)
     monkeypatch.setattr(embeddings.sys, "platform", "win32")
     assert embeddings._rocm_is_possible() is False
+
+
+def test_a_windows_rocm_wheel_is_seen_before_torch_is_imported(monkeypatch):
+    # The startup window, and the standing case when the torch warm is disabled: detection
+    # unsettled and torch not yet imported. Windows has no KFD node, so the wheel on disk
+    # is the only thing that can keep this host off the in-process AMD query.
+    _no_torch_loaded(monkeypatch, installed = True)
+    monkeypatch.setattr(embeddings.sys, "platform", "win32")
+    assert embeddings._rocm_is_possible() is True
+
+
+def test_windows_stays_cautious_when_the_wheel_cannot_be_read(monkeypatch):
+    _no_torch_loaded(monkeypatch, installed = None)
+    monkeypatch.setattr(embeddings.sys, "platform", "win32")
+    assert embeddings._rocm_is_possible() is True
+
+
+def test_installed_torch_is_read_without_importing_torch(monkeypatch, tmp_path):
+    # torch/version.py is generated literals, and find_spec locates the package without
+    # executing it, so this reads what detection reads long before torch is imported.
+    import importlib.util
+
+    embeddings._installed_torch_is_rocm.cache_clear()
+    package = tmp_path / "torch"
+    package.mkdir()
+    (package / "__init__.py").write_text("raise AssertionError('torch was imported')")
+
+    def _fake_find_spec(name):
+        assert name == "torch"
+        return SimpleNamespace(origin = str(package / "__init__.py"))
+
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+
+    (package / "version.py").write_text(
+        "__version__ = '2.9.1+rocm6.3'\nhip: Optional[str] = '6.3.42134'\n"
+    )
+    assert embeddings._installed_torch_is_rocm() is True
+
+    embeddings._installed_torch_is_rocm.cache_clear()
+    (package / "version.py").write_text("__version__ = '2.9.1+cu128'\nhip: Optional[str] = None\n")
+    assert embeddings._installed_torch_is_rocm() is False
+
+    # AMD SDK wheel: hip unset, rocm only in the version string.
+    embeddings._installed_torch_is_rocm.cache_clear()
+    (package / "version.py").write_text(
+        "__version__ = '2.11.0+rocm7.1'\nhip: Optional[str] = None\n"
+    )
+    assert embeddings._installed_torch_is_rocm() is True
+
+    embeddings._installed_torch_is_rocm.cache_clear()
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    assert embeddings._installed_torch_is_rocm() is None  # torch absent: query cannot run
 
 
 def test_rocm_is_possible_reads_torch_hip_when_torch_is_already_loaded(monkeypatch):
