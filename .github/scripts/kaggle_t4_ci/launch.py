@@ -321,22 +321,37 @@ def push(
 
         out = ""
         for attempt in range(PUSH_ATTEMPTS):
-            proc = subprocess.run(
-                [
-                    "kaggle",
-                    "kernels",
-                    "push",
-                    "-p",
-                    str(workdir),
-                    "--accelerator",
-                    accelerator,
-                    "-t",
-                    str(kernel_timeout_sec),
-                ],
-                capture_output = True,
-                text = True,
-                timeout = 600,
-            )
+            try:
+                proc = subprocess.run(
+                    [
+                        "kaggle",
+                        "kernels",
+                        "push",
+                        "-p",
+                        str(workdir),
+                        "--accelerator",
+                        accelerator,
+                        "-t",
+                        str(kernel_timeout_sec),
+                    ],
+                    capture_output = True,
+                    text = True,
+                    timeout = 600,
+                )
+            except subprocess.TimeoutExpired:
+                # A stalled CLI is Kaggle transport, the same as a 503 or a
+                # refused push, and every one of those returns a reason here
+                # and exits 0 as infra. Letting TimeoutExpired escape instead
+                # would end the process before `finish()` writes
+                # launch_result.json, so the step goes red and the reporter
+                # that reads that file never gets to call the run NOT RUN --
+                # a red verdict for something the code under test never saw.
+                _log("push timed out after 600s; treating as Kaggle transport")
+                return {
+                    "ok": False,
+                    "reason": "push_timeout",
+                    "detail": f"kaggle kernels push exceeded 600s (attempt {attempt + 1})",
+                }
             out = proc.stdout + proc.stderr
             lowered = out.lower()
             if "successfully pushed" in lowered:

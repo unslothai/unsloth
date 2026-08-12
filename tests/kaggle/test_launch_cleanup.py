@@ -138,6 +138,29 @@ def test_a_failed_delete_keeps_the_entry_for_next_time(tmp_path, monkeypatch):
     assert [e["slug"] for e in launch._inflight_read()] == ["me/orphan"]
 
 
+def test_a_stalled_push_is_reported_as_infra_not_raised(tmp_path, monkeypatch):
+    """Every other Kaggle transport failure returns a reason and exits 0.
+
+    A `kaggle kernels push` that stalls past the 600s ceiling raises
+    TimeoutExpired, and letting it escape ends the process before
+    `finish()` writes launch_result.json: the launch step goes red and the
+    reporter never gets to call the run NOT RUN. Red is reserved for a payload
+    that ran on a T4 and failed an assertion.
+    """
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    notebook = tmp_path / "kernel.ipynb"
+    notebook.write_text("{}", encoding = "utf-8")
+
+    def _stall(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd = ["kaggle"], timeout = 600)
+
+    monkeypatch.setattr(launch.subprocess, "run", _stall)
+    pushed = launch.push(notebook, "me", 3600)
+    assert pushed["ok"] is False
+    assert pushed["reason"] == "push_timeout"
+    assert launch._inflight_read() == []
+
+
 def test_a_corrupt_registry_does_not_take_the_run_down(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     (tmp_path / "inflight.json").write_text("{not json", encoding = "utf-8")
