@@ -7692,9 +7692,7 @@ def install_prebuilt(
             log(f"system report unavailable: {report_exc}")
         if preserve_backend:
             # A concrete choice must not become a hardware-selected source build.
-            log(
-                f"the {backend} backend selection was preserved; source fallback was not started"
-            )
+            log(f"the {backend} backend selection was preserved; source fallback was not started")
             raise SystemExit(EXIT_BACKEND_UNAVAILABLE) from exc
         raise SystemExit(EXIT_FALLBACK) from exc
 
