@@ -153,13 +153,21 @@ def safe_user_dir(
     if expanduser is None:
         expanduser = pathmod.expanduser
     windirs = [windir] if isinstance(windir, str) else list(windir)
+    public = (environ.get("PUBLIC") or "").strip()
     candidates = [environ.get("USERPROFILE")]
     if allow_public:
-        candidates.append(environ.get("PUBLIC"))
+        candidates.append(public)
     candidates.append(expanduser("~"))
     for candidate in candidates:
-        if _outside_windows(candidate, windirs, pathmod, sep):
-            return candidate
+        if not _outside_windows(candidate, windirs, pathmod, sep):
+            continue
+        # USERPROFILE and ~ can name the public profile themselves, so the check
+        # is on the folder, not on which variable it came from.
+        if not allow_public and public and _normalize(candidate, pathmod) == _normalize(
+            public, pathmod
+        ):
+            continue
+        return candidate
     return None
 
 
@@ -251,6 +259,11 @@ _RELATIVE_PATH_ENV = (
     "WHISPER_SERVER_PATH",
     "SD_CLI_PATH",
     "SD_SERVER_PATH",
+    # GPU SDK roots, joined with bin/ for DLL discovery.
+    "CUDA_PATH",
+    "HIP_PATH",
+    "HIP_PATH_57",
+    "ROCM_PATH",
     "MLX_HOSTFILE",
     "OLLAMA_MODELS",
     "DG_VISUAL_BIN",
@@ -309,10 +322,18 @@ def relocation_target(
     sep = _os.sep,
     expanduser = None,
     makedirs = _os.makedirs,
+    home_isdir = None,
 ):
     """Where a desktop-managed command should run instead, or None."""
     home = safe_user_dir(environ, windir, pathmod, sep, expanduser)
     if not home:
+        return None
+    if home_isdir is None:
+        home_isdir = pathmod.isdir
+    # A roaming profile that has not mounted yet still has a writable parent, so
+    # makedirs would happily build a second, empty one that shadows the real
+    # profile when it arrives. Report it unavailable, as the Rust half does.
+    if not home_isdir(home):
         return None
     work_dir = pathmod.join(home, WORK_DIR_NAME)
     try:
@@ -377,6 +398,7 @@ def check_working_directory(
     makedirs = _os.makedirs,
     isdir = None,
     abspath = None,
+    home_isdir = None,
 ):
     """Decide what to do about the current working directory.
 
@@ -409,7 +431,9 @@ def check_working_directory(
     if not is_relocatable_invocation(argv, environ):
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
-    target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs)
+    target = relocation_target(
+        environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir
+    )
     if target is not None:
         try:
             # Before moving, or a relative override the caller wrote would end up

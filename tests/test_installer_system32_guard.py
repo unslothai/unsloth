@@ -331,6 +331,7 @@ def _guard_outcome(
     windows_dirs: tuple[str, ...] = (r"C:\Windows",),
     environ_out: dict[str, str] | None = None,
     drive_cwd: dict[str, str] | None = None,
+    missing_homes: tuple[str, ...] = (),
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -393,6 +394,9 @@ def _guard_outcome(
         # Only a folder that really holds System32 counts as a Windows directory.
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
         abspath = _abspath,
+        home_isdir = lambda path: ntpath.normcase(path) not in {
+            ntpath.normcase(home) for home in missing_homes
+        },
     )
     if environ_out is not None:
         environ_out.clear()
@@ -791,6 +795,54 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
     )
     assert colour == "yellow"
     assert environ_out[name] == r"C:\Windows\System32\cache"
+
+
+def test_cli_guard_does_not_recreate_a_profile_that_is_not_mounted():
+    """A roaming profile that has not arrived yet has a writable parent, so
+    makedirs would build an empty second one that shadows the real profile."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        missing_homes = (r"C:\Users\me",),
+    )
+    assert (colour, chdir_calls) == ("red", [])
+
+
+def test_cli_guard_never_relocates_into_the_public_profile():
+    """The public profile is readable and writable by every account on the
+    machine, so it is no place for one account's caches, scans and outputs."""
+    public = r"C:\Users\Public"
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        userprofile = public,
+        environ_extra = {"PUBLIC": public},
+    )
+    assert (colour, chdir_calls) == ("red", [])
+
+
+@pytest.mark.parametrize("public", [r"C:\Users\Public", r"c:\users\public\\"])
+def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: str):
+    """It is the folder that is shared, not the variable that named it, so `~`
+    resolving there is refused exactly as USERPROFILE is."""
+    environ = {"USERPROFILE": r"C:\Windows\System32\config\systemprofile", "PUBLIC": public}
+    chosen = _system_dir_guard.safe_user_dir(
+        environ,
+        [r"C:\Windows"],
+        pathmod = ntpath,
+        sep = "\\",
+        expanduser = lambda _p: r"C:\Users\Public",
+    )
+    assert chosen is None
+    # A human can still be told about it, which is what allow_public is for.
+    assert _system_dir_guard.safe_user_dir(
+        environ,
+        [r"C:\Windows"],
+        pathmod = ntpath,
+        sep = "\\",
+        expanduser = lambda _p: r"C:\Users\Public",
+        allow_public = True,
+    ) == public
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
