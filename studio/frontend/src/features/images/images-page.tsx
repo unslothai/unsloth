@@ -4241,7 +4241,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       <HugeiconsIcon icon={PinIcon} className="size-3" />
                     </span>
                   )}
-                  <div className="absolute right-0.5 top-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  <div className="absolute right-0.5 top-0.5">
                     <GalleryItemMenu
                       variant="overlay"
                       noun="image"
