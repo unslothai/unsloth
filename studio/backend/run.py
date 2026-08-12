@@ -2436,7 +2436,7 @@ def run_server(
                     # An Application Control policy can block the generated
                     # unsloth.exe while the signed interpreter beside it still
                     # runs, so name a route that does not go through it.
-                    f"  - or through the interpreter: {sys.executable} -m unsloth_cli studio\n"
+                    f"  - or through the interpreter: {sys.executable} -I -m unsloth_cli studio\n"
                     if sys.platform == "win32"
                     else ""
                 )

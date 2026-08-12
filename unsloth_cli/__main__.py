@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`python -m unsloth_cli` -- reach the CLI without the generated console script.
+"""`python -I -m unsloth_cli` -- reach the CLI without the generated console script.
 
 Windows materialises the `unsloth` entry point as a generated, unsigned
 `unsloth.exe`. AppLocker, WDAC and Smart App Control deny that executable while
@@ -11,7 +11,7 @@ https://github.com/unslothai/unsloth/issues/8490). This module is the supported
 way in for those users, and for anyone who would rather not depend on a
 generated launcher:
 
-    python -X utf8 -m unsloth_cli studio -p 8888
+    python -X utf8 -I -m unsloth_cli studio -p 8888
 
 Output is identical to the console script, which takes three things:
 
@@ -30,6 +30,15 @@ Output is identical to the console script, which takes three things:
 
 import sys
 
+# Every command this project prints spells the module route `-I -m unsloth_cli`, and the
+# -I is not decoration. `-m` resolves the package before this file runs, so a shell
+# sitting in a directory that has an `unsloth_cli` folder (an unsloth checkout, most
+# obviously) would run that one instead of the managed install, and nothing here could
+# tell or correct it. -I drops the working directory from sys.path first. It is the
+# advertised recovery command that needs this, not the internal call sites: those use
+# the -c trampoline, which strips the same entry without -I's other effects, because
+# they have to behave exactly like the console script they replace.
+#
 # Before the import, so a direct `python path/to/unsloth_cli/__main__.py` run
 # takes the console-script gate in __init__ rather than needing the call below.
 sys.argv[0] = "unsloth"

@@ -67,7 +67,7 @@ def _reset_password_command() -> str:
         if os.name == "nt":
             python = os.path.abspath(sys.executable)
             if " " not in python:
-                return f"{python} -m unsloth_cli studio reset-password"
+                return f"{python} -I -m unsloth_cli studio reset-password"
             # A spaced interpreter path cannot be written unquoted, so fall
             # through to the PATH form below.
         else:

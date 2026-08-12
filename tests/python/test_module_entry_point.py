@@ -276,3 +276,56 @@ def test_the_module_entry_source_keeps_its_two_load_bearing_details():
     # click reads __main__.__package__ rather than argv[0] and would otherwise
     # print `Usage: python -m unsloth_cli` in every usage and error string.
     assert 'prog_name = "unsloth"' in source
+
+
+@requires_this_checkout_installed
+def test_the_advertised_module_route_ignores_a_shadowing_directory(tmp_path):
+    """`-m` resolves the package before __main__.py runs, so -I is load bearing.
+
+    A shell sitting in a directory that has an `unsloth_cli` folder is not exotic:
+    it is anyone standing in an unsloth checkout. Without -I that copy wins and the
+    printed recovery command drives the wrong install, which nothing inside
+    __main__.py can detect or undo.
+    """
+    shadow = tmp_path / "unsloth_cli"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("app = None\n", encoding = "utf-8")
+    (shadow / "__main__.py").write_text("print('SHADOWED')\n", encoding = "utf-8")
+
+    plain = subprocess.run(
+        [sys.executable, "-m", "unsloth_cli", "--version"],
+        capture_output = True,
+        timeout = 120,
+        cwd = tmp_path,
+    )
+    assert b"SHADOWED" in plain.stdout, (
+        "the shadowing fixture did not take effect, so the case below proves nothing"
+    )
+
+    isolated = _run([sys.executable, "-X", "utf8", "-I", "-m", "unsloth_cli", "--version"])
+    assert isolated.returncode == 0, isolated.stderr.decode("utf-8", "replace")
+    assert isolated.stdout.startswith(b"unsloth "), isolated.stdout
+
+
+def test_every_advertised_module_route_is_isolated():
+    """Runs everywhere: the strings we print must not lose their -I.
+
+    Source-contract, because the commands live in hint text rather than in code we
+    can call, and a copy that drops the flag reintroduces the shadowing silently.
+    """
+    advertised = {
+        "studio/backend/routes/auth.py",
+        "studio/backend/run.py",
+        "install.ps1",
+        "unsloth_cli/__main__.py",
+    }
+    for name in sorted(advertised):
+        source = (_REPO_ROOT / name).read_text(encoding = "utf-8")
+        for line in source.splitlines():
+            if "-m unsloth_cli" not in line:
+                continue
+            # click prints its own `Usage: python -m unsloth_cli` when prog_name is
+            # missing; that is the symptom being described, not a command we offer.
+            if "Usage:" in line:
+                continue
+            assert "-I -m unsloth_cli" in line, f"{name}: unisolated module route: {line.strip()}"

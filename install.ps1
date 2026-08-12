@@ -5209,7 +5209,7 @@ exit 0
             # The interpreter, not $UnslothExe: this arm is reached on machines whose
             # policy denies the generated console script, where that advice cannot work.
             Write-StudioLine "       Until the next successful install, start Studio with:" -ForegroundColor Yellow
-            Write-StudioLine "       & '$VenvPython' -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
+            Write-StudioLine "       & '$VenvPython' -I -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
         }
     }
     # Companion launcher for machines whose policy denies the generated .exe. PATHEXT
