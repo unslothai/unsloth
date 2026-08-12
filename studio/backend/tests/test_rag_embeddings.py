@@ -79,6 +79,27 @@ def _hammer(fn, n = 8):
     return errors
 
 
+def test_first_encode_builds_the_selected_backend_once(monkeypatch):
+    """Importing the facade is inert; the first real vector operation owns construction."""
+    builds: list[str] = []
+
+    class _Backend:
+        def encode(self, texts, **_kwargs):
+            return np.zeros((len(texts), 4), dtype = np.float32)
+
+    def _build():
+        builds.append("backend")
+        return _Backend()
+
+    monkeypatch.setattr(embeddings, "_build_st_backend_or_fallback", _build)
+
+    assert embeddings._backend is None
+    embeddings.encode(["first"])
+    embeddings.encode(["second"])
+
+    assert builds == ["backend"]
+
+
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))

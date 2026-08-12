@@ -264,7 +264,10 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     finish_reason="tool_calls" (not "stop") so the frontend's accumulator runs
     the function."""
 
+    captured: dict = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
         events = [
             {"type": "response.created"},
             {
@@ -305,7 +308,10 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
                             "name": "get_weather",
                             "parameters": {
                                 "type": "object",
-                                "properties": {"city": {"type": "string"}},
+                                "properties": {
+                                    "city": {"type": "string"},
+                                    "options": {"type": "object"},
+                                },
                             },
                         },
                     }
@@ -342,6 +348,9 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
         and p["choices"][0].get("finish_reason") in ("stop", "tool_calls")
     )
     assert terminal["choices"][0]["finish_reason"] == "tool_calls", payloads
+
+    parameters = captured["body"]["tools"][0]["parameters"]
+    assert parameters["properties"]["options"]["properties"] == {}
 
 
 def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):

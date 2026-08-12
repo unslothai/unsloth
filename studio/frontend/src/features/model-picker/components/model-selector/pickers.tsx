@@ -40,7 +40,6 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
-  ggufVariantDisplayLabel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
@@ -189,6 +188,14 @@ import type {
   ModelSelectorChangeMeta,
 } from "./types";
 import { describeVariantListingError } from "./variant-listing-error";
+import {
+  ggufQuantChipLabel,
+  ggufQuantDetailLabel,
+  ggufVariantPickerLabel,
+  groupGgufVariantsForPicker,
+  h3PickerHasOnlyPrunedBuilds,
+  preferredGgufVariantByGroup,
+} from "./variant-presentation";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -1384,29 +1391,49 @@ function GgufVariantExpander({
     [budgetKnown, gpuBudgetGb, totalBudgetGb],
   );
 
-  // If the recommended variant is OOM, pick the largest fitting one;
-  // if all are OOM, recommend the smallest.
-  const effectiveRecommended = useMemo(() => {
-    if (
-      !variants ||
-      variants.length === 0 ||
-      (totalBudgetGb <= 0 && !budgetKnown)
-    ) {
-      return defaultVariant;
+  const variantGroups = useMemo(
+    () => groupGgufVariantsForPicker(variants ?? []),
+    [variants],
+  );
+  const preferredByGroup = useMemo(
+    () => preferredGgufVariantByGroup(variantGroups, defaultVariant),
+    [variantGroups, defaultVariant],
+  );
+
+  // Each workflow gets its own recommendation. If its preferred variant is
+  // OOM, use the largest one that can run; if all are OOM, use the smallest.
+  const effectiveRecommendedByGroup = useMemo(() => {
+    const recommended = new Map<string, string>();
+    for (const group of variantGroups) {
+      const preferred = preferredByGroup.get(group.key) ?? null;
+      if (totalBudgetGb <= 0 && !budgetKnown) {
+        if (preferred) recommended.set(group.key, preferred.quant);
+        continue;
+      }
+      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
+        recommended.set(group.key, preferred.quant);
+        continue;
+      }
+      const fitting = group.variants
+        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
+        .sort((left, right) => right.size_bytes - left.size_bytes);
+      if (fitting[0]) {
+        recommended.set(group.key, fitting[0].quant);
+        continue;
+      }
+      const smallest = [...group.variants].sort(
+        (left, right) => left.size_bytes - right.size_bytes,
+      )[0];
+      if (smallest) recommended.set(group.key, smallest.quant);
     }
-    const defaultV = variants.find((v) => v.quant === defaultVariant);
-    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
-      return defaultVariant;
-    // Largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
-    if (fitting.length > 0) {
-      fitting.sort((a, b) => b.size_bytes - a.size_bytes);
-      return fitting[0].quant;
-    }
-    // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-    return sorted[0]?.quant ?? defaultVariant;
-  }, [variants, defaultVariant, totalBudgetGb, budgetKnown, getGgufFit]);
+    return recommended;
+  }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
+  // Flattened, for readers with no row to ask about (the footprint representative
+  // below). A ROW asks its own group, or it lights the other group's pick too.
+  const effectiveRecommended = useMemo(
+    () => new Set(effectiveRecommendedByGroup.values()),
+    [effectiveRecommendedByGroup],
+  );
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -1417,24 +1444,27 @@ function GgufVariantExpander({
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
     };
-    return [...variants].sort((a, b) => {
-      const aTier = tierOf(a);
-      const bTier = tierOf(b);
-      if (aTier !== bTier) return aTier - bTier;
+    return variantGroups.flatMap((group) => {
+      const recommended = effectiveRecommendedByGroup.get(group.key);
+      return [...group.variants].sort((a, b) => {
+        const aTier = tierOf(a);
+        const bTier = tierOf(b);
+        if (aTier !== bTier) return aTier - bTier;
 
-      // Within the same tier, recommended goes first
-      const aIsRec = a.quant === effectiveRecommended;
-      const bIsRec = b.quant === effectiveRecommended;
-      if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
+        // Within the same tier, the workflow's recommendation goes first.
+        const aIsRec = a.quant === recommended;
+        const bIsRec = b.quant === recommended;
+        if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-      // fits: largest first (best quality that fits in GPU)
-      // tight/OOM: smallest first (closest to fitting, fastest to run)
-      const fitsInGpu = aTier === 0 || aTier === 2;
-      return fitsInGpu
-        ? b.size_bytes - a.size_bytes
-        : a.size_bytes - b.size_bytes;
+        // fits: largest first (best quality that fits in GPU)
+        // tight/OOM: smallest first (closest to fitting, fastest to run)
+        const fitsInGpu = aTier === 0 || aTier === 2;
+        return fitsInGpu
+          ? b.size_bytes - a.size_bytes
+          : a.size_bytes - b.size_bytes;
+      });
     });
-  }, [variants, effectiveRecommended, getGgufFit]);
+  }, [variants, variantGroups, effectiveRecommendedByGroup, getGgufFit]);
 
   // On Device only: when Show all quantizations is off, list quants already on
   // disk, torn ones included. Browse lists always show every quant.
@@ -1448,6 +1478,14 @@ function GgufVariantExpander({
       showAll: showAllQuantizations,
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
+  const displayVariantGroups = useMemo(
+    () => groupGgufVariantsForPicker(displayVariants ?? []),
+    [displayVariants],
+  );
+  const hideH3PrunedBuild = useMemo(
+    () => h3PickerHasOnlyPrunedBuilds(displayVariants ?? []),
+    [displayVariants],
+  );
 
   // A diffusion GGUF is not self-contained: the loader also needs a text
   // encoder, VAE, tokenizer and configs. That companion set is NOT
@@ -1473,8 +1511,8 @@ function GgufVariantExpander({
       // The recommended quant is the representative of its own group when it
       // has one; otherwise the group's first row stands.
       if (
-        current.quant !== effectiveRecommended &&
-        variant.quant === effectiveRecommended
+        !effectiveRecommended.has(current.quant) &&
+        effectiveRecommended.has(variant.quant)
       ) {
         byKey.set(key, variant);
       }
@@ -1607,7 +1645,7 @@ function GgufVariantExpander({
     >
       {/* On Device shows the model name above, so the Quantizations heading is
           redundant; its Vision badge is relayed to the name instead. */}
-      {!onDevice && (
+      {!onDevice && !displayVariantGroups.some((group) => group.title) && (
         <div className="px-2 py-1 flex items-center gap-1.5">
           <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
             Quantizations
@@ -1624,7 +1662,31 @@ function GgufVariantExpander({
           )}
         </div>
       )}
+      {!onDevice &&
+        hasVision &&
+        displayVariantGroups.some((group) => group.title) && (
+          <div className="px-2 pt-1">
+            <span className="flex items-center gap-0.5 text-ui-9 font-medium text-indigo-700 dark:text-indigo-300">
+              <HugeiconsIcon
+                icon={ViewIcon}
+                className="size-3"
+                strokeWidth={1.8}
+              />
+              Vision
+            </span>
+          </div>
+        )}
       {displayVariants.map((v) => {
+        const group = displayVariantGroups.find((candidate) =>
+          candidate.variants.some((variant) => variant.filename === v.filename),
+        );
+        const showGroupHeading =
+          group?.title != null && group.variants[0]?.filename === v.filename;
+        // Its own group's pick. Matching on the quant alone happens to work only
+        // because an H3 key is unique per file, which is the backend's rule.
+        const isRecommended =
+          group != null &&
+          effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
@@ -1657,10 +1719,11 @@ function GgufVariantExpander({
             )}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-xs">
-              <span
-                className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
-              >
-                {ggufVariantDisplayLabel(v)}
+              <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>
+                {ggufVariantPickerLabel(v, {
+                  h3Grouped: group?.title != null,
+                  hideH3PrunedBuild,
+                })}
               </span>
               {unusableLocal ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
@@ -1677,7 +1740,7 @@ function GgufVariantExpander({
                     </span>
                   ) : null}
                 </>
-              ) : v.quant === effectiveRecommended ? (
+              ) : isRecommended ? (
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
                   recommended
                 </span>
@@ -1707,7 +1770,19 @@ function GgufVariantExpander({
             </span>
           </button>
         );
-        return (
+        return [
+          showGroupHeading && group?.title ? (
+            <div key={`${v.filename}:group`} className="px-2 pb-1 pt-2">
+              <div className="text-xs font-semibold text-foreground">
+                {group.title}
+              </div>
+              {group.description && (
+                <div className="mt-0.5 text-ui-10 leading-snug text-muted-foreground">
+                  {group.description}
+                </div>
+              )}
+            </div>
+          ) : null,
           <div key={v.filename} className="flex items-center">
             {/* The explanation rides the row button; nested button triggers are not accessible. */}
             {companionBytes === null ? (
@@ -1823,8 +1898,8 @@ function GgufVariantExpander({
                   }
                 />
               )}
-          </div>
-        );
+          </div>,
+        ];
       })}
     </div>
   );
@@ -1989,7 +2064,7 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recent" },
 ];
 
-// Sort for the On Device / Custom (local) lists. "recent" = last loaded;
+// Sort for the On Device lists. "recent" = last loaded;
 // "downloaded" = file download date.
 type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
@@ -2085,10 +2160,17 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
-function localPathTooltip(name: string, path: string): ReactNode {
+function localPathTooltip(
+  name: string,
+  path: string,
+  // Which checkpoint, since the path cannot say: an H3 repo holds its keyframe
+  // and reference partitions in one directory.
+  detail?: string,
+): ReactNode {
   return (
     <>
       <span className="block break-words">{name}</span>
+      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -2180,7 +2262,7 @@ export function HubModelPicker({
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
-  section?: "downloaded" | "recommended" | "custom" | "connected";
+  section?: "downloaded" | "recommended" | "connected";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
   onEject?: () => void;
@@ -4233,7 +4315,7 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device / Custom rows are already on disk, so the device-fit filter
+  // On Device rows are already on disk, so the device-fit filter
   // only applies to the Unsloth listing.
   const sectionSortDropdown =
     section === "recommended" ? (
@@ -4358,9 +4440,11 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={entry.repoId}
-            tooltipText={`${entry.repoId} (${entry.quant})`}
+            tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
+              entry.quant,
+            )})`}
             meta="GGUF"
-            quantChip={entry.quant}
+            quantChip={ggufQuantChipLabel(entry.quant)}
             alignMeta="device"
             selected={isSelected}
             loaded={isLoaded}
@@ -4478,9 +4562,13 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
-            tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
+            tooltipText={localPathTooltip(
+              c.repo_id,
+              c.cache_path,
+              ggufQuantDetailLabel(variant.quant),
+            )}
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
-            quantChip={variant.quant}
+            quantChip={ggufQuantChipLabel(variant.quant)}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
             loaded={rowState.loaded}

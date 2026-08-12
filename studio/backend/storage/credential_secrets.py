@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 HF_TOKEN_KIND = "hf_token"
 HF_TOKEN_SCOPE = "default"
 PROVIDER_API_KEY_KIND = "provider_api_key"
+
+OPENAI_CODEX_OAUTH_KIND = "openai_codex_oauth"
+
+OPENAI_CODEX_OAUTH_FLOW_KIND = "openai_codex_oauth_flow"
 _FORMAT_VERSION = 1
 _NONCE_BYTES = 12
 

@@ -18,6 +18,7 @@ mod native_intents;
 mod native_path_policy;
 mod preflight;
 mod process;
+mod process_identity;
 mod update;
 mod windows_job;
 mod x11_threads;
@@ -1536,6 +1537,7 @@ fn main() {
             commands::open_models_dir,
             commands::start_backend_update,
             commands::start_managed_repair,
+            commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
@@ -1735,8 +1737,12 @@ mod tests {
     // `dirs::home_dir` is all over this crate.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // The crate-wide lock, not one of this module's own: the path policy
+        // reads XDG_DATA_HOME while choosing where its tests may write, and an
+        // override running underneath that would change the answer.
+        let _guard = crate::native_path_policy::PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let saved = std::env::var_os("XDG_DATA_HOME");
         std::env::set_var("XDG_DATA_HOME", value);
         let out = f();

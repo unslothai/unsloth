@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import ast
 import atexit
 import contextlib
+import errno
 import functools
 import json
 import logging
@@ -75,14 +76,9 @@ from core.inference.llama_server_args import (
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
+    StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
@@ -91,14 +87,6 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the GGUF streaming strip stays aligned with the parser.
-from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
-    _strip_bracket_tag_calls,
-    apply_tool_strip_patterns,
-    strip_outside_think,
-)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -140,11 +128,17 @@ class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
     Subclasses RuntimeError so existing handlers still catch it."""
 
+    __slots__ = ()
+
 
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
 
+    __slots__ = ()
 
+
+# Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
+# every GGUF load breaks. Reflection over this dataclass is part of how it is used.
 @dataclass(frozen = True)
 class GgufLoadIntent:
     """Immutable caller intent replayed by retries and recovery."""
@@ -154,6 +148,7 @@ class GgufLoadIntent:
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
+    dflash_draft_path: Optional[str] = None
     hf_repo: Optional[str] = None
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
@@ -220,6 +215,34 @@ _SPEC_ENV_VARS = (
     "LLAMA_ARG_MODEL_DRAFT",
     "LLAMA_ARG_HFD_REPO",
 )
+
+# Hub failures that are settled: retrying them buys nothing.
+_PERMANENT_HUB_ERRORS = (
+    "RepositoryNotFoundError",
+    "GatedRepoError",
+    "RevisionNotFoundError",
+    "EntryNotFoundError",
+    "OfflineModeIsEnabled",
+)
+
+# Settled failures of this machine, not the Hub. By errno, not exception type: the Hub
+# client raises OSError subclasses for network trouble too, and those are retryable.
+_UNRECOVERABLE_LOCAL_ERRNOS = frozenset(
+    {
+        errno.EACCES,  # cache dir not writable
+        errno.EPERM,
+        errno.ENOSPC,  # disk full
+        errno.EROFS,
+    }
+)
+
+# Every kind records the same "binary_no_mtp", so the reason alone cannot say which
+# capability to recheck.
+_SPEC_KIND_CAPABILITY: dict[str, str] = {
+    "dspark": "supports_dspark",
+    "dflash": "supports_dflash",
+    "mtp": "supports_mtp",
+}
 
 _PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR = (
     "This Mac's Metal device is virtualised, where offloaded layers can return "
@@ -1148,6 +1171,9 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
+# Human label per resolved spec mode, for launch logging and the UI notice.
+_DRAFTER_DISPLAY_LABELS = {"dspark": "DSpark", "dflash": "DFlash"}
+
 
 def _drafter_path_kind(path: str) -> Optional[str]:
     """Drafter kind naming *path*: basename prefix, or exact parent dir for
@@ -1201,6 +1227,41 @@ def _is_dspark_drafter_path(path: str) -> bool:
     listings and cache snapshots for that reason.
     """
     return _drafter_path_kind(path) == "dspark"
+
+
+def _is_dflash_drafter_path(path: str) -> bool:
+    """True for a DFlash sidecar, excluding the separate DSpark method.
+
+    Prefix only: ``dflash`` doubles as a family name a publisher puts on real
+    weights, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, and a
+    user's ``dflash/`` folder holds whatever they put there (``dflash`` is
+    absent from ``_DRAFTER_DIR_KINDS`` for that reason). Only a root-level
+    ``dflash-*.gguf`` names a sidecar.
+
+    Broader than model_config.detect_dflash_file, which additionally confirms
+    ``general.architecture = dflash`` in the header. Only ever used against repo
+    listings and cache snapshots, where a header read is not available.
+    """
+    return _drafter_path_kind(path) == "dflash"
+
+
+def _is_root_dflash_drafter_path(path: str) -> bool:
+    """A DFlash sidecar as a repo listing or cache snapshot offers one: the
+    ``dflash-`` prefix AND the repository root.
+
+    _is_dflash_drafter_path tests the basename, which is all its other callers
+    have (a bare filename carries no parent to look at). Remote discovery does
+    have the repository-relative path, and needs it: the local contract is root
+    level only, so ``quants/dflash-model-Q8_0.gguf`` is an ordinary weight that
+    detect_dflash_file would never offer. Going by basename there made it a
+    candidate, and since the header can only be read once the bytes are here,
+    the whole weight was downloaded before the rejection.
+
+    Checked here rather than inside the basename predicate so the prefix-only
+    naming rule stays exactly as it is for the callers that share it.
+    """
+    normalized = path.replace("\\", "/")
+    return "/" not in normalized and _is_dflash_drafter_path(normalized)
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -1544,7 +1605,17 @@ def _companion_snapshot_sibling(
     if not sibling:
         return None
     candidate = snap / sibling
-    return str(candidate) if candidate.is_file() else None
+    if not candidate.is_file():
+        return None
+    # A split companion is usable only as a whole set (llama-server resolves the
+    # siblings from this path's directory), so a snapshot holding shard 1 alone
+    # is not a reuse -- reporting it would skip the download that completes it and
+    # leave the load with a drafter the server cannot open. Same rule the local
+    # scan applies. Non-split names are a complete one-file set, so this is a
+    # no-op for every companion published today.
+    from utils.models.model_config import _drafter_split_is_complete
+
+    return str(candidate) if _drafter_split_is_complete(candidate) else None
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -1716,6 +1787,13 @@ def _with_gguf_load_marker(load: Callable):
             return load(self, intent, load_cancel_event = load_cancel_event)
 
     return wrapped
+
+
+def _drafter_set_bytes(sizes: Mapping[str, int], name: str) -> int:
+    """Total listed bytes of ``name``'s whole shard set (its own size when single)."""
+    return (sizes.get(name, 0) or 0) + sum(
+        sizes.get(shard, 0) or 0 for shard in _gguf_extra_shards(sizes, name)
+    )
 
 
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
@@ -2322,6 +2400,13 @@ def _extra_args_requests_dspark(
     return "draft-dspark" in _accumulated_spec_types(extra_args, env)
 
 
+def _extra_args_requests_dflash(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if DFlash lands in llama.cpp's accumulated spec-type vector."""
+    return "draft-dflash" in _accumulated_spec_types(extra_args, env)
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """True when Metal is a virtualised Apple GPU, whose offload can corrupt output.
@@ -2602,7 +2687,8 @@ def _extra_args_requests_separate_draft(
     _extra_args_requests_mtp: a later --spec-default or --spec-type cannot clear an
     inherited draft-simple, so reading only the last under-reserves the model it loads."""
     return bool(
-        _accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3", "draft-dspark"}
+        _accumulated_spec_types(extra_args, env)
+        & {"draft-simple", "draft-eagle3", "draft-dspark", "draft-dflash"}
     )
 
 
@@ -2632,37 +2718,51 @@ def _extra_args_mtp_draft_path(
     --spec-draft-hf/-hfd/...), else the LLAMA_ARG_SPEC_DRAFT_MODEL/_HF_REPO env,
     else None. An HF repo isn't a local file, so the budget can't size it (falls
     back to the flat reserve), but recognizing it avoids sizing the wrong one."""
-    flags = {
-        "--model-draft",
-        "--spec-draft-model",
-        "-md",
-        "--spec-draft-hf",
-        "-hfd",
-        "-hfrd",
-        "--hf-repo-draft",
-    }
+    return _extra_args_mtp_draft_source(extra_args, env)[0]
+
+
+_HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
+_LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
+
+
+def _extra_args_mtp_draft_source(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[Optional[str], bool]:
+    """The drafter the launch resolves to, and whether it is a repo id.
+
+    The two travel together on purpose. Draft flags are last-wins, so a remote flag
+    followed by a local one leaves a local path as the winner; a caller that asks
+    only "does any remote flag appear" would then price a filesystem path as a
+    Hugging Face repository and charge a reserve for something llama-server will
+    not load. Only the winning flag decides which of the two the value is.
+    """
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
+    found_remote = False
     for i, raw in enumerate(args):
         flag = _flag_name(raw)
         _, eq, inline = raw.partition("=")
-        if flag not in flags:
+        if flag not in _HF_DRAFT_FLAGS and flag not in _LOCAL_DRAFT_FLAGS:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if value and not value.startswith("-"):
             found = value
+            found_remote = flag in _HF_DRAFT_FLAGS
     if found is not None:
-        return found
+        return found, found_remote
     e = os.environ if env is None else env
-    return (
-        e.get("LLAMA_ARG_SPEC_DRAFT_MODEL")
-        or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO")
-        # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
-        # rename (2026-04-28).
-        or e.get("LLAMA_ARG_MODEL_DRAFT")
-        or e.get("LLAMA_ARG_HFD_REPO")
-        or None
-    )
+    # The value lookup's own precedence; with no flag to read, the env spelling says
+    # local or remote. The last two are pre-b8955 (2025-08-30 to 2026-04-28).
+    for var, remote in (
+        ("LLAMA_ARG_SPEC_DRAFT_MODEL", False),
+        ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", True),
+        ("LLAMA_ARG_MODEL_DRAFT", False),
+        ("LLAMA_ARG_HFD_REPO", True),
+    ):
+        value = e.get(var)
+        if value:
+            return value, remote
+    return None, False
 
 
 def _extra_args_draft_cache_types(
@@ -2927,14 +3027,24 @@ def _build_ngram_mod_flags(
 
 
 # Canonical Speculative Decoding modes exposed by the Unsloth chat UI.
-# Dropdown renders six (auto, mtp, dspark, ngram, mtp+ngram, off); the load API
-# also accepts legacy values the original Switch and external callers emit
-# (default, draft-mtp, ngram-mod, ngram-simple).
-_CANONICAL_SPEC_MODES = {"auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"}
+# Dropdown renders seven (auto, mtp, dspark, dflash, ngram, mtp+ngram, off); the
+# load API also accepts legacy values the original Switch and external callers
+# emit (default, draft-mtp, ngram-mod, ngram-simple).
+_CANONICAL_SPEC_MODES = {
+    "auto",
+    "mtp",
+    "dspark",
+    "dflash",
+    "ngram",
+    "mtp+ngram",
+    "off",
+    "ngram-simple",
+}
 _LEGACY_SPEC_MODE_MAP = {
     "default": "auto",
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",
+    "draft-dflash": "dflash",
     "ngram-mod": "ngram",
 }
 
@@ -2942,8 +3052,8 @@ _LEGACY_SPEC_MODE_MAP = {
 def _canonicalize_spec_mode(value):
     """Map any accepted ``speculative_type`` input onto a canonical mode.
 
-    Returns ``auto``, ``mtp``, ``dspark``, ``ngram``, ``mtp+ngram``, ``off``,
-    ``ngram-simple``, or ``None`` (callers treat ``None`` as ``auto``).
+    Returns ``auto``, ``mtp``, ``dspark``, ``dflash``, ``ngram``, ``mtp+ngram``,
+    ``off``, ``ngram-simple``, or ``None`` (callers treat ``None`` as ``auto``).
     Unknown strings collapse to ``auto`` so a stale UI value or typo falls
     back to the safe platform-aware path.
     """
@@ -3041,6 +3151,11 @@ def _llama_lib_dir(binary: str) -> Path:
 
 
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
+
+# GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
+_GGML_GPU_BACKEND_RE = re.compile(
+    r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+)
 
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
@@ -3147,6 +3262,12 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
 class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
 
+    __slots__ = ()
+
+
+# Module level so tests can point the orphan sweep at a fixture tree.
+_PROC_ROOT = "/proc"
+
 
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
@@ -3185,6 +3306,14 @@ class LlamaCppBackend:
         self._capability_probe_inconclusive: bool = False
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
+        self._dflash_sidecar_absent: bool = False
+        # Sidecar fetch lost to a blip, not to the repo lacking one
+        # (_dflash_sidecar_absent). Worth one more Apply: under Auto nothing else
+        # records that the load ended up with no drafter.
+        self._dflash_retry_needed: bool = False
+        # Which llama-server file this load ran. `unsloth studio update` replaces it
+        # in place, so a stand-down blamed on the binary can spot a real update.
+        self._launch_binary_revision: tuple = ()
         # Set after an auto-Vulkan crash recovers with all devices disabled.
         self._cpu_fallback_reason: Optional[str] = None
         self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
@@ -3263,6 +3392,8 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
+        self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -3323,6 +3454,9 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
+        # server is not hidden behind the 500 ms fallback poll.
+        self._health_probe_event = threading.Event()
         # llama-server tee log (see _drain_stdout / _kill_process).
         self._llama_log_fh = None
         self._llama_log_path: Optional[Path] = None
@@ -3445,6 +3579,44 @@ class LlamaCppBackend:
     def spec_fallback_reason(self) -> Optional[str]:
         """Why MTP was disabled on the last MTP-requesting load, else None."""
         return self._spec_fallback_reason
+
+    def _binary_changed_since_launch(self) -> bool:
+        """Whether a different llama-server is installed than the live one was launched
+        from. False when either side is unreadable, so an install still in flight is not
+        read as a finished one; the next Apply asks again."""
+        current = self._binary_revision(self._find_llama_server_binary())
+        if not current or not self._launch_binary_revision:
+            return False
+        return current != self._launch_binary_revision
+
+    def spec_binary_fallback_can_retry(self) -> bool:
+        """Whether the binary has since gained what the last load stood down for.
+
+        The UI tells the user to run `unsloth studio update`, which leaves the request
+        identical, so the duplicate-load comparators would otherwise dedup the very
+        reload that update was meant to enable.
+
+        Ask about the capability the drafter kind needs, not the reason: every kind
+        records "binary_no_mtp", so asking about MTP after a DSpark stand-down says yes
+        on a build that never gained draft-dspark. "binary_outdated" is an unknown
+        architecture, which no flag advertises, so that one compares the file.
+        """
+        if self._spec_fallback_reason == "binary_outdated":
+            return self._binary_changed_since_launch()
+        if self._spec_fallback_reason != "binary_no_mtp":
+            return False
+        if self._launch_binary_revision and not self._binary_changed_since_launch():
+            # An untouched file advertises nothing new, and this runs on every
+            # duplicate-load check where the probe below is a subprocess.
+            return False
+        capability = _SPEC_KIND_CAPABILITY.get(self._spec_drafter_kind or "")
+        if capability is None:
+            return False
+        try:
+            return bool(self.probe_server_capabilities().get(capability))
+        except Exception as exc:
+            logger.debug("Could not recheck the speculative capability: %s", exc)
+            return False
 
     @property
     def extra_args(self) -> Optional[List[str]]:
@@ -3991,10 +4163,25 @@ class LlamaCppBackend:
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
-            and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark")
+            and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
+            # DFlash asks through _dflash_retry_needed below, which is set only for
+            # retryable failures. A permanent listing error records no answer, so
+            # _dflash_sidecar_absent stays False and this arm relaunched forever.
+            and self._spec_drafter_kind != "dflash"
             and not spec_owned_by_extra_args
         ):
+            return False
+        # The stand-down the UI asks the user to fix by updating llama.cpp. That leaves
+        # the request identical, so without this the repaired load never happens.
+        if (
+            speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
+            and self.spec_binary_fallback_can_retry()
+        ):
+            return False
+        # Under Auto a failed fetch records no fallback reason, so the branch above
+        # cannot see it. A repo with no sidecar is _dflash_sidecar_absent's business.
+        if self._dflash_retry_needed and speculative_type in ("auto", "dflash"):
             return False
         # Retry a runtime the probe degraded, once the probe starts answering (#8317).
         # The retry window is worth nothing if Apply keeps deduping against the degraded
@@ -4018,7 +4205,7 @@ class LlamaCppBackend:
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
         if (
             (
-                self._speculative_type in ("draft-mtp", "draft-dspark")
+                self._speculative_type in ("draft-mtp", "draft-dspark", "draft-dflash")
                 or self._spec_fallback_reason == "runtime_error"
             )
             and intent.spec_draft_n_max is not None
@@ -4035,17 +4222,38 @@ class LlamaCppBackend:
             "mtp",
             "mtp+ngram",
             "dspark",
+            "dflash",
         ):
             try:
-                # Auto counts as dspark once it resolved that way: the launch stored
-                # the DSpark sidecar, so comparing the MTP field (None for these
+                # Auto counts as dspark/dflash once it resolved that way: the launch
+                # stored that sidecar, so comparing the MTP field (None for these
                 # repos) against it would reload a healthy server on every Apply.
+                # _speculative_type is reset to "default" when a drafter fails to
+                # start and the drafterless retry succeeds, but the launch still
+                # recorded the sidecar it resolved. Keying the comparison off it
+                # would then compare the intent's (empty) MTP path against that
+                # recorded sidecar and reload a healthy server on every Apply.
+                # _spec_drafter_kind survives the fallback, so it decides here.
                 _compare_dspark = speculative_type == "dspark" or (
-                    speculative_type == "auto" and self._speculative_type == "draft-dspark"
+                    speculative_type == "auto"
+                    and (
+                        self._speculative_type == "draft-dspark"
+                        or self._spec_drafter_kind == "dspark"
+                    )
                 )
-                intent_draft = (
-                    intent.dspark_draft_path if _compare_dspark else intent.mtp_draft_path
+                _compare_dflash = speculative_type == "dflash" or (
+                    speculative_type == "auto"
+                    and (
+                        self._speculative_type == "draft-dflash"
+                        or self._spec_drafter_kind == "dflash"
+                    )
                 )
+                if _compare_dspark:
+                    intent_draft = intent.dspark_draft_path
+                elif _compare_dflash:
+                    intent_draft = intent.dflash_draft_path
+                else:
+                    intent_draft = intent.mtp_draft_path
                 requested_draft = Path(intent_draft).resolve() if intent_draft else None
                 # A drafter the last load dropped on purpose counts as launched here:
                 # the file is still there, so comparing it against the stored None
@@ -4073,6 +4281,19 @@ class LlamaCppBackend:
         if not self._n_experts or not self._n_layers:
             return 0
         return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
+
+    @property
+    def is_embedding_gguf(self) -> bool:
+        """Whether the loaded GGUF is an embedding model, from its pooling type.
+
+        Only MEAN, CLS and LAST pool into the one vector per sequence that
+        `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
+        head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
+        send_embedding reads n_embd_out floats out of it.
+        """
+        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -4116,7 +4337,7 @@ class LlamaCppBackend:
 
     @property
     def spec_drafter_kind(self) -> Optional[str]:
-        """Which drafter the resolution was about, ``mtp`` or ``dspark``.
+        """Which drafter the resolution was about: ``mtp``, ``dspark`` or ``dflash``.
 
         Distinct from ``requested_spec_mode``, which stays ``auto`` when Auto
         resolves the kind itself, and from ``speculative_type``, which reads
@@ -4297,17 +4518,20 @@ class LlamaCppBackend:
         match = re.match(r"b(\d+)", str(release_tag or ""))
         return bool(match) and int(match.group(1)) in cls._BROKEN_DSPARK_BUILDS
 
-    # Cached on (path, mtime); `unsloth studio update` bumps mtime.
+    # Keyed on the file's revision, since `unsloth studio update` replaces it in place.
+    # Nanoseconds and size, not int(st_mtime): an update landing in the same second as
+    # the probe kept the key identical and got the old build's capabilities.
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
-    _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
-    _capability_retry_after: dict[tuple[str, int], float] = {}
+    _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
+    _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
-        {found, mtp_token, supports_mtp, supports_dspark, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
+        {found, mtp_token, supports_mtp, supports_dspark, supports_dflash,
+        ngram_mod_flavor, supports_ngram_mod, spec_draft_n_max_flag, cache flag
+        support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
         ``--spec-ngram-mod-n-match / -n-min / -n-max`` are real args;
@@ -4328,6 +4552,7 @@ class LlamaCppBackend:
                 "mtp_token": None,
                 "supports_mtp": False,
                 "supports_dspark": False,
+                "supports_dflash": False,
                 "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
@@ -4345,10 +4570,13 @@ class LlamaCppBackend:
                 "spec_draft_ngl_flag": None,
             }
         try:
-            mtime = int(Path(bin_path).stat().st_mtime)
+            binary_stat = Path(bin_path).stat()
+            mtime_ns = binary_stat.st_mtime_ns
+            size = binary_stat.st_size
         except OSError:
-            mtime = 0
-        cache_key = (bin_path, mtime)
+            mtime_ns = 0
+            size = 0
+        cache_key = (bin_path, mtime_ns, size)
         with cls._capability_cache_lock:
             cached = cls._capability_cache.get(cache_key)
             if cached is not None:
@@ -4362,6 +4590,7 @@ class LlamaCppBackend:
 
         mtp_token: Optional[str] = None
         supports_dspark = False
+        supports_dflash = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
@@ -4463,6 +4692,15 @@ class LlamaCppBackend:
                     spec_help.lower(),
                 )
             )
+            # Same word-boundary match as DSpark: draft-dflash only exists on
+            # builds that carry the arch, and emitting a --spec-type the binary
+            # does not know aborts the launch instead of falling back.
+            supports_dflash = bool(
+                re.search(
+                    r"(?<![a-z0-9_-])draft-dflash(?![a-z0-9_-])",
+                    spec_help.lower(),
+                )
+            )
             # Only a resolved --spec-type block confirms missing MTP; empty/crash
             # leaves saw_spec_type False so supports_mtp fails open.
             saw_spec_type = bool(spec_help.strip()) and "--spec-type" in spec_help
@@ -4551,6 +4789,7 @@ class LlamaCppBackend:
             "mtp_token": mtp_token,
             "supports_mtp": supports_mtp,
             "supports_dspark": bool(supports_dspark and saw_spec_type and probe_ok),
+            "supports_dflash": bool(supports_dflash and saw_spec_type and probe_ok),
             "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
@@ -5278,8 +5517,14 @@ class LlamaCppBackend:
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
+            # Windows ROCm's free reading is an over-report on discrete cards too,
+            # not only on the shared pool handled below (#8403). It is capped
+            # against this process's own allocator, so VRAM a resident torch model
+            # holds in the backend process stops being offered to llama.cpp slots.
+            from utils.hardware import trusted_mem_get_info
+
             for ordinal in range(torch.cuda.device_count()):
-                free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
+                free_bytes, total_bytes = trusted_mem_get_info(ordinal)
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -6444,9 +6689,11 @@ class LlamaCppBackend:
             compute = 2 * act_scratch + out_buffer * par
         else:
             # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot; would under-count embeddings/--logits-all,
-            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
-            compute = act_scratch + out_buffer * max(0, par - 1)
+            # ~one logit row per slot). Embedding mode outputs the whole first
+            # micro-batch too, so it pays for every slot rather than slots past one.
+            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
+            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
+            compute = act_scratch + out_buffer * output_slots
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
     def _compute_buffer_ctx_bytes(
@@ -6796,6 +7043,13 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
+                    # Two forms across llama.cpp builds. Only readiness lines wake the
+                    # probe: waking on every tensor-load log spins startup.
+                    line_lower = line.lower()
+                    if "server is listening" in line_lower or "model loaded" in line_lower:
+                        health_probe_event = getattr(self, "_health_probe_event", None)
+                        if health_probe_event is not None:
+                            health_probe_event.set()
                     logger.debug(f"[llama-server] {line}")
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
@@ -6809,6 +7063,11 @@ class LlamaCppBackend:
             # Never let the drain thread die: a full stdout pipe can deadlock
             # llama-server (Windows). Pipe-closed on exit is the common case.
             logger.debug("llama-server stdout drain stopped", exc_info = True)
+        finally:
+            # EOF means the process exited; wake the health loop immediately.
+            health_probe_event = getattr(self, "_health_probe_event", None)
+            if health_probe_event is not None:
+                health_probe_event.set()
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -6864,6 +7123,15 @@ class LlamaCppBackend:
             for _ in range(alen):
                 n = struct.unpack("<Q", f.read(8))[0]
                 raw = f.read(n)
+                # Only "<...>" / "[...]" entries survive delimiter_shaped_tokens, so skip
+                # the decode for the rest. UTF-8 is self-synchronising, so no multi-byte
+                # character starts with either byte and the first one settles it. The
+                # bytes are still read rather than seeked past: seeking would move the
+                # cursor differently on a short read, raise a different error on a bad
+                # length, and fail outright on a non-seekable stream. Decoding a
+                # six-figure vocabulary is the cost here, not reading it.
+                if raw[:1] != b"<" and raw[:1] != b"[":
+                    continue
                 # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
                 # entries are simply not markers.
                 try:
@@ -6917,6 +7185,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
+        self._pooling_type = None
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -6961,6 +7230,7 @@ class LlamaCppBackend:
             # Arch-specific keys added dynamically once we know the arch.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            pooling_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -6992,7 +7262,7 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys:
+                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -7009,6 +7279,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -7036,6 +7307,8 @@ class LlamaCppBackend:
                                 )
                                 if key == "diffusion.canvas_length":
                                     canvas_seen = True
+                                if key.endswith(".pooling_type"):
+                                    pooling_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -7075,6 +7348,11 @@ class LlamaCppBackend:
                         # fetch); break so the resolver fallback runs on
                         # what we have.
                         break
+
+            # GGUF metadata has no key-order contract. Pooling can precede
+            # general.architecture, so bind the buffered value after the sweep.
+            if arch is not None:
+                self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -7771,6 +8049,7 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
         outcome: Optional[dict] = None,
+        on_transient_failure: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -7780,10 +8059,33 @@ class LlamaCppBackend:
         Runs WITHOUT self._lock (like _download_gguf); honors _cancel_event so
         an /unload between the main download and here skips the fetch.
         ``cancel_event`` overrides ``self._cancel_event`` (defaults to it).
+
+        Split-aware, like the main-model download: a companion published as a
+        split GGUF is only usable as a complete set, since llama-server resolves
+        the sibling shards from the first one's directory. Fetching just the
+        picked shard left a drafter whose header reads fine and which the server
+        then cannot open, so the load fell back to no speculation with nothing to
+        show for the download -- and it disagreed with the local scan, which
+        accepts a split drafter only when every shard is present.
+
+        ``on_transient_failure`` fires when the companion was lost to a listing that
+        never completed or a download that dropped, the one None worth another attempt.
+        A callback rather than an ``outcome`` key because the DFlash caller loops and
+        needs the answer per attempt. Permanent errors, offline and cancellation do not
+        fire it.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
+
+        # The listing that produced the pick, kept so the shard siblings can be
+        # resolved from the same names the pick chose among.
+        available: list[str] = []
+
+        def _pick_from(names: list[str]) -> Optional[str]:
+            nonlocal available
+            available = list(names)
+            return pick(available)
 
         # Keep companion files in the main GGUF's snapshot.
         if near_path:
@@ -7807,6 +8109,9 @@ class LlamaCppBackend:
         # completed (offline, transient Hub failure) leaves target None for a
         # reason that says nothing about the repo's contents.
         listing_answered = False
+        # Whether the listing died of something retryable. Distinct from
+        # listing_answered: a permanent error also leaves the listing unanswered.
+        listing_failed = False
         from huggingface_hub import list_repo_files
 
         # Retry a transient listing blip; permanent repo/auth errors and offline
@@ -7815,19 +8120,15 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = pick(list_repo_files(hf_repo, token = hf_token))
+                target = _pick_from(list_repo_files(hf_repo, token = hf_token))
                 listing_answered = True
+                listing_failed = False
                 break
             except Exception as e:
-                if type(e).__name__ in (
-                    "RepositoryNotFoundError",
-                    "GatedRepoError",
-                    "RevisionNotFoundError",
-                    "EntryNotFoundError",
-                    "OfflineModeIsEnabled",
-                ):
+                if type(e).__name__ in _PERMANENT_HUB_ERRORS:
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
+                listing_failed = True
                 logger.debug(
                     f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
@@ -7839,7 +8140,7 @@ class LlamaCppBackend:
                 from utils.models.model_config import _iter_hf_cache_snapshots
                 for snap in _iter_hf_cache_snapshots(hf_repo, companion_cache_dir):
                     rel_files = _gguf_snapshot_files(snap)
-                    target = pick(rel_files)
+                    target = _pick_from(rel_files)
                     if target is not None:
                         logger.info("Resolved %s %s from local HF cache", label, target)
                         break
@@ -7858,6 +8159,9 @@ class LlamaCppBackend:
         ):
             outcome["listed"] = target is not None
         if target is None or cancel_event.is_set():
+            # The listing is the only step that can fail this far in.
+            if target is None and listing_failed and not cancel_event.is_set():
+                self._report_transient_companion_failure(on_transient_failure, label)
             return None
 
         # Offline, resolve the companion straight from the cache snapshot that
@@ -7872,22 +8176,87 @@ class LlamaCppBackend:
                 cache_dir = companion_cache_dir,
             )
             if cached:
-                logger.info("Resolved %s from local HF cache: %s", label, cached)
-                return cached
+                from utils.models.model_config import _drafter_split_is_complete
 
+                # Same whole-set rule as the snapshot reuse above: half a split
+                # companion is not a companion, and offline there is no fetch to
+                # complete it, so answering None leaves the load without a
+                # drafter instead of with one llama-server cannot open.
+                if _drafter_split_is_complete(Path(cached)):
+                    logger.info("Resolved %s from local HF cache: %s", label, cached)
+                    return cached
+
+        # A split companion is one file to pick and N files to fetch. Same helper
+        # the main-model download resolves its shards with, so the two cannot
+        # disagree about what belongs to a set; empty for the single-file case,
+        # which is every mmproj and every published sidecar so far.
+        extra_shards = _gguf_extra_shards(available, target)
+        # The filename carries the set size, so a short listing is answerable before
+        # the download: half a split companion is not one, as the reuse paths above say.
+        _shard_total = _SHARD_FULL_RE.match(target)
+        if _shard_total and len(extra_shards) + 1 != int(_shard_total.group(3)):
+            logger.info(
+                "Skipping %s: %s lists %d of %s shards.",
+                label,
+                hf_repo,
+                len(extra_shards) + 1,
+                _shard_total.group(3),
+            )
+            # Settled, not retryable: the listing answered, so the caller records
+            # absence rather than reloading on every Apply.
+            if outcome is not None:
+                outcome["listed"] = False
+            return None
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             # Same policy; companions are best-effort (caller below swallows failures to None).
-            return hf_hub_download_with_xet_fallback(
+            local_path = hf_hub_download_with_xet_fallback(
                 hf_repo,
                 target,
                 hf_token,
                 cancel_event = cancel_event,
                 cache_dir = companion_cache_dir,
             )
+            for shard in extra_shards:
+                if cancel_event.is_set():
+                    return None
+                logger.info(f"Downloading {label} shard: {hf_repo}/{shard}")
+                hf_hub_download_with_xet_fallback(
+                    hf_repo,
+                    shard,
+                    hf_token,
+                    cancel_event = cancel_event,
+                    cache_dir = companion_cache_dir,
+                )
+            return local_path
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
+            # The listing named the file, so this is the fetch dropping: retryable
+            # unless the Hub or this machine answered for good, or we were cancelled.
+            if (
+                not cancel_event.is_set()
+                and type(e).__name__ not in _PERMANENT_HUB_ERRORS
+                and getattr(e, "errno", None) not in _UNRECOVERABLE_LOCAL_ERRNOS
+                and not _hf_env_offline()
+            ):
+                self._report_transient_companion_failure(on_transient_failure, label)
             return None
+
+    @staticmethod
+    def _report_transient_companion_failure(
+        on_transient_failure: Optional[Callable[[], None]], label: str
+    ) -> None:
+        """Tell the caller its companion was lost to something retryable.
+
+        Best-effort both ways: the callback is optional, and one that raises must not
+        lose the load over bookkeeping for an already best-effort companion.
+        """
+        if on_transient_failure is None:
+            return
+        try:
+            on_transient_failure()
+        except Exception as exc:
+            logger.debug("Could not record the transient %s failure: %s", label, exc)
 
     def _download_mmproj(
         self,
@@ -8107,6 +8476,321 @@ class LlamaCppBackend:
         # every repo but one) from a fetch that failed and could yet succeed.
         self._dspark_sidecar_absent = outcome.get("listed") is False
         return found
+
+    def _cached_repo_dflash_drafter(
+        self,
+        hf_repo: str,
+        *,
+        cache_dir: Optional[str] = None,
+        near_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """The preferred already-cached DFlash sidecar for a repo, Q8_0 first
+        (dflash_repo_preference_key), so an offline reuse picks the same file
+        the online download would have fetched.
+
+        ``near_path`` is the weight this sidecar would draft for. A repo hosting
+        more than one family ships more than one sidecar, and precision alone
+        would hand model B the sidecar named after model A, so the candidates
+        are ranked against the weight actually being loaded (same rule as
+        detect_dflash_file). Without it the ordering is precision only, as
+        before.
+        """
+        try:
+            from utils.models.drafters import (
+                _drafter_split_is_complete,
+                dflash_repo_preference_key,
+                is_dflash_architecture,
+            )
+            from utils.models.model_config import _iter_hf_cache_snapshots
+
+            snapshots = (
+                _iter_hf_cache_snapshots(hf_repo)
+                if cache_dir is None
+                else _iter_hf_cache_snapshots(hf_repo, cache_dir)
+            )
+            weight_name = Path(near_path).name if near_path else None
+            ranked: list[tuple[tuple[int, int, int, str], Path]] = []
+            for snap in snapshots:
+                names = _gguf_snapshot_files(snap)
+                # Every non-sidecar GGUF in the snapshot is a weight some sidecar
+                # could be naming; that is what tells a neighbour's sidecar apart
+                # from one naming no family at all. A nested dflash-*.gguf counts
+                # as one of those weights, since only a root-level file is a
+                # sidecar here.
+                others = [
+                    Path(name).name for name in names if not _is_root_dflash_drafter_path(name)
+                ]
+                ranked.extend(
+                    (dflash_repo_preference_key(name, weight_name, others), snap / name)
+                    for name in names
+                    if _is_root_dflash_drafter_path(name)
+                )
+            for _, candidate in sorted(ranked, key = lambda entry: entry[0]):
+                if not candidate.is_file():
+                    continue
+                # The ranking above works off names, and dflash- is only a naming
+                # convention: a cached weight whose basename happens to start with
+                # it would be launched as --model-draft and refused at startup.
+                # Same header rule, same helper, as the local scan, so an offline
+                # reuse and a local scan cannot disagree about what a sidecar is.
+                # Skipped rather than fatal, since the snapshot may hold a real one.
+                if not is_dflash_architecture(str(candidate)):
+                    logger.info(
+                        "Ignoring cached DFlash candidate %s: general.architecture is not dflash",
+                        candidate,
+                    )
+                    continue
+                # Same whole-set rule _companion_snapshot_sibling applies, for the
+                # same reason: llama-server resolves the sibling shards from this
+                # one's directory, and what this lookup returns is handed straight
+                # back as the drafter with no fetch left to complete it. Half a
+                # set reads as a valid header and then cannot be opened, so the
+                # load quietly drops speculation. Skipped rather than fatal, since
+                # another snapshot may hold the complete copy.
+                if not _drafter_split_is_complete(candidate):
+                    logger.info(
+                        "Ignoring cached DFlash candidate %s: split shard set is incomplete",
+                        candidate,
+                    )
+                    continue
+                return str(candidate)
+        except Exception as exc:
+            logger.debug("Cached DFlash drafter lookup failed for %s: %s", hf_repo, exc)
+        return None
+
+    def _download_dflash(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+        near_path: Optional[str] = None,
+        binary: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the published DFlash sidecar, preferring its Q8_0 copy.
+
+        Unlike the ~11 GB DSpark sidecar, which is why that one is opt-in, the
+        published DFlash sidecar is ~1.5 GiB and already ships in the model's own
+        GGUF repo, so Auto fetches it the same way it fetches the MTP drafter.
+        Still gated on ``supports_dflash``: a binary with no usable
+        ``--spec-type draft-dflash`` falls back, so the download would never be
+        opened. A raised probe still fetches, since launch re-probes and may yet
+        engage.
+        """
+
+        weight_name = Path(near_path).name if near_path else None
+        # Whatever a previous load concluded, this one is asking again.
+        self._dflash_retry_needed = False
+
+        def _mark_retry_needed() -> None:
+            self._dflash_retry_needed = True
+
+        # Basenames whose header turned out not to say dflash. A name lands here
+        # only once the file is readable on disk, and _pick_dflash then skips it,
+        # so a repo whose best-ranked candidate is an impostor still reaches the
+        # real sidecar behind it instead of the search giving up on the repo.
+        rejected: set[str] = set()
+
+        def _pick_dflash(candidates: list[str]) -> Optional[str]:
+            # Ranked against the weight being loaded, not by precision alone: a
+            # repo hosting two families ships a sidecar per family, and
+            # dflash-model-A-Q8_0.gguf beats the generic dflash-kquant.gguf on
+            # precision, so model B would download and launch model A's drafter.
+            # The rest of the listing supplies the neighbouring weights that make
+            # a foreign sidecar recognisable (a sidecar naming no family at all
+            # stays eligible, which is what the published one does).
+            from utils.models.drafters import (
+                dflash_repo_preference_key,
+                split_listing_is_complete,
+            )
+
+            # Root level only, as the local scan is: a nested dflash-*.gguf is an
+            # ordinary weight, and offering it here spends its entire download
+            # before the header check can turn it away.
+            others = [
+                Path(name).name
+                for name in candidates
+                if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
+            ]
+            # Same bound as dflash_plan_files: dflash- is a prefix real weights carry,
+            # the header only reads once the bytes are here, and a drafter is a few
+            # layers of its target. An unlisted size leaves the candidate in, as before.
+            sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
+            try:
+                target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
+            except OSError:
+                target_bytes = 0
+            files = sorted(
+                (
+                    name
+                    for name in candidates
+                    if _is_root_dflash_drafter_path(name)
+                    and Path(name).name not in rejected
+                    # Before the ranking, as dflash_plan_files is: the fetch refuses a
+                    # half-listed set, and returning it ends the loop.
+                    and split_listing_is_complete(candidates, name)
+                    # Whole set, not the picked shard: each half of a split weight can
+                    # sit under the target while the set does not.
+                    and not (
+                        target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
+                    )
+                ),
+                key = lambda name: dflash_repo_preference_key(name, weight_name, others),
+            )
+            return files[0] if files else None
+
+        def _validated(path: Optional[str]) -> Optional[str]:
+            """``path`` back iff its header really says ``dflash``.
+
+            _is_dflash_drafter_path is a FILENAME test, deliberately (the prefix
+            form is the only one accepted, so a sidecar cannot double as a
+            selectable main model in the quant picker), which means a remote repo
+            holding an ordinary weight called dflash-*.gguf passes it. The local
+            scan settles that with the architecture in the header; the remote
+            paths have to as well, or the load spends gigabytes of download on a
+            file llama-server then refuses as --model-draft. Same helper as
+            detect_dflash_file so the two rules cannot drift.
+            """
+            from utils.models.drafters import is_dflash_architecture
+
+            if not path:
+                return None
+            if is_dflash_architecture(path):
+                return path
+            rejected.add(Path(path).name)
+            logger.warning("Ignoring DFlash candidate %s: general.architecture is not dflash", path)
+            return None
+
+        # Retried rather than abandoned: every rejection removes one name from the
+        # pool, so the next pick returns a different file and the scan ends at the
+        # last candidate (or at the first real sidecar). Answers already seen end
+        # it too, so a scan that ignores the pool cannot spin here.
+        cached: Optional[str] = None
+        seen_siblings: set[str] = set()
+        while near_path:
+            sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
+            if sibling is None or sibling in seen_siblings:
+                break
+            seen_siblings.add(sibling)
+            cached = _validated(sibling)
+            if cached:
+                break
+        # _cached_repo_dflash_drafter applies the same header check to its own
+        # candidates, so anything it hands back is already validated.
+        if not cached and _hf_env_offline():
+            cached = self._cached_repo_dflash_drafter(
+                hf_repo,
+                cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                near_path = near_path,
+            )
+        try:
+            if not self.probe_server_capabilities(binary).get("supports_dflash"):
+                logger.warning(
+                    "Skipping the DFlash sidecar download: llama-server has no usable "
+                    "--spec-type draft-dflash, so this load falls back to no speculative "
+                    "decoding. Run `unsloth studio update`, then reload."
+                )
+                # A sidecar already on disk is still reported, for the same reason as
+                # the DSpark path: the route rediscovers it on every Apply, so
+                # answering None would make the reuse check compare it against a
+                # launched None and reload the same server each time.
+                # _build_speculative_flags re-checks the capability and still falls back.
+                return cached
+        except Exception as exc:
+            logger.debug("DFlash capability probe failed before the sidecar fetch: %s", exc)
+
+        if cached:
+            logger.info("Reusing cached DFlash drafter: %s", cached)
+            return cached
+        outcome: dict = {}
+        found: Optional[str] = None
+        # The header can only be read once the bytes are here, so validation is a
+        # post-fetch step and a rejection has to be able to fall through to the
+        # next candidate rather than end the search. Bounded the same way as the
+        # reuse scan above: a fetch that answers with a file already rejected has
+        # nothing further to offer.
+        fetched: set[str] = set()
+        while True:
+            candidate = self._download_companion_gguf(
+                hf_repo = hf_repo,
+                hf_token = hf_token,
+                pick = _pick_dflash,
+                label = "DFlash drafter",
+                near_path = near_path,
+                outcome = outcome,
+                # Not a header rejection: that candidate is settled and the loop moves
+                # on. Only the Hub dropping out leaves a real sidecar unfetched.
+                on_transient_failure = _mark_retry_needed,
+            )
+            if candidate is None or candidate in fetched:
+                break
+            fetched.add(candidate)
+            found = _validated(candidate)
+            if found:
+                break
+        # Distinguishes a repo that ships no sidecar from a fetch that failed and
+        # could yet succeed. A repo whose only dflash-*.gguf is an ordinary weight
+        # exits the loop through a listing that picked nothing, which records the
+        # same permanent absence: there is nothing usable here to fetch next time.
+        self._dflash_sidecar_absent = outcome.get("listed") is False
+        return found
+
+    @staticmethod
+    def _remote_root_gguf_sizes(hf_repo: str, hf_token: Optional[str] = None) -> dict[str, int]:
+        """Root-level GGUF basenames to their listed byte size, {} when unavailable.
+
+        list_repo_files answers names only, so the size bound needs the metadata
+        listing. Best effort: an empty map leaves every candidate eligible, which is
+        the behaviour before the bound existed.
+        """
+        try:
+            from huggingface_hub import model_info
+            info = model_info(hf_repo, token = hf_token, files_metadata = True)
+            return {
+                name: int(getattr(sibling, "size", 0) or 0)
+                for sibling in (getattr(info, "siblings", None) or [])
+                if isinstance(name := getattr(sibling, "rfilename", None), str) and "/" not in name
+            }
+        except Exception as exc:
+            logger.debug("Could not size the DFlash candidates for %s: %s", hf_repo, exc)
+            return {}
+
+    def _dspark_wins_auto(
+        self,
+        *,
+        binary: Optional[str],
+        dspark_draft_path: Optional[str],
+        spec_canon: str,
+        extra_args: Optional[list[str]],
+        caps: Optional[Callable[[Optional[str]], dict]] = None,
+    ) -> bool:
+        """Whether Auto will actually resolve this load to DSpark.
+
+        A DSpark path on its own does not answer that. _download_dspark reports
+        an already-cached sidecar even when the binary has no usable
+        ``--spec-type draft-dspark`` (deliberately: the route rediscovers it on
+        every Apply, and answering None there would reload the same server each
+        time), so the capability has to be applied by everything that reads the
+        path as "DSpark is what Auto picks". Without it a binary that supports
+        DFlash but not DSpark stands down on the DFlash fetch for a sidecar it
+        can never launch and the load ends up with no drafter at all.
+
+        A raised probe answers False, which keeps Auto on its other options
+        exactly as the promotion does. probe_server_capabilities caches on the
+        binary's revision, so asking here and at the promotion is one probe.
+        """
+        if spec_canon != "auto" or not dspark_draft_path:
+            return False
+        if _extra_args_set_spec_type(extra_args):
+            return False
+        try:
+            # Through the caller's getter when it has one, so an inconclusive probe
+            # still latches for this launch (#8317) even though the promotion moved
+            # in here.
+            probe = caps or self.probe_server_capabilities
+            return bool(probe(binary).get("supports_dspark"))
+        except Exception as exc:
+            logger.debug("DSpark capability probe failed during Auto: %s", exc)
+            return False
 
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
@@ -9190,9 +9874,7 @@ class LlamaCppBackend:
             # and let the next stage collect what no live Studio holds.
             (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
-            gpu_backend = re.compile(
-                r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
-            )
+            gpu_backend = _GGML_GPU_BACKEND_RE
             cpu_library_present = False
             for source in lib_dir.iterdir():
                 try:
@@ -9238,6 +9920,20 @@ class LlamaCppBackend:
         except OSError:
             return ()
         return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    @staticmethod
+    def _binary_revision(binary: Optional[str]) -> tuple:
+        """Which build of llama-server a path currently holds, () when unreadable.
+
+        The path alone cannot say, since an update swaps the file in place. Empty on an
+        unreadable file so callers read "cannot tell" as "unchanged": the install window
+        is itself unreadable, and treating it as a finished update would tear a healthy
+        server down for a binary that is not there yet.
+        """
+        if not binary:
+            return ()
+        stamp = LlamaCppBackend._binary_stamp(Path(binary))
+        return (str(binary),) + stamp if stamp else ()
 
     def _cleanup_cpu_fallback_runtime(self) -> None:
         runtime = getattr(self, "_cpu_fallback_runtime", None)
@@ -9383,6 +10079,7 @@ class LlamaCppBackend:
         mmproj_path = intent.mmproj_path
         mtp_draft_path = intent.mtp_draft_path
         dspark_draft_path = intent.dspark_draft_path
+        dflash_draft_path = intent.dflash_draft_path
         hf_repo = intent.hf_repo
         hf_variant = intent.hf_variant
         hf_token = intent.hf_token
@@ -9515,6 +10212,13 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+            # Kept so a stand-down blamed on the binary can later tell a real update
+            # from the same file still being installed.
+            self._launch_binary_revision = self._binary_revision(binary)
+            # Cleared per load, not only where the fetch runs: a local-file load never
+            # reaches the DFlash fetch, and a verdict left over from the previous model
+            # would make every Apply for this one reload.
+            self._dflash_retry_needed = False
 
             # Every capability answer shaping this launch, latching whether any was a
             # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
@@ -9712,6 +10416,39 @@ class LlamaCppBackend:
                             binary = binary,
                             caps_probe = _launch_caps,
                         )
+                    # DFlash: same shape, and Auto is included for the same
+                    # reason, but it is not gated behind an opt-in the way the
+                    # ~11 GB DSpark sidecar is. The published sidecar is ~1.5 GiB
+                    # and ships in the model's own GGUF repo, so under Auto it
+                    # costs about what the MTP drafter costs. Repos without one
+                    # no-op after a single listing.
+                    # Under Auto, DSpark takes first refusal in the promotion
+                    # below, so a repo that ships both kinds would never launch
+                    # the DFlash sidecar. Fetching it anyway costs ~1.5 GiB of
+                    # bandwidth and cache for a file that cannot be used, so the
+                    # Auto fetch stands down once DSpark has resolved. It has to
+                    # be the same "resolved" the promotion means, capability and
+                    # all: a DSpark path this binary cannot launch loses the
+                    # promotion, so standing down on it would leave a
+                    # DFlash-capable binary with no drafter at all. An explicit
+                    # "dflash" request still fetches.
+                    if (
+                        not dflash_draft_path
+                        and _spec_canon in ("auto", "dflash")
+                        and not self._dspark_wins_auto(
+                            binary = binary,
+                            dspark_draft_path = dspark_draft_path,
+                            spec_canon = _spec_canon,
+                            extra_args = extra_args,
+                        )
+                        and not _extra_args_set_spec_type(extra_args)
+                    ):
+                        dflash_draft_path = self._download_dflash(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                            near_path = model_path,
+                            binary = binary,
+                        )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
                     raise FileNotFoundError(f"GGUF file not found: {gguf_path}")
@@ -9724,21 +10461,35 @@ class LlamaCppBackend:
 
             # Auto resolves to DSpark whenever a sidecar is available and this
             # binary can run it: 1.84x decode on 4x B200 and 1.91x on one, against
-            # the ngram-mod fallback this architecture would otherwise get. Gated
-            # on the capability because _download_dspark also reports a cached
-            # sidecar an incapable binary cannot launch, and promoting there would
-            # turn Auto's fallback into no speculative decoding at all.
+            # the ngram-mod fallback this architecture would otherwise get. The
+            # capability gate lives in _dspark_wins_auto, shared with the DFlash
+            # fetch above so the fetch and the promotion cannot disagree about
+            # whether Auto is going to end up on DSpark.
+            if self._dspark_wins_auto(
+                binary = binary,
+                dspark_draft_path = dspark_draft_path,
+                spec_canon = _spec_canon,
+                extra_args = extra_args,
+                caps = _launch_caps,
+            ):
+                _spec_canon = "dspark"
+                logger.info("Auto: DSpark sidecar available, using draft-dspark.")
+
+            # DFlash is the other Auto promotion, on the same capability gate.
+            # DSpark keeps first refusal (llama.cpp's own downloader ranks it
+            # ahead too), so a repo shipping both is unchanged; in practice a
+            # repo ships one kind or neither.
             if (
                 _spec_canon == "auto"
-                and dspark_draft_path
+                and dflash_draft_path
                 and not _extra_args_set_spec_type(extra_args)
             ):
                 try:
-                    if _launch_caps(binary).get("supports_dspark"):
-                        _spec_canon = "dspark"
-                        logger.info("Auto: DSpark sidecar available, using draft-dspark.")
+                    if _launch_caps(binary).get("supports_dflash"):
+                        _spec_canon = "dflash"
+                        logger.info("Auto: DFlash sidecar available, using draft-dflash.")
                 except Exception as exc:
-                    logger.debug("DSpark capability probe failed during Auto: %s", exc)
+                    logger.debug("DFlash capability probe failed during Auto: %s", exc)
 
             # MTP and DSpark are mutually exclusive, and the drafter sizing and
             # lifecycle path below is architecture agnostic, so it carries the
@@ -9747,6 +10498,8 @@ class LlamaCppBackend:
             # _spec_canon is the only thing that says which.
             if _spec_canon == "dspark":
                 mtp_draft_path = dspark_draft_path
+            elif _spec_canon == "dflash":
+                mtp_draft_path = dflash_draft_path
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
@@ -9771,6 +10524,17 @@ class LlamaCppBackend:
                 # reloads a healthy diffusion server on every Apply.
                 self._mtp_draft_path = None
                 self._mtp_draft_suppressed_path = None
+                # And the verdict on why the last load had no drafter, for the same
+                # reason once more: _build_speculative_flags clears it at the top of
+                # every load that reaches it, and this path never does. Both retry
+                # rules in the dedupe read it -- the drafter one and the binary one --
+                # and a stale answer would relaunch this server on every Apply for a
+                # drafter it was never going to carry.
+                self._spec_fallback_reason = None
+                self._spec_drafter_kind = None
+                # Discovery runs before the metadata read that says diffusion, so a
+                # transient sidecar failure can set this for a drafterless server.
+                self._dflash_retry_needed = False
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
@@ -9842,6 +10606,25 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
+                if (
+                    self.is_embedding_gguf
+                    and _effective_ubatch is not None
+                    and _effective_ubatch < n_parallel
+                ):
+                    # max(): a degenerate "-b 0" extra resolves to 0, and --parallel 0 is
+                    # rejected at arg parse.
+                    _embedding_slots = max(1, _effective_ubatch)
+                    logger.warning(
+                        "Reducing serving slots from %d to %d: llama-server caps the batch "
+                        "at the %d-token micro-batch under --embedding and aborts when that "
+                        "is below the slot count.",
+                        n_parallel,
+                        _embedding_slots,
+                        _effective_ubatch,
+                    )
+                    n_parallel = _embedding_slots  # allow-slot-clamp: llama-server would abort
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -10051,6 +10834,9 @@ class LlamaCppBackend:
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
+                # Auto dropped the drafter because only the target fit. Bound before the
+                # try: the launch below reads it either way.
+                _spec_dropped_no_vram = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -10174,8 +10960,9 @@ class LlamaCppBackend:
                     # engage; auto only on an MTP model >= 3B; ngram/off never. A
                     # separate drafter (Gemma) counts as an MTP model.
                     # _spec_canon, not the raw request: Auto has already resolved to
-                    # dspark above when a sidecar is available, and the reserve below
-                    # differs by kind (no duplicated target-KV copy, depth 3).
+                    # dspark or dflash above when a sidecar is available, and the
+                    # reserve below differs by kind (no duplicated target-KV copy,
+                    # and DSpark uses depth 3).
                     _mtp_effective = _spec_canon
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
                     # Sub-3B drops MTP only for an embedded head; a separate
@@ -10216,9 +11003,13 @@ class LlamaCppBackend:
                     if not _user_mtp_via_extras:
                         try:
                             _fit_caps = _launch_caps(binary) or {}
+                            _sidecar_cap = {
+                                "dspark": "supports_dspark",
+                                "dflash": "supports_dflash",
+                            }.get(_mtp_effective)
                             _mtp_binary_ok = bool(
-                                _fit_caps.get("supports_dspark")
-                                if _mtp_effective == "dspark"
+                                _fit_caps.get(_sidecar_cap)
+                                if _sidecar_cap
                                 else _fit_caps.get("mtp_token")
                             )
                         except Exception:
@@ -10228,7 +11019,7 @@ class LlamaCppBackend:
                         not _extra_args_set_spec_type(extra_args)
                         and _mtp_model_for_fit
                         and (
-                            _mtp_effective in ("mtp", "mtp+ngram", "dspark")
+                            _mtp_effective in ("mtp", "mtp+ngram", "dspark", "dflash")
                             or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
                         )
                         and (
@@ -10249,10 +11040,11 @@ class LlamaCppBackend:
                     # only charge it when the engaged mode is truly MTP. Those modes
                     # arrive by two routes, hence the two conditions: draft-simple
                     # and draft-eagle3 via _user_draft_via_extras (already excluded,
-                    # they never set _user_mtp_via_extras), and DSpark via Studio's
-                    # own resolution, which does set _auto_studio_mtp.
+                    # they never set _user_mtp_via_extras), and DSpark/DFlash via
+                    # Studio's own resolution, which does set _auto_studio_mtp.
                     _engaged_is_mtp = bool(
-                        _user_mtp_via_extras or (_auto_studio_mtp and _mtp_effective != "dspark")
+                        _user_mtp_via_extras
+                        or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
 
                     # Effective draft depth: extras win (last-wins at launch), else
@@ -10287,6 +11079,11 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
+                    # Will a SEPARATE drafter be emitted at all, taken before the CPU
+                    # nulling below. Not mtp_draft_path: extras owning --spec-type return
+                    # before Studio's sidecar becomes --model-draft, which
+                    # _studio_draft_for_budget already encodes.
+                    _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
@@ -10456,43 +11253,18 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    # Flat MTP reserve fraction: used only as the fallback when the
-                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
-                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
-                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
-                    # GPU regardless of draft-offload flags (keep its reserve).
-                    _flat_mtp_engages = _mtp_will_engage and (
-                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    # Nothing speculative on the GPU: the drafter that launches is the
+                    # separate CPU-offloaded one, and a sidecar wins over an embedded head
+                    # (llama.cpp loads the draft model on has_dft()). A head with no
+                    # sidecar is still GPU-resident and still reserved.
+                    _draft_cpu_no_embedded = _draft_on_cpu and (
+                        _separate_draft_launches or not self._nextn_predict_layers
                     )
-                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
-                    # MTP reserves GPU VRAM unless its only drafter is a separate
-                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
-                    # path reserves like the layer path; gate both on this.
-                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
-                    _flat_mtp_reserve = (
-                        _MTP_VRAM_RESERVE_FRAC
-                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
-                        else 0.0
-                    )
-                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
-                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
-                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
-                    # MTP draft-graph buffers exist on every backend.
-                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
-                    if effective_is_vision and mmproj_size > 0:
-                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
-                    if _mtp_reserves_gpu:
-                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
-                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
-
-                    def _subset_model_size(n_gpus: int) -> int:
-                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
-
-                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
-                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
-
+                    # The two tensor -> layer downgrades that need nothing the probe
+                    # decides run BEFORE it: the probe is gated on `not tensor_parallel`
+                    # and must answer for any load that ends up layer-split. Running them
+                    # first also hands it the restored KV type that load will use.
                     def _restore_after_tensor_downgrade():
                         # Restore the quantized KV + extras tensor dropped (layer
                         # split supports them), minus --split-mode.
@@ -10575,6 +11347,293 @@ class LlamaCppBackend:
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
+
+                    # Target pins but the drafter's reserve tips it over: Auto drops the
+                    # drafter rather than pay for speed with context (or a --fit offload,
+                    # where decode collapses ~3x). Priced over the SAME ranked subsets the
+                    # placement loop walks, at the context the target alone would get, so
+                    # it drops only when no placement could have held both. Carried to the
+                    # launch as drafter_no_vram. Skipped under tensor parallelism, whose
+                    # per-device buffer has its own geometry these numbers do not model;
+                    # `tensor_parallel` already reflects the downgrades hoisted above, so
+                    # a request that ends up layer-split IS probed. The pooled tensor
+                    # weight-budget check below still escapes, since it prices the reserve
+                    # this probe may clear and running it first would be circular. The
+                    # gate reads the user's choice, not _mtp_effective, which by here is
+                    # the kind Auto resolved and can no longer tell the two apart.
+                    if (
+                        _mtp_will_engage
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        # A bare --model-draft / --spec-draft-hf sets neither flag above
+                        # (both key off --spec-type), yet llama.cpp loads whatever it
+                        # names anyway: load_model gates the draft on has_dft(). Dropping
+                        # here would free the reserve for a drafter that still loads.
+                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        and not _draft_cpu_no_embedded
+                        and not tensor_parallel
+                        and gpus
+                        and effective_ctx > 0
+                        and self._can_estimate_kv()
+                    ):
+
+                        def _probe_frac(drafter: bool) -> float:
+                            # The flat fraction is the reserve whenever _mtp_bytes is 0.
+                            return self._GPU_PIN_VRAM_FRACTION - (
+                                _MTP_VRAM_RESERVE_FRAC
+                                if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                                else 0.0
+                            )
+
+                        def _probe_base(drafter: bool, n: int) -> int:
+                            # model_size_fit's terms, before it is built below.
+                            _soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                            if effective_is_vision and mmproj_size > 0:
+                                _soft += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            if drafter:
+                                _soft += self._MTP_DRAFT_COMPUTE_BYTES
+                            return (
+                                model_size
+                                + _compute_buffer_pipeline
+                                + _soft
+                                + max(0, n - 1) * _pipeline_overhead_bytes
+                            )
+
+                        # Fewest GPUs first, ranked by usable VRAM: the same order and
+                        # the same budget the auto placement loop uses, so the answer is
+                        # about placements that loop could actually choose.
+                        def _probe_rank(drafter: bool) -> list:
+                            return sorted(
+                                gpus,
+                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                reverse = True,
+                            )
+
+                        _probe_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
+
+                        def _probe_floor(ranked: list, drafter: bool) -> int:
+                            # Same floor as the placement loop's _auto_min_gpus: a tensor
+                            # downgrade raises _layer_min_gpus to keep the request
+                            # multi-GPU, and a one-GPU placement the loop is forbidden to
+                            # choose must not be the one that saves the drafter.
+                            return max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, _probe_frac(drafter))
+                                        > _probe_overhead_mib
+                                    )
+                                    or 1,
+                                ),
+                            )
+
+                        # Both rankings: an unsized drafter costs five points of pin
+                        # fraction, which can reorder heterogeneous cards (a busy 80 GB
+                        # can lead at 0.97, an idle 24 GB at 0.92). The placement loop
+                        # sorts under the fraction that load ends up with, so a prefix
+                        # only the drafter's ranking produces is still one it can choose.
+                        # Identical whenever the orders agree, i.e. every uniform machine.
+                        _probe_orders = [_probe_rank(False)]
+                        _ranked_w = _probe_rank(True)
+                        if [id(g) for g in _ranked_w] != [id(g) for g in _probe_orders[0]]:
+                            _probe_orders.append(_ranked_w)
+                        _target_fits_somewhere = False
+                        _both_fit_somewhere = False
+                        _probe_ctx = 0
+                        _probe_need = _probe_have = 0.0
+                        for _probe_ranked in _probe_orders:
+                            if _both_fit_somewhere:
+                                break
+                            _probe_min_gpus = _probe_floor(_probe_ranked, False)
+                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
+                                _subset = _probe_ranked[:_n]
+                                _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
+                                _base_wo = _probe_base(False, _n)
+                                _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
+                                # Explicit context is honored verbatim, so that is what the
+                                # drafter has to fit alongside; Auto gets its own best cap.
+                                _ctx_wo = (
+                                    effective_ctx
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _budget_wo,
+                                        _base_wo,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = False,
+                                        mtp_overhead_fn = None,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if _ctx_wo <= 0:
+                                    continue
+                                _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                if _foot_wo > _budget_wo:
+                                    continue
+                                # The pooled figure hides the compute buffer every device
+                                # replicates, so the weakest card may not hold the context
+                                # the pool priced and the placement loop caps to what it
+                                # does. Charging the drafter at the uncapped context
+                                # condemns it at a context this load never reaches. Same
+                                # reserve and cap the auto-context loop below applies, so
+                                # the two cannot disagree. Auto only: an explicit context
+                                # is honored verbatim and overflows to --fit.
+                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                                _probe_reserve_at = lambda c, _k = _n: (
+                                    (_pipeline_overhead_bytes if _k > 1 else 0)
+                                    + _cc_bytes(c, _k) // _k
+                                )
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_wo, _probe_reserve_at(_ctx_wo)
+                                ):
+                                    if explicit_ctx:
+                                        # Nothing to cap: this subset cannot hold it, and
+                                        # _select_gpus_split_aware will go to --fit too.
+                                        # Calling it a fit would drop the drafter and then
+                                        # report a pin that never happened.
+                                        continue
+                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                        _ctx_wo, _usable_wo, _probe_reserve_at
+                                    )
+                                    if _ctx_wo <= 0:
+                                        continue
+                                    # Every pooled term shrinks with the context, so this
+                                    # cannot newly fail; re-price rather than lean on it.
+                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                    if _foot_wo > _budget_wo:
+                                        continue
+                                _foot_w = (
+                                    _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
+                                ) / (1024 * 1024)
+                                _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
+                                if not _target_fits_somewhere:
+                                    _target_fits_somewhere = True
+                                    _probe_ctx, _probe_need, _probe_have = (
+                                        _ctx_wo,
+                                        _foot_w,
+                                        _budget_w,
+                                    )
+                                if _foot_w <= _budget_w:
+                                    _both_fit_somewhere = True
+                                    break
+                                # Both do not fit at the target's own context. The loop does
+                                # not move on: it re-caps the context WITH the drafter and
+                                # takes this subset at whatever that leaves. So a smaller
+                                # context holding both here IS the placement the load takes,
+                                # paying for the drafter in context, which is the trade being
+                                # refused. Only if no context fits both does it widen.
+                                _ctx_w = (
+                                    0
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        _ctx_wo,
+                                        _budget_w,
+                                        _probe_base(True, _n),
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = True,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if (
+                                    _ctx_w > 0
+                                    and (
+                                        _probe_base(True, _n)
+                                        + _kv_bytes(_ctx_w)
+                                        + _cc_n(_ctx_w)
+                                        + _mtp_bytes(_ctx_w)
+                                    )
+                                    / (1024 * 1024)
+                                    <= _budget_w
+                                ):
+                                    break
+                        if _target_fits_somewhere and not _both_fit_somewhere:
+                            _spec_dropped_no_vram = True
+                            _mtp_will_engage = False
+                            # Clearing the flag alone leaves the reserve: the _mtp_bytes
+                            # sites are unconditional and _fit_context_to_vram invokes any
+                            # non-None mtp_overhead_fn whatever mtp_engaged says, so the
+                            # fit would still shrink the context for a drafter that no
+                            # longer launches. _mtp_kv_unsized goes with it, or
+                            # _flat_mtp_engages swaps the flat fraction in as replacement.
+                            mtp_overhead_fn = None
+                            _mtp_kv_unsized = False
+                            logger.warning(
+                                "Speculative decoding disabled for this load: the model "
+                                "fits in VRAM at context %d but its drafter does not "
+                                "(needs %.1f GB of a %.1f GB budget, on any GPU subset). "
+                                "Auto keeps the context rather than shrink it for a speed "
+                                "option. Select the drafter in Settings to force it.",
+                                _probe_ctx,
+                                _probe_need / 1024,
+                                _probe_have / 1024,
+                            )
+
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
+
+                    # Flat MTP reserve fraction: used only as the fallback when the
+                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
+                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
+                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
+                    # GPU regardless of draft-offload flags (keep its reserve).
+                    _flat_mtp_engages = _mtp_will_engage and (
+                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    )
+                    # MTP reserves GPU VRAM unless its only drafter is a separate
+                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
+                    # path reserves like the layer path; gate both on this.
+                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    _flat_mtp_reserve = (
+                        _MTP_VRAM_RESERVE_FRAC
+                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
+                        else 0.0
+                    )
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
+                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
+                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
+                    # MTP draft-graph buffers exist on every backend.
+                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
+                    if effective_is_vision and mmproj_size > 0:
+                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                    if _mtp_reserves_gpu:
+                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
+                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
+
+                    def _subset_model_size(n_gpus: int) -> int:
+                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -11113,6 +12172,10 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
+                # llama-server 501s on /v1/embeddings without this; pooling stays model-default.
+                if self.is_embedding_gguf:
+                    cmd.append("--embedding")
+
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # Two separate aborts, both reachable from the picker since the input
@@ -11350,7 +12413,7 @@ class LlamaCppBackend:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
-                    drafter_label = "DSpark" if _spec_canon == "dspark" else "MTP",
+                    drafter_label = _DRAFTER_DISPLAY_LABELS.get(_spec_canon, "MTP"),
                 )
                 _pv_suppressed_draft_path: Optional[str] = None
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
@@ -11425,9 +12488,14 @@ class LlamaCppBackend:
                     model_path = model_path,
                     gpus = bool(_detected_gpus),
                     binary = binary,
-                    mtp_draft_path = (None if _spec_canon == "dspark" else launch_mtp_draft_path),
+                    mtp_draft_path = (
+                        None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
+                    ),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
                     dspark_fit_sized = not use_fit,
+                    dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
+                    dflash_fit_sized = not use_fit,
+                    drafter_no_vram = _spec_dropped_no_vram,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -11769,6 +12837,13 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # The GGUF header controls pooling; ignore inherited defaults.
+                for _pooling_var in (
+                    "LLAMA_ARG_POOLING",
+                    "LLAMA_ARG_RERANKING",
+                    "LLAMA_ARG_EMBEDDINGS",
+                ):
+                    env.pop(_pooling_var, None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
@@ -12367,6 +13442,9 @@ class LlamaCppBackend:
                 _spec_requested_dspark = any(
                     "draft-dspark" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
+                _spec_requested_dflash = any(
+                    "draft-dflash" in str(t).lower() for t in spec_flags
+                ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -12430,7 +13508,7 @@ class LlamaCppBackend:
                 _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
-                    and (_spec_requested_mtp or _spec_requested_dspark)
+                    and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)
                     and not _load_cancelled()
                 ):
                     _spec_cpu_replay_cmd = list(_last_spawn_cmd)
@@ -12480,9 +13558,11 @@ class LlamaCppBackend:
                     # failed and lose a main model that loads fine without it. The
                     # tail loses its spec group and the env goes with it, the same way
                     # the crash replay does it.
-                    if _extra_args_requests_mtp(
-                        extra_args, env = _launch_spec_env
-                    ) or _extra_args_requests_dspark(extra_args, env = _launch_spec_env):
+                    if (
+                        _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                        or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
+                        or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                    ):
                         _fb_tail = strip_shadowing_flags(
                             _fb_tail,
                             strip_context = False,
@@ -12787,6 +13867,9 @@ class LlamaCppBackend:
         mtp_draft_path: Optional[str] = None,
         dspark_draft_path: Optional[str] = None,
         dspark_fit_sized: bool = True,
+        dflash_draft_path: Optional[str] = None,
+        dflash_fit_sized: bool = True,
+        drafter_no_vram: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -12895,16 +13978,17 @@ class LlamaCppBackend:
         # fallback can erase the evidence: the UI names the recovery from this,
         # and under Auto neither the requested mode nor the resolved
         # _speculative_type ("default" after a fallback) still carries the kind.
-        self._spec_drafter_kind = (
-            "dspark"
-            if canonical_mode == "dspark"
-            or (
-                (canonical_mode or "auto") == "auto"
-                and dspark_draft_path
-                and caps.get("supports_dspark")
-            )
-            else "mtp"
-        )
+        _auto_mode = (canonical_mode or "auto") == "auto"
+        if canonical_mode == "dspark" or (
+            _auto_mode and dspark_draft_path and caps.get("supports_dspark")
+        ):
+            self._spec_drafter_kind = "dspark"
+        elif canonical_mode == "dflash" or (
+            _auto_mode and dflash_draft_path and caps.get("supports_dflash")
+        ):
+            self._spec_drafter_kind = "dflash"
+        else:
+            self._spec_drafter_kind = "mtp"
 
         def _resolved_draft_n_max() -> int:
             # User override wins; else platform default (the B200 / x86
@@ -12974,6 +14058,73 @@ class LlamaCppBackend:
                 self._spec_fallback_reason = "drafter_not_found"
                 return flags
             _emit_dspark()
+            return flags
+
+        def _emit_dflash() -> None:
+            """Append --model-draft <sidecar> --spec-type draft-dflash + n-max.
+
+            Callers have already established the sidecar and the capability. Auto
+            reaches this too, since DFlash is the default whenever the model
+            ships one: unlike the ~11 GB DSpark sidecar it is ~1.5 GiB and comes
+            from the model's own GGUF repo.
+            """
+            if not dflash_fit_sized:
+                # Same shape as DSpark: the sidecar ships no token_embd/output and
+                # borrows the target's, so llama.cpp cannot build a standalone
+                # draft context to measure it (llama-context.cpp:153-160) and
+                # skips the reserve (server-context.cpp:1190-1193). The load still
+                # works; only the ~1.5 GB is missing from the fit budget, which is
+                # an order of magnitude less than the DSpark case.
+                logger.info(
+                    "DFlash under --fit on: llama.cpp cannot size the sidecar during "
+                    "fitting, so its ~%.1f GB is not reserved. Pin GPU Layers in "
+                    "Manual mode if the load runs out of VRAM.",
+                    (self._get_gguf_size_bytes(dflash_draft_path) or 0) / 1e9,
+                )
+            draft_n_max = _resolved_draft_n_max()
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            flags.extend(
+                [
+                    "--model-draft",
+                    dflash_draft_path,
+                    "--spec-type",
+                    "draft-dflash",
+                    str(n_max_flag),
+                    str(draft_n_max),
+                ]
+            )
+            if draft_device:
+                # A separate drafter, like the Gemma MTP one, so it takes the same
+                # device pin (_emit_mtp does this); a baked-in head has nowhere to
+                # put it and DSpark's sidecar predates the flag being threaded here.
+                flags.extend(["--spec-draft-device", draft_device])
+            self._speculative_type = "draft-dflash"
+            logger.info("Spec decoding: draft-dflash using %s", dflash_draft_path)
+
+        if effective_mode == "dflash":
+            # Capability first, for the same reason as DSpark: the fetch is gated
+            # on the same answer, so a missing sidecar here is usually the
+            # binary's fault, and blaming the file would tell the user to place
+            # one and reload on every Apply.
+            if not caps.get("supports_dflash"):
+                logger.warning(
+                    "DFlash requested but llama-server lacks --spec-type "
+                    "draft-dflash; loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not dflash_draft_path:
+                logger.warning(
+                    "DFlash requested but no matching dflash-*.gguf sidecar was found; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+                return flags
+            _emit_dflash()
             return flags
 
         def _emit_mtp(*, chain_ngram: bool) -> bool:
@@ -13092,14 +14243,60 @@ class LlamaCppBackend:
             _emit_mtp(chain_ngram = chain_ngram)
             return flags
 
-        # effective_mode == "auto": the promotion path. llama.cpp #22673:
-        # MTP is compatible with mmproj, so there's no vision gate.
-        if dspark_draft_path and caps.get("supports_dspark"):
+        # effective_mode == "auto": the promotion path. No vision gate on any drafter
+        # kind. MTP's mmproj compatibility is llama.cpp #22673; DFlash is a different
+        # --spec-type and #22105 says nothing, so it was measured: Muse-Glimmer-30B
+        # UD-Q4_K_XL + mmproj-kquant + dflash-kquant, b10342, B200, n_max=2, greedy,
+        # ~545 image tokens gave 92.1 -> 114.2 tok/s at 0.646 acceptance with output
+        # byte-identical to the drafter-free run.
+        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with no
+        # sidecar is already dropped by policy below, and reporting the VRAM reason
+        # would invite forcing MTP at a smaller context: slower than the ngram-mod it
+        # gets. Let it fall through to the MLA branch, which gives the real reason.
+        _no_vram_drops_a_real_drafter = (
+            bool(dspark_draft_path and caps.get("supports_dspark"))
+            or bool(dflash_draft_path and caps.get("supports_dflash"))
+            or not _auto_mla_embedded_mtp
+        )
+        if drafter_no_vram and _no_vram_drops_a_real_drafter:
+            # The fit found room for the target but not for the drafter's reserve,
+            # and reserved nothing for it, so emitting one now would OOM the load.
+            # Same downgrade as the MLA branch below: ngram-mod costs no VRAM, and
+            # spec-off when the build lacks it. The drafter paths stay recorded, so
+            # the UI still names the kind and a repeat Apply still dedupes.
+            self._spec_fallback_reason = "drafter_no_vram"
+            if caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so it is dropped and ngram-mod (zero-VRAM) takes its "
+                    "place. Choose the drafter in the Speculative Decoding dropdown to "
+                    "force it at a smaller context."
+                )
+                _emit_ngram_mod()
+            else:
+                # spec-off: --spec-type ngram-mod is not a value this build's enum
+                # carries, and llama-server aborts on one it cannot parse rather than
+                # ignoring it. Mirrors the MLA and sub-3B branches below.
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so speculative decoding is disabled (this llama-server "
+                    "does not advertise ngram-mod). Choose the drafter in the "
+                    "Speculative Decoding dropdown to force it at a smaller context."
+                )
+        elif dspark_draft_path and caps.get("supports_dspark"):
             # DSpark first: load_model only hands a sidecar down once it has one
             # this binary can launch, and it beats every other Auto outcome for
             # this architecture (1.84x on 4x B200, 1.91x on one). Without it these
             # models fall through to --spec-default, i.e. no drafter at all.
             _emit_dspark()
+        elif dflash_draft_path and caps.get("supports_dflash"):
+            # DFlash next, on the same reasoning as DSpark and with the same
+            # capability gate: load_model only hands a sidecar down once it has
+            # one this binary can launch. Unlike DSpark this needs no opt-in: the
+            # published sidecar is ~1.5 GiB and already sits in the model's own
+            # GGUF repo, so Auto pays roughly what the MTP drafter costs. DSpark
+            # keeps first refusal so a repo shipping both is unchanged.
+            _emit_dflash()
         elif _auto_mla_embedded_mtp:
             # MLA embedded-MTP (GLM-5.2 et al.): the MTP path regresses vs spec-off
             # on llama.cpp today, so Auto drops it and falls back to ngram-mod (or
@@ -13344,6 +14541,9 @@ class LlamaCppBackend:
             self._capability_probe_inconclusive = False
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
+            self._dflash_sidecar_absent = False
+            self._dflash_retry_needed = False
+            self._launch_binary_revision = ()
             self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
@@ -13407,6 +14607,7 @@ class LlamaCppBackend:
             self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
+            self._pooling_type = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
@@ -13779,9 +14980,16 @@ class LlamaCppBackend:
         _find_llama_server_binary() can return, so orphans from any
         supported install path are cleaned up.
 
-        Uses psutil for cross-platform support (Linux, macOS, Windows);
-        falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
-        absent.
+        Reads /proc directly on Linux and uses psutil elsewhere (macOS, Windows).
+        The pgrep fallback the psutil-less path used to take is gone: /proc is
+        what that fallback read anyway, and psutil is a hard dependency, so it
+        was unreachable from both directions.
+
+        Candidates are collected first and killed afterwards, so an enumeration
+        that fails part way kills nothing rather than some. The parent check
+        therefore runs after enumeration rather than during it; a parent that
+        exits in between makes the process a genuine orphan, and the start-time
+        check below still refuses to signal a PID that has been reused.
 
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
@@ -13846,108 +15054,169 @@ class LlamaCppBackend:
 
             my_pid = os.getpid()
 
-            # -- Enumerate processes -------------------------------------------
-            # Prefer psutil (cross-platform); fall back to pgrep + /proc on
-            # Linux when psutil is absent.
-            try:
-                import psutil
-                has_psutil = True
-            except ImportError:
-                has_psutil = False
+            # -- Enumerate candidate processes ---------------------------------
+            # (pid, resolved binary, kill callable) per llama-server-looking process;
+            # ownership, orphan and kill handling is shared below so the paths agree.
+            candidates = []
 
-            if has_psutil:
-                for proc in psutil.process_iter(["pid", "name", "exe"]):
-                    try:
-                        if proc.info["pid"] == my_pid:
-                            continue
+            def _looks_like_server(name):
+                return bool(name) and name.lower().startswith("llama-server")
 
-                        name = proc.info.get("name") or ""
-                        if not name.lower().startswith("llama-server"):
-                            continue
+            def _stat_start_time(line):
+                right = line.rfind(b")")
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
 
-                        exe = proc.info.get("exe")
-                        if not exe:
-                            continue
+            def _proc_start_time(proc_dir):
+                """Field 22 of /proc/<pid>/stat, in jiffies since boot."""
+                try:
+                    with open(f"{proc_dir}/stat", "rb") as fh:
+                        line = fh.read()
+                except OSError:
+                    return None
+                right = line.rfind(b")")
+                if right < 0:
+                    return None
+                # Fields after comm start at field 3, so starttime is index 19.
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
 
-                        exe_path = Path(exe).resolve()
-
-                        # Ownership: exact match OR binary under a known root.
-                        is_ours = exe_path in exact_binaries or any(
-                            exe_path.is_relative_to(root) for root in resolved_roots
-                        )
-                        if not is_ours:
-                            continue
-
-                        # A live parent means a running Unsloth (or the user's
-                        # shell) still owns it -- not an orphan.
-                        if LlamaCppBackend._pid_parent_is_alive(proc.info["pid"]):
-                            continue
-
-                        proc.kill()
-                        killed += 1
-                        logger.info(
-                            f"Killed orphaned llama-server process (pid={proc.info['pid']})"
-                        )
-                    except (
-                        psutil.NoSuchProcess,
-                        psutil.AccessDenied,
-                        psutil.ZombieProcess,
-                    ):
-                        pass
-            else:
-                # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
-                if sys.platform != "linux":
-                    return killed
-                result = subprocess.run(
-                    ["pgrep", "-a", "-f", "llama-server"],
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    timeout = 5,
-                    env = child_env_without_native_path_secret(),
-                )
-                if result.returncode != 0:
-                    return killed
-
-                for line in result.stdout.strip().splitlines():
-                    parts = line.strip().split(None, 1)
-                    if len(parts) < 2:
-                        continue
-                    pid = int(parts[0])
-                    if pid == my_pid:
-                        continue
-
-                    # /proc/<pid>/exe symlinks the real binary, avoiding
-                    # cmdline-parsing ambiguities; fall back to the first
-                    # cmdline token when /proc is unavailable.
-                    proc_exe = Path(f"/proc/{pid}/exe")
-                    try:
-                        binary = proc_exe.resolve(strict = True)
-                    except (OSError, ValueError):
-                        cmdline = parts[1]
-                        token = cmdline.split()[0] if cmdline.strip() else ""
-                        if not token:
-                            continue
-                        binary = Path(token).resolve(strict = False)
-
-                    owned = binary in exact_binaries or any(
-                        binary.is_relative_to(root) for root in resolved_roots
-                    )
-                    if not owned:
-                        continue
-
-                    if LlamaCppBackend._pid_parent_is_alive(pid):
-                        continue
-
+            def _make_signal_killer(proc_dir, pid, start_time):
+                def _kill():
+                    # psutil.Process.kill() refuses to signal a reused PID, so re-check
+                    # identity here too: starttime never changes for a process and a reused
+                    # PID gets a later one, so a mismatch means this is not our process.
+                    if start_time is None or _proc_start_time(proc_dir) != start_time:
+                        return False
                     try:
                         os.kill(pid, signal.SIGKILL)
-                        killed += 1
-                        logger.info(f"Killed orphaned llama-server process (pid={pid})")
-                    except ProcessLookupError:
-                        pass
-                    except PermissionError:
-                        pass
+                    except (ProcessLookupError, PermissionError):
+                        return False
+                    return True
+
+                return _kill
+
+            # /proc is Linux only; a missing one falls back to psutil rather than finding
+            # nothing. Tests point _PROC_ROOT elsewhere to drive either path.
+            proc_root = _PROC_ROOT
+            if sys.platform == "linux" and os.path.isdir(proc_root):
+                # psutil.process_iter(["pid", "name", "exe"]) reads /proc/<pid>/stat several
+                # times per process and resolves exe for every one before the name rejects
+                # almost all. This sweep runs on every backend start and every temporary
+                # LlamaCppBackend(), so read comm once and resolve exe only on a name match.
+                def _proc_exe(proc_dir):
+                    try:
+                        target = os.readlink(f"{proc_dir}/exe")
+                    except OSError:
+                        return None
+                    if not target:
+                        return None
+                    # The kernel appends " (deleted)" once the binary is replaced or removed,
+                    # which is what an upgrade's orphan looks like. psutil strips the marker,
+                    # so strip it here too or that orphan stops being recognised as ours.
+                    if target.endswith(" (deleted)") and not os.path.exists(target):
+                        target = target[: -len(" (deleted)")]
+                    try:
+                        return Path(target).resolve()
+                    except OSError:
+                        return None
+
+                with os.scandir(proc_root) as entries:
+                    for entry in entries:
+                        if not entry.name.isdigit():
+                            continue
+                        try:
+                            pid = int(entry.name)
+                        except ValueError:
+                            continue
+                        if pid == my_pid:
+                            continue
+                        try:
+                            with open(f"{entry.path}/stat", "rb") as fh:
+                                stat_line = fh.read()
+                        except OSError:
+                            continue  # the process exited mid-scan
+                        left = stat_line.find(b"(")
+                        right = stat_line.rfind(b")")
+                        if left < 0 or right <= left:
+                            continue
+                        # comm is truncated to 15 bytes, which still leaves the 12-byte
+                        # "llama-server" prefix intact, so this selects the names psutil does.
+                        name = stat_line[left + 1 : right].decode("utf-8", "replace")
+                        if not _looks_like_server(name):
+                            continue
+                        exe_path = _proc_exe(entry.path)
+                        if exe_path is None:
+                            continue
+                        candidates.append(
+                            (
+                                pid,
+                                exe_path,
+                                _make_signal_killer(entry.path, pid, _stat_start_time(stat_line)),
+                            )
+                        )
+            else:
+                try:
+                    import psutil
+                except ImportError:
+                    psutil = None
+
+                if psutil is not None:
+
+                    def _make_psutil_killer(psutil_mod, proc):
+                        def _kill():
+                            try:
+                                proc.kill()
+                            except (
+                                psutil_mod.NoSuchProcess,
+                                psutil_mod.AccessDenied,
+                                psutil_mod.ZombieProcess,
+                            ):
+                                return False
+                            return True
+
+                        return _kill
+
+                    for proc in psutil.process_iter(["pid", "name", "exe"]):
+                        try:
+                            pid = proc.info["pid"]
+                            if pid == my_pid:
+                                continue
+                            if not _looks_like_server(proc.info.get("name") or ""):
+                                continue
+                            exe = proc.info.get("exe")
+                            if not exe:
+                                continue
+                            candidates.append(
+                                (pid, Path(exe).resolve(), _make_psutil_killer(psutil, proc))
+                            )
+                        except (
+                            psutil.NoSuchProcess,
+                            psutil.AccessDenied,
+                            psutil.ZombieProcess,
+                        ):
+                            pass
+                else:
+                    # Unreachable while the Linux branch above exists; kept so the
+                    # psutil-less path stays correct if that changes.
+                    return killed
+
+            # -- Ownership check, orphan check, kill ---------------------------
+            for pid, binary, kill in candidates:
+                # Ownership: exact match OR binary under a known root.
+                is_ours = binary in exact_binaries or any(
+                    binary.is_relative_to(root) for root in resolved_roots
+                )
+                if not is_ours:
+                    continue
+
+                # A live parent means a running Unsloth (or the user's shell) still owns it.
+                if LlamaCppBackend._pid_parent_is_alive(pid):
+                    continue
+
+                if kill():
+                    killed += 1
+                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
         return killed
@@ -14432,8 +15701,14 @@ class LlamaCppBackend:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}/health"
+        health_probe_event = getattr(self, "_health_probe_event", None)
+        if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
+            health_probe_event = self._health_probe_event = threading.Event()
 
         while time.monotonic() < deadline:
+            # Cleared before probing so output during the request stays latched for
+            # the fallback wait below.
+            health_probe_event.clear()
             # Process crashed?
             if self._process.poll() is not None:
                 # Let the drain thread collect final output.
@@ -14471,7 +15746,7 @@ class LlamaCppBackend:
             ):
                 pass
 
-            time.sleep(interval)
+            health_probe_event.wait(interval)
 
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
@@ -15353,34 +16628,19 @@ class LlamaCppBackend:
                 text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
+        # Wraps the parser's ``strip_segment`` so the accumulated response is not rescanned
+        # end to end on every content token (that was quadratic in the response length).
+        # Think blocks stay verbatim inside it: a rehearsed call in one must not be deleted.
+        _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
+
+        # The final-answer loop has its own buffer and strips with ``final = False``, so it
+        # needs its own instance rather than sharing the one above.
+        _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-
-            def _seg(segment: str, is_last: bool) -> str:
-                # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
-                # strips first (nested JSON removed whole; literal markup inside a value is that
-                # call's data), then the guarded function-XML / GLM scans, then the regex arms
-                # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-                # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal + markerless
-                # strips are name-gated on the ORIGINAL list (strip/detect aligned).
-                seg = _strip_mistral_closed_calls(segment)
-                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = _enabled_names_gate)
-                if is_last:
-                    seg = _strip_gemma_wrapperless_calls(seg, _enabled_names_gate)
-                seg = _strip_function_xml_calls(seg, final = is_last)
-                seg = _strip_glm_calls(seg, final = is_last)
-                pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
-                for pat in pats:
-                    seg = pat.sub("", seg)
-                if is_last:
-                    seg = apply_tool_strip_patterns(
-                        seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = _enabled_names_gate
-                    )
-                return seg
-
-            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
-            return strip_outside_think(text, _seg)
+            return _streaming_stripper.strip(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -15591,6 +16851,8 @@ class LlamaCppBackend:
                 _reasoning_summary_emitted = False
                 _deferred_reasoning_summary = None
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
+                # A new buffer, not a continuation of the previous iteration's.
+                _streaming_stripper.reset()
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
@@ -16806,7 +18068,11 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         in_thinking = False
                                     cumulative += token
-                                    cleaned = _strip_tool_markup(cumulative)
+                                    cleaned = (
+                                        _final_answer_stripper.strip(cumulative)
+                                        if auto_heal_tool_calls
+                                        else cumulative
+                                    )
                                     # Emit only when cleaned text grows (monotonic).
                                     if len(cleaned) > len(_last_emitted):
                                         _last_emitted = cleaned

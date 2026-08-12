@@ -1901,12 +1901,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and
           Video: side by side, the 408px rail plus a usable preview needs more width than that. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 @[50rem]:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-8 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -2034,9 +2034,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             )}
           </div>
           {mode === "speak" ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+            /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
+            <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
               <Button
-                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={
                   busy === "generating" ? handleStopGeneration : handleGenerate
                 }

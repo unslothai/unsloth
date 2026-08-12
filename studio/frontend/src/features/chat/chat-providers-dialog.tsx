@@ -37,6 +37,8 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ApiProviderLogo } from "./api-provider-logo";
+
+import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type ProviderRegistryEntry,
   createProviderConfig,
@@ -61,7 +63,6 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
-  supportsProviderPromptCaching,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -187,19 +188,28 @@ export function ChatProvidersSettings({
   const isCustomProvider = isCustomProviderType(providerType);
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
-  const showApiKeyField = !customPresetSkipsApiKeyField(providerType);
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
     [registry],
   );
+  const selectedProviderContract = registryByType.get(
+    toExternalBackendProviderType(providerType),
+  );
+  const usesOAuth = selectedProviderContract?.auth_kind === "chatgpt_oauth";
+
+  const isCodexSubscription = usesOAuth;
+  const modelIdsEditable =
+    selectedProviderContract?.model_ids_editable !== false;
+  const showApiKeyField =
+    !usesOAuth && !customPresetSkipsApiKeyField(providerType);
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
   const isManualModelList =
     (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
-    isCuratedModelList;
+    (isCuratedModelList && modelIdsEditable);
 
   const modelsPanelKey = isCustomProvider
     ? providerType || "custom"
@@ -531,6 +541,63 @@ export function ChatProvidersSettings({
     }
   }
 
+  async function ensureCodexProvider(): Promise<string> {
+    if (editingProviderId) return editingProviderId;
+    const backendProviderType = toExternalBackendProviderType(providerType);
+    const entry = registryByType.get(backendProviderType);
+    if (entry?.auth_kind !== "chatgpt_oauth") {
+      throw new Error("This connection does not support ChatGPT authorization.");
+    }
+
+    setMutatingProvider(true);
+    try {
+      const models = pruneProviderModelIds(
+        providerType,
+        selectedModelIds.length > 0 ? selectedModelIds : entry.default_models,
+      );
+      const available = pruneProviderModelIds(providerType, [
+        ...new Set([...availableModels, ...entry.default_models]),
+      ]);
+      const created = await createProviderConfig({
+        providerType: backendProviderType,
+        displayName: entry.display_name,
+        baseUrl: null,
+        models,
+        availableModels: available,
+      });
+      const provider: ExternalProviderConfig = {
+        id: created.id,
+        providerType: created.provider_type,
+        name: created.display_name,
+        baseUrl: created.base_url ?? "",
+        models,
+        availableModels: available,
+        hasApiKey: created.has_api_key,
+        authKind: created.auth_kind,
+        authStatus: created.auth_status,
+        createdAt: Number.isFinite(Date.parse(created.created_at))
+          ? Date.parse(created.created_at)
+          : Date.now(),
+        updatedAt: Number.isFinite(Date.parse(created.updated_at))
+          ? Date.parse(created.updated_at)
+          : Date.now(),
+      };
+      const nextProviders = [
+        ...providersRef.current.filter((current) => current.id !== created.id),
+        provider,
+      ];
+      providersRef.current = nextProviders;
+      onProvidersChange(nextProviders);
+      setSelectedModelIds(models);
+      setAvailableModels(available);
+      setEditingProviderId(created.id);
+      return created.id;
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
+
   async function addProvider() {
     if (!providerType) {
       toast.error("Choose a connection first.");
@@ -541,14 +608,18 @@ export function ChatProvidersSettings({
     const displayName = isCustomProvider
       ? customProviderName.trim() || customProviderDisplayName(providerType)
       : (selectedRegistryEntry?.display_name ?? providerType);
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (
+      !isCustomProvider &&
+      selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
+      !apiKey.trim()
+    ) {
       toast.error("API key is required.");
       return;
     }
     const curated = selectedRegistryEntry?.model_list_mode === "curated";
     const manualOnly =
       (isCustomProvider && !supportsRemoteModelCatalog(providerType)) ||
-      curated;
+      (curated && selectedRegistryEntry?.model_ids_editable !== false);
     const remoteAllowsManual = allowsManualModelIdsWithCatalog(providerType);
     const manualIds = parseManualModelIds(manualModelIds);
     const allowManual = manualOnly || remoteAllowsManual;
@@ -623,6 +694,9 @@ export function ChatProvidersSettings({
           : pruneProviderModelIds(providerType, availableModels),
 
         hasApiKey: created.has_api_key,
+
+        authKind: created.auth_kind,
+        authStatus: created.auth_status,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
@@ -663,7 +737,15 @@ export function ChatProvidersSettings({
       apiKey,
       clearApiKeyRequested,
     );
-    if (!isEditingCustomProvider && credentialEdit.action === "missing") {
+    const editingContract = registryByType.get(
+      toExternalBackendProviderType(existing.providerType),
+    );
+    const isEditingOAuthProvider = existing.authKind === "chatgpt_oauth";
+    if (
+      !isEditingCustomProvider &&
+      !isEditingOAuthProvider &&
+      credentialEdit.action === "missing"
+    ) {
       toast.error("API key is required.");
       return;
     }
@@ -672,7 +754,7 @@ export function ChatProvidersSettings({
     const manualOnly =
       (isEditingCustomProvider &&
         !supportsRemoteModelCatalog(existing.providerType)) ||
-      curated;
+      (curated && editingContract?.model_ids_editable !== false);
     const remoteAllowsManual = allowsManualModelIdsWithCatalog(
       existing.providerType,
     );
@@ -869,6 +951,16 @@ export function ChatProvidersSettings({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
+
+    if (provider.authKind === "chatgpt_oauth") {
+      if (provider.authStatus === "connected") {
+        toast.success("ChatGPT subscription is connected.");
+      } else {
+        await editProvider(provider);
+        toast.info("Authorize this ChatGPT subscription connection.");
+      }
+      return;
+    }
     const savedKey = provider.hasApiKey
       ? ""
       : getExternalProviderApiKey(provider.id).trim();
@@ -1133,7 +1225,8 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {isCustomProvider ? (
+              {isCustomProvider &&
+              selectedProviderContract?.base_url_editable !== false ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
@@ -1182,6 +1275,20 @@ export function ChatProvidersSettings({
               ) : null}
             </div>
           </section>
+
+
+          {isCodexSubscription ? (
+            <OpenAICodexConnect
+              providerId={editingProviderId}
+              authStatus={providers.find((provider) => provider.id === editingProviderId)?.authStatus}
+              ensureProvider={ensureCodexProvider}
+              onChanged={async () => {
+                const synced = await syncExternalProvidersFromBackend(providersRef.current);
+                providersRef.current = synced;
+                onProvidersChange(synced);
+              }}
+            />
+          ) : null}
 
           <section className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]">
             <AnimatePresence initial={false} mode="wait">
@@ -1332,24 +1439,24 @@ export function ChatProvidersSettings({
                         </ul>
                       </div>
                     ) : null}
-                    <div className="space-y-2">
-                      <Label
-                        htmlFor="provider-manual-models"
-                        className="text-sm font-medium"
-                      >
-                        Model IDs (one per line or comma-separated)
-                      </Label>
-                      <Textarea
-                        id="provider-manual-models"
-                        value={manualModelIds}
-                        onChange={(event) =>
-                          setManualModelIds(event.target.value)
-                        }
-                        placeholder={"model-id-1\nmodel-id-2"}
-                        rows={5}
-                        className="min-h-[100px] resize-y font-mono text-sm"
-                      />
-                    </div>
+                    {modelIdsEditable ? (
+                      <div className="space-y-2">
+                        <Label
+                          htmlFor="provider-manual-models"
+                          className="text-sm font-medium"
+                        >
+                          Model IDs (one per line or comma-separated)
+                        </Label>
+                        <Textarea
+                          id="provider-manual-models"
+                          value={manualModelIds}
+                          onChange={(event) => setManualModelIds(event.target.value)}
+                          placeholder={"model-id-1\nmodel-id-2"}
+                          rows={5}
+                          className="min-h-[100px] resize-y font-mono text-sm"
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ) : availableModels.length === 0 &&
                   !allowsManualModelIdsWithCatalog(providerType) ? null : (
