@@ -371,6 +371,83 @@ def test_publish_cache_key_collision_found_under_both_suffixes(tmp_path, suffix)
     assert "cache key" in proc.stderr
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # -i drops into the REPL after the script; on EOF the interpreter
+        # exits 0 even though the lint called sys.exit(1).
+        "python3 -i scripts/lint_workflow_triggers.py",
+        # Anything outside the allowlist fails closed.
+        "python3 -d scripts/lint_workflow_triggers.py",
+        "python3 -uB scripts/lint_workflow_triggers.py",
+    ],
+    ids = ["interactive", "unknown-flag", "combined-flag"],
+)
+def test_lint_rejects_flags_outside_the_allowlist(tmp_path, command):
+    """Only flags that leave run-this-file-and-return-its-status intact count."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py", f"run: {command}"
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+@pytest.mark.parametrize("flag", ["-u", "-E", "-s", "-B", "-q", "-O"])
+def test_lint_accepts_allowlisted_flags(tmp_path, flag):
+    """The allowlist must not reject ordinary interpreter flags."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            f"run: python3 {flag} scripts/lint_workflow_triggers.py",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("scope", ["step", "job", "workflow"])
+@pytest.mark.parametrize("key", ["BASH_ENV", "PATH"])
+def test_lint_rejects_execution_redirecting_env(tmp_path, scope, key):
+    """`BASH_ENV` runs before the step script; `PATH` picks the interpreter."""
+    body = _host_workflow()
+    entry = f"env:\n  {key}: /tmp/x\n"
+    if scope == "step":
+        body = body.replace(
+            "      - run: python3 scripts/lint_workflow_triggers.py\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n"
+            f"        env:\n          {key}: /tmp/x\n",
+        )
+    elif scope == "job":
+        body = body.replace(
+            "    runs-on: ubuntu-latest\n",
+            f"    runs-on: ubuntu-latest\n    env:\n      {key}: /tmp/x\n",
+        )
+    else:
+        body = body.replace("jobs:\n", entry + "jobs:\n")
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(body)
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert key in proc.stderr
+
+
+@pytest.mark.parametrize("value", ["false", "true", "[opened]", "'yes'"])
+def test_lint_rejects_a_non_mapping_pull_request_value(tmp_path, value):
+    """GitHub will not load such a workflow, so it cannot be the gate."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace("  pull_request:\n", f"  pull_request: {value}\n")
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "not a valid event configuration" in proc.stderr
+
+
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
     """A skipped prerequisite skips the lint job without failing the run."""
     wf = tmp_path / "wf"

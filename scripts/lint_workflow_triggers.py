@@ -100,11 +100,15 @@ def _trigger_set(yaml_doc) -> set[str]:
 # The BASENAME must be a python, so a `/tmp/fakepython` that exits 0 is not
 # mistaken for an interpreter. A directory prefix stays fine.
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
-# Options that make python print something and exit without running a file.
-_TERMINAL_OPTS = ("-V", "--version", "-h", "--help")
+# An ALLOWLIST, not a denylist. Every round of review found another flag
+# that stops the file running or masks its exit status (-c, -m, --version,
+# and -i, which drops into the REPL after the script and exits 0 even when
+# the lint called sys.exit(1)). Only flags that leave "run this file and
+# return its status" intact are accepted; anything else is not a host.
+_SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
 LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
-# Options that consume the next token, so the script path is not mistaken for
-# their value.
+# Safe, but they consume the next token, so the script path is not mistaken
+# for their value.
 _OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
 _SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
 
@@ -120,10 +124,12 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
 
     args, i = tokens[1:], 0
     while i < len(args) and args[i].startswith("-"):
-        if args[i].startswith(("-c", "-m")) or args[i] in _TERMINAL_OPTS:
-            # -c / -m run another program; -V / --help exit before the file.
+        if args[i] in _OPTS_WITH_VALUE:
+            i += 2
+        elif args[i] in _SAFE_OPTS:
+            i += 1
+        else:
             return False, None
-        i += 2 if args[i] in _OPTS_WITH_VALUE else 1
 
     rest = args[i:]
     # Exactly the repo-relative path. A suffix match would accept a decoy at
@@ -173,6 +179,12 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
 # `bash -c '"{0}" || true'`, so only the plain executors count.
 SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
+# These redirect execution without the command text changing at all.
+# Non-interactive bash sources BASH_ENV before the step script, so an
+# `exit 0` in that file ends the step before the lint runs; PATH picks the
+# interpreter.
+UNSAFE_ENV_KEYS: tuple[str, ...] = ("BASH_ENV", "ENV", "PATH")
+
 
 def _effective_run_setting(yaml_doc, job: dict, step: dict, key: str) -> str | None:
     """A step's `run` setting, falling back to job then workflow defaults."""
@@ -184,6 +196,30 @@ def _effective_run_setting(yaml_doc, job: dict, step: dict, key: str) -> str | N
         if isinstance(run, dict) and run.get(key):
             return str(run[key])
     return None
+
+
+def _effective_env(yaml_doc, job: dict, step: dict) -> dict:
+    """Workflow, job and step `env`, merged in precedence order."""
+    merged = {}
+    for scope in (yaml_doc, job, step):
+        env = scope.get("env") if isinstance(scope, dict) else None
+        if isinstance(env, dict):
+            merged.update(env)
+    return merged
+
+
+def _pull_request_config_problem(yaml_doc) -> str | None:
+    """`pull_request:` must be bare or a mapping; GitHub rejects anything else."""
+    on = _on_field(yaml_doc)
+    if not isinstance(on, dict) or "pull_request" not in on:
+        return None
+    pr = on["pull_request"]
+    if pr is None or isinstance(pr, dict):
+        return None
+    return (
+        f"its 'pull_request' value is {pr!r}, which is not a valid event "
+        "configuration, so GitHub will not load the workflow at all"
+    )
 
 
 def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
@@ -213,6 +249,15 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
                 problems.append(
                     f"its lint step runs under shell {shell!r}, which can wrap "
                     "the command and drop its exit status"
+                )
+            unsafe_env = sorted(
+                k for k in _effective_env(yaml_doc, job, step) if k in UNSAFE_ENV_KEYS
+            )
+            if unsafe_env:
+                enforcing = False
+                problems.append(
+                    f"its lint step sets {' + '.join(unsafe_env)}, which can "
+                    "redirect the step before the lint runs"
                 )
             workdir = _effective_run_setting(yaml_doc, job, step, "working-directory")
             if workdir is not None:
@@ -313,6 +358,9 @@ def main() -> int:
                     f"{' + '.join(restrictions)}, so a PR adding that skips "
                     "this workflow for its own PR"
                 )
+            config_problem = _pull_request_config_problem(doc)
+            if config_problem:
+                problems.append(config_problem)
             if any(
                 _is_truthy(job.get("continue-on-error"))
                 or _is_truthy(step.get("continue-on-error"))
