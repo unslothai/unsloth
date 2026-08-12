@@ -25,7 +25,7 @@ import argparse
 import re
 import shlex
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 try:
     import yaml
@@ -38,7 +38,10 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-PUBLISH_WORKFLOW_NAMES: tuple[str, ...] = ("release-desktop.yml",)
+# Matched on the STEM: scanning `.yaml` too means a rename to
+# `release-desktop.yaml` must still classify as a publisher, or a cache key
+# shared with a PR workflow would stop being a finding.
+PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
 # A workflow that runs this script is a "host". `pull_request` resolves the
 # workflow file from the PR merge ref, so any narrowing a PR adds to its host
@@ -94,7 +97,11 @@ def _trigger_set(yaml_doc) -> set[str]:
 # pipeline, redirection or `|| true` detaches the step's exit status from the
 # lint's (the default `run:` shell is `bash -e`, without pipefail); and any
 # argument can point it elsewhere or turn it into a no-op, `--help` included.
-_PYTHON = re.compile(r"[\w./-]*python[\w.]*")
+# The BASENAME must be a python, so a `/tmp/fakepython` that exits 0 is not
+# mistaken for an interpreter. A directory prefix stays fine.
+_PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
+# Options that make python print something and exit without running a file.
+_TERMINAL_OPTS = ("-V", "--version", "-h", "--help")
 LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
 # Options that consume the next token, so the script path is not mistaken for
 # their value.
@@ -108,13 +115,14 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
         tokens = shlex.split(line.strip())
     except ValueError:
         return False, None
-    if not tokens or not _PYTHON.fullmatch(tokens[0]):
+    if not tokens or not _PYTHON_BASENAME.fullmatch(PurePosixPath(tokens[0]).name):
         return False, None  # `echo <script>`, or not python at all
 
     args, i = tokens[1:], 0
     while i < len(args) and args[i].startswith("-"):
-        if args[i].startswith(("-c", "-m")):
-            return False, None  # runs that program, not this file
+        if args[i].startswith(("-c", "-m")) or args[i] in _TERMINAL_OPTS:
+            # -c / -m run another program; -V / --help exit before the file.
+            return False, None
         i += 2 if args[i] in _OPTS_WITH_VALUE else 1
 
     rest = args[i:]
@@ -166,15 +174,15 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
 SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
 
-def _effective_shell(yaml_doc, job: dict, step: dict) -> str | None:
-    """The step's shell, falling back to job then workflow `defaults.run`."""
-    if step.get("shell"):
-        return str(step["shell"])
+def _effective_run_setting(yaml_doc, job: dict, step: dict, key: str) -> str | None:
+    """A step's `run` setting, falling back to job then workflow defaults."""
+    if step.get(key):
+        return str(step[key])
     for scope in (job, yaml_doc):
         defaults = scope.get("defaults") if isinstance(scope, dict) else None
         run = defaults.get("run") if isinstance(defaults, dict) else None
-        if isinstance(run, dict) and run.get("shell"):
-            return str(run["shell"])
+        if isinstance(run, dict) and run.get(key):
+            return str(run[key])
     return None
 
 
@@ -199,12 +207,22 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
             enforcing, problems = _lint_step_report(str(step.get("run") or ""))
             if not (enforcing or problems):
                 continue
-            shell = _effective_shell(yaml_doc, job, step)
+            shell = _effective_run_setting(yaml_doc, job, step, "shell")
             if shell is not None and shell not in SAFE_SHELLS:
                 enforcing = False
                 problems.append(
                     f"its lint step runs under shell {shell!r}, which can wrap "
                     "the command and drop its exit status"
+                )
+            workdir = _effective_run_setting(
+                yaml_doc, job, step, "working-directory"
+            )
+            if workdir is not None:
+                enforcing = False
+                problems.append(
+                    f"its lint step runs in working-directory {workdir!r}, so "
+                    "the command resolves to a different file than this "
+                    "repository's script"
                 )
             found.append((job, step, enforcing, problems))
     return found
@@ -334,7 +352,7 @@ def main() -> int:
         is_dispatch_only = "workflow_dispatch" in triggers and not (
             "push" in triggers or "pull_request" in triggers
         )
-        if path.name in PUBLISH_WORKFLOW_NAMES or is_dispatch_only:
+        if path.stem in PUBLISH_WORKFLOW_STEMS or is_dispatch_only:
             publish_triggered.append((path, _extract_cache_keys(path)))
 
     if require_host and not unfiltered_hosts:

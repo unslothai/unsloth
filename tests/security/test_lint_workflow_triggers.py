@@ -286,6 +286,93 @@ def test_lint_accepts_an_explicit_plain_shell(tmp_path):
     assert proc.returncode == 0, proc.stderr
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A fake interpreter that merely contains "python" in its name.
+        "/tmp/fakepython scripts/lint_workflow_triggers.py",
+        # Flags that make python print and exit before running the file.
+        "python3 --version scripts/lint_workflow_triggers.py",
+        "python3 -V scripts/lint_workflow_triggers.py",
+        "python3 --help scripts/lint_workflow_triggers.py",
+    ],
+    ids = ["fake-interpreter", "version-long", "version-short", "help-before-path"],
+)
+def test_lint_rejects_a_non_running_interpreter(tmp_path, command):
+    """The interpreter must be a python that actually executes the file."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py", f"run: {command}"
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+@pytest.mark.parametrize("where", ["step", "job-defaults", "workflow-defaults"])
+def test_lint_rejects_a_changed_working_directory(tmp_path, where):
+    """`working-directory` resolves the command to a different file."""
+    body = _host_workflow()
+    if where == "step":
+        body = body.replace(
+            "      - run: python3 scripts/lint_workflow_triggers.py\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n"
+            "        working-directory: /tmp\n",
+        )
+    elif where == "job-defaults":
+        body = body.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            "    defaults:\n      run:\n        working-directory: /tmp\n",
+        )
+    else:
+        body = body.replace(
+            "jobs:\n", "defaults:\n  run:\n    working-directory: /tmp\njobs:\n"
+        )
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(body)
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "working-directory" in proc.stderr
+
+
+@pytest.mark.parametrize("suffix", [".yml", ".yaml"])
+def test_publish_cache_key_collision_found_under_both_suffixes(tmp_path, suffix):
+    """Scanning `.yaml` is pointless if publisher classification misses it."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / f"release-desktop{suffix}").write_text(
+        "name: release\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "  workflow_dispatch:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          key: shared-cache-key\n"
+    )
+    (wf / "pr.yml").write_text(
+        "name: pr\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/cache@v4\n"
+        "        with:\n"
+        "          key: shared-cache-key\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1
+    assert "cache key" in proc.stderr
+
+
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
     """A skipped prerequisite skips the lint job without failing the run."""
     wf = tmp_path / "wf"
