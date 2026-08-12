@@ -99,6 +99,7 @@ __all__ = [
     "get_gpu_summary",
     "get_package_versions",
     "get_gpu_utilization",
+    "cpu_frequency_mhz",
     "get_visible_gpu_utilization",
     "rocm_windows_free_is_untrusted",
     "trusted_mem_get_info",

@@ -246,9 +246,10 @@ class TestPatchApplication:
         assert psutil.cpu_freq.__name__ == "cpu_freq"
 
     @pytest.mark.parametrize("sample", [None, "junk", 0.0])
-    def test_unusable_readings_pass_through(self, monkeypatch, fake_m4, sample):
+    def test_unusable_readings_without_tables_pass_through(self, monkeypatch, fake_m4, sample):
         value = sample if sample in (None, "junk") else _scpufreq(0.0, 0.0, 0.0)
         psutil = _install_fake_psutil(monkeypatch, value)
+        _fake_ioreg(monkeypatch, [])
         IF.patch_psutil_cpu_freq()
         assert psutil.cpu_freq() == value
 

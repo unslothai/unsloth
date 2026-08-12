@@ -186,9 +186,10 @@ class TestCpuFrequencyMhz:
         assert len(calls) == 1
 
     @pytest.mark.parametrize("current", [None, 0.0, -1.0, float("nan"), "fast"])
-    def test_missing_or_bogus_value_returns_none(self, monkeypatch, current):
+    def test_missing_or_bogus_value_without_ioreg_returns_none(self, monkeypatch, current):
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
         _fake_psutil(monkeypatch, current)
+        _fake_ioreg(monkeypatch, [])
         assert hardware.cpu_frequency_mhz() is None
 
     def test_psutil_failure_returns_none(self, monkeypatch):
