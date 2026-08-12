@@ -388,8 +388,9 @@ def test_annotation_only_network_entries_are_digest_pinned():
     import pathlib
 
     baseline = json.loads(
-        (pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json")
-        .read_text(encoding = "utf-8")
+        (
+            pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
     )
     credential_adjacent = {
         "openai/_client.py",
