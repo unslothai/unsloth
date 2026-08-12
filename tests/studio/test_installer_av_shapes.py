@@ -68,15 +68,15 @@ def test_no_remote_script_is_executed_in_process(name: str) -> None:
     # Piping downloaded script text into the engine is the construct AMSI providers and cloud ML
     # scanners score hardest. install.ps1 and studio/setup.ps1 both fetch a pinned archive now.
     for number, line in _code_lines(name):
-        assert not re.search(r"Invoke-Expression\s*\(\s*Invoke-(RestMethod|WebRequest)", line), (
-            f"{name}:{number} runs downloaded script text in-process: {line.strip()}"
-        )
-        assert not re.search(r"\|\s*(iex|Invoke-Expression)\b", line), (
-            f"{name}:{number} pipes into the engine: {line.strip()}"
-        )
-        assert "scriptblock]::Create" not in line.lower().replace(" ", ""), (
-            f"{name}:{number} builds a script block from a string: {line.strip()}"
-        )
+        assert not re.search(
+            r"Invoke-Expression\s*\(\s*Invoke-(RestMethod|WebRequest)", line
+        ), f"{name}:{number} runs downloaded script text in-process: {line.strip()}"
+        assert not re.search(
+            r"\|\s*(iex|Invoke-Expression)\b", line
+        ), f"{name}:{number} pipes into the engine: {line.strip()}"
+        assert "scriptblock]::Create" not in line.lower().replace(
+            " ", ""
+        ), f"{name}:{number} builds a script block from a string: {line.strip()}"
 
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)
@@ -108,9 +108,9 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
     # the app's own launch and the shortcut install.ps1 writes now matches.
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
-            assert not re.search(r"-ExecutionPolicy\s+Bypass", line, re.IGNORECASE), (
-                f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
-            )
+            assert not re.search(
+                r"-ExecutionPolicy\s+Bypass", line, re.IGNORECASE
+            ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
 # Every runtime-compiled P/Invoke still in the shipped installers, with why it stays. Each entry
@@ -144,7 +144,9 @@ ALLOWED_PINVOKES = {
 def test_no_new_native_imports(name: str) -> None:
     text = _text(name)
     imported = set()
-    for match in re.finditer(r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text):
+    for match in re.finditer(
+        r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text
+    ):
         imported.add(match.group(1))
     # The multi-line declarations in install.ps1 need the parameter list skipped too.
     for match in re.finditer(r"extern\s+[\w.<>\[\]]+\s+(\w+)\s*\(", text):
@@ -175,7 +177,7 @@ def test_no_process_memory_apis(name: str) -> None:
 REQUIRED_OUTPUT = {
     "install.ps1": ['Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex"'],
     "studio/setup.ps1": ['Write-StudioLine "        irm https://unsloth.ai/install.ps1 | iex"'],
-    "install.sh": ['curl -fsSL https://unsloth.ai/install.sh | sh'],
+    "install.sh": ["curl -fsSL https://unsloth.ai/install.sh | sh"],
 }
 
 
