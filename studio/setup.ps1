@@ -5654,8 +5654,15 @@ if ($LocalLlamaCppLinked) {
                 step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
                 Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
             }
-        } elseif ($prebuiltExit -eq 2 -or $prebuiltExit -eq 5) {
-            # Exit 5 adds a specific reason to the ordinary source-build fallback.
+        } elseif ($prebuiltExit -eq 5) {
+            step "llama.cpp" "requested backend is unavailable" "Red"
+            Write-LlamaFailureLog -Output $prebuiltOutput
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                substep "Existing install was restored" "Yellow"
+            }
+            substep "Choose a backend published for this machine or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
+            Exit-SetupFailure "The requested llama.cpp backend is unavailable, so the installer will not substitute a different source backend."
+        } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {

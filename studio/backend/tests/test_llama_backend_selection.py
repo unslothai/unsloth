@@ -84,6 +84,7 @@ def test_every_install_kind_the_installer_can_select_names_a_backend():
         ("windows-cuda", "cuda"),
         ("linux-rocm", "rocm"),
         ("windows-hip", "rocm"),
+        ("windows-rocm", "rocm"),
         ("linux-vulkan", "vulkan"),
         ("windows-vulkan", "vulkan"),
         ("linux-cpu", "cpu"),
@@ -101,6 +102,15 @@ def test_install_kinds_for_backend_is_the_inverse():
     assert ilp.install_kinds_for_backend("vulkan") == ilp.VULKAN_INSTALL_KINDS
     assert "linux-cuda" in ilp.install_kinds_for_backend("cuda")
     assert ilp.install_kinds_for_backend(None) == frozenset()
+
+
+def test_windows_rocm_bundle_satisfies_a_rocm_request():
+    choice = _choice("windows-rocm", "llama-b9925-windows-rocm-gfx1100.zip")
+    plan = ilp.InstallReleasePlan("latest", "b9925", "b9925", [choice], SimpleNamespace())
+
+    filtered = ilp._backend_only_release_plans([plan], "rocm")
+
+    assert filtered[0].attempts == [choice]
 
 
 # ── Reading a choice back off an install ──
@@ -289,6 +299,29 @@ def test_backend_resolver_does_not_turn_a_switch_into_a_version_update(monkeypat
     assert not any(entry["available"] for entry in payload["backends"])
 
 
+def test_backend_resolver_fails_when_every_option_hits_an_unexpected_error(monkeypatch):
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: SimpleNamespace(is_macos = False, system = "Linux", machine = "x86_64"),
+    )
+    monkeypatch.setattr(ilp, "describe_installed_backend", lambda install_dir: None)
+
+    def _offline(**kwargs):
+        raise ConnectionError("offline")
+
+    monkeypatch.setattr(ilp, "select_backend_install", _offline)
+    args = SimpleNamespace(
+        published_repo = FORK,
+        published_release_tag = "",
+        has_rocm = False,
+        rocm_gfx = None,
+    )
+
+    with pytest.raises(RuntimeError, match = "could not resolve any"):
+        ilp.resolve_backends_payload("latest", args = args)
+
+
 def test_metadata_records_both_the_backend_and_the_choice(tmp_path):
     checksums = ilp.ApprovedReleaseChecksums(
         repo = FORK,
@@ -419,11 +452,10 @@ def test_a_named_backend_this_host_cannot_serve_fails_instead(monkeypatch, tmp_p
     with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "", llama_backend = "vulkan")
 
-    # The UI needs a specific error while setup still falls back to source.
+    # Both the UI and setup need a specific fail-closed result.
     assert raised.value.code == ilp.EXIT_BACKEND_UNAVAILABLE
     assert seen == ["vulkan"]
 
 
-def test_backend_unavailable_is_a_prebuilt_fallback():
-    # setup.sh's existing handling treats it as "no prebuilt, source build instead".
+def test_backend_unavailable_uses_the_prebuilt_rollback_path():
     assert issubclass(ilp.BackendUnavailable, ilp.PrebuiltFallback)

@@ -222,6 +222,19 @@ def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
     assert action["reason"] == "already_selected"
 
 
+def test_auto_reapplies_when_hardware_detection_changes(monkeypatch, tmp_path):
+    install_dir = _install(monkeypatch, tmp_path, backend = "cpu", backend_request = "auto")
+    _patch_installer(
+        monkeypatch,
+        on_start = lambda cmd, kwargs: _write_install(
+            install_dir, backend = "cuda", backend_request = "auto"
+        ),
+    )
+
+    assert upd.start_backend_switch("auto")["started"] is True
+    assert _await_job()["state"] == "success"
+
+
 def test_pinning_a_detected_install_to_its_own_backend_is_a_real_change(monkeypatch, tmp_path):
     """auto -> cuda on a CUDA box installs the same bundle, and still matters: it
     stops the next update from re-detecting the machine onto something else."""
@@ -364,12 +377,23 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
     assert status["supported"] is True
     assert status["backend"] == "cuda"
     assert status["backend_request"] == "auto"
+    assert status["selection_applied"] is True
     assert status["installed_tag"] == "b9596-mix-abc"
     by_backend = {option["backend"]: option for option in status["options"]}
     assert by_backend["auto"]["resolved_backend"] == "cuda"
     assert by_backend["auto"]["download_size_bytes"] == 1234
     assert by_backend["rocm"]["available"] is False
     assert "sycl" not in by_backend
+
+
+def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path, backend = "cpu", backend_request = "auto")
+
+    status = upd.get_backend_status()
+
+    assert status["backend"] == "cpu"
+    assert status["backend_request"] == "auto"
+    assert status["selection_applied"] is False
 
 
 def test_status_surfaces_an_environment_pin(monkeypatch, tmp_path):
@@ -404,6 +428,37 @@ def test_status_degrades_when_the_options_cannot_be_resolved(monkeypatch, tmp_pa
     assert status["supported"] is False
     assert status["backend"] == "cuda"
     assert status["options"] == []
+
+
+def test_backend_resolution_failures_are_not_cached(monkeypatch, tmp_path):
+    memo = {}
+    responses = [
+        (1, ""),
+        (
+            0,
+            json.dumps(
+                {"backends": [{"backend": "auto", "available": True, "resolved_backend": "cuda"}]}
+            ),
+        ),
+    ]
+
+    def _run(cmd, **kwargs):
+        returncode, stdout = responses.pop(0)
+        return type("Result", (), {"returncode": returncode, "stdout": stdout})()
+
+    monkeypatch.setattr(upd.subprocess, "run", _run)
+
+    kwargs = {
+        "force_refresh": False,
+        "memo": memo,
+        "installer_script": lambda: tmp_path / "install.py",
+        "log_message": "test resolver failed",
+        "mode": ("--resolve-backends", "latest"),
+    }
+    assert upd._flow.resolve_prebuilt_for_host(**kwargs) is None
+    resolved = upd._flow.resolve_prebuilt_for_host(**kwargs)
+    assert resolved["backends"][0]["available"] is True
+    assert responses == []
 
 
 def test_running_job_status_does_not_resolve_options_again(monkeypatch, tmp_path):

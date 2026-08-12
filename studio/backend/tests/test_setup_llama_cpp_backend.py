@@ -150,6 +150,24 @@ def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
     assert "Exit-SetupFailure" in guarded
 
 
+def test_unavailable_named_backend_never_falls_through_to_source():
+    sh = _SETUP_SH.read_text(encoding = "utf-8")
+    unavailable = sh.index('elif [ "$_PREBUILT_STATUS" -eq 5 ]; then')
+    ordinary_fallback = sh.index('elif [ "$_PREBUILT_STATUS" -eq 2 ]; then', unavailable)
+    guarded = sh[unavailable:ordinary_fallback]
+    assert "will not substitute a different source backend" in guarded
+    assert "_NEED_LLAMA_SOURCE_BUILD=true" not in guarded
+    assert "setup_fail 1" in guarded
+
+    ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
+    unavailable = ps1.index("} elseif ($prebuiltExit -eq 5) {")
+    ordinary_fallback = ps1.index("} elseif ($prebuiltExit -eq 2) {", unavailable)
+    guarded = ps1[unavailable:ordinary_fallback]
+    assert "will not substitute a different source backend" in guarded
+    assert "$NeedLlamaSourceBuild = $true" not in guarded
+    assert "Exit-SetupFailure" in guarded
+
+
 def test_explicit_vulkan_source_build_fails_closed():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     local_branch = sh.index('if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then')
@@ -225,6 +243,7 @@ def _source_backend_choice_block() -> str:
         ("auto", "on", "auto", "true"),
         ("banana", "1", "banana", "true"),
         ("cpu", "1", "cpu", "false"),
+        ("cuda", "1", "cuda", "false"),
         ("hip", "1", "hip", "false"),
         ("rocm", "1", "rocm", "false"),
     ],
@@ -266,6 +285,7 @@ def _ps1_search(pattern: str, flags = 0) -> str:
         ("vulkan", None, "True"),
         ("auto", "on", "True"),
         ("cpu", "1", "False"),
+        ("cuda", "1", "False"),
         ("hip", "1", "False"),
         ("rocm", "1", "False"),
     ],
@@ -370,8 +390,8 @@ def test_ps1_backend_vulkan_is_accepted(value):
 
 
 @_SKIP_NO_PWSH
-@pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM "])
-def test_ps1_backend_hip_opt_out_is_accepted(value):
+@pytest.mark.parametrize("value", ["cuda", " CUDA ", "hip", "HIP", "rocm", " ROCM "])
+def test_ps1_backend_gpu_opt_out_is_accepted(value):
     out = _run_ps1(value)
     assert "--force-cpu" not in out
     assert "--llama-backend" not in out
@@ -391,7 +411,7 @@ def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
 
 
 @_SKIP_NO_PWSH
-@pytest.mark.parametrize("value", ["gpu", "cuda"])
+@pytest.mark.parametrize("value", ["gpu", "sycl"])
 def test_ps1_backend_unknown_warns_and_no_flag(value):
     out = _run_ps1(value)
     assert "--force-cpu" not in out

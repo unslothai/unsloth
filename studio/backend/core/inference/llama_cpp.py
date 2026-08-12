@@ -9523,11 +9523,11 @@ class LlamaCppBackend:
         from utils.llama_cpp_update import _llama_install_root
         from utils.prebuilt.llama_backend import marker_backend_was_chosen, normalize_backend
 
-        # The environment outranks whatever the install recorded, so a backend
-        # exported there is an explicit selection even against an "auto" marker.
+        # A concrete environment override is explicit. "auto" still has to pass
+        # the managed-install marker check below.
         explicit = normalize_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
-        if explicit is not None:
-            return explicit == "auto"
+        if explicit is not None and explicit != "auto":
+            return False
         if (os.environ.get("UNSLOTH_FORCE_VULKAN") or "").strip().lower() in {
             "1",
             "true",

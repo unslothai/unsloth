@@ -14,6 +14,7 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "windows-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
+    "windows-rocm": "rocm",
     "linux-vulkan": "vulkan",
     "windows-vulkan": "vulkan",
     "linux-cpu": "cpu",

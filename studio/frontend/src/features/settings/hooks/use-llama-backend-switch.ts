@@ -140,14 +140,15 @@ export function useLlamaBackendSwitch() {
   );
 
   const apply = useCallback(() => {
-    if (!selected) {
+    const requested = selected ?? status?.backendRequest;
+    if (!requested) {
       return;
     }
     setApplying(true);
     ourJob.current = true;
     void (async () => {
       try {
-        const started = await switchLlamaBackend(selected);
+        const started = await switchLlamaBackend(requested);
         if (!started.started) {
           if (!mounted.current) {
             ourJob.current = false;
@@ -182,7 +183,7 @@ export function useLlamaBackendSwitch() {
         toast.error(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [selected, refresh, startPolling, t]);
+  }, [selected, status?.backendRequest, refresh, startPolling, t]);
 
   // The component derives the untouched value from status.backendRequest.
   const running = applying || status?.job.state === "running";

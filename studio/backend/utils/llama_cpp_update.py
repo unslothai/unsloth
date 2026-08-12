@@ -482,6 +482,9 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         "env_backend": _env_backend_override(),
         "backend": marker_backend(marker),
         "backend_request": marker_backend_request(marker),
+        # Becomes false only after the resolver proves that the recorded request
+        # now selects a different backend. Unknown status must not invite an apply.
+        "selection_applied": True,
         "installed_tag": (marker or {}).get("release_tag") or (marker or {}).get("tag"),
         "options": [],
         "job": job,
@@ -525,6 +528,12 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
             }
         )
     status["options"] = options
+    current = next(
+        (option for option in options if option["backend"] == status["backend_request"]),
+        None,
+    )
+    if current and current["available"] and current["resolved_backend"] is not None:
+        status["selection_applied"] = current["resolved_backend"] == status["backend"]
     return status
 
 
@@ -750,17 +759,6 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             },
         }
 
-    if marker and backend_request is not None:
-        if marker_backend_request(marker) == backend_request:
-            # Compare choices, since auto may run the same backend without pinning it.
-            return {
-                "skip_reason": "already_selected",
-                "refusal": {
-                    "started": False,
-                    "reason": "already_selected",
-                    "message": f"llama.cpp is already set to {backend_request}.",
-                },
-            }
     if marker:
         # Mirror the detection guard: a direct POST or a stale banner must not
         # start an install when the latest is not actually newer (force a fresh
@@ -952,6 +950,16 @@ def start_backend_switch(backend: str) -> dict:
             "started": False,
             "reason": "backend_unavailable",
             "message": f"No {normalized} llama.cpp build is available for this machine.",
+            "job": job,
+        }
+    marker = read_install_marker(_find_binary())
+    if marker_backend_request(marker) == normalized and marker_backend(marker) == resolved_backend:
+        with _job_lock:
+            job = dict(_job)
+        return {
+            "started": False,
+            "reason": "already_selected",
+            "message": f"llama.cpp is already set to {normalized}.",
             "job": job,
         }
     return _start_llama_job(backend_request = normalized, llama_plan = llama_plan)

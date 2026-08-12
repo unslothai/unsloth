@@ -537,6 +537,19 @@ class TestAutoVulkanCpuFallbackGate:
             "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
         )
 
+    def test_auto_environment_override_does_not_make_a_custom_binary_managed(self, monkeypatch):
+        import utils.llama_cpp_update as update
+
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+        monkeypatch.setattr(update, "_llama_install_root", lambda _binary: None)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+
+        assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
+        )
+
 
 class TestCpuIsolatedReplay:
     @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])

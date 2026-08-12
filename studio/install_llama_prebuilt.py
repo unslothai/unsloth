@@ -139,6 +139,7 @@ INSTALL_KIND_BACKENDS = {
     "windows-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
+    "windows-rocm": "rocm",
     "linux-vulkan": "vulkan",
     "windows-vulkan": "vulkan",
     "linux-cpu": "cpu",
@@ -548,11 +549,8 @@ class ExistingInstallSatisfied(RuntimeError):
 class BackendUnavailable(PrebuiltFallback):
     """This host and these releases publish no bundle for the requested backend.
 
-    A PrebuiltFallback so every existing handler keeps treating it as "no prebuilt,
-    source build instead", but distinct so the one caller that must tell the two
-    apart -- a stored choice deciding whether to fall back to detection -- does not
-    have to read exception text, and so a network failure can never be mistaken for
-    an unavailable backend.
+    It shares the prebuilt rollback path, but remains distinguishable from transport
+    failures and from fallbacks where automatic source selection is safe.
     """
 
 
@@ -7701,8 +7699,7 @@ def install_prebuilt(
         except Exception as report_exc:
             log(f"system report unavailable: {report_exc}")
         if isinstance(exc, BackendUnavailable) and backend_mandatory:
-            # Distinct only for the caller's benefit: the setup scripts treat it as
-            # the same source-build fallback (see their exit-code handling).
+            # Setup must not replace a concrete request with an auto-detected build.
             raise SystemExit(EXIT_BACKEND_UNAVAILABLE) from exc
         raise SystemExit(EXIT_FALLBACK) from exc
 
@@ -7978,6 +7975,8 @@ def resolve_backends_payload(
                 if not entry["available"]:
                     entry["reason"] = "no_prebuilt"
             entries.append(entry)
+        if entries and all(entry.get("reason") == "error" for entry in entries):
+            raise RuntimeError("could not resolve any llama.cpp backend")
         return entries
 
     pinned_to = args.published_release_tag or (installed or {}).get("release_tag") or ""

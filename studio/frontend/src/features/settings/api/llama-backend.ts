@@ -14,6 +14,7 @@ import {
 export {
   LLAMA_BACKENDS,
   isLlamaBackend,
+  llamaBackendSelectionNeedsApply,
   visibleLlamaBackendOptions,
 } from "./llama-backend-payload";
 export type {

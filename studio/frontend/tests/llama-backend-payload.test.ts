@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  llamaBackendSelectionNeedsApply,
   parseLlamaBackendStatus,
   visibleLlamaBackendOptions,
 } from "../src/features/settings/api/llama-backend-payload.ts";
@@ -14,6 +15,7 @@ const FULL_PAYLOAD = {
   env_backend: null,
   backend: "cuda",
   backend_request: "auto",
+  selection_applied: true,
   installed_tag: "b9596-mix-abc",
   options: [
     {
@@ -111,4 +113,23 @@ test("the selected backend stays listed even when it stops being installable", (
     visibleLlamaBackendOptions(status, "rocm").map((option) => option.backend),
     ["auto", "rocm"],
   );
+});
+
+test("automatic can be applied again when it now resolves differently", () => {
+  const status = parseLlamaBackendStatus({
+    ...FULL_PAYLOAD,
+    backend: "cpu",
+    selection_applied: false,
+  });
+
+  assert.equal(llamaBackendSelectionNeedsApply(status, null), true);
+  assert.equal(llamaBackendSelectionNeedsApply(status, "auto"), true);
+});
+
+test("older status payloads do not become dirty without server evidence", () => {
+  const { selection_applied: _selectionApplied, ...olderPayload } = FULL_PAYLOAD;
+  const status = parseLlamaBackendStatus(olderPayload);
+
+  assert.equal(status.selectionApplied, true);
+  assert.equal(llamaBackendSelectionNeedsApply(status, null), false);
 });

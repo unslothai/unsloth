@@ -1921,7 +1921,7 @@ _explicit_vulkan_source_build=false
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
     case "$_source_backend_choice" in
         vulkan) _explicit_vulkan_source_build=true ;;
-        cpu|hip|rocm) ;;
+        cpu|cuda|hip|rocm) ;;
         *)
             case "$_source_legacy_force_vulkan" in
                 1|true|yes|on) _explicit_vulkan_source_build=true ;;
@@ -2228,8 +2228,16 @@ else
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
             setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
-    elif [ "$_PREBUILT_STATUS" -eq 2 ] || [ "$_PREBUILT_STATUS" -eq 5 ]; then
-        # Exit 5 adds a specific reason to the ordinary source-build fallback.
+    elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
+        step "llama.cpp" "requested backend is unavailable" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "prebuilt update failed; existing install restored"
+        fi
+        substep "choose a backend published for this machine or unset UNSLOTH_LLAMA_CPP_BACKEND"
+        setup_fail 1 "The requested llama.cpp backend is unavailable, so the installer will not substitute a different source backend."
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"

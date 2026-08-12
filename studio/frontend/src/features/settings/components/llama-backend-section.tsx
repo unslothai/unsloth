@@ -15,6 +15,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import {
   type LlamaBackendOption,
   isLlamaBackend,
+  llamaBackendSelectionNeedsApply,
   visibleLlamaBackendOptions,
 } from "../api/llama-backend";
 import { useLlamaBackendSwitch } from "../hooks/use-llama-backend-switch";
@@ -53,8 +54,8 @@ export function LlamaBackendSection() {
   const current = status?.backendRequest ?? "auto";
   const value = selected ?? current;
   const options = visibleLlamaBackendOptions(status, value);
-  const pending = options.find((option) => option.backend === selected);
-  const dirty = !running && selected != null && selected !== current;
+  const pending = options.find((option) => option.backend === value);
+  const dirty = !running && llamaBackendSelectionNeedsApply(status, selected);
   const unsupportedKey =
     status && !status.supported && !running
       ? (UNSUPPORTED_REASONS[status.reason ?? ""] ??
