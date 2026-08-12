@@ -165,9 +165,11 @@ def _api():
 # is still alive belongs to a run in progress and must not be touched, or one
 # launcher would delete a concurrent launcher's kernel and report its absence
 # as a failure of the code under test.
-INFLIGHT = Path(
-    os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3]
-) / "logs" / "kaggle_inflight.json"
+INFLIGHT = (
+    Path(os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3])
+    / "logs"
+    / "kaggle_inflight.json"
+)
 
 
 def _inflight_read() -> list[dict]:
@@ -202,9 +204,9 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True      # exists, owned by someone else
+        return True  # exists, owned by someone else
     except (OSError, TypeError):
-        return True      # unknown: assume alive, deleting is the costly error
+        return True  # unknown: assume alive, deleting is the costly error
     return True
 
 
@@ -232,11 +234,13 @@ def sweep_orphans() -> list[str]:
         try:
             subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
-                capture_output = True, text = True, timeout = 180,
+                capture_output = True,
+                text = True,
+                timeout = 180,
             )
             reclaimed.append(slug)
         except Exception:  # noqa: BLE001
-            keep.append(entry)   # try again next time rather than forget it
+            keep.append(entry)  # try again next time rather than forget it
     _inflight_write(keep)
     return reclaimed
 

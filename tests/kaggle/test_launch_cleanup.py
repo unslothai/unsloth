@@ -36,11 +36,14 @@ def _fake_kaggle(bin_dir: Path, record: Path) -> None:
     """A `kaggle` on PATH that only records what it was asked to delete."""
     bin_dir.mkdir(parents = True, exist_ok = True)
     shim = bin_dir / "kaggle"
-    shim.write_text(textwrap.dedent(f"""\
+    shim.write_text(
+        textwrap.dedent(f"""\
         #!{sys.executable}
         import sys, pathlib
         pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
-        """), encoding = "utf-8")
+        """),
+        encoding = "utf-8",
+    )
     shim.chmod(0o755)
 
 
@@ -49,17 +52,24 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     record = tmp_path / "kaggle_calls.txt"
     _fake_kaggle(tmp_path / "bin", record)
     script = tmp_path / "runner.py"
-    script.write_text(textwrap.dedent(f"""\
+    script.write_text(
+        textwrap.dedent(f"""\
         import sys, time
         sys.path.insert(0, {str(CI_DIR)!r})
         import launch
         launch.INFLIGHT = __import__("pathlib").Path({str(tmp_path / "inflight.json")!r})
         {body}
-        """), encoding = "utf-8")
+        """),
+        encoding = "utf-8",
+    )
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
-    return subprocess.Popen([sys.executable, str(script)], env = env,
-                            stdout = subprocess.PIPE, stderr = subprocess.STDOUT,
-                            text = True)
+    return subprocess.Popen(
+        [sys.executable, str(script)],
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+    )
 
 
 def _deletions(tmp_path: Path) -> list[str]:
@@ -72,8 +82,7 @@ def _deletions(tmp_path: Path) -> list[str]:
 # --------------------------------------------------------------------------
 # the registry
 # --------------------------------------------------------------------------
-def test_a_pushed_kernel_is_recorded_before_anything_else_can_fail(tmp_path,
-                                                                   monkeypatch):
+def test_a_pushed_kernel_is_recorded_before_anything_else_can_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
     launch._inflight_add("me/k-1")
     entries = launch._inflight_read()
@@ -120,6 +129,7 @@ def test_a_failed_delete_keeps_the_entry_for_next_time(tmp_path, monkeypatch):
 
     def _boom(*a, **kw):
         raise OSError("kaggle is unreachable")
+
     monkeypatch.setattr(launch.subprocess, "run", _boom)
     assert launch.sweep_orphans() == []
     assert [e["slug"] for e in launch._inflight_read()] == ["me/orphan"]
@@ -140,14 +150,17 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     """SIGTERM is what `kill` and an Actions cancel send; SIGINT is Ctrl-C.
     Before the handlers, neither deleted anything.
     """
-    proc = _runner(tmp_path, """
+    proc = _runner(
+        tmp_path,
+        """
         result = {"kernels": [{"slug": "me/k-1", "released": False}]}
         class A:
             keep_kernel = False
         launch._install_release_handlers(result, A())
         print("READY", flush=True)
         time.sleep(60)
-    """)
+    """,
+    )
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(getattr(signal, signame))
@@ -155,21 +168,25 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert any("me/k-1" in c for c in _deletions(tmp_path)), (
-        f"{signame} left the kernel behind; it would bill to its ceiling")
+    assert any(
+        "me/k-1" in c for c in _deletions(tmp_path)
+    ), f"{signame} left the kernel behind; it would bill to its ceiling"
 
 
 def test_the_exit_status_still_says_it_was_killed(tmp_path):
     """A handler that swallows the signal and exits 0 makes a cancelled job
     look like a completed one."""
-    proc = _runner(tmp_path, """
+    proc = _runner(
+        tmp_path,
+        """
         result = {"kernels": [{"slug": "me/k-1", "released": False}]}
         class A:
             keep_kernel = False
         launch._install_release_handlers(result, A())
         print("READY", flush=True)
         time.sleep(60)
-    """)
+    """,
+    )
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(signal.SIGTERM)
@@ -177,19 +194,23 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert proc.returncode == -signal.SIGTERM, (
-        f"expected death by SIGTERM, got returncode {proc.returncode}")
+    assert (
+        proc.returncode == -signal.SIGTERM
+    ), f"expected death by SIGTERM, got returncode {proc.returncode}"
 
 
 def test_an_unhandled_exception_still_deletes(tmp_path):
     """atexit covers the path no signal handler sees."""
-    proc = _runner(tmp_path, """
+    proc = _runner(
+        tmp_path,
+        """
         result = {"kernels": [{"slug": "me/k-1", "released": False}]}
         class A:
             keep_kernel = False
         launch._install_release_handlers(result, A())
         raise RuntimeError("boom")
-    """)
+    """,
+    )
     proc.wait(timeout = 30)
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
@@ -198,11 +219,14 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
     """Nothing in-process survives SIGKILL. What must survive is the record,
     so the next launcher can reclaim it."""
     inflight = tmp_path / "inflight.json"
-    proc = _runner(tmp_path, f"""
+    proc = _runner(
+        tmp_path,
+        f"""
         launch._inflight_add("me/k-9")
         print("READY", flush=True)
         time.sleep(60)
-    """)
+    """,
+    )
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(signal.SIGKILL)
