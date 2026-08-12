@@ -173,6 +173,38 @@ def test_xformers_bias_move_replaces_all_shared_metadata_aliases():
     assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
 
 
+def test_xformers_bias_move_preserves_causal_type_when_to_demotes():
+    class _FakeTensor:
+        def __init__(self, device):
+            self.device = torch.device(device)
+
+    class _ReturningSeqInfo:
+        def __init__(self, device):
+            self.seqstart = _FakeTensor(device)
+
+        def to(self, device):
+            return _ReturningSeqInfo(device)
+
+    class _BaseBias:
+        def __init__(self, seqinfo):
+            self.q_seqinfo = seqinfo
+            self.k_seqinfo = seqinfo
+
+        def to(self, device):
+            return _BaseBias(self.q_seqinfo.to(device))
+
+    class _CausalBias(_BaseBias):
+        pass
+
+    bias = _CausalBias(_ReturningSeqInfo("cuda:0"))
+    moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+
+    assert moved is bias
+    assert type(moved) is _CausalBias
+    assert moved.q_seqinfo is moved.k_seqinfo
+    assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
+
+
 def test_xformers_bias_move_skips_matching_metadata_device():
     class _SeqInfo:
         def __init__(self):

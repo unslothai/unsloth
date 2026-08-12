@@ -75,11 +75,16 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
     move = getattr(attn_bias, "to", None)
     if callable(move):
         moved = move(device)
-        return attn_bias if moved is None else moved
+        if moved is None or type(moved) is type(attn_bias):
+            return attn_bias if moved is None else moved
 
-    # xFormers before 0.0.27 exposes ``to`` only on the sequence metadata and
-    # mutates it in place. Keep that compatibility path while newer versions
-    # return a new attention-bias object from ``attn_bias.to(device)`` above.
+        # xFormers 0.0.27 and 0.0.28 let BlockDiagonalCausalMask inherit
+        # BlockDiagonalMask.to(), which returns a non-causal BlockDiagonalMask.
+        # Preserve the original bias type and move its metadata below instead.
+
+    # Older xFormers exposes ``to`` only on the sequence metadata and mutates it
+    # in place. This also handles newer versions whose top-level ``to`` loses the
+    # concrete bias type.
     seen = set()
     for name in ("q_seqinfo", "k_seqinfo"):
         seqinfo = getattr(attn_bias, name, None)
