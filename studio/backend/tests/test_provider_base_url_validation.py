@@ -43,6 +43,8 @@ _SUPPORTED = [
     "https://my-resource.openai.azure.com/openai/v1",
     "https://gw.example/v1?tenant=a",
     "https://[2606:4700:4700::1111]/v1",
+    # Self-hosted gateways behind basic auth keep working.
+    "https://user:pass@gw.example/v1",
 ] + [info["base_url"] for info in PROVIDER_REGISTRY.values() if info["base_url"]]
 
 
@@ -81,8 +83,6 @@ def test_no_dns_lookup_on_the_default_path(monkeypatch):
         ("file:///etc/passwd", "http or https"),
         ("gopher://example.com/", "http or https"),
         ("data:text/plain,hi", "http or https"),
-        ("https://user:pass@example.com/v1", "credentials"),
-        ("http://@example.com/v1", "credentials"),
         ("http://exa mple.com/v1", "invalid characters"),
         ("http://example.com\n/v1", "invalid characters"),
         ("http://example.com\\@evil.com/v1", "invalid characters"),
@@ -108,6 +108,8 @@ def test_rejected_url_shapes(url, error):
         "http://metadata.google.internal/computeMetadata/v1/",
         "http://metadata/computeMetadata/v1/",
         "http://100.100.100.200/latest/meta-data/",
+        # Userinfo does not disguise the real host.
+        "http://api.openai.com@169.254.169.254/latest/meta-data/",
     ],
 )
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):

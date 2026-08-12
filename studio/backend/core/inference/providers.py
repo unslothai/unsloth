@@ -489,9 +489,10 @@ def validate_provider_base_url(base_url: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         raise ValueError("Provider base URL must use http or https.")
-    # `is not None` rather than truthiness: `http://@host/` has empty userinfo.
-    if parts.username is not None or parts.password is not None:
-        raise ValueError("Provider base URL must not contain credentials.")
+    # Userinfo (`https://user:pass@gateway/v1`) is left alone: some self-hosted
+    # gateways sit behind basic auth, and the host checks below read the parsed
+    # hostname, so `http://api.openai.com@169.254.169.254/` is caught on its real
+    # host either way.
     if not hostname:
         raise ValueError("Provider base URL must contain a hostname.")
 
