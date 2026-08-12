@@ -2758,10 +2758,8 @@ def _extra_args_mtp_draft_source(
     if found is not None:
         return found, found_remote
     e = os.environ if env is None else env
-    # Same precedence the value lookup has always used; the env spelling is what
-    # says local or remote here, there being no flag to read.
-    # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
-    # rename (2026-04-28).
+    # The value lookup's own precedence; with no flag to read, the env spelling says
+    # local or remote. The last two are pre-b8955 (2025-08-30 to 2026-04-28).
     for var, remote in (
         ("LLAMA_ARG_SPEC_DRAFT_MODEL", False),
         ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", True),
@@ -10758,8 +10756,8 @@ class LlamaCppBackend:
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
-                # Auto dropped the drafter because only the target fit. Bound before
-                # the try for the same reason: the launch below reads it either way.
+                # Auto dropped the drafter because only the target fit. Bound before the
+                # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -11003,11 +11001,10 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
-                    # The same three sources, kept before the CPU nulling below, as the
-                    # answer to "will a SEPARATE drafter be emitted at all". Not
-                    # mtp_draft_path: extras owning --spec-type return from
-                    # _build_speculative_flags before Studio's resolved sidecar becomes
-                    # --model-draft, and _studio_draft_for_budget already encodes that.
+                    # Will a SEPARATE drafter be emitted at all, taken before the CPU
+                    # nulling below. Not mtp_draft_path: extras owning --spec-type return
+                    # before Studio's sidecar becomes --model-draft, which
+                    # _studio_draft_for_budget already encodes.
                     _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
@@ -11178,24 +11175,18 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    # CPU-offloaded and the drafter that will launch is the separate
-                    # one, so nothing speculative sits on the GPU. A separate sidecar
-                    # wins over an embedded head (llama.cpp loads the draft model on
-                    # has_dft()), so an unused head must not keep the reserve alive;
-                    # a head with no sidecar is still GPU-resident and still reserved.
+                    # Nothing speculative on the GPU: the drafter that launches is the
+                    # separate CPU-offloaded one, and a sidecar wins over an embedded head
+                    # (llama.cpp loads the draft model on has_dft()). A head with no
+                    # sidecar is still GPU-resident and still reserved.
                     _draft_cpu_no_embedded = _draft_on_cpu and (
                         _separate_draft_launches or not self._nextn_predict_layers
                     )
 
-                    # The two tensor -> layer downgrades that depend on nothing the
-                    # drafter probe below decides run here, BEFORE it: the probe is
-                    # gated on `not tensor_parallel`, and a load that ends up layer-split
-                    # is a load the probe has to answer for (the layer planner reserves
-                    # the Auto drafter and pays for it in context). Both are knowable
-                    # this early -- a recorded abort is a session lookup, and the usable
-                    # GPU count needs only the tensor compute-buffer reserve -- and
-                    # running them first also hands the probe the restored (possibly
-                    # quantized) KV type the layer load will actually use.
+                    # The two tensor -> layer downgrades that need nothing the probe
+                    # decides run BEFORE it: the probe is gated on `not tensor_parallel`
+                    # and must answer for any load that ends up layer-split. Running them
+                    # first also hands it the restored KV type that load will use.
                     def _restore_after_tensor_downgrade():
                         # Restore the quantized KV + extras tensor dropped (layer
                         # split supports them), minus --split-mode.
@@ -11279,50 +11270,29 @@ class LlamaCppBackend:
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
 
-                    # When the target pins on GPU but the drafter's reserve is what tips
-                    # it over, Auto drops the drafter: it only buys speed, and paying
-                    # for it with a smaller context (or a --fit offload, where decode
-                    # collapses ~3x) is the worse trade. An explicit dropdown / CLI /
-                    # extras choice is honored and keeps the shrink behaviour below.
-                    # Priced over the SAME ranked subsets the placement loop below
-                    # walks, at the context the target alone would get on each: so it
-                    # drops only when no placement could have held both. A whole-pool
-                    # figure is not the ceiling it looks like, because a busy card adds
-                    # ~nothing to _pool_budget_mib while still charging its pipeline
-                    # overhead and its replicated compute buffer, which can condemn a
-                    # drafter the single healthy GPU would have held. Carried to the
-                    # launch as drafter_no_vram, which downgrades the Auto emit.
-                    # Skipped under tensor parallelism: _plan_tensor_parallel reserves a
-                    # per-device tensor buffer with its own context geometry, so these
-                    # layer-split numbers are not that load's numbers, and a wrong answer
-                    # here costs the user the drafter. TP keeps the behaviour it has.
-                    # `tensor_parallel` here already reflects the two downgrades hoisted
-                    # above (recorded abort, fewer than two usable GPUs), so a request
-                    # that ends up layer-split for either reason IS probed. One
-                    # downgrade still escapes: the pooled tensor weight-budget check
-                    # below, which prices _soft_overhead and therefore _mtp_reserves_gpu
-                    # -- both derived from the _mtp_will_engage this probe may clear.
-                    # Running it first would be circular (dropping the drafter shrinks
-                    # the requirement, so the load could stay on tensor with the drafter
-                    # already gone), so a tensor request that falls back to layer split
-                    # purely because the pooled budget cannot hold weights + MTP reserve
-                    # + per-device buffers keeps today's behaviour: no probe, and the
-                    # layer planner pays for the drafter in context as before.
-                    # The gate reads the user's choice, not _mtp_effective, which by
-                    # here is the kind Auto resolved and can no longer tell the two apart.
+                    # Target pins but the drafter's reserve tips it over: Auto drops the
+                    # drafter rather than pay for speed with context (or a --fit offload,
+                    # where decode collapses ~3x). Priced over the SAME ranked subsets the
+                    # placement loop walks, at the context the target alone would get, so
+                    # it drops only when no placement could have held both. Carried to the
+                    # launch as drafter_no_vram. Skipped under tensor parallelism, whose
+                    # per-device buffer has its own geometry these numbers do not model;
+                    # `tensor_parallel` already reflects the downgrades hoisted above, so
+                    # a request that ends up layer-split IS probed. The pooled tensor
+                    # weight-budget check below still escapes, since it prices the reserve
+                    # this probe may clear and running it first would be circular. The
+                    # gate reads the user's choice, not _mtp_effective, which by here is
+                    # the kind Auto resolved and can no longer tell the two apart.
                     if (
                         _mtp_will_engage
                         and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
                         and not _user_mtp_via_extras
                         and not _user_draft_via_extras
                         and not _extra_args_set_spec_type(extra_args)
-                        # A bare --model-draft / --spec-draft-hf sets neither of the
-                        # two flags above (both key off an accumulated --spec-type),
-                        # yet llama.cpp loads whatever that names regardless of the
-                        # spec type: server load_model gates the draft model on
-                        # has_dft(), i.e. "a draft path was given". Dropping here
-                        # would release the reserve for a drafter the child still
-                        # loads, and the load OOMs. It is also an explicit choice.
+                        # A bare --model-draft / --spec-draft-hf sets neither flag above
+                        # (both key off --spec-type), yet llama.cpp loads whatever it
+                        # names anyway: load_model gates the draft on has_dft(). Dropping
+                        # here would free the reserve for a drafter that still loads.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                         and not _draft_cpu_no_embedded
                         and not tensor_parallel
@@ -11384,15 +11354,12 @@ class LlamaCppBackend:
                                 ),
                             )
 
-                        # Both rankings, because an unsized drafter costs five points of
-                        # pin fraction and that can reorder heterogeneous cards: a busy
-                        # 80 GB card can lead at 0.97 while an idle 24 GB card leads at
-                        # 0.92. The placement loop re-sorts under the fraction that load
-                        # ends up with, so a prefix only the drafter's own ranking
-                        # produces is still a placement it can choose, and condemning the
-                        # drafter without pricing it there is a drop of a drafter that
-                        # fits. Identical when the two orders agree, which is every
-                        # homogeneous machine.
+                        # Both rankings: an unsized drafter costs five points of pin
+                        # fraction, which can reorder heterogeneous cards (a busy 80 GB
+                        # can lead at 0.97, an idle 24 GB at 0.92). The placement loop
+                        # sorts under the fraction that load ends up with, so a prefix
+                        # only the drafter's ranking produces is still one it can choose.
+                        # Identical whenever the orders agree, i.e. every uniform machine.
                         _probe_orders = [_probe_rank(False)]
                         _ranked_w = _probe_rank(True)
                         if [id(g) for g in _ranked_w] != [id(g) for g in _probe_orders[0]]:
@@ -11439,15 +11406,13 @@ class LlamaCppBackend:
                                 if _foot_wo > _budget_wo:
                                     continue
                                 # The pooled figure hides the compute buffer every device
-                                # replicates: on a heterogeneous split the weakest card can
-                                # be unable to hold the context the pool priced, and the
-                                # placement loop caps to what it does hold. Charging the
-                                # drafter at the uncapped context condemns it at a context
-                                # this load can never reach. Same reserve expression and
-                                # same cap the auto-context loop below applies (_reserve_at
-                                # / _every_gpu_holds_reserve / _cap_ctx_to_per_device_reserve),
-                                # so the two cannot disagree. Auto only: an explicit context
-                                # is honored verbatim, never capped, and overflows to --fit.
+                                # replicates, so the weakest card may not hold the context
+                                # the pool priced and the placement loop caps to what it
+                                # does. Charging the drafter at the uncapped context
+                                # condemns it at a context this load never reaches. Same
+                                # reserve and cap the auto-context loop below applies, so
+                                # the two cannot disagree. Auto only: an explicit context
+                                # is honored verbatim and overflows to --fit.
                                 _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
                                 _probe_reserve_at = lambda c, _k = _n: (
                                     (_pipeline_overhead_bytes if _k > 1 else 0)
@@ -11457,11 +11422,10 @@ class LlamaCppBackend:
                                     _usable_wo, _probe_reserve_at(_ctx_wo)
                                 ):
                                     if explicit_ctx:
-                                        # Honored verbatim, so there is nothing to cap: this
-                                        # subset simply cannot hold it, and _select_gpus_
-                                        # split_aware will say so too by going to --fit.
-                                        # Calling it a fit here would drop the drafter and
-                                        # then report a pin that never happened.
+                                        # Nothing to cap: this subset cannot hold it, and
+                                        # _select_gpus_split_aware will go to --fit too.
+                                        # Calling it a fit would drop the drafter and then
+                                        # report a pin that never happened.
                                         continue
                                     _ctx_wo = self._cap_ctx_to_per_device_reserve(
                                         _ctx_wo, _usable_wo, _probe_reserve_at
@@ -11488,13 +11452,12 @@ class LlamaCppBackend:
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
-                                # Both do not fit at the target's own context. The placement
-                                # loop does not simply move on: it re-caps the context WITH
-                                # the drafter charged and accepts this subset at whatever
-                                # that leaves. So if a smaller context would hold both here,
-                                # this is the placement the load takes and the drafter is
-                                # paid for in context, which is the trade being refused. It
-                                # only moves to a larger subset when no context fits both.
+                                # Both do not fit at the target's own context. The loop does
+                                # not move on: it re-caps the context WITH the drafter and
+                                # takes this subset at whatever that leaves. So a smaller
+                                # context holding both here IS the placement the load takes,
+                                # paying for the drafter in context, which is the trade being
+                                # refused. Only if no context fits both does it widen.
                                 _ctx_w = (
                                     0
                                     if explicit_ctx
@@ -11530,14 +11493,12 @@ class LlamaCppBackend:
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
-                            # Clearing the flag alone leaves the reserve in place: the
-                            # eight _mtp_bytes call sites below are unconditional, and
-                            # _fit_context_to_vram invokes any non-None mtp_overhead_fn
-                            # whatever mtp_engaged says. The fit would then still shrink
-                            # the context (or take --fit) for a drafter that no longer
-                            # launches, which is the whole thing this drop prevents.
-                            # _mtp_kv_unsized goes with it, or _flat_mtp_engages below
-                            # would swap the flat fraction in as its replacement.
+                            # Clearing the flag alone leaves the reserve: the _mtp_bytes
+                            # sites are unconditional and _fit_context_to_vram invokes any
+                            # non-None mtp_overhead_fn whatever mtp_engaged says, so the
+                            # fit would still shrink the context for a drafter that no
+                            # longer launches. _mtp_kv_unsized goes with it, or
+                            # _flat_mtp_engages swaps the flat fraction in as replacement.
                             mtp_overhead_fn = None
                             _mtp_kv_unsized = False
                             logger.warning(
@@ -11552,14 +11513,11 @@ class LlamaCppBackend:
                             )
 
                     if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
-                        # Nothing speculative is GPU-resident: the drafter that
-                        # launches is the separate CPU-offloaded one, and any embedded
-                        # head it displaced does not run. The flat fraction below is
-                        # already gated on this, but the byte-accurate callback is not:
-                        # _fit_context_to_vram invokes any non-None mtp_overhead_fn
-                        # whatever mtp_engaged says, and the _mtp_bytes sites are
-                        # unconditional, so the fit would still shrink the context or
-                        # take --fit for VRAM no drafter allocates.
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
                         mtp_overhead_fn = None
                         _mtp_kv_unsized = False
 
@@ -14202,11 +14160,10 @@ class LlamaCppBackend:
         # UD-Q4_K_XL + mmproj-kquant + dflash-kquant, b10342, B200, n_max=2, greedy,
         # ~545 image tokens gave 92.1 -> 114.2 tok/s at 0.646 acceptance with output
         # byte-identical to the drafter-free run.
-        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with
-        # no sidecar is already dropped by policy below, so reporting the VRAM reason
-        # for it would tell the user to force MTP at a smaller context: a path that is
-        # slower than the ngram-mod they are getting. Let it fall through to the MLA
-        # branch, which drops the same drafter for the reason that actually applies.
+        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with no
+        # sidecar is already dropped by policy below, and reporting the VRAM reason
+        # would invite forcing MTP at a smaller context: slower than the ngram-mod it
+        # gets. Let it fall through to the MLA branch, which gives the real reason.
         _no_vram_drops_a_real_drafter = (
             bool(dspark_draft_path and caps.get("supports_dspark"))
             or bool(dflash_draft_path and caps.get("supports_dflash"))
