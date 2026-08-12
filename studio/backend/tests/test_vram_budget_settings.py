@@ -402,3 +402,38 @@ class TestLaunchFinalization:
         helper = helper[: helper.index("# Nothing is committed yet")]
         compact = "".join(helper.split())
         assert "ifnotgpusorintent.cpu_fallback:returnNone" in compact
+
+
+class TestPreLaunchWindow:
+    @staticmethod
+    def _compact():
+        import inspect
+
+        import core.inference.llama_cpp as lc
+        return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+
+    def test_the_pending_value_is_armed_before_the_download(self):
+        # The download and planning ahead of the spawn can take minutes, and the
+        # old child is gone for part of it, so a save landing there would be told
+        # no reload is needed while the eventual child carries the old fraction.
+        compact = self._compact()
+        armed = compact.index("self._vram_fraction_pending=_vram_frac\n".strip())
+        cancel = compact.index("self._cancel_event.clear()")
+        spawn = compact.index("self._vram_fraction_pending=_budget_priced_placement()")
+        assert armed < cancel < spawn
+
+    def test_a_terminal_failure_releases_the_pending_value(self):
+        # The route reads the pending value before it checks is_active, so a value
+        # left behind by a failed load would ask for a reload with nothing loaded.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        funnel = source[source.index("def _raise_terminal_load_failure") :]
+        funnel = funnel[: funnel.index("def _try_auto_vulkan_cpu_fallback")]
+        compact = "".join(funnel.split())
+        assert "self._vram_fraction_pending=None" in compact
+        assert compact.index("self._vram_fraction_pending=None") < compact.index(
+            "raiseRuntimeError(detail)"
+        )

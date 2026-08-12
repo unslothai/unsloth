@@ -10246,6 +10246,17 @@ class LlamaCppBackend:
                     return False
                 return True
 
+            # From here the load is going to replace the running child, and the
+            # download and planning ahead of it can take minutes. A save landing
+            # in that stretch would otherwise find no active backend and be told
+            # no reload is needed, while the child that eventually starts is
+            # already committed to the fraction captured above. Placement is not
+            # decided yet, so this claims the load is budget-priced and the spawn
+            # site narrows it once gpus and the effective intent are known; an
+            # unnecessary reload prompt for those few seconds beats sizing a
+            # child against a budget the user has already replaced.
+            self._vram_fraction_pending = _vram_frac
+
             self._cancel_event.clear()
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")
@@ -13241,6 +13252,10 @@ class LlamaCppBackend:
                 def _raise_terminal_load_failure(detail: str) -> NoReturn:
                     if intent.cpu_fallback:
                         self._cleanup_failed_cpu_fallback()
+                    # No child is going to carry this budget now. Left set, the
+                    # settings route would answer from it ahead of its is_active
+                    # check and ask for a reload with nothing loaded.
+                    self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
                 def _try_auto_vulkan_cpu_fallback(
@@ -13303,6 +13318,7 @@ class LlamaCppBackend:
                             binary,
                         )
                         self._cleanup_failed_cpu_fallback()
+                        self._vram_fraction_pending = None
                         raise RuntimeError(detail)
 
                     intent = self._apply_cpu_fallback_state(

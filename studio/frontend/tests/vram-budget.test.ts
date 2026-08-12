@@ -158,7 +158,7 @@ test("Run waits for a staged budget save before starting the load", () => {
     handlerStart,
     pageSource.indexOf("\n  };", handlerStart),
   );
-  const flushAt = handler.indexOf("flushVramBudgetSave()");
+  const flushAt = handler.indexOf("settleVramBudgetSave()");
   assert.ok(flushAt >= 0, "handleRun no longer flushes the staged budget");
   assert.ok(
     flushAt < handler.indexOf("onRun(effectiveLoadConfig"),
@@ -184,7 +184,7 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
     handlerStart,
     pageSource.indexOf("\n  };", handlerStart),
   );
-  const flush = handler.slice(handler.indexOf("flushVramBudgetSave()"));
+  const flush = handler.slice(handler.indexOf("settleVramBudgetSave()"));
   // finally alone re-rejects, so the browser logs an unhandled rejection and the
   // load proceeds on the old fraction with nothing said.
   assert.ok(
@@ -214,4 +214,20 @@ test("budget writes are serialised and only the newest publishes", () => {
   );
   // A failed save must not strand every later one behind it.
   assert.match(update, /vramBudgetWriteChain = write\.catch/);
+});
+
+test("Run also waits for a save the debounce already sent", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  // Pause past the 400 ms debounce, then click Load: nothing is staged any more,
+  // but the PUT is still open and the load would use the fraction it replaces.
+  const settle = client.slice(client.indexOf("export function settleVramBudgetSave"));
+  assert.match(settle, /flushVramBudgetSave\(\) \?\?/);
+  assert.match(settle, /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain : null/);
+  // The counter has to come back down however the write ends.
+  assert.match(client, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
 });

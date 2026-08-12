@@ -26,6 +26,7 @@ import {
   type VramBudgetSettings,
   flushVramBudgetSave,
   loadVramBudgetSettings,
+  settleVramBudgetSave,
   stageVramBudgetSave,
   subscribeVramBudgetSettings,
 } from "@/features/settings/api/vram-budget";
@@ -1547,7 +1548,7 @@ export function ModelConfigPage({
     // be sized against the old fraction. That is exactly the load the control
     // promises the new value applies to. A failed save must not swallow the
     // load, hence finally, and a click with nothing staged stays synchronous.
-    const stagedBudget = flushVramBudgetSave();
+    const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
       // Caught, not voided: finally would re-reject and the browser would log an
       // unhandled rejection, and the load would otherwise proceed on the old

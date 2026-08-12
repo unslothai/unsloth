@@ -56,6 +56,23 @@ export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
   return fraction === null ? null : updateVramBudgetSettings(fraction);
 }
 
+/**
+ * Everything the next load has to wait for: a staged fraction, or a save the
+ * debounce already sent and that has not come back.
+ *
+ * An open write counts as much as a staged one. The debounce fires 400 ms after
+ * the last pointer move, so a user who pauses and then clicks Load has nothing
+ * staged and a PUT still in flight, and the load would otherwise be sized against
+ * the fraction that request is replacing. The chain swallows its own rejections,
+ * which the debounced save has already reported.
+ */
+export function settleVramBudgetSave(): Promise<unknown> | null {
+  return (
+    flushVramBudgetSave() ??
+    (vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : null)
+  );
+}
+
 export function subscribeVramBudgetSettings(
   listener: (settings: VramBudgetSettings) => void,
 ) {
@@ -139,6 +156,9 @@ async function putVramBudget(
 // the newest publish, so a late response cannot repaint the control.
 let vramBudgetWriteChain: Promise<unknown> = Promise.resolve();
 let vramBudgetWriteGeneration = 0;
+// Writes that have been issued and not yet settled, so a load can tell whether
+// there is anything to wait for.
+let vramBudgetWritesOpen = 0;
 
 /** `null` clears the stored budget so the env var or the default applies again. */
 export function updateVramBudgetSettings(
@@ -146,10 +166,15 @@ export function updateVramBudgetSettings(
 ): Promise<VramBudgetSettings> {
   vramBudgetWriteGeneration += 1;
   const generation = vramBudgetWriteGeneration;
-  const write = vramBudgetWriteChain.then(
-    () => putVramBudget(fraction),
-    () => putVramBudget(fraction),
-  );
+  vramBudgetWritesOpen += 1;
+  const write = vramBudgetWriteChain
+    .then(
+      () => putVramBudget(fraction),
+      () => putVramBudget(fraction),
+    )
+    .finally(() => {
+      vramBudgetWritesOpen -= 1;
+    });
   // The chain must survive a rejection, or one failed save would strand every
   // later one behind it.
   vramBudgetWriteChain = write.catch(() => undefined);
