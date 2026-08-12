@@ -146,6 +146,33 @@ def test_xformers_bias_move_supports_legacy_in_place_metadata():
     assert moved.q_seqinfo.device == torch.device("cuda:1")
 
 
+def test_xformers_bias_move_replaces_all_shared_metadata_aliases():
+    class _FakeTensor:
+        def __init__(self, device):
+            self.device = torch.device(device)
+
+    class _ReturningSeqInfo:
+        def __init__(self, device):
+            self.seqstart = _FakeTensor(device)
+
+        def to(self, device):
+            return _ReturningSeqInfo(device)
+
+    class _Bias:
+        def __init__(self):
+            self.q_seqinfo = _ReturningSeqInfo("cuda:0")
+            self.k_seqinfo = self.q_seqinfo
+
+    bias = _Bias()
+    original = bias.q_seqinfo
+    moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+
+    assert moved is bias
+    assert moved.q_seqinfo is moved.k_seqinfo
+    assert moved.q_seqinfo is not original
+    assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
+
+
 def test_xformers_bias_move_skips_matching_metadata_device():
     class _SeqInfo:
         def __init__(self):

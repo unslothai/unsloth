@@ -90,7 +90,9 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         if callable(move):
             moved = move(device)
             if moved is not None:
-                setattr(attn_bias, name, moved)
+                for alias in ("q_seqinfo", "k_seqinfo"):
+                    if getattr(attn_bias, alias, None) is seqinfo:
+                        setattr(attn_bias, alias, moved)
     return attn_bias
 
 
