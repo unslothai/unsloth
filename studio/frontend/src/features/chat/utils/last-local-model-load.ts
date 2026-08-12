@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
+
 export type LastLocalModelKind = "gguf" | "model";
 
 const PATH_LIKE_ID_RE = /^(?:[/~]|[A-Za-z]:[\\/]|\\\\)/;
@@ -14,56 +16,75 @@ export type LastLocalModelLoad = {
   id: string;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
-  loadedAt: number;
 };
 
-const STORAGE_KEY = "unsloth.last-local-model-load.v1";
-
-function storage(): Storage | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage;
-  } catch {
-    return null;
-  }
-}
+const API_PATH = "/api/settings/last-local-model";
+// Pre-backend installs kept the record here; still read as a fallback so an
+// upgrade does not forget the model.
+const LEGACY_STORAGE_KEY = "unsloth.last-local-model-load.v1";
 
 function isLastLocalModelKind(value: unknown): value is LastLocalModelKind {
   return value === "gguf" || value === "model";
 }
 
-export function readLastLocalModelLoad(): LastLocalModelLoad | null {
+function toRecord(input: {
+  id?: unknown;
+  kind?: unknown;
+  ggufVariant?: unknown;
+}): LastLocalModelLoad | null {
+  if (typeof input.id !== "string" || !isLastLocalModelKind(input.kind)) {
+    return null;
+  }
+  const id = input.id.trim();
+  const ggufVariant =
+    typeof input.ggufVariant === "string"
+      ? input.ggufVariant.trim() || null
+      : null;
+  if (!id) {
+    return null;
+  }
+  // A quant-less cached repo names no file; a local .gguf path is the file.
+  if (input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)) {
+    return null;
+  }
+  return { id, kind: input.kind, ggufVariant };
+}
+
+function readLegacyRecord(): LastLocalModelLoad | null {
   try {
-    const raw = storage()?.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) {
       return null;
     }
-    const parsed = JSON.parse(raw) as Partial<LastLocalModelLoad>;
-    if (
-      typeof parsed.id !== "string" ||
-      !parsed.id.trim() ||
-      !isLastLocalModelKind(parsed.kind) ||
-      typeof parsed.loadedAt !== "number"
-    ) {
-      return null;
-    }
-    // A quant-less cached repo names no file; a local .gguf path is the file.
-    if (
-      parsed.kind === "gguf" &&
-      !isPathLikeId(parsed.id) &&
-      (typeof parsed.ggufVariant !== "string" || !parsed.ggufVariant.trim())
-    ) {
-      return null;
-    }
-    return {
-      id: parsed.id,
-      kind: parsed.kind,
-      ggufVariant:
-        typeof parsed.ggufVariant === "string" ? parsed.ggufVariant : null,
-      loadedAt: parsed.loadedAt,
-    };
+    return toRecord(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     return null;
   }
+}
+
+export async function readLastLocalModelLoad(): Promise<LastLocalModelLoad | null> {
+  try {
+    const res = await authFetch(API_PATH);
+    if (res.ok) {
+      const data = (await res.json()) as {
+        id?: unknown;
+        kind?: unknown;
+        // biome-ignore lint/style/useNamingConvention: API schema
+        gguf_variant?: unknown;
+      };
+      const record = toRecord({
+        id: data.id,
+        kind: data.kind,
+        ggufVariant: data.gguf_variant,
+      });
+      if (record) {
+        return record;
+      }
+    }
+  } catch {
+    // Unreachable settings API: fall back to the legacy record.
+  }
+  return readLegacyRecord();
 }
 
 export function recordLastLocalModelLoad(input: {
@@ -71,25 +92,20 @@ export function recordLastLocalModelLoad(input: {
   kind: LastLocalModelKind;
   ggufVariant?: string | null;
 }): void {
-  const id = input.id.trim();
-  if (!id) {
+  const record = toRecord(input);
+  if (!record) {
     return;
   }
-  const ggufVariant = input.ggufVariant?.trim() || null;
-  if (input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)) {
-    return;
-  }
-  try {
-    storage()?.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        id,
-        kind: input.kind,
-        ggufVariant: input.kind === "gguf" ? ggufVariant : null,
-        loadedAt: Date.now(),
-      } satisfies LastLocalModelLoad),
-    );
-  } catch {
-    // Ignore disabled storage / quota errors; auto-load falls back to size order.
-  }
+  authFetch(API_PATH, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: record.id,
+      kind: record.kind,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      gguf_variant: record.ggufVariant,
+    }),
+  }).catch(() => {
+    // Best effort; auto-load falls back to size order without it.
+  });
 }

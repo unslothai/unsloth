@@ -466,6 +466,47 @@ def update_model_memory(
     return _model_memory_response()
 
 
+LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+
+
+class LastLocalModelPayload(BaseModel):
+    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    kind: Literal["gguf", "model"]
+    gguf_variant: Optional[str] = Field(default = None, max_length = _MAX_VARIANT_SUFFIX_LEN)
+
+
+class LastLocalModelResponse(BaseModel):
+    id: Optional[str] = None
+    kind: Optional[Literal["gguf", "model"]] = None
+    gguf_variant: Optional[str] = None
+
+
+@router.get("/last-local-model", response_model = LastLocalModelResponse)
+def get_last_local_model(
+    current_subject: str = Depends(get_current_subject),
+) -> LastLocalModelResponse:
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    if not isinstance(stored, dict):
+        return LastLocalModelResponse()
+    try:
+        payload = LastLocalModelPayload(**stored)
+    except Exception:
+        return LastLocalModelResponse()
+    return LastLocalModelResponse(**payload.model_dump())
+
+
+@router.put("/last-local-model", response_model = LastLocalModelResponse)
+def update_last_local_model(
+    payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
+) -> LastLocalModelResponse:
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump()})
+    return LastLocalModelResponse(**payload.model_dump())
+
+
 class CodingAgentsResponse(BaseModel):
     # All agents `unsloth start` supports, in the CLI's declared order.
     agents: tuple[str, ...] = CODING_AGENTS
