@@ -482,6 +482,21 @@ def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch
     assert not odd.exists(), "the index named this shard and it was left behind"
 
 
+def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, save_mod):
+    """`-NNNNN-of-NNNNN` under an unrelated stem is not something
+    `save_pretrained` writes, and transformers does not clear it either: its own
+    stale-shard sweep requires the name to start with `model` / `pytorch_model`
+    as well as to have the shard shape. So a file like this was put here by the
+    user, and this helper deletes permanently."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    theirs = Path(merge) / "backup-00001-of-00002.safetensors"
+    theirs.write_bytes(b"not ours")
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    assert theirs.exists(), "a foreign shard set was deleted with the merge"
+    assert not [f for f in os.listdir(merge) if f.startswith("model-")]
+
+
 def test_a_malformed_index_falls_back_to_the_naming_convention(tmp_path, monkeypatch, save_mod):
     """A half-written index must not stop the reclamation, nor make it raise."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)

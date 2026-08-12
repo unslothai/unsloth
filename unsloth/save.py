@@ -3530,10 +3530,18 @@ def _gguf_output_size_ratio(quant_method, first_conversion):
 # The names `save_pretrained` gives a set of weights, and only those. Unsharded
 # it is transformers' own `SAFE_WEIGHTS_NAME` / `WEIGHTS_NAME`, plus the
 # consolidated single file unsloth_zoo renames to `model.safetensors`. Sharded
-# it is `-NNNNN-of-NNNNN` under any stem, which is the shape transformers
-# matches its own shards with (`modeling_utils`: `(.*?)-\d{5}-of-\d{5}`).
+# it is the same stem plus `-NNNNN-of-NNNNN`.
+#
+# The stem is part of the rule, not decoration. transformers clears stale shards
+# from a save directory under exactly this pair of conditions
+# (`modeling_utils`: `filename.startswith(weights_no_suffix)` and
+# `re.fullmatch(r"(.*?)-\d{5}-of-\d{5}", ...)`), so a shard set under some other
+# stem is a file `save_pretrained` neither writes nor removes -- and this helper
+# deletes permanently. A merge that does use another stem still gets reclaimed,
+# because a sharded `save_pretrained` always writes the index and the index
+# names its own shards.
 _MERGE_WEIGHT_NAME = re.compile(
-    r"^((model|pytorch_model|consolidated)|.+-\d+-of-\d+)\.(safetensors|bin)$"
+    r"^(model|pytorch_model|consolidated)(-\d{5}-of-\d{5})?\.(safetensors|bin)$"
 )
 # `save_pretrained` names the shard set here when it writes more than one.
 _WEIGHT_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
