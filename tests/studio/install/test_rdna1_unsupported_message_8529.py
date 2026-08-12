@@ -468,10 +468,16 @@ class TestAdviceIsNotEmittedForRdna1:
     )
     def test_no_unsupported_arm_promises_cpu_training(self, path, anchor):
         lines = _normalised(path).splitlines()
-        hits = [i for i, line in enumerate(lines) if anchor in line and not line.lstrip().startswith("#")]
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if anchor in line and not line.lstrip().startswith("#")
+        ]
         assert len(hits) == 1, f"{path.name}: expected one arm anchored on {anchor!r}, got {hits}"
         window = "\n".join(
-            line for line in lines[hits[0] : hits[0] + 8] if not line.lstrip().startswith(("#", "//"))
+            line
+            for line in lines[hits[0] : hits[0] + 8]
+            if not line.lstrip().startswith(("#", "//"))
         )
         assert "runs on CPU on this GPU" not in window, (
             f"{path.name}:{hits[0] + 1}: promises CPU training, which raises "
@@ -659,9 +665,9 @@ class TestVulkanAdvice:
             and any(e in line for e in ("substep", "_safe_print", "step ", "Write-StudioLine"))
             and not line.lstrip().startswith("#")
         ]
-        assert not offenders, (
-            f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
-        )
+        assert (
+            not offenders
+        ), f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
 
     # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with how
     # many times each anchor is expected to appear. The count is the point: the
@@ -795,9 +801,9 @@ class TestVulkanAdvice:
         implicitly-joined fragments and no single source line carries it."""
         _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert _PWSH_SETTER in out, f"the printed advice is not pasteable into PowerShell:\n{out}"
-        assert _POSIX_SETTER not in out, (
-            f"the printed advice gives a POSIX assignment PowerShell cannot parse:\n{out}"
-        )
+        assert (
+            _POSIX_SETTER not in out
+        ), f"the printed advice gives a POSIX assignment PowerShell cannot parse:\n{out}"
 
     def test_the_printed_advice_says_when_to_set_it(self):
         """The anti-#8458 clause for the Python copy.
