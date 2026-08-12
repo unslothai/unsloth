@@ -214,9 +214,7 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
                     f"its lint step runs under shell {shell!r}, which can wrap "
                     "the command and drop its exit status"
                 )
-            workdir = _effective_run_setting(
-                yaml_doc, job, step, "working-directory"
-            )
+            workdir = _effective_run_setting(yaml_doc, job, step, "working-directory")
             if workdir is not None:
                 enforcing = False
                 problems.append(

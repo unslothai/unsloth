@@ -328,9 +328,7 @@ def test_lint_rejects_a_changed_working_directory(tmp_path, where):
             "    defaults:\n      run:\n        working-directory: /tmp\n",
         )
     else:
-        body = body.replace(
-            "jobs:\n", "defaults:\n  run:\n    working-directory: /tmp\njobs:\n"
-        )
+        body = body.replace("jobs:\n", "defaults:\n  run:\n    working-directory: /tmp\njobs:\n")
     (wf := tmp_path / "wf").mkdir()
     (wf / "host.yml").write_text(body)
     proc = _run(wf, require_host = True)
