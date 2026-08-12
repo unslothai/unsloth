@@ -229,9 +229,7 @@ class VramBudgetPayload(BaseModel):
     # None clears the stored budget, so the environment default (or the built-in
     # one) applies again. The route cannot use None for "leave untouched" as the
     # model-memory switches do, because there is only one field to write.
-    fraction: Optional[float] = Field(
-        default = None, ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX
-    )
+    fraction: Optional[float] = Field(default = None, ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
 
 
 class VramBudgetResponse(BaseModel):

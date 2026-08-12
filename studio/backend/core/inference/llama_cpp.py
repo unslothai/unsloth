@@ -1905,7 +1905,6 @@ def _active_vram_fraction() -> float:
     """
     try:
         from utils.vram_budget_settings import get_vram_budget_fraction
-
         return get_vram_budget_fraction()
     except Exception:
         # Settings are a convenience; a load must never fail because of them.
@@ -11712,9 +11711,7 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(
-                                    g, _vram_frac - _flat_mtp_reserve
-                                ),
+                                key = lambda g: _gpu_usable(g, _vram_frac - _flat_mtp_reserve),
                                 reverse = True,
                             )
                             best_cap = 0
