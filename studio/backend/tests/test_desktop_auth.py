@@ -835,17 +835,15 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
-    # _hardware_snapshot() is a seqlock read that returns None until detection settles, so
-    # without this the authed chat_only fields are never published and the assertions below
-    # fail on a missing key rather than a wrong value.
+    # _hardware_snapshot() is a seqlock read returning None until detection settles, so without
+    # this the authed chat_only fields never publish and the assertions fail on a missing key.
     import threading
 
     _settled = threading.Event()
     _settled.set()
     monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
-    # On Apple Silicon the MLX self-heal may still overturn the settled "mlx_unavailable"
-    # verdict, so health_check() drops the snapshot and the authed fields go missing again.
-    # Pin the host predicate that gate starts from, so a Mac measures what CI does.
+    # On Apple Silicon the MLX self-heal can overturn the settled "mlx_unavailable" verdict, so
+    # health_check() drops the snapshot. Pin the predicate off so a Mac measures what CI does.
     monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
@@ -1085,9 +1083,8 @@ def test_the_router_stub_covers_every_router_main_imports():
     imported = set(re.findall(r"(\w+_router)", block.group(1)))
     assert imported, "the routes import block named no routers; re-derive this"
 
-    # The health test's own stub only, never the whole file: another test's fixture
-    # stubbing part of routes (loaded_local_model registers routes.inference) would
-    # otherwise count as coverage for an import that test never sees.
+    # The health test's own stub only: another test's fixture (loaded_local_model registers
+    # routes.inference) would otherwise count as coverage for an import it never sees.
     own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
     stubbed = set(re.findall(r'"(\w+_router)":', own_src))
     assert stubbed, "the health test's stub dict named no routers; re-derive this"
@@ -1097,9 +1094,8 @@ def test_the_router_stub_covers_every_router_main_imports():
         f"define them, so the routes stand-in will not satisfy that import"
     )
 
-    # The same drift through the other import form: `from routes.<sub> import router` needs a
-    # sys.modules entry, not a dict key. routes.whisper and routes.profile_stats were both
-    # missing but only the first was visible: the import dies on the earliest and hides the rest.
+    # Same drift via `from routes.<sub> import router`, which needs a sys.modules entry, not a
+    # dict key. whisper and profile_stats were both missing; the earliest import hid the rest.
     submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
     assert submodules, "main.py imports no routes submodule; re-derive this"
     registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
