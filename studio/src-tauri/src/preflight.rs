@@ -53,6 +53,19 @@ fn stale_auto_repair(managed: &ManagedProbe) -> bool {
     release_auto_repair() && !managed_profile_unreachable(managed)
 }
 
+/// What to tell the user about a stale backend.
+///
+/// The unreachable profile comes first: updating is what the frontend advises
+/// for every other stale reason, and the update runs through the very profile
+/// the probe could not reach. The backend's own reason stays in the log.
+fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
+    if managed_profile_unreachable(managed) {
+        info!("Desktop preflight: stale backend ({reason}) reported as an unreachable profile");
+        return managed::WORKING_DIRECTORY_UNAVAILABLE.to_string();
+    }
+    reason.to_string()
+}
+
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
     match managed {
         ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
@@ -132,7 +145,7 @@ fn choose_owned_preflight(
         },
         OwnedBackendReadiness::Stale { reason } => DesktopPreflightResult {
             disposition: DesktopPreflightDisposition::OwnedStale,
-            reason: Some(reason.clone()),
+            reason: Some(stale_reason(managed, reason)),
             port: Some(owned.port),
             can_auto_repair: stale_auto_repair(managed),
             managed_bin: managed_bin_for_result(managed),
@@ -185,7 +198,7 @@ fn choose_ownerless_spawned_preflight(
         (Some(owned_port), BackendProbe::Old { port, reason }) if owned_port == *port => {
             DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::OwnedStale,
-                reason: Some(reason.clone()),
+                reason: Some(stale_reason(managed, reason)),
                 port: Some(*port),
                 can_auto_repair: stale_auto_repair(managed),
                 managed_bin: managed_bin_for_result(managed),
@@ -521,6 +534,13 @@ mod tests {
                 assert_eq!(result.disposition, DesktopPreflightDisposition::OwnedStale);
                 assert_eq!(result.port, Some(8000));
                 assert!(!result.can_auto_repair, "{managed:?}");
+                // The frontend answers "backend_outdated" with "run the update",
+                // which is the one thing an unreachable profile cannot do.
+                assert_eq!(
+                    result.reason.as_deref(),
+                    Some(managed::WORKING_DIRECTORY_UNAVAILABLE),
+                    "{managed:?}"
+                );
             }
         }
 
@@ -529,6 +549,11 @@ mod tests {
             assert_eq!(stale_auto_repair(managed), release_auto_repair());
             for result in [owned(managed), ownerless(managed)] {
                 assert_eq!(result.can_auto_repair, release_auto_repair(), "{managed:?}");
+                assert_eq!(
+                    result.reason.as_deref(),
+                    Some("backend_outdated"),
+                    "{managed:?}"
+                );
             }
         }
     }

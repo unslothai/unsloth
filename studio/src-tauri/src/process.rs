@@ -2674,8 +2674,11 @@ mod managed_cli_working_dir_tests {
             "C:\\Windows\\System32\\config\\systemprofile",
             "C:\\Windows\\",
         ] {
-            let error = managed_cli_working_dir_from(Some(PathBuf::from(home)), std::slice::from_ref(&windir))
-                .unwrap_err();
+            let error = managed_cli_working_dir_from(
+                Some(PathBuf::from(home)),
+                std::slice::from_ref(&windir),
+            )
+            .unwrap_err();
             assert!(
                 error.contains("inside the Windows directory"),
                 "{home} must be rejected, got: {error}"
