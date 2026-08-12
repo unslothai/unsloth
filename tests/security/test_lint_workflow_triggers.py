@@ -142,55 +142,41 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
     assert expected in proc.stderr
 
 
-def test_lint_rejects_a_host_that_only_mentions_the_script(tmp_path):
-    """`echo <script>` runs nothing, so it must not satisfy the wiring check."""
-    wf = tmp_path / "wf"
-    wf.mkdir()
-    (wf / "host.yml").write_text(
-        _host_workflow().replace(
-            "run: python3 scripts/lint_workflow_triggers.py",
-            "run: echo scripts/lint_workflow_triggers.py",
-        )
-    )
-    proc = _run(wf, require_host = True)
-    assert proc.returncode == 1
-    assert "does not cover every PR" in proc.stderr
-
-
 @pytest.mark.parametrize(
     "command, expected",
     [
-        ("python3 scripts/lint_workflow_triggers.py || true", "swallows"),
-        ("python3 scripts/lint_workflow_triggers.py ; true", "swallows"),
-        ("set +e\n          python3 scripts/lint_workflow_triggers.py", "swallows"),
+        ("python3 scripts/lint_workflow_triggers.py || true", "chained"),
+        ("python3 scripts/lint_workflow_triggers.py ; true", "chained"),
+        ("python3 scripts/lint_workflow_triggers.py | tee lint.log", "chained"),
+        ("python3 scripts/lint_workflow_triggers.py &", "chained"),
+        ("set -e\n          set +e\n          python3 scripts/lint_workflow_triggers.py", "set +e"),
         (
             "python3 scripts/lint_workflow_triggers.py --workflows-dir /tmp/empty",
             "--workflows-dir",
         ),
-        (
-            "python3 scripts/lint_workflow_triggers.py --no-require-host",
-            "--no-require-host",
-        ),
-        # -c / -m run something else and treat the path as a bare argument.
-        ("python3 -c 'pass' scripts/lint_workflow_triggers.py", "does not cover"),
-        ("python3 -m json.tool scripts/lint_workflow_triggers.py", "does not cover"),
+        ("python3 scripts/lint_workflow_triggers.py --no-require-host", "--no-require-host"),
+        ("python3 scripts/lint_workflow_triggers.py --workflows-d /tmp/empty", "--workflows-d"),
+        ("python3 scripts/lint_workflow_triggers.py --help", "--help"),
     ],
     ids = [
         "or-true",
         "semi-true",
+        "pipe-tee",
+        "background",
         "set-plus-e",
         "elsewhere-dir",
         "self-check-off",
-        "dash-c",
-        "dash-m",
+        "abbreviated-flag",
+        "help",
     ],
 )
 def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
     """Running the script is not enough; it has to be able to gate.
 
-    `|| true` swallows the exit code, and the flags point it away from the
-    live tree or switch off its own wiring check. Each leaves a workflow that
-    looks wired and enforces nothing.
+    A pipeline or `|| true` detaches the step's exit status from the lint's
+    (the default `run:` shell is `bash -e`, with no pipefail), and any
+    argument can point it away from the live tree, switch off its own wiring
+    check, or make it exit before scanning at all.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
@@ -203,6 +189,31 @@ def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
     assert expected in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -c 'pass' scripts/lint_workflow_triggers.py",
+        "python3 -m json.tool scripts/lint_workflow_triggers.py",
+        "echo scripts/lint_workflow_triggers.py",
+        # A decoy with the right basename but not this repository's script.
+        "python3 /tmp/lint_workflow_triggers.py",
+    ],
+    ids = ["dash-c", "dash-m", "echo", "decoy-path"],
+)
+def test_lint_does_not_count_a_non_running_command_as_a_host(tmp_path, command):
+    """None of these execute the repository's lint, so none is a host."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py", f"run: {command}"
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
 
 
 def test_lint_rejects_a_host_job_with_needs(tmp_path):

@@ -88,80 +88,73 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# Host detection. `echo scripts/lint_workflow_triggers.py` mentions the script
-# without running it, so a real python invocation of the file is required.
+# Host detection. A host must run the repository's own lint script as a plain,
+# standalone command with no arguments: `echo <script>` runs nothing;
+# `/tmp/lint_workflow_triggers.py` is a decoy with the same basename; a
+# pipeline, redirection or `|| true` detaches the step's exit status from the
+# lint's (the default `run:` shell is `bash -e`, without pipefail); and any
+# argument can point it elsewhere or turn it into a no-op, `--help` included.
 _PYTHON = re.compile(r"[\w./-]*python[\w.]*")
-_SEPARATORS = re.compile(r"\|\||&&|[;&|\n]")
-# Options that consume the next token, so the script path cannot be confused
-# with their value.
+LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
+# Options that consume the next token, so the script path is not mistaken for
+# their value.
 _OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
+_SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
 
 
-def _commands(run: str) -> list[list[str]]:
-    """Argv-ish token lists for each command in a `run` block."""
-    out = []
-    for segment in _SEPARATORS.split(run):
-        segment = segment.strip()
-        if not segment:
-            continue
-        try:
-            tokens = shlex.split(segment)
-        except ValueError:
-            tokens = segment.split()
-        if tokens:
-            out.append(tokens)
-    return out
+def _classify_lint_line(line: str) -> tuple[bool, str | None]:
+    """(is an enforcing invocation, problem) for one line naming the script."""
+    try:
+        tokens = shlex.split(line.strip())
+    except ValueError:
+        return False, None
+    if not tokens or not _PYTHON.fullmatch(tokens[0]):
+        return False, None          # `echo <script>`, or not python at all
 
+    args, i = tokens[1:], 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i].startswith(("-c", "-m")):
+            return False, None      # runs that program, not this file
+        i += 2 if args[i] in _OPTS_WITH_VALUE else 1
 
-def _invokes_lint(run: str) -> bool:
-    """True when python is asked to EXECUTE this script.
+    rest = args[i:]
+    if not rest or not rest[0].endswith(LINT_SCRIPT_PATH):
+        return False, None
+    if len(rest) == 1:
+        return True, None
 
-    `python3 -c 'pass' scripts/lint_workflow_triggers.py` names the script but
-    runs the `-c` program and exits 0, so the script has to be the executed
-    file rather than any later argument.
-    """
-    for tokens in _commands(run):
-        if not _PYTHON.fullmatch(tokens[0]):
-            continue
-        args, i = tokens[1:], 0
-        while i < len(args) and args[i].startswith("-"):
-            # -c / -m hand the rest to a program that is not this file.
-            if args[i].startswith(("-c", "-m")):
-                break
-            i += 2 if args[i] in _OPTS_WITH_VALUE else 1
-        else:
-            if i < len(args) and args[i].endswith(LINT_SCRIPT_NAME):
-                return True
-    return False
-
-
-# Shell that swallows a non-zero exit, so the step goes green on findings.
-_MASKED = re.compile(
-    rf"{re.escape(LINT_SCRIPT_NAME)}[^\n]*(?:\|\||[;&]\s*(?:true|:)\s*(?:$|\n))",
-    re.MULTILINE,
-)
-# Flags that keep the gate running but stop it gating anything.
-NEUTERING_FLAGS: tuple[str, ...] = ("--workflows-dir", "--no-require-host")
-
-
-def _invocation_problems(run: str) -> list[str]:
-    """Ways a real invocation can still fail to enforce anything."""
-    problems = []
-    if _MASKED.search(run) or "set +e" in run:
-        problems.append(
-            "its lint command swallows a non-zero exit (|| true, ; true, "
-            "set +e), so findings cannot fail the run"
+    trailing = " ".join(rest[1:])
+    if any(op in tok for tok in rest[1:] for op in _SHELL_OPERATORS):
+        return False, (
+            f"its lint command is chained, piped or backgrounded ({trailing}), "
+            "so the step's exit status need not be the lint's"
         )
-    used = [f for f in NEUTERING_FLAGS if f in run]
-    if used:
+    return False, (
+        f"its lint command passes {trailing}, so it does not gate the live "
+        "workflows with its own checks on"
+    )
+
+
+def _lint_step_report(run: str) -> tuple[bool, list[str]]:
+    """(an enforcing invocation is present, problems with lint-ish commands)."""
+    enforcing, problems = False, []
+    for line in run.splitlines():
+        if LINT_SCRIPT_NAME not in line:
+            continue
+        ok, problem = _classify_lint_line(line)
+        enforcing = enforcing or ok
+        if problem:
+            problems.append(problem)
+    if (enforcing or problems) and "set +e" in run:
         problems.append(
-            f"its lint command passes {' + '.join(used)}, so it does not gate the live workflows"
+            "its lint step runs under 'set +e', so a non-zero exit does not "
+            "fail the step"
         )
-    return problems
+    return enforcing, problems
 
 
-def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
-    """(job, step) pairs whose `run` actually invokes this script.
+def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
+    """(job, step, enforcing, problems) for every step that runs the lint.
 
     Reads the parsed steps rather than the raw text: a commented-out
     `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
@@ -176,8 +169,11 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if isinstance(step, dict) and _invokes_lint(str(step.get("run") or "")):
-                found.append((job, step))
+            if not isinstance(step, dict):
+                continue
+            enforcing, problems = _lint_step_report(str(step.get("run") or ""))
+            if enforcing or problems:
+                found.append((job, step, enforcing, problems))
     return found
 
 
@@ -196,7 +192,9 @@ def _is_truthy(value) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
+    # No abbreviations: `--workflows-d` must not silently mean
+    # `--workflows-dir`, or a host could smuggle it past review.
+    parser = argparse.ArgumentParser(description = __doc__, allow_abbrev = False)
     parser.add_argument(
         "--workflows-dir",
         type = Path,
@@ -269,32 +267,35 @@ def main() -> int:
             if any(
                 _is_truthy(job.get("continue-on-error"))
                 or _is_truthy(step.get("continue-on-error"))
-                for job, step in lint_steps
+                for job, step, _, _ in lint_steps
             ):
                 problems.append(
                     "its lint step is continue-on-error, so findings cannot fail the run"
                 )
             if any(
-                job.get("if") is not None or step.get("if") is not None for job, step in lint_steps
+                job.get("if") is not None or step.get("if") is not None
+                for job, step, _, _ in lint_steps
             ):
                 problems.append(
                     "its lint step is gated by an 'if:' condition, so the gate "
                     "can be skipped while the run still succeeds"
                 )
-            if any(job.get("needs") is not None for job, _ in lint_steps):
+            if any(job.get("needs") is not None for job, _, _, _ in lint_steps):
                 problems.append(
                     "its lint job declares 'needs:', so a skipped prerequisite "
                     "skips the gate without failing the run"
                 )
-            for _, step in lint_steps:
-                problems.extend(_invocation_problems(str(step.get("run") or "")))
+            for _, _, _, step_problems in lint_steps:
+                problems.extend(step_problems)
             if problems:
                 findings.append(
                     f"{path.name}: runs {LINT_SCRIPT_NAME} but "
                     + ", and ".join(problems)
                     + ". The gate must run, and be able to fail, on every PR."
                 )
-            elif "pull_request" in triggers:
+            elif "pull_request" in triggers and any(
+                enforcing for _, _, enforcing, _ in lint_steps
+            ):
                 unfiltered_hosts.append(path)
 
         if "pull_request" in triggers:
