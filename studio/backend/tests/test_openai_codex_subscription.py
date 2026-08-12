@@ -72,12 +72,9 @@ def test_protocol_constants_and_curated_provider_contract():
     assert row["auth_kind"] == "chatgpt_oauth"
 
 
-
-
 def test_provider_lock_can_release_from_another_executor_thread():
     lock = codex_auth._provider_file_lock("provider")
     assert lock.is_thread_local() is False
-
 
 
 def test_pkce_uses_s256_and_high_entropy_verifier():
