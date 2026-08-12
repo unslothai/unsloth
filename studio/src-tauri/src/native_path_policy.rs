@@ -589,19 +589,27 @@ pub(crate) fn scratch_root() -> PathBuf {
                 .and_then(|exe| exe.parent().map(Path::to_path_buf)),
             dirs::home_dir(),
         ];
-        let unique = format!("unsloth-test-scratch-{}", std::process::id());
         for candidate in candidates.into_iter().flatten() {
-            let child = candidate.join(&unique);
-            if fs::create_dir_all(&child).is_err() {
+            // tempfile, not a name derived from the PID: the first candidate is
+            // a shared temp directory, where another local user can pre-create
+            // a predictable path and leave a symlink for the probe write below
+            // to follow. tempdir_in creates an unguessable directory with an
+            // exclusive operation, or fails.
+            let Ok(child) = tempfile::Builder::new()
+                .prefix("unsloth-test-scratch-")
+                .tempdir_in(&candidate)
+            else {
+                continue;
+            };
+            // Existing is not writable: a directory that is already there is
+            // accepted without a byte being written.
+            if fs::write(child.path().join("writable"), b"1").is_err() {
                 continue;
             }
-            // exists() is not writability: a directory that is already there is
-            // created by create_dir_all without a byte being written.
-            if fs::write(child.join("writable"), b"1").is_err() {
-                continue;
-            }
-            if classify_native_document_folder(&child).is_ok() {
-                return child;
+            if classify_native_document_folder(child.path()).is_ok() {
+                // Kept rather than dropped, which would delete it out from
+                // under every test that follows.
+                return child.keep();
             }
         }
         // Nothing qualifies. Fall back rather than skip, so the tests fail
