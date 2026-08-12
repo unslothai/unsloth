@@ -5464,6 +5464,11 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if not line:
+                                # The blank line ends the event, and an SSE event name never
+                                # carries into the next one. Clearing here, the single place
+                                # an event can end, keeps a stale `response.failed` from
+                                # turning a later data-only frame into a fatal error.
+                                sse_event_name = ""
                                 continue
                             if line.startswith("event:"):
                                 sse_event_name = line[len("event:") :].strip()
@@ -5517,9 +5522,7 @@ class ExternalProviderClient:
                                 # Skipping one unrecognisable frame is the pre-existing
                                 # behaviour and beats failing the whole completion; the
                                 # ChatGPT path stays strict, where the shape is guaranteed.
-                                sse_event_name = ""
                                 continue
-                            sse_event_name = ""
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
