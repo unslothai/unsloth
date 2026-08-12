@@ -46,6 +46,8 @@ _SUPPORTED = [
     "http://1681207502/v1",
     # A DNS name is not link-local just because it starts with those digits.
     "http://169.254.gateway.example.com/v1",
+    # An internationalized host is left alone.
+    "https://例え.テスト/v1",
     "https://[2606:4700:4700::1111]/v1",
     # Self-hosted gateways behind basic auth keep working.
     "https://user:pass@gw.example/v1",
@@ -119,6 +121,13 @@ def test_rejected_url_shapes(url, error):
         "http://0xA9FEA9FE/latest/meta-data/",
         "http://0251.0376.0251.0376/latest/meta-data/",
         "http://169.254.43518/latest/meta-data/",
+        # IDNA label separators: httpx encodes the host through idna, which
+        # splits on all of these, so they dial 169.254.169.254.
+        "http://169。254。169。254/latest/meta-data/",
+        "http://169．254．169．254/latest/meta-data/",
+        "http://169｡254｡169｡254/latest/meta-data/",
+        "http://169.254.169.254。/latest/meta-data/",
+        "http://metadata。google。internal/computeMetadata/v1/",
     ],
 )
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):

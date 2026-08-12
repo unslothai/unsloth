@@ -429,6 +429,10 @@ _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 # names while getaddrinfo returns 169.254.169.254.
 _NUMERIC_HOST_PART = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)")
 
+# IDNA label separators. httpx encodes a host through idna, which splits on all
+# of these, so http://169。254。169。254/ reaches 169.254.169.254.
+_IDNA_DOTS = str.maketrans({"。": ".", "．": ".", "｡": "."})
+
 
 def _canonical_host(hostname: str) -> str:
     """Return the dotted-quad form of a numeric host, else ``hostname``."""
@@ -446,7 +450,7 @@ def _canonical_host(hostname: str) -> str:
 
 def _metadata_host(hostname: str) -> bool:
     """True when ``hostname`` names a cloud metadata service."""
-    hostname = _canonical_host(hostname)
+    hostname = _canonical_host(hostname.translate(_IDNA_DOTS).rstrip("."))
     if hostname in _METADATA_HOST_LITERALS:
         return True
     try:
