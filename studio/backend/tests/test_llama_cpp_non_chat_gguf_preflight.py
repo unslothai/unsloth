@@ -363,7 +363,6 @@ def test_the_first_shard_is_the_one_a_variant_resolves_to():
     # producer strips the shard suffix from the variant key, and the matches are sorted, so
     # shard 1 leads and the rest ride along as extra shards.
     from core.inference.llama_cpp import _gguf_extra_shards, _gguf_files_for_variant
-
     files = [f"BF16/model-BF16-{i:05d}-of-00010.gguf" for i in range(1, 11)]
     for variant in ("BF16", "BF16/model-BF16"):
         picked = _gguf_files_for_variant(files, variant)
