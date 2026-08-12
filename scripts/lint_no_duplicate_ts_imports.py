@@ -47,7 +47,13 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "frontend" / "src"
+# The frontend root, not `src`, because that is what the build compiles.
+# `npm run build` is `tsc -b && vite build` and `npm run typecheck` is
+# `tsc -b && tsc -p tsconfig.test.json`, so the projects that produce TS2300 are
+# tsconfig.app.json (`src`), tsconfig.node.json (`vite.config.ts`) and
+# tsconfig.test.json (`tests`). Scanning only `src` leaves the other two able to
+# red the frontend build with the very error this step exists to catch first.
+DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "frontend"
 SKIP_PARTS = frozenset({"node_modules", "dist", "build", ".venv", "venv", "__pycache__"})
 
 # One import statement, up to its module specifier. `re.DOTALL` so a clause

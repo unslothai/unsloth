@@ -22,6 +22,11 @@
 # Each is a stricter check than a parse-only step would be, so a
 # fast-fail duplicate here would only burn cache; the dedicated
 # workflows already block merges on Rust / TS regressions.
+# The one exception is the duplicate-import rule below: it needs no
+# npm, no node and no type information, and #8470 showed that when a
+# TS2300 does land, every job that builds the frontend goes red behind
+# it, so finding it in seconds instead of inside the slowest job in
+# the matrix is worth the one step.
 
 name: Lint CI
 
