@@ -1096,6 +1096,37 @@ class TestArm64SkipListParity:
         expected = {"datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"}
         assert self._python_set() == expected
 
+    @staticmethod
+    def _requirement_names(text: str) -> dict[str, str]:
+        entries = {}
+        for line in text.splitlines():
+            bare = line.split("#")[0].strip()
+            if not bare:
+                continue
+            name = re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+            if name:
+                entries[name] = bare
+        return entries
+
+    def test_version_lifts_match_the_overrides_file(self):
+        """install.ps1 rewrites the pinned lines itself (the file it filters comes
+        from the installed wheel, which need not contain a newly added overrides
+        file), and install_python_stack.py points UV_OVERRIDE at the file. Same
+        lifts, or an ARM64 install compiles MuPDF from source on one path only."""
+        overrides = (
+            REPO_ROOT / "studio" / "backend" / "requirements" / "single-env" / "overrides-win-arm64.txt"
+        ).read_text(encoding = "utf-8")
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("$script:ArmInferenceLiftPackages = @{")
+        block = source[index : source.index("}", index)]
+        powershell = {
+            name.lower(): spec
+            for name, spec in re.findall(r'"([^"]+)"\s*=\s*"([^"]+)"', block)
+        }
+        assert powershell == {
+            name: entry for name, entry in self._requirement_names(overrides).items()
+        }
+
     def test_powershell_filter_normalises_names(self):
         """no-torch-runtime.txt spells it hf_transfer and the list spells it
         hf-transfer; PEP 503 says they are the same distribution."""

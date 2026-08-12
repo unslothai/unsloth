@@ -4254,6 +4254,19 @@ exit 0
         "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"
     )
 
+    # Pins that predate their package's first win_arm64 wheel, rewritten in place.
+    # Kept identical to single-env/overrides-win-arm64.txt, which is how
+    # install_python_stack.py applies the same lifts (tests/python/
+    # test_cross_platform_parity.py compares the two). Named here rather than read
+    # from that file: the requirements this filters are the ones shipped inside the
+    # INSTALLED unsloth wheel, which on a fresh install is whatever release is on
+    # PyPI -- so an overrides file added in this change is not there yet, and a lift
+    # that silently no-ops leaves uv trying to compile MuPDF from source.
+    $script:ArmInferenceLiftPackages = @{
+        "pymupdf" = "pymupdf>=1.28.2"
+        "av"      = "av>=17.0.0"
+    }
+
     # The requirements file with the ARM64-impossible entries removed, or the original
     # path when the tier is off. install_python_stack.py does the same filtering for the
     # steps it owns, but this branch hands a requirements file straight to uv, so an
@@ -4261,20 +4274,6 @@ exit 0
     function Get-ArmFilteredRequirements {
         param([string]$Path)
         if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
-        # The version lifts live in the same overrides file install_python_stack.py
-        # points UV_OVERRIDE at, so the two never drift. They cannot be applied as an
-        # override here: this file is installed --no-deps, where uv resolves nothing to
-        # override, so the pinned line itself is rewritten.
-        $lifts = @{}
-        $liftFile = Join-Path (Split-Path -Parent $Path) "single-env\overrides-win-arm64.txt"
-        if (Test-Path -LiteralPath $liftFile) {
-            foreach ($liftLine in Get-Content -LiteralPath $liftFile) {
-                $liftBare = ($liftLine -split "#")[0].Trim()
-                if (-not $liftBare) { continue }
-                $liftName = (($liftBare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
-                if ($liftName) { $lifts[$liftName] = $liftBare }
-            }
-        }
         $kept = foreach ($line in Get-Content -LiteralPath $Path) {
             $bare = ($line -split "#")[0].Trim()
             if (-not $bare) { $line; continue }
@@ -4282,7 +4281,10 @@ exit 0
             # Normalised PEP 503 style so hf_transfer and hf-transfer are one package.
             $name = (($bare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
             if ($script:ArmInferenceSkipPackages -contains $name) { continue }
-            if ($lifts.ContainsKey($name)) { $lifts[$name]; continue }
+            if ($script:ArmInferenceLiftPackages.ContainsKey($name)) {
+                $script:ArmInferenceLiftPackages[$name]
+                continue
+            }
             $line
         }
         $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f $PID)
