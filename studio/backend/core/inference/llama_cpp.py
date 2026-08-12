@@ -9292,9 +9292,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _with_startup_diagnostics(
-        message: str,
-        output: Optional[str],
-        log_path: "Optional[Path | str]",
+        message: str, output: Optional[str], log_path: "Optional[Path | str]"
     ) -> str:
         """Append llama-server's output tail and log path to ``message``.
 
