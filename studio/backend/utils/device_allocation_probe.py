@@ -233,6 +233,12 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
             # the signal WE sent, and reporting that as the driver's fault would be a lie.
             stderr = _terminate_and_drain(process)
             return process.returncode, stderr, "probe timed out"
+        except OSError as read_error:
+            # A pipe or handle failure, or a read error under resource pressure. The child
+            # may still be running and we have no verdict from it, so tear it down and fail
+            # closed rather than letting this escape a function that promises not to raise.
+            stderr = _terminate_and_drain(process)
+            return process.returncode, stderr, f"probe could not be read ({read_error})"
 
         return process.returncode, stderr or "", None
     finally:

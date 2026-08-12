@@ -323,9 +323,29 @@ def test_installed_torch_is_read_without_importing_torch(monkeypatch, tmp_path):
     )
     assert embeddings._installed_torch_is_rocm() is True
 
+    # Absent is a definite answer, not an unknown: no torch, no ROCm torch path. A
+    # --no-torch install resolves to llama-server, and calling this unknown would make
+    # Windows cautious forever and reject the local GGUF that install is meant to take.
     embeddings._installed_torch_is_rocm.cache_clear()
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-    assert embeddings._installed_torch_is_rocm() is None  # torch absent: query cannot run
+    assert embeddings._installed_torch_is_rocm() is False
+
+    # Present but unreadable stays unknown, which is what the caution is reserved for.
+    embeddings._installed_torch_is_rocm.cache_clear()
+    (package / "version.py").unlink()
+    monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+    assert embeddings._installed_torch_is_rocm() is None
+
+
+def test_a_no_torch_windows_install_keeps_its_gguf_answer(monkeypatch):
+    # --no-torch on Windows: detection never settles when the torch warm is disabled, and
+    # auto really does resolve to llama-server there, so PUT /embedding-model must accept a
+    # local GGUF rather than send it through the sentence-transformers verification path.
+    _no_torch_loaded(monkeypatch, installed = False)
+    monkeypatch.setattr(embeddings.sys, "platform", "win32")
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings._rocm_is_possible() is False
+    assert embeddings.active_backend_is_llama() is True
 
 
 def test_rocm_is_possible_reads_torch_hip_when_torch_is_already_loaded(monkeypatch):

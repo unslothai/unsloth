@@ -141,15 +141,19 @@ def _installed_torch_is_rocm() -> bool | None:
     without executing it, so this reads the same two facts detection reads, long before
     torch is imported. That matters on Windows, which has no KFD node.
 
-    None means no answer: torch is missing, in which case the AMD query cannot run either,
-    or the file is unreadable. Cached, being filesystem I/O on a request path.
+    False also covers torch being absent, which is a definite answer: no torch, no ROCm
+    torch path. None is reserved for an installation that is there but unreadable. Cached,
+    being filesystem I/O on a request path.
     """
     try:
         import importlib.util
 
         spec = importlib.util.find_spec("torch")
         if spec is None or not spec.origin:
-            return None
+            # Absent, not unreadable. There is no ROCm torch path to protect on a
+            # --no-torch install, and saying "unknown" here would make Windows cautious
+            # forever and cost that install the llama/GGUF answer it actually resolves to.
+            return False
         version_py = os.path.join(os.path.dirname(spec.origin), "version.py")
         with open(version_py, encoding = "utf-8") as handle:
             source = handle.read()

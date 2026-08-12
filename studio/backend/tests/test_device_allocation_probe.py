@@ -369,6 +369,26 @@ def test_a_child_that_dies_within_the_grace_needs_no_reaper(monkeypatch):
     assert threading.active_count() <= before
 
 
+def test_a_read_failure_fails_closed_and_tears_the_child_down(monkeypatch):
+    # A Windows pipe/handle failure, or a read error under resource pressure. This function
+    # promises never to raise and to treat every unknown outcome as unsafe, and the child
+    # may still be running, so it has to be torn down rather than left to its watchdog.
+    proc = _FakeProc()
+
+    def _boom(timeout = None):
+        proc.calls.append("communicate")
+        raise OSError("handle is invalid")
+
+    proc.communicate = _boom  # type: ignore[method-assign]
+    _patch_popen(monkeypatch, proc)
+
+    result = probe_torch_device_allocation("cuda:0")
+
+    assert result.ok is False
+    assert "could not be read" in result.reason
+    assert "terminate" in proc.calls
+
+
 def test_spawn_failure_fails_closed_without_raising(monkeypatch):
     def boom(argv, **kwargs):
         raise OSError("no fork headroom")
