@@ -1376,6 +1376,40 @@ def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
     assert M.existing_install_matches(tmp_path, host, selection) is True
 
 
+@pytest.mark.parametrize(
+    "recorded_identity, current",
+    [
+        ("fingerprint:new", True),
+        ("fingerprint:old", False),
+        (None, False),
+    ],
+)
+def test_existing_slim_install_requires_current_llama_pairing(
+    tmp_path, monkeypatch, recorded_identity, current
+):
+    host = _host("linux", "x64")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    server = tmp_path / "build" / "bin" / "whisper-server"
+    server.parent.mkdir(parents = True)
+    server.write_text("bin")
+    server.chmod(0o755)
+    (server.parent / "libggml.so.0").write_text("lib")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "paired_llama_identity": recorded_identity,
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+        },
+    )
+    selection = type("Selection", (), {"paired_llama_identity": "fingerprint:new"})()
+
+    assert M.existing_install_matches(tmp_path, host, selection) is current
+
+
 def test_existing_slim_install_requires_wired_libraries(tmp_path, monkeypatch):
     # A slim install whose hardlinked ggml files vanished (llama dir deleted)
     # must reinstall so update re-wires instead of reporting up to date.

@@ -975,8 +975,9 @@ def existing_install_matches(
     """Core fingerprint match, hardened for repairability: a marker-matching
     install is only "current" when the server is executable (the sidecar refuses
     non-executable binaries, so setup must repair not skip) and, for slim
-    installs, every wired ggml library is still present (else a deleted/moved
-    llama dir leaves dictation broken while update reports up to date)."""
+    installs, the exact paired llama runtime still matches and every wired ggml
+    library is present (else runtime replacement or deletion leaves dictation
+    broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     server = installed_server_path(install_dir, host)
@@ -985,6 +986,9 @@ def existing_install_matches(
         return False
     marker = load_prebuilt_metadata(install_dir) or {}
     if marker.get("install_kind") == "slim":
+        if marker.get("paired_llama_identity") != getattr(selection, "paired_llama_identity", None):
+            log(f"existing slim install at {install_dir} has stale llama pairing; reinstalling")
+            return False
         bin_dir = server.parent
         if marker.get("runtime_wiring_version") != SLIM_RUNTIME_WIRING_VERSION:
             log(f"existing slim install at {install_dir} has stale runtime wiring; reinstalling")
