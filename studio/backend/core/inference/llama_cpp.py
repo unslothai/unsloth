@@ -3374,6 +3374,8 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
+        self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -4258,6 +4260,19 @@ class LlamaCppBackend:
         if not self._n_experts or not self._n_layers:
             return 0
         return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
+
+    @property
+    def is_embedding_gguf(self) -> bool:
+        """Whether the loaded GGUF is an embedding model, from its pooling type.
+
+        Only MEAN, CLS and LAST pool into the one vector per sequence that
+        `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
+        head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
+        send_embedding reads n_embd_out floats out of it.
+        """
+        return self._pooling_type in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -7120,6 +7135,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
+        self._pooling_type = None
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -7212,6 +7228,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -10533,6 +10550,25 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
+                if (
+                    self.is_embedding_gguf
+                    and _effective_ubatch is not None
+                    and _effective_ubatch < n_parallel
+                ):
+                    # max(): a degenerate "-b 0" extra resolves to 0, and --parallel 0 is
+                    # rejected at arg parse.
+                    _embedding_slots = max(1, _effective_ubatch)
+                    logger.warning(
+                        "Reducing serving slots from %d to %d: llama-server caps the batch "
+                        "at the %d-token micro-batch under --embedding and aborts when that "
+                        "is below the slot count.",
+                        n_parallel,
+                        _embedding_slots,
+                        _effective_ubatch,
+                    )
+                    n_parallel = _embedding_slots  # allow-slot-clamp: llama-server would abort
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -11809,6 +11845,10 @@ class LlamaCppBackend:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
+
+                # llama-server 501s on /v1/embeddings without this; pooling stays model-default.
+                if self.is_embedding_gguf:
+                    cmd.append("--embedding")
 
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
@@ -14198,6 +14238,7 @@ class LlamaCppBackend:
             self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
+            self._pooling_type = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None

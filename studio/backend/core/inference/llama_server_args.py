@@ -74,8 +74,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--models-preset"}),
     frozenset({"--models-max"}),
     frozenset({"--models-autoload", "--no-models-autoload"}),
-    # Server-mode flips: --embedding / --rerank restrict llama-server to
-    # those endpoints, breaking Unsloth's /v1/chat/completions hop.
+    # Server-mode flips: --embedding is set from the GGUF pooling type at load, not by hand.
     frozenset({"--embedding", "--embeddings"}),
     frozenset({"--rerank", "--reranking"}),
     # llama-server's own built-in tools flag would silently stack on top of

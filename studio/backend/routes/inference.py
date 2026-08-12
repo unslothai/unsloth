@@ -15453,11 +15453,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
-    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
-    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
-    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
-    # a non-embedding target switches, then llama-server returns a no-pooling error.
+    # Auto-switch applies here too; the target launches embedding-enabled only if it pools.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
