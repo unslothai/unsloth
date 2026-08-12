@@ -66,13 +66,32 @@ _DEVICE_IDENTITY_ENV_VARS = (
     "HSA_OVERRIDE_GFX_VERSION",
 )
 
+# Windows ROCm bin directories for the child, os.pathsep-joined. See _rocm_dll_directories.
+ROCM_DLL_DIRS_ENV_VAR = "UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS"
+
 # Allocate, WRITE, then synchronize. Device execution is asynchronous, so an allocation
 # that faults in the kernel can outlive the statement that queued it -- without the
 # synchronize the child can exit 0 while the fault is still in flight, which is the one
 # way this probe could report a false pass. torch.empty alone is too weak for the same
 # reason: it need not touch the device at all.
+#
+# The DLL block runs BEFORE ``import torch``: Python 3.8+ ignores PATH for extension
+# modules, and os.add_dll_directory registrations are process-local, so a fresh child does
+# not inherit the parent's. Without it a healthy Windows AMD GPU fails to import torch at
+# all and this probe would report the host as condemned. main.py and core/training/worker.py
+# do the same thing at their own process starts, for the same reason.
 _CHILD_SCRIPT = """
+import os
 import sys
+
+if sys.platform == "win32":
+    _handles = []
+    for _d in os.environ.get("UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS", "").split(os.pathsep):
+        if _d and os.path.isdir(_d):
+            try:
+                _handles.append(os.add_dll_directory(_d))
+            except (OSError, AttributeError):
+                pass
 
 import torch
 
@@ -85,6 +104,46 @@ elif tensor.device.type == "xpu":
     torch.xpu.synchronize(tensor.device)
 print("ok")
 """
+
+
+def _rocm_dll_directories() -> list[str]:
+    """Windows ROCm ``bin`` directories, newest version first. Empty off Windows.
+
+    Same discovery as ``main.py`` and ``core/training/worker.py``; it lives here too
+    because the child is a bare ``-c`` script with no backend directory on its path (that
+    isolation is deliberate), and computing the list parent-side keeps it testable.
+    """
+    if sys.platform != "win32":
+        return []
+
+    candidates: list[str] = []
+    for var in ("HIP_PATH", "ROCM_PATH"):
+        value = os.environ.get(var)
+        if value:
+            candidates.append(os.path.join(value, "bin"))
+
+    default_root = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "AMD", "ROCm")
+
+    def _version_key(name: str) -> tuple:
+        # Numeric tuple key so "10.0" sorts after "7.0".
+        parts = []
+        for chunk in name.split("."):
+            try:
+                parts.append((0, int(chunk)))
+            except ValueError:
+                parts.append((1, chunk))
+        return tuple(parts)
+
+    try:
+        if os.path.isdir(default_root):
+            for version in sorted(os.listdir(default_root), key = _version_key, reverse = True):
+                bin_dir = os.path.join(default_root, version, "bin")
+                if os.path.isdir(bin_dir):
+                    candidates.append(bin_dir)
+    except OSError:
+        pass
+
+    return [d for d in candidates if os.path.isdir(d)]
 
 
 @dataclass(frozen = True)
@@ -146,6 +205,9 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
     env = utf8_child_env(child_env_without_native_path_secret())
+    dll_dirs = _rocm_dll_directories()
+    if dll_dirs:
+        env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_dirs)
     try:
         process = subprocess.Popen(
             [sys.executable, "-c", _CHILD_SCRIPT, device],

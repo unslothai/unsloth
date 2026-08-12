@@ -136,6 +136,55 @@ def test_child_env_strips_the_native_path_secret(monkeypatch):
     assert env["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_windows_child_registers_the_rocm_dll_directories(monkeypatch, tmp_path):
+    # os.add_dll_directory registrations are process-local, so a fresh child does not
+    # inherit main.py's. Without this a healthy Windows AMD GPU cannot even import torch in
+    # the child, and the fail-closed verdict would condemn it to CPU for the process.
+    rocm_bin = tmp_path / "rocm" / "bin"
+    rocm_bin.mkdir(parents = True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("HIP_PATH", str(tmp_path / "rocm"))
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+
+    probe_torch_device_allocation("cuda:0")
+
+    env = calls[0][1]["env"]
+    assert str(rocm_bin) in env[probe_mod.ROCM_DLL_DIRS_ENV_VAR].split(os.pathsep)
+    script = calls[0][0][2]
+    # The registration has to precede the import, not merely be present.
+    assert script.index("add_dll_directory") < script.index("import torch")
+
+
+def test_rocm_dll_directories_are_empty_off_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("HIP_PATH", str(tmp_path))
+    assert probe_mod._rocm_dll_directories() == []
+
+
+def test_non_windows_child_env_has_no_dll_variable(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+    probe_torch_device_allocation("cuda:0")
+    assert probe_mod.ROCM_DLL_DIRS_ENV_VAR not in calls[0][1]["env"]
+
+
+def test_rocm_dll_directories_prefers_the_newest_version(monkeypatch, tmp_path):
+    root = tmp_path / "AMD" / "ROCm"
+    for version in ("6.3", "10.0", "7.0"):
+        (root / version / "bin").mkdir(parents = True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+
+    found = probe_mod._rocm_dll_directories()
+
+    # Numeric sort, so 10.0 outranks 7.0 rather than sorting as a string.
+    assert [Path(p).parent.name for p in found] == ["10.0", "7.0", "6.3"]
+
+
 # --- every way it fails closed ---------------------------------------------------
 
 
@@ -281,7 +330,16 @@ def test_describe_exit_names_the_signal():
 
 def test_parent_side_never_imports_torch():
     # This module is imported by the RAG embedder, which is deliberately torch-optional
-    # and runs in the lean main process (see tests/test_startup_defers_torch.py).
+    # and runs in the lean main process (see tests/test_startup_defers_torch.py). Walk the
+    # AST rather than the text: the child script is a string literal here and the prose
+    # around it names the import it is careful to place correctly.
+    import ast
+
     source = (_BACKEND_DIR / "utils" / "device_allocation_probe.py").read_text(encoding = "utf-8")
-    module_level = source.split('_CHILD_SCRIPT = """')[0]
-    assert "import torch" not in module_level
+    imported = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            imported.add(node.module.split(".")[0])
+    assert "torch" not in imported

@@ -60,24 +60,33 @@ def _rocm_gpu_is_fatal() -> bool:
     (#8474, host in #7331). So a child is asked to allocate first, and its death is the
     answer. Asked once per process; nothing is asked off ROCm, so a CUDA, XPU, Apple, CPU
     or ``--no-torch`` host spawns nothing and behaves exactly as it did before.
-    """
-    try:
-        from utils.hardware import hardware as hardware_mod
 
-        # Read the flag, never force the detection that sets it: detection imports torch,
-        # and this is reachable from active_backend_is_llama() well before the coordinated
-        # warm is meant to pay that cost. Nothing is lost by declining here -- the place
-        # that actually allocates, _safe_torch_device, calls _device() first, which
-        # settles detection, so the guard that matters is never the one skipped.
-        if not hardware_mod.DETECTION_COMPLETE.is_set():
-            return False
-        if not hardware_mod.IS_ROCM:
-            return False
-    except Exception:  # noqa: BLE001 - if we cannot even tell, leave behaviour untouched
+    Only ``_safe_torch_device`` calls this, and it has already settled detection through
+    ``_device()``, so the unknown case below is not the ROCm host going unprobed.
+    """
+    if _host_is_rocm() is not True:
         return False
     from utils.device_allocation_probe import probe_torch_device_allocation
 
     return not probe_torch_device_allocation("cuda:0").ok
+
+
+def _host_is_rocm() -> bool | None:
+    """True/False once hardware detection has settled, None while it has not.
+
+    Tri-state on purpose. Detection imports torch, and this is reached from
+    ``active_backend_is_llama()`` on the settings request path, so forcing it there is not
+    an option; but collapsing "not yet known" into False would let that same path fall
+    through to the in-process AMD GPU query this module exists to route around. Callers
+    have to say what they want done with "unknown".
+    """
+    try:
+        from utils.hardware import hardware as hardware_mod
+        if not hardware_mod.DETECTION_COMPLETE.is_set():
+            return None
+        return bool(hardware_mod.IS_ROCM)
+    except Exception:  # noqa: BLE001 - if we cannot even tell, leave behaviour untouched
+        return False
 
 
 def _safe_torch_device() -> str:
@@ -556,15 +565,31 @@ def _resolve_auto() -> str:
     -- or ST if its binary is missing.
 
     The GPU check is torch-free on NVIDIA (nvidia-smi) but NOT on AMD, where
-    ``_get_gpu_free_memory`` falls back to torch ``mem_get_info`` in this process. So the
-    allocation probe has to be consulted FIRST on ROCm: a condemned host used to be
-    steered by this function straight into the crash it was trying to route around.
+    ``_get_gpu_free_memory`` falls back to torch ``mem_get_info`` in this process. On
+    anything that might be ROCm this function therefore answers without asking it: a ROCm
+    host resolves to sentence-transformers whatever the GPU turns out to be, since a
+    working GPU takes it and a condemned one is placed on CPU by ``_safe_torch_device``.
+    That is what keeps this function from steering an affected host into the very crash it
+    exists to route around. Returning early also keeps the llama.cpp plumbing unimported.
+    Note that no allocation probe runs here: the device decision belongs to the load.
+
+    This settles hardware detection if it has not settled, so the answer is final and safe
+    for ``_get_backend`` to cache. Callers that must not block on detection (there is one,
+    ``active_backend_is_llama``) decide the ROCm case themselves and never get here.
     """
-    if _rocm_gpu_is_fatal():
-        # Stay on sentence-transformers, which _safe_torch_device() will place on CPU.
-        # Picking llama-server here would embed into a different vector space and force a
-        # reindex, for a host whose only problem is that it cannot use its GPU. Returning
-        # before the import below also keeps the llama.cpp plumbing out of this process.
+    is_rocm = _host_is_rocm()
+    if is_rocm is None:
+        # get_device() imports torch and caches under its own lock. The builder can afford
+        # that; it is the request path that cannot, and it does not come here.
+        try:
+            get_device()
+            is_rocm = _host_is_rocm()
+        except Exception:  # noqa: BLE001 - detection failing is not this function's problem
+            is_rocm = None
+
+    if is_rocm is not False:
+        # None lands here too, and deliberately: until detection settles ROCm cannot be
+        # ruled out, and guessing "not ROCm" would reopen the AMD query below.
         return "sentence-transformers"
 
     from core.inference.llama_cpp import LlamaCppBackend
@@ -692,7 +717,19 @@ def active_backend_is_llama() -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
+        if raw in _AUTO_ALIASES:
+            # This runs inside PUT /embedding-model and friends, so it must not sit behind
+            # hardware detection. On ROCm, and while detection is still unsettled and ROCm
+            # cannot be ruled out, answer without asking: auto resolves to
+            # sentence-transformers on every ROCm host, so the answer is False. That also
+            # leaves the ST pickle gate ENGAGED, the conservative direction for a security
+            # check. Only a settled non-ROCm host reaches the resolver, where the GPU query
+            # is nvidia-smi and cheap.
+            if _host_is_rocm() is not False:
+                return False
+            key = _resolve_auto()
+        else:
+            key = raw
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False

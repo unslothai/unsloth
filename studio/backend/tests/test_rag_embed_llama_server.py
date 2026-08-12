@@ -149,6 +149,92 @@ def test_auto_does_not_query_gpu_memory_after_a_failed_rocm_probe(monkeypatch):
     assert embeddings._resolve_auto() == "sentence-transformers"
 
 
+def _forbid_gpu_query(monkeypatch):
+    """Make the in-process AMD GPU-memory query a test failure if it is reached."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    def _must_not_run():
+        raise AssertionError("_get_gpu_free_memory reached; its AMD path runs torch here")
+
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_must_not_run))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+
+
+def _forbid_probe(monkeypatch):
+    """Make the isolated allocation probe a test failure if it is reached."""
+    from utils import device_allocation_probe as probe_mod
+
+    def _must_not_run(device = "cuda:0"):
+        raise AssertionError("allocation probe reached on a request path")
+
+    monkeypatch.setattr(probe_mod, "probe_torch_device_allocation", _must_not_run)
+
+
+def test_settings_gate_does_not_block_on_detection_or_probe(monkeypatch):
+    # active_backend_is_llama() runs inside PUT /embedding-model. Before detection settles
+    # it must not force detection, must not run the probe (a cold torch import is allowed
+    # 120s), and must not reach the AMD GPU query. Answering False keeps the ST pickle gate
+    # engaged, which is the safe direction for a security check.
+    import threading
+
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(hardware_mod, "DETECTION_COMPLETE", threading.Event())  # unset
+    monkeypatch.setattr(
+        embeddings, "get_device", lambda: (_ for _ in ()).throw(AssertionError("forced detection"))
+    )
+    _forbid_gpu_query(monkeypatch)
+    _forbid_probe(monkeypatch)
+
+    assert embeddings.active_backend_is_llama() is False
+
+
+def test_settings_gate_does_not_probe_on_a_settled_rocm_host(monkeypatch):
+    _mock_rocm_probe(monkeypatch, is_rocm = True, probe_ok = False)
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    _forbid_gpu_query(monkeypatch)
+    _forbid_probe(monkeypatch)
+
+    assert embeddings.active_backend_is_llama() is False
+
+
+def test_settings_gate_still_reports_llama_on_a_settled_non_rocm_host(monkeypatch):
+    # The NVIDIA/CPU path keeps its old answer: nvidia-smi is torch-free and cheap.
+    _mock_rocm_probe(monkeypatch, is_rocm = False, probe_ok = True)
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings.active_backend_is_llama() is True
+
+
+def test_builder_settles_detection_rather_than_guessing(monkeypatch):
+    # The backend builder caches its answer, so unlike the request path it must not commit
+    # a provisional one: it settles detection first and then decides.
+    import threading
+
+    from utils.hardware import hardware as hardware_mod
+    from utils.hardware.hardware import DeviceType
+
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+    event = threading.Event()
+    monkeypatch.setattr(hardware_mod, "DETECTION_COMPLETE", event)
+    monkeypatch.setattr(hardware_mod, "IS_ROCM", False)
+
+    settled = {"count": 0}
+
+    def _detect():
+        settled["count"] += 1
+        event.set()
+        return DeviceType.CPU
+
+    monkeypatch.setattr(embeddings, "get_device", _detect)
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+
+    assert embeddings._resolve_auto() == "llama-server"
+    assert settled["count"] == 1
+
+
 def test_auto_is_unchanged_after_a_passing_rocm_probe(monkeypatch):
     _stub_st_load(monkeypatch)
     _mock_rocm_probe(monkeypatch, is_rocm = True, probe_ok = True)
