@@ -65,7 +65,7 @@ def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
     clause = clause.strip()
     if clause.startswith("type "):
-        clause = clause[len("type "):]
+        clause = clause[len("type ") :]
 
     names: list[str] = []
     braced = re.search(r"\{(?P<inner>.*)\}", clause, re.DOTALL)
@@ -76,7 +76,7 @@ def _bindings(clause: str) -> list[str]:
                 continue
             # `a as b` binds b; `type T` binds T; `type T as U` binds U.
             if piece.startswith("type "):
-                piece = piece[len("type "):].strip()
+                piece = piece[len("type ") :].strip()
             parts = piece.split()
             names.append(parts[-1] if " as " in f" {piece} " else parts[0])
         clause = clause[: braced.start()]
@@ -88,7 +88,7 @@ def _bindings(clause: str) -> list[str]:
             continue
         if piece.startswith("*"):
             parts = piece.split()
-            names.append(parts[-1])          # `* as ns`
+            names.append(parts[-1])  # `* as ns`
         elif piece.isidentifier():
             names.append(piece)
     return names
