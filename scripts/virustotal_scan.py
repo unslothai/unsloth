@@ -268,8 +268,12 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
         for report in notes:
             lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
 
-    if detected:
-        lines += submission_packet_lines(detected)
+    # Keyed on the counts, not the engine list: stats and results are separate fields of the
+    # same response, so an asset can carry a flagged count with no readable results map. The
+    # table would report it and the packet would skip it, which is the one asset that needs one.
+    flagged = [report for report in reports if report.stats is not None and report.stats.flagged]
+    if flagged:
+        lines += submission_packet_lines(flagged)
 
     lines += ["", "<details><summary>SHA-256</summary>", ""]
     for report in reports:

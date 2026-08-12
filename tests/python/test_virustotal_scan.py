@@ -500,6 +500,25 @@ class TestRenderMarkdown:
         assert "46193144 bytes" in text
         assert "wdsi/filesubmission" in text
 
+    def test_a_flagged_asset_with_no_readable_engine_list_still_gets_a_packet(self):
+        # stats and results are separate fields of the same response. The table reports the
+        # count, so the packet has to key on the same thing or it skips the one asset that
+        # needs one.
+        text = vt.render_markdown(
+            [
+                vt.FileReport(
+                    name = "a.exe",
+                    sha256 = "ab",
+                    size = 10,
+                    stats = vt.ScanStats(malicious = 1, undetected = 60),
+                    detections = [],
+                )
+            ],
+            0,
+        )
+        assert "False-positive submission packet" in text
+        assert "Flagging engines" not in text
+
     def test_a_clean_run_gets_no_submission_packet(self):
         text = vt.render_markdown(
             [vt.FileReport(name = "a.exe", sha256 = "ab", stats = vt.ScanStats(undetected = 60))], 0
