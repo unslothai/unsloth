@@ -39,6 +39,15 @@ BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
 PUBLISH_WORKFLOW_NAMES: tuple[str, ...] = ("release-desktop.yml",)
 
+# A workflow that runs this script is a "host". `pull_request` resolves the
+# workflow file from the PR merge ref, so a host carrying a `paths` /
+# `paths-ignore` filter can be skipped by the very PR that adds it -- the gate
+# would then never run for workflow changes, which is the hole this whole
+# script exists to close. Hosts must therefore trigger on unfiltered
+# `pull_request`.
+LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
+PATH_FILTER_KEYS: tuple[str, ...] = ("paths", "paths-ignore")
+
 
 def _normalise_on(on_field):
     if isinstance(on_field, str):
@@ -66,11 +75,37 @@ def _extract_cache_keys(path: Path) -> list[str]:
     return keys
 
 
-def _trigger_set(yaml_doc) -> set[str]:
-    on = yaml_doc.get(True)
-    if on is None:
+def _on_field(yaml_doc):
+    # PyYAML resolves a bare `on:` key to the boolean True.
+    on = yaml_doc.get(True) if isinstance(yaml_doc, dict) else None
+    if on is None and isinstance(yaml_doc, dict):
         on = yaml_doc.get("on")
-    return _normalise_on(on)
+    return on
+
+
+def _trigger_set(yaml_doc) -> set[str]:
+    return _normalise_on(_on_field(yaml_doc))
+
+
+def _runs_lint(path: Path) -> bool:
+    """True when the workflow invokes this script from a `run:` step.
+
+    Matched on `run:` rather than anywhere in the file so a workflow that
+    merely mentions the script in a comment is not mistaken for a host.
+    """
+    text = path.read_text(encoding = "utf-8")
+    return re.search(rf"run:[^\n]*{re.escape(LINT_SCRIPT_NAME)}", text) is not None
+
+
+def _pull_request_path_filters(yaml_doc) -> list[str]:
+    """Path-filter keys on the `pull_request` trigger, if any."""
+    on = _on_field(yaml_doc)
+    if not isinstance(on, dict):
+        return []
+    pr = on.get("pull_request")
+    if not isinstance(pr, dict):
+        return []
+    return [k for k in PATH_FILTER_KEYS if k in pr]
 
 
 def main() -> int:
@@ -81,8 +116,26 @@ def main() -> int:
         default = DEFAULT_WORKFLOWS_DIR,
         help = "Override the workflows directory (used by tests).",
     )
+    parser.add_argument(
+        "--require-host",
+        action = "store_true",
+        default = None,
+        help = "Require a workflow that runs this script on unfiltered "
+               "`pull_request`. Defaults on for the live tree, off for a "
+               "fixture directory.",
+    )
+    parser.add_argument(
+        "--no-require-host",
+        dest = "require_host",
+        action = "store_false",
+        help = "Skip the host-wiring check.",
+    )
     args = parser.parse_args()
     workflows_dir = args.workflows_dir
+
+    require_host = args.require_host
+    if require_host is None:
+        require_host = workflows_dir.resolve() == DEFAULT_WORKFLOWS_DIR.resolve()
 
     findings: list[str] = []
     # GitHub Actions loads BOTH `.yml` and `.yaml` from .github/workflows/, so
@@ -91,6 +144,7 @@ def main() -> int:
     workflows = sorted(list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml")))
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []
+    unfiltered_hosts: list[Path] = []
 
     for path in workflows:
         doc = _load_workflow(path)
@@ -115,6 +169,20 @@ def main() -> int:
                         "comment somewhere in the file, with a justification."
                     )
 
+        if _runs_lint(path):
+            filters = _pull_request_path_filters(doc)
+            if filters:
+                findings.append(
+                    f"{path.name}: runs {LINT_SCRIPT_NAME} but its "
+                    f"'pull_request' trigger has {' + '.join(filters)}. A PR "
+                    "adding that filter skips this workflow for its own PR, so "
+                    "the trigger gate never runs on the workflow change it is "
+                    "meant to review. Drop the filter, or host the lint in a "
+                    "workflow that runs on every PR."
+                )
+            elif "pull_request" in triggers:
+                unfiltered_hosts.append(path)
+
         if "pull_request" in triggers:
             pr_triggered.append((path, _extract_cache_keys(path)))
         is_dispatch_only = "workflow_dispatch" in triggers and not (
@@ -122,6 +190,13 @@ def main() -> int:
         )
         if path.name in PUBLISH_WORKFLOW_NAMES or is_dispatch_only:
             publish_triggered.append((path, _extract_cache_keys(path)))
+
+    if require_host and not unfiltered_hosts:
+        findings.append(
+            f"no workflow runs {LINT_SCRIPT_NAME} on an unfiltered "
+            "'pull_request' trigger, so this gate does not cover every PR. "
+            "Restore the workflow-trigger-lint workflow."
+        )
 
     pr_keys = {key for _, keys in pr_triggered for key in keys}
     for pub_path, pub_keys in publish_triggered:

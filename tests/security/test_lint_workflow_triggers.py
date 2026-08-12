@@ -13,12 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "lint_workflow_triggers.py"
 
 
-def _run(workflows_dir: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [sys.executable, str(SCRIPT), "--workflows-dir", str(workflows_dir)],
-        capture_output = True,
-        text = True,
-    )
+def _run(workflows_dir: Path, require_host: bool = False) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, str(SCRIPT), "--workflows-dir", str(workflows_dir)]
+    if require_host:
+        cmd.append("--require-host")
+    return subprocess.run(cmd, capture_output = True, text = True)
 
 
 def test_lint_passes_on_current_workflows():
@@ -72,23 +71,111 @@ def test_lint_rejects_pull_request_target_in_yaml_extension(tmp_path):
     assert "BANNED trigger 'pull_request_target'" in proc.stderr
 
 
-def test_security_audit_runs_on_every_pull_request():
-    """The lint job is wired inside security-audit.yml, so that workflow must
-    not carry a `paths` filter -- a filter that omits `.github/workflows/**`
-    would let a PR add a dangerous workflow without ever running the lint."""
-    yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "security-audit.yml").read_text(
-            encoding = "utf-8",
-        )
+def _host_workflow(filter_key: str | None) -> str:
+    """A workflow that runs the lint, optionally with a path filter."""
+    flt = f"    {filter_key}:\n      - 'studio/**'\n" if filter_key else ""
+    return (
+        "name: host\n"
+        "on:\n"
+        "  pull_request:\n" + flt +
+        "jobs:\n"
+        "  lint:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: python3 scripts/lint_workflow_triggers.py\n"
     )
-    on = doc.get(True, doc.get("on"))
-    assert isinstance(on, dict) and "pull_request" in on
-    pr = on["pull_request"] or {}
-    assert "paths" not in pr, (
-        "security-audit.yml gained a pull_request `paths` filter; the "
-        "workflow-trigger lint would stop running for workflow-file PRs."
+
+
+@pytest.mark.parametrize("filter_key", ["paths", "paths-ignore"])
+def test_lint_rejects_path_filter_on_its_own_host(tmp_path, filter_key):
+    """A host with a path filter can be skipped by the PR that adds it.
+
+    `pull_request` resolves the workflow file from the PR merge ref, so the
+    filter takes effect for its own PR and the gate never runs on the change
+    it exists to review. Both filter keys are the same bypass.
+    """
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(_host_workflow(filter_key))
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert filter_key in proc.stderr
+    assert "host.yml" in proc.stderr
+
+
+def test_lint_accepts_unfiltered_host(tmp_path):
+    """An unfiltered `pull_request` host satisfies the wiring requirement."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(_host_workflow(None))
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_lint_rejects_missing_host(tmp_path):
+    """Deleting the gate's workflow must fail the gate, not silently pass."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "unrelated.yml").write_text(
+        "name: unrelated\n"
+        "on:\n"
+        "  pull_request:\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: echo hi\n"
     )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+def test_comment_mention_is_not_a_host(tmp_path):
+    """Naming the script in a comment must not count as running it."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "mentions.yml").write_text(
+        "name: mentions\n"
+        "on:\n"
+        "  pull_request:\n"
+        "    paths:\n"
+        "      - 'studio/**'\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      # scripts/lint_workflow_triggers.py needs PyYAML\n"
+        "      - run: echo hi\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
+    """End to end on the live tree, with the host requirement forced on."""
+    proc = _run(REPO_ROOT / ".github" / "workflows", require_host = True)
+    assert proc.returncode == 0, (
+        f"live tree failed lint:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+    )
+
+
+def test_workflow_changes_require_code_owner_review():
+    """CODEOWNERS must cover `.github/workflows/`.
+
+    The lint cannot stop a PR that disables the lint's own host workflow, so
+    the merge-time control is owner review on workflow changes.
+    """
+    owners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
+    rules = [
+        line.split("#", 1)[0].strip()
+        for line in owners.splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    for pattern in ("/.github/workflows/", "/.github/CODEOWNERS"):
+        assert any(
+            r.split()[0] == pattern and len(r.split()) > 1 for r in rules
+        ), f"CODEOWNERS has no owner rule for {pattern}"
 
 
 def test_lint_rejects_unjustified_workflow_run(tmp_path):
