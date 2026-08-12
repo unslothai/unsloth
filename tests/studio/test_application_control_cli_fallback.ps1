@@ -421,6 +421,57 @@ try {
     Remove-Item -LiteralPath $ownTmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# --- Test-ShimLaunchBlocked, chatty launcher ----------------------------------------------
+# Both pipes are redirected, so a launcher that fills one blocks writing while the probe
+# blocks waiting and neither side moves. Reachable since the trampoline stopped passing -I:
+# PYTHONPROFILEIMPORTTIME=1 now reaches the child and produces ~24 KB of stderr against a
+# 4 KB pipe buffer. Measured on this runner: undrained, the probe burns its full 20s
+# timeout; drained, it returns in tens of milliseconds.
+$probeTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-probe-" + [guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Path $probeTmp
+try {
+    $onWindows = $env:OS -eq "Windows_NT"
+    $line = "." * 64
+    # Has to outrun the pipe buffer to mean anything: Linux defaults to 64 KB, so 26 KB
+    # of output would sail through undrained and the timing check below would be vacuous.
+    $repeats = 2000
+    if ($onWindows) {
+        $chatty = Join-Path $probeTmp "chatty.cmd"
+        $body = "@echo off`r`n"
+        $body += "for /L %%i in (1,1,$repeats) do @echo $line`r`n"
+        $body += "for /L %%i in (1,1,$repeats) do @echo $line 1>&2`r`n"
+        [System.IO.File]::WriteAllText($chatty, $body, (New-Object System.Text.UTF8Encoding($false)))
+    } else {
+        $chatty = Join-Path $probeTmp "chatty.sh"
+        $body = "#!/bin/sh`n"
+        $body += "i=0`n"
+        $body += "while [ `$i -lt $repeats ]; do echo '$line'; echo '$line' >&2; i=`$((i+1)); done`n"
+        [System.IO.File]::WriteAllText($chatty, $body, (New-Object System.Text.UTF8Encoding($false)))
+        & chmod +x $chatty
+    }
+
+    $sb = [scriptblock]::Create(@"
+param(`$Path)
+$blockFn
+$probeFn
+Test-ShimLaunchBlocked -Path `$Path
+"@)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $blocked = & $sb $chatty
+    $sw.Stop()
+
+    Write-Host "a launcher that outfills the pipe buffer does not stall the probe"
+    Check "extraction kept the drain"  ($probeFn -match 'ReadToEndAsync')
+    # -1 -lt anything, so an absent drain would pass this on order alone.
+    Check "drains before it waits"     ($probeFn.IndexOf('ReadToEndAsync') -ge 0 -and
+                                        $probeFn.IndexOf('ReadToEndAsync') -lt $probeFn.IndexOf('WaitForExit'))
+    # A launcher that ran is not blocked, whatever it printed.
+    Check "a chatty launcher is not blocked" (-not $blocked)
+    Check "and it did not hit the timeout"   ($sw.ElapsedMilliseconds -lt 10000)
+} finally {
+    Remove-Item -LiteralPath $probeTmp -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

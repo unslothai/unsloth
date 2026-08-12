@@ -1195,9 +1195,8 @@ public static class UnslothStudioFinalPathV2
     # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
     # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
     # child, 1260 straight back); an unaffected machine pays one `--version`, measured
-    # at a quarter second. Nothing is killed on success: the stub runs python as a
-    # child, so killing it would orphan that child, and a wait that times out reports
-    # "not blocked", which is the truth.
+    # at a quarter second. A process that started is not blocked whatever it does next,
+    # so the timeout path still answers "not blocked" and just stops waiting.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1221,7 +1220,28 @@ public static class UnslothStudioFinalPathV2
             $psi.RedirectStandardError = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
             try {
-                $proc.WaitForExit(20000) | Out-Null
+                # Drain both pipes BEFORE waiting. With two redirected streams and no
+                # reader, a child that fills a pipe buffer blocks writing while we block
+                # waiting, and neither side moves. It is reachable here: the trampoline
+                # no longer passes -I, so PYTHONPROFILEIMPORTTIME=1 in the environment
+                # reaches this child and produces ~24 KB of stderr against a 4 KB buffer.
+                # Reading them sequentially would not help, since the child can fill one
+                # while we block on the other; async is the only correct answer.
+                $stdout = $proc.StandardOutput.ReadToEndAsync()
+                $stderr = $proc.StandardError.ReadToEndAsync()
+                if ($proc.WaitForExit(20000)) {
+                    # The timed overload does not wait for the readers to finish; the
+                    # parameterless one does, and returns at once for an exited process.
+                    $proc.WaitForExit()
+                } else {
+                    # It started, so it is not blocked, but leaving it running would
+                    # hold the launcher open against the next update.
+                    try { $proc.Kill() } catch { }
+                }
+                # Observed so a faulted read cannot surface later as an unobserved task.
+                foreach ($reader in @($stdout, $stderr)) {
+                    try { $null = $reader.Result } catch { }
+                }
             } finally {
                 $proc.Dispose()
             }
