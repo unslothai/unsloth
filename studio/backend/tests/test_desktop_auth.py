@@ -843,6 +843,11 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     _settled = threading.Event()
     _settled.set()
     monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
+    # On an Apple Silicon host the settled "mlx_unavailable" verdict is one the MLX
+    # self-heal may still overturn, so health_check() drops the snapshot and the authed
+    # fields below go missing again. Pin the host predicate that gate starts from, so this
+    # test measures the same thing on a Mac as it does in CI.
+    monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
     from auth.authentication import create_access_token
@@ -1071,6 +1076,7 @@ def test_the_router_stub_covers_every_router_main_imports():
     makes every test in this file die with an ImportError rather than a useful
     message. That is how ``openai_codex_auth_router`` broke main after #8511.
     Comparing the two lists keeps the omission local to this assertion."""
+    import inspect
     import re
     from pathlib import Path
 
@@ -1081,8 +1087,12 @@ def test_the_router_stub_covers_every_router_main_imports():
     imported = set(re.findall(r"(\w+_router)", block.group(1)))
     assert imported, "the routes import block named no routers; re-derive this"
 
-    own_src = Path(__file__).read_text(encoding = "utf-8")
+    # The health test's own stub only, never the whole file: another test's fixture
+    # stubbing part of routes (loaded_local_model registers routes.inference) would
+    # otherwise count as coverage for an import that test never sees.
+    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
     stubbed = set(re.findall(r'"(\w+_router)":', own_src))
+    assert stubbed, "the health test's stub dict named no routers; re-derive this"
     missing = sorted(imported - stubbed)
     assert not missing, (
         f"main.py imports {missing} from routes, but the stub dict in this file does not "
@@ -1094,7 +1104,9 @@ def test_the_router_stub_covers_every_router_main_imports():
     # were both missing while only the first was visible, because the import dies on the
     # earliest one and hides the rest.
     submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
+    assert submodules, "main.py imports no routes submodule; re-derive this"
     registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
+    assert registered, "the health test registered no routes submodule; re-derive this"
     unstubbed = sorted(submodules - registered)
     assert not unstubbed, (
         f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
