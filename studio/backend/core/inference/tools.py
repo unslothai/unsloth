@@ -8909,6 +8909,16 @@ WEB_SEARCH_TOOL = {
 }
 
 
+# Without this a model assumes its output vanished into a scratch dir and says
+# so, which reads as "the file was not really created". Shared by the sandboxed
+# and Full access notes: the workdir is the per-session dir in both modes.
+_CREATED_FILES_NOTE = (
+    " Any file you create here is kept and shown to the user with a download "
+    "link, so name the files you created in your reply -- by file name only, "
+    "since you do not know their absolute path."
+)
+
+
 def _build_sandbox_paths_note() -> str:
     """Platform and working-directory note, on BOTH tool descriptions.
 
@@ -8919,23 +8929,40 @@ def _build_sandbox_paths_note() -> str:
     instead: without it a model assumes the pipe is its only output and declines
     to open a window it believes nobody can see.
     """
-    # Without this a model assumes its output vanished into a scratch dir and
-    # says so, which reads as "the file was not really created".
-    created = (
-        " Any file you create here is kept and shown to the user with a download "
-        "link, so name the files you created in your reply -- by file name only, "
-        "since you do not know their absolute path."
-    )
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
-            "/mnt/data or /tmp/outputs do not exist." + created
+            "/mnt/data or /tmp/outputs do not exist." + _CREATED_FILES_NOTE
         )
     return (
         " You are on Windows, and this runs on the user's own machine. Read and "
         "write files using relative paths in the current working directory, which "
-        "persists for this conversation." + created
+        "persists for this conversation." + _CREATED_FILES_NOTE
+    )
+
+
+def _build_full_access_paths_note() -> str:
+    """The same note for Full access (permission_mode='full'), where the
+    sandbox is genuinely off.
+
+    _build_sandbox_paths_note describes the sandboxed run, and every claim in it
+    is false under Full access: _build_bypass_env/_bypass_preexec skip the
+    static analysis, the command blocklist and the rlimits, so absolute paths do
+    resolve and the host filesystem is reachable. Handing the sandboxed text to
+    a model in that mode makes it answer "I am sandboxed and cannot see your
+    files" to a question it could have answered with one tool call, so the
+    working-directory advice stays (the workdir really is still the per-session
+    dir) and the isolation claim goes.
+    """
+    platform_note = " You are on Windows." if sys.platform == "win32" else ""
+    return (
+        " The code sandbox is disabled for this conversation and this runs "
+        "directly on the user's own machine, so absolute paths do resolve and "
+        "you can read and write anywhere that account can."
+        + platform_note
+        + " Relative paths still resolve in a working directory that persists "
+        "for this conversation." + _CREATED_FILES_NOTE
     )
 
 
@@ -8966,6 +8993,7 @@ def _build_terminal_shell_note() -> str:
 
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
+_FULL_ACCESS_PATHS_NOTE = _build_full_access_paths_note()
 _TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
 
 PYTHON_TOOL = {
@@ -9006,6 +9034,59 @@ TERMINAL_TOOL = {
         },
     },
 }
+
+# Full access (permission_mode='full') runs these two without the sandbox, so it
+# gets its own pair of schemas rather than a per-request rebuild: the notes are
+# platform-derived constants, and the sandboxed pair stays the module default so
+# every existing importer keeps the safe wording.
+PYTHON_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **PYTHON_TOOL["function"],
+        "description": "Execute Python code on the user's own machine and return stdout/stderr."
+        + _FULL_ACCESS_PATHS_NOTE,
+    },
+}
+
+TERMINAL_TOOL_FULL_ACCESS = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": "Execute a terminal command on the user's own machine and return stdout/stderr."
+        + _FULL_ACCESS_PATHS_NOTE
+        + _TERMINAL_SHELL_NOTE,
+    },
+}
+
+_FULL_ACCESS_TOOL_BY_NAME = {
+    "python": PYTHON_TOOL_FULL_ACCESS,
+    "terminal": TERMINAL_TOOL_FULL_ACCESS,
+}
+
+
+def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Swap python/terminal for their Full access schemas.
+
+    Only the two sandboxed built-ins are touched; web_search, render_html,
+    search_knowledge_base and MCP tools are passed through untouched, and a list
+    without either built-in is returned as-is so callers can apply this
+    unconditionally. The input list is never mutated -- ALL_TOOLS entries are
+    module globals shared across requests.
+    """
+    if not tools:
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        replacement = _FULL_ACCESS_TOOL_BY_NAME.get(name)
+        if replacement is None:
+            out.append(tool)
+        else:
+            out.append(replacement)
+            swapped = True
+    return out if swapped else tools
+
 
 RENDER_HTML_TOOL = {
     "type": "function",
