@@ -215,3 +215,47 @@ class TestExecPathForLaunch:
     def test_no_binary_is_passed_through(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "darwin")
         assert LlamaCppBackend._exec_path_for_launch(None) is None
+
+
+class TestBinaryRevisionPathSpace:
+    """_binary_revision keys on the path string, so both sides of the
+    changed-since-launch comparison must resolve the entrypoint the same way.
+    Otherwise every Apply on a macOS managed install looks like an update and
+    reloads the model."""
+
+    def _managed_wrapper(self, monkeypatch, tmp_path):
+        root = tmp_path / "llama.cpp"
+        real_dir = root / "build" / "bin"
+        real_dir.mkdir(parents = True)
+        (real_dir / "llama-server-real").write_text("real")
+        wrapper = root / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server-real" "$@"\n')
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        return wrapper
+
+    def test_an_unchanged_managed_install_does_not_look_updated(self, monkeypatch, tmp_path):
+        wrapper = self._managed_wrapper(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_k: str(wrapper))
+        )
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._launch_binary_revision = LlamaCppBackend._binary_revision(
+            LlamaCppBackend._exec_path_for_launch(str(wrapper))
+        )
+        assert backend._launch_binary_revision  # the stamp is readable
+        assert backend._binary_changed_since_launch() is False
+
+    def test_a_real_update_is_still_detected(self, monkeypatch, tmp_path):
+        wrapper = self._managed_wrapper(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda **_k: str(wrapper))
+        )
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._launch_binary_revision = LlamaCppBackend._binary_revision(
+            LlamaCppBackend._exec_path_for_launch(str(wrapper))
+        )
+        target = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server-real"
+        target.write_text("a different build entirely")
+        assert backend._binary_changed_since_launch() is True

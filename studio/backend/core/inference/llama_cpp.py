@@ -3584,7 +3584,13 @@ class LlamaCppBackend:
         """Whether a different llama-server is installed than the live one was launched
         from. False when either side is unreadable, so an install still in flight is not
         read as a finished one; the next Apply asks again."""
-        current = self._binary_revision(self._find_llama_server_binary())
+        # Same path space as the launch recorded: _binary_revision keys on the
+        # path string, and on macOS the launch resolves a managed entrypoint to
+        # its target, so comparing an unresolved discovery path against it would
+        # differ for the same unchanged file and reload the model on every Apply.
+        current = self._binary_revision(
+            self._exec_path_for_launch(self._find_llama_server_binary())
+        )
         if not current or not self._launch_binary_revision:
             return False
         return current != self._launch_binary_revision
