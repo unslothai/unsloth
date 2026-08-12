@@ -11386,9 +11386,6 @@ def _check_signal_escape_patterns(code: str):
         "(no absolute paths, no '..' segments, no dynamic expressions)"
     )
 
-    # Commit operations that never read a local file, so no path check applies.
-    _HF_NO_READ_COMMIT_OPS = frozenset({"CommitOperationDelete", "CommitOperationCopy"})
-
     # Upload methods that take CommitOperation* objects rather than a path, and
     # the kwarg each one carries them in. `preupload_lfs_files` sends the file
     # bytes to the LFS store on its own, so it needs the same gate as a commit.
@@ -11522,17 +11519,10 @@ def _check_signal_escape_patterns(code: str):
                     return inner
             return None
         if method_name == "commit_operation":
-            # A CommitOperation* constructor inside the operation list above.
-            f = node.func
-            op_name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-            if op_name in _HF_NO_READ_COMMIT_OPS:
-                # Deletes / server-side copies read no local file, but a computed
-                # argument still can (path_in_repo=open('x').read()), and the value
-                # ships to the Hub, so their args must be plain literals.
-                values = list(node.args or []) + [kw.value for kw in (node.keywords or [])]
-                if any(not isinstance(v, ast.Constant) for v in values):
-                    return _HF_UPLOAD_PATH_VIOLATION
-                return None
+            # A CommitOperation* constructor inside the operation list above. Every
+            # operation is held to the path rule, delete and copy included: exempting
+            # those by constructor name would trust a name the sandboxed code can
+            # rebind, and they were refused before this gate existed anyway.
             # CommitOperationAdd(path_in_repo, path_or_fileobj) -- either can be
             # positional, so every positional arg must be a sandbox-local literal.
             path_nodes = list(node.args or [])

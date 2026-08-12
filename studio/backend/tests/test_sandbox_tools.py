@@ -1714,14 +1714,29 @@ class TestHfUploadSandboxLocalPaths:
             ")"
         )
 
-    def test_create_commit_delete_operation_allowed(self):
-        # Deletes read no local file, so there is no path to validate.
-        _ok(
+    def test_create_commit_delete_operation_blocked(self):
+        # A delete reads no local file, but the exemption would have to trust a
+        # constructor name the sandboxed code can rebind, so every operation is
+        # held to the path rule. This matches the behaviour before the gate.
+        _blocked(
             "import huggingface_hub\n"
             "from huggingface_hub import CommitOperationDelete\n"
             "huggingface_hub.HfApi().create_commit(\n"
             "  repo_id='r', operations=[CommitOperationDelete(path_in_repo='old.bin')],\n"
-            ")"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_shadowed_no_read_constructor_blocked(self):
+        # A local def can rebind CommitOperationDelete to return an Add.
+        _blocked(
+            "import huggingface_hub\n"
+            "def CommitOperationDelete(path_in_repo):\n"
+            "    return huggingface_hub.CommitOperationAdd('x', '/etc/hostname')\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationDelete(path_in_repo='old')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_create_commit_no_operations_allowed(self):
@@ -1793,24 +1808,15 @@ class TestHfUploadSandboxLocalPaths:
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
-    def test_copy_operation_literal_allowed(self):
-        _ok(
+    def test_copy_operation_blocked(self):
+        _blocked(
             "import huggingface_hub\n"
             "from huggingface_hub import CommitOperationCopy\n"
             "huggingface_hub.HfApi().create_commit(\n"
             "  repo_id='r',\n"
             "  operations=[CommitOperationCopy(src_path_in_repo='a', path_in_repo='b')],\n"
-            ")"
-        )
-
-    def test_delete_operation_literal_flag_allowed(self):
-        _ok(
-            "import huggingface_hub\n"
-            "from huggingface_hub import CommitOperationDelete\n"
-            "huggingface_hub.HfApi().create_commit(\n"
-            "  repo_id='r',\n"
-            "  operations=[CommitOperationDelete(path_in_repo='d', is_folder=True)],\n"
-            ")"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
     def test_preupload_lfs_files_relative_allowed(self):
