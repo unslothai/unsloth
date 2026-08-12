@@ -65,6 +65,21 @@ Agent 2
   Device Type:             GPU
 """
 
+ROCMINFO_MULTI_GPU_BLANK_FIRST = """\
+*******
+Agent 1
+*******
+  Name:                    gfx1100
+  Marketing Name:
+  Device Type:             GPU
+*******
+Agent 2
+*******
+  Name:                    gfx1151
+  Marketing Name:          AMD Radeon 8060S
+  Device Type:             GPU
+"""
+
 
 def _extract_function(script: pathlib.Path, name: str) -> str:
     src = script.read_text(encoding = "utf-8")
@@ -75,7 +90,7 @@ def _extract_function(script: pathlib.Path, name: str) -> str:
     return src[start : end + 2]
 
 
-def _run_marketing_name(tmp_path, script: pathlib.Path, name: str, rocminfo: str) -> str:
+def _run_gpu_records(tmp_path, script: pathlib.Path, name: str, rocminfo: str) -> str:
     probe = tmp_path / "probe.sh"
     probe.write_text(_extract_function(script, name) + f"\n{name}\n")
     return subprocess.run(
@@ -87,38 +102,48 @@ def _run_marketing_name(tmp_path, script: pathlib.Path, name: str, rocminfo: str
     ).stdout.strip()
 
 
-MARKETING_HELPERS = [
-    (INSTALL_SH, "_rocminfo_gpu_marketing_name"),
-    (SETUP_SH, "_setup_rocminfo_gpu_marketing_name"),
+RECORD_HELPERS = [
+    (INSTALL_SH, "_rocminfo_gpu_records"),
+    (SETUP_SH, "_setup_rocminfo_gpu_records"),
 ]
-MARKETING_IDS = ["install.sh", "setup.sh"]
+RECORD_IDS = ["install.sh", "setup.sh"]
 
 
-@pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
 def test_discrete_host_reports_the_gpu_not_the_cpu(tmp_path, script, fn):
     """#7307: the GPU line must name the card, not the processor in front of it."""
-    assert _run_marketing_name(tmp_path, script, fn, ROCMINFO_DISCRETE) == "AMD Radeon AI PRO R9700"
-
-
-@pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
-def test_apu_without_a_gfx_agent_keeps_the_processor_name(tmp_path, script, fn):
-    """The fallback feeds name-based arch inference; losing it would drop APUs to CPU torch."""
-    assert (
-        _run_marketing_name(tmp_path, script, fn, ROCMINFO_APU_NO_GFX)
-        == "AMD Ryzen AI Max+ 395 w/ Radeon 8060S"
+    assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_DISCRETE) == (
+        "gfx1201|AMD Radeon AI PRO R9700"
     )
 
 
-@pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
+def test_apu_without_a_gfx_agent_keeps_the_processor_name(tmp_path, script, fn):
+    """The fallback feeds name-based arch inference; losing it would drop APUs to CPU torch."""
+    assert (
+        _run_gpu_records(tmp_path, script, fn, ROCMINFO_APU_NO_GFX)
+        == "|AMD Ryzen AI Max+ 395 w/ Radeon 8060S"
+    )
+
+
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
 def test_no_rocminfo_output_yields_no_name(tmp_path, script, fn):
-    assert _run_marketing_name(tmp_path, script, fn, "") == ""
+    assert _run_gpu_records(tmp_path, script, fn, "") == ""
 
 
-@pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
 def test_multi_gpu_probe_preserves_one_name_per_device(tmp_path, script, fn):
-    assert _run_marketing_name(tmp_path, script, fn, ROCMINFO_MULTI_GPU).splitlines() == [
-        "AMD Radeon RX 7900 XTX",
-        "AMD Radeon 8060S",
+    assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_MULTI_GPU).splitlines() == [
+        "gfx1100|AMD Radeon RX 7900 XTX",
+        "gfx1151|AMD Radeon 8060S",
+    ]
+
+
+@pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
+def test_blank_marketing_name_preserves_its_device_slot(tmp_path, script, fn):
+    assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_MULTI_GPU_BLANK_FIRST).splitlines() == [
+        "gfx1100|",
+        "gfx1151|AMD Radeon 8060S",
     ]
 
 
@@ -128,13 +153,31 @@ def test_multi_gpu_probe_preserves_one_name_per_device(tmp_path, script, fn):
         (INSTALL_SH, "_select_visible_gpu_line"),
         (SETUP_SH, "_setup_select_visible_line"),
     ],
-    ids = MARKETING_IDS,
+    ids = RECORD_IDS,
 )
 def test_visible_device_index_selects_the_matching_name(tmp_path, script, fn):
     probe = tmp_path / "select.sh"
     probe.write_text(_extract_function(script, fn) + f"\nprintf '%s\\n' first second | {fn} 1\n")
     result = subprocess.run(["bash", str(probe)], capture_output = True, text = True, timeout = 30)
     assert result.stdout.strip() == "second"
+
+
+@pytest.mark.parametrize(
+    "script, fn",
+    [
+        (INSTALL_SH, "_select_visible_gpu_line"),
+        (SETUP_SH, "_setup_select_visible_line"),
+    ],
+    ids = RECORD_IDS,
+)
+def test_visible_device_selection_keeps_a_record_with_a_blank_name(tmp_path, script, fn):
+    probe = tmp_path / "select-blank.sh"
+    probe.write_text(
+        _extract_function(script, fn)
+        + f"\nprintf '%s\\n' 'gfx1100|' 'gfx1151|AMD Radeon 8060S' | {fn} 0\n"
+    )
+    result = subprocess.run(["bash", str(probe)], capture_output = True, text = True, timeout = 30)
+    assert result.stdout.strip() == "gfx1100|"
 
 
 # The dependency fast path delegates to the same Python implementation that performs repair.

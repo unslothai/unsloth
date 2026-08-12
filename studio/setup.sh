@@ -1524,23 +1524,29 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt_all=""
+_setup_amd_records=""
 _setup_amd_probe_kind=""
 
-# Emit every gfx agent's marketing name in device order. Keep the first-name fallback for APUs
-# without a gfx token, since name-based arch inference uses it. Keep in sync with install.sh.
-_setup_rocminfo_gpu_marketing_name() {
+# Emit one gfx|marketing-name record per GPU, including an empty name, so device ordinals stay
+# aligned. Keep a |name fallback for APUs without a gfx token. Keep in sync with install.sh.
+_setup_rocminfo_gpu_records() {
     awk -F': ' '
         /^[[:space:]]*Name:/ {
+            if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
             name = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-            is_gpu = (name ~ /^gfx[1-9]/)
+            is_gpu = (name ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/)
+            gfx = is_gpu ? name : ""
+            emitted = 0
         }
         /^[[:space:]]*Marketing Name:/ {
             mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
-            if (mkt == "") next
-            if (is_gpu) { print mkt; printed = 1; next }
-            if (first == "") first = mkt
+            if (is_gpu) { print gfx "|" mkt; printed = 1; emitted = 1; next }
+            if (mkt != "" && first == "") first = mkt
         }
-        END { if (!printed && first != "") print first }
+        END {
+            if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
+            if (!printed && first != "") print "|" first
+        }
     '
 }
 
@@ -1556,17 +1562,18 @@ if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
 if [ "$_setup_nvidia_usable" != true ]; then
-    if command -v rocminfo >/dev/null 2>&1 && \
-       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+    if command -v rocminfo >/dev/null 2>&1; then
+        _setup_amd_records=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_records || true)
+        _setup_gfx_all=$(printf '%s\n' "$_setup_amd_records" | awk -F'|' '$1 != "" { print $1 }')
+    fi
+    if [ -n "$_setup_gfx_all" ]; then
         _setup_amd_detected=true
         _setup_amd_probe_kind=rocminfo
-        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | awk \
-            '$1 == "Name:" && $2 ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/ { print $2 }' || true)
-        _setup_mkt_all=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_marketing_name || true)
     elif command -v amd-smi >/dev/null 2>&1 && \
          _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
         _setup_amd_detected=true
         _setup_amd_probe_kind=amd-smi
+        _setup_amd_records=""
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
@@ -1919,8 +1926,14 @@ elif [ "$_setup_amd_detected" = true ]; then
     if [ "$_setup_amd_probe_kind" = rocminfo ] && [ "$_setup_vis_name" = ROCR_VISIBLE_DEVICES ]; then
         _setup_vis_idx=0
     fi
-    _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | _setup_select_visible_line "$_setup_vis_idx")
-    _setup_mkt=$(printf '%s\n' "$_setup_mkt_all" | _setup_select_visible_line "$_setup_vis_idx")
+    if [ -n "$_setup_amd_records" ]; then
+        _setup_amd_record=$(printf '%s\n' "$_setup_amd_records" | _setup_select_visible_line "$_setup_vis_idx")
+        _setup_gfx=${_setup_amd_record%%|*}
+        _setup_mkt=${_setup_amd_record#*|}
+    else
+        _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | _setup_select_visible_line "$_setup_vis_idx")
+        _setup_mkt=$(printf '%s\n' "$_setup_mkt_all" | _setup_select_visible_line "$_setup_vis_idx")
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"

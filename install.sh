@@ -4343,21 +4343,26 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
-# Emit every gfx agent's marketing name in device order. Keep the first-name fallback for APUs
-# without a gfx token, since name-based arch inference uses it. Keep in sync with studio/setup.sh.
-_rocminfo_gpu_marketing_name() {
+# Emit one gfx|marketing-name record per GPU, including an empty name, so device ordinals stay
+# aligned. Keep a |name fallback for APUs without a gfx token. Keep in sync with studio/setup.sh.
+_rocminfo_gpu_records() {
     awk -F': ' '
         /^[[:space:]]*Name:/ {
+            if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
             name = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-            is_gpu = (name ~ /^gfx[1-9]/)
+            is_gpu = (name ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/)
+            gfx = is_gpu ? name : ""
+            emitted = 0
         }
         /^[[:space:]]*Marketing Name:/ {
             mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
-            if (mkt == "") next
-            if (is_gpu) { print mkt; printed = 1; next }
-            if (first == "") first = mkt
+            if (is_gpu) { print gfx "|" mkt; printed = 1; emitted = 1; next }
+            if (mkt != "" && first == "") first = mkt
         }
-        END { if (!printed && first != "") print first }
+        END {
+            if (is_gpu && !emitted) { print gfx "|"; printed = 1 }
+            if (!printed && first != "") print "|" first
+        }
     '
 }
 
@@ -4373,20 +4378,26 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
     _gpu_disp_mkt_all=""
+    _gpu_disp_records=""
     _gpu_probe_kind=""
     if command -v rocminfo >/dev/null 2>&1; then
-        _gpu_probe_kind=rocminfo
-        _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | awk \
-            '$1 == "Name:" && $2 ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/ { print $2 }' || true)
-        _gpu_disp_mkt_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_marketing_name || true)
+        _gpu_disp_records=$(rocminfo 2>/dev/null | _rocminfo_gpu_records || true)
+        if [ -n "$_gpu_disp_records" ]; then
+            _gpu_probe_kind=rocminfo
+            _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')
+        fi
     fi
     if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-        _gpu_probe_kind=amd-smi
-        _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        [ -z "$_gpu_disp_gfx_all" ] && \
-            _gpu_disp_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _gpu_amd_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_gpu_amd_gfx_all" ] && \
+            _gpu_amd_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        if [ -n "$_gpu_amd_gfx_all" ]; then
+            _gpu_probe_kind=amd-smi
+            _gpu_disp_records=""
+            _gpu_disp_gfx_all="$_gpu_amd_gfx_all"
+        fi
     fi
-    if [ -z "$_gpu_disp_mkt_all" ] && command -v amd-smi >/dev/null 2>&1; then
+    if [ -z "$_gpu_disp_records" ] && command -v amd-smi >/dev/null 2>&1; then
         _gpu_disp_mkt_all=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2) print $2}' || true)
     fi
@@ -4410,8 +4421,14 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     if [ "$_gpu_probe_kind" = rocminfo ] && [ "$_gpu_vis_name" = ROCR_VISIBLE_DEVICES ]; then
         _gpu_vis_idx=0
     fi
-    _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | _select_visible_gpu_line "$_gpu_vis_idx")
-    _gpu_disp_mkt=$(printf '%s\n' "$_gpu_disp_mkt_all" | _select_visible_gpu_line "$_gpu_vis_idx")
+    if [ -n "$_gpu_disp_records" ]; then
+        _gpu_disp_record=$(printf '%s\n' "$_gpu_disp_records" | _select_visible_gpu_line "$_gpu_vis_idx")
+        _gpu_disp_gfx=${_gpu_disp_record%%|*}
+        _gpu_disp_mkt=${_gpu_disp_record#*|}
+    else
+        _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | _select_visible_gpu_line "$_gpu_vis_idx")
+        _gpu_disp_mkt=$(printf '%s\n' "$_gpu_disp_mkt_all" | _select_visible_gpu_line "$_gpu_vis_idx")
+    fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _gpu_disp_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
