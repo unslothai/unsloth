@@ -1073,6 +1073,44 @@ def test_fit_context_budget_frac_override_is_tighter():
     assert backend._fit_context_to_vram(131072, pool_mib, model_size, "f16") == fit_default
 
 
+def test_fit_context_follows_the_user_vram_budget(monkeypatch):
+    """The VRAM budget setting moves the fitted context, in both directions.
+
+    This is the whole point of the setting: the reserve it controls is worth real
+    context. An unset budget must land exactly on the historical default, so the
+    change is a no-op for anyone who never touches it.
+    """
+    import utils.vram_budget_settings as vb
+
+    backend = _kv_seeded_backend()
+    model_size = 8 * 1024**3
+    pool_mib = 24 * 1024
+    total_mib = 24 * 1024
+
+    def _fit():
+        return backend._fit_context_to_vram(
+            131072, pool_mib, model_size, "f16", total_mib = total_mib
+        )
+
+    monkeypatch.delenv(vb.VRAM_FRACTION_ENV_VAR, raising = False)
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: None)
+    fit_default = _fit()
+    assert fit_default < 131072, "expected the context to be capped at this VRAM tier"
+
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: 1.0)
+    fit_max = _fit()
+
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: vb.VRAM_FRACTION_MIN)
+    fit_min = _fit()
+
+    assert fit_max > fit_default, "claiming the whole card must buy context back"
+    assert fit_min < fit_default, "a smaller budget must give context up"
+
+    # And clearing it returns to exactly the historical number, not merely close.
+    monkeypatch.setattr(vb, "_cached_setting", lambda _key: None)
+    assert _fit() == fit_default
+
+
 # ── unsupported-arch load failure -> clean message ───────────────────
 
 

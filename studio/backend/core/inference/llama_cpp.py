@@ -1895,6 +1895,23 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
+def _active_vram_fraction() -> float:
+    """The user's VRAM budget, or ``_CTX_FIT_VRAM_FRACTION`` when they set none.
+
+    The settings module clamps to a supported range and swallows a corrupt stored
+    value, so this cannot widen the budget past 1.0 or hand back a NaN. Imported
+    lazily to keep the settings/storage layer off this module's import path, and
+    read per call so a change applies to the next load without a restart.
+    """
+    try:
+        from utils.vram_budget_settings import get_vram_budget_fraction
+
+        return get_vram_budget_fraction()
+    except Exception:
+        # Settings are a convenience; a load must never fail because of them.
+        return _CTX_FIT_VRAM_FRACTION
+
+
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     """Bytes per KV-cache element for a llama.cpp cache type (f16 default)."""
     return {
@@ -3338,6 +3355,10 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        # VRAM budget fraction the running child was sized against; None before any
+        # load. Lets the settings route report a stale budget rather than assuming
+        # every save needs a reload.
+        self._vram_fraction_launched: Optional[float] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
@@ -6033,7 +6054,7 @@ class LlamaCppBackend:
         min_gpus = max(1, min(min_gpus, len(gpus)))
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
-            usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
+            usable_fraction = _active_vram_fraction()
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
 
         # Per-GPU usable budget: free - (1-frac)*total when total is known, else
@@ -6888,7 +6909,7 @@ class LlamaCppBackend:
         # when dims can't size the draft KV); callers may override budget_frac.
         if budget_frac is None:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
-            budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
+            budget_frac = _active_vram_fraction() - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
         if total_mib is not None and total_mib > 0:
             budget_mib = max(0.0, available_mib - (1.0 - budget_frac) * total_mib)
@@ -9193,11 +9214,15 @@ class LlamaCppBackend:
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
         # _gpu_usable so the 5% cushion is kept on every path, not dropped here.
+        # Resolved once above the closure: re-reading per GPU could straddle a
+        # settings write and rank two cards against different budgets.
+        _tp_frac = _active_vram_fraction()
+
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             if t > 0:
-                return max(0.0, free_mib - (1.0 - _CTX_FIT_VRAM_FRACTION) * t)
-            return max(0.0, free_mib * _CTX_FIT_VRAM_FRACTION)
+                return max(0.0, free_mib - (1.0 - _tp_frac) * t)
+            return max(0.0, free_mib * _tp_frac)
 
         # Drop GPUs whose usable budget can't hold the per-device compute-graph
         # buffer; they'd OOM in tensor mode. Admitting on raw free would let a
@@ -10076,6 +10101,14 @@ class LlamaCppBackend:
         n_ubatch = intent.n_ubatch
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
+        # Fraction of each card this load may claim, resolved ONCE so every budget
+        # below is priced against the same number: ranking against one fraction and
+        # fitting against another mis-orders mixed-total setups. Defaults to
+        # _CTX_FIT_VRAM_FRACTION, so an unset budget is the historical behaviour.
+        _vram_frac = _active_vram_fraction()
+        # What this child is actually sized against, so the settings route can say
+        # whether a saved budget needs a reload instead of guessing from "loaded".
+        self._vram_fraction_launched = _vram_frac
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -10841,7 +10874,7 @@ class LlamaCppBackend:
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
 
-                    def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
+                    def _gpu_usable(g, frac = _vram_frac):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total.
                         # Callers pass the ACTIVE fraction so the ranking matches the
                         # budget the fit then tests (else mixed totals mis-order).
@@ -11335,7 +11368,9 @@ class LlamaCppBackend:
 
                         def _probe_frac(drafter: bool) -> float:
                             # The flat fraction is the reserve whenever _mtp_bytes is 0.
-                            return self._GPU_PIN_VRAM_FRACTION - (
+                            # Same budget the fit below uses, or the probe would answer
+                            # for a card size the fit never tests.
+                            return _vram_frac - (
                                 _MTP_VRAM_RESERVE_FRAC
                                 if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
                                 else 0.0
@@ -11570,7 +11605,7 @@ class LlamaCppBackend:
                         if (_flat_mtp_engages and not _draft_cpu_no_embedded)
                         else 0.0
                     )
-                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+                    _pin_fraction = _vram_frac - _flat_mtp_reserve
 
                     # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
                     # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
@@ -11678,12 +11713,12 @@ class LlamaCppBackend:
                             ranked_for_cap = sorted(
                                 gpus,
                                 key = lambda g: _gpu_usable(
-                                    g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                    g, _vram_frac - _flat_mtp_reserve
                                 ),
                                 reverse = True,
                             )
                             best_cap = 0
-                            _cap_fraction = _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                            _cap_fraction = _vram_frac - _flat_mtp_reserve
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
                                 subset = ranked_for_cap[:n_gpus]
                                 # Per-GPU-consistent pool budget (fixes mixed
