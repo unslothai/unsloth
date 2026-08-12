@@ -290,6 +290,26 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _managed_cli_package_present(python: Path) -> bool:
+    """Whether the venv holding *python* still has the package the CLI imports.
+
+    Windows only, and only asked when the console script is gone. The generated
+    unsloth.exe is what proves a CLI on POSIX, but on Windows nothing launches it
+    any more (issue #8490) and antivirus quarantine deletes the unsigned stub
+    while leaving the environment perfectly able to run. site-packages is the
+    same kind of cheap on-disk proof, one layer down.
+
+    The dist-info is accepted alongside the package directory because an
+    editable install of the checkout leaves a .pth and no unsloth_cli/ here.
+    """
+    if platform.system() != "Windows":
+        return False
+    site_packages = python.parent.parent / "Lib" / "site-packages"
+    if (site_packages / "unsloth_cli").is_dir():
+        return True
+    return any(site_packages.glob("unsloth-*.dist-info"))
+
+
 def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
     """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
 
@@ -2451,12 +2471,14 @@ def run(
         # unsloth.exe, so the bare name is never a file there and `unsloth run` aborted
         # with "venv missing 'unsloth' entry point" on a perfectly good install.
         #
-        # On Windows the file is still what proves the venv has a CLI, but it is no
-        # longer what gets launched: see the launch_head below.
+        # On Windows the file is no longer what gets launched (see the launch_head
+        # below) and no longer the only thing that proves a CLI: quarantine deletes
+        # the stub and leaves the environment able to run, so the installed package
+        # answers for it.
         studio_bin = studio_python.parent / (
             "unsloth.exe" if platform.system() == "Windows" else "unsloth"
         )
-        if not studio_bin.is_file():
+        if not studio_bin.is_file() and not _managed_cli_package_present(studio_python):
             typer.echo("Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
         # `run` serves the same Unsloth UI (unless --api-only); a public launch must

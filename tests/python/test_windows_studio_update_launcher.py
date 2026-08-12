@@ -773,3 +773,28 @@ def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
     _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studio, tmp_path):
+    """What `studio run` checks instead of the deleted stub, and only on Windows."""
+    scripts = tmp_path / "Scripts"
+    site_packages = tmp_path / "Lib" / "site-packages"
+    scripts.mkdir(parents = True)
+    site_packages.mkdir(parents = True)
+    python = scripts / "python.exe"
+    python.write_bytes(b"python")
+
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    assert not studio._managed_cli_package_present(python)
+
+    (site_packages / "unsloth_cli").mkdir()
+    assert studio._managed_cli_package_present(python)
+
+    # An editable install leaves a .pth and no unsloth_cli/ here.
+    (site_packages / "unsloth_cli").rmdir()
+    (site_packages / "unsloth-2026.8.1.dist-info").mkdir()
+    assert studio._managed_cli_package_present(python)
+
+    # POSIX proves a CLI with the console script itself; nothing changes there.
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    assert not studio._managed_cli_package_present(python)

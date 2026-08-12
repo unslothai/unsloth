@@ -6,7 +6,7 @@ at runtime, hence the AST:
 1. The venv's entry point is `unsloth.exe` on Windows, so resolving the bare name
    made `studio_bin.is_file()` false on every Windows install and aborted with
    "Unsloth venv missing 'unsloth' entry point". The per-platform name still has to
-   be chosen, because that file is what proves the venv has a CLI at all.
+   be chosen, because on POSIX that file is what proves the venv has a CLI at all.
 
 2. That file must not be what Windows LAUNCHES. It is a generated, unsigned
    executable, and an Application Control policy denies it while the signed
@@ -163,3 +163,37 @@ def test_the_interpreter_argv_carries_no_isolation_flag():
         '"-X", "utf8", "-c"' in source
     ), "the interpreter argv must be `-X utf8 -c <trampoline>`, in that order"
     assert '"-I"' not in source, "-I breaks PYTHON* parity with the console script"
+
+
+def test_the_windows_existence_gate_accepts_a_quarantined_venv():
+    """Quarantine deletes the stub; the install behind it still runs.
+
+    The Windows respawn goes through the interpreter and never touches this file,
+    so requiring it here would abort `studio run` on an environment that works,
+    which is the whole failure this change exists to remove.
+    """
+    gate = None
+    for node in ast.walk(_run_function()):
+        if not isinstance(node, ast.If):
+            continue
+        called = {
+            child.func.attr
+            for child in ast.walk(node.test)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+        }
+        if "is_file" in called and any(
+            isinstance(child, ast.Name) and child.id == "studio_bin"
+            for child in ast.walk(node.test)
+        ):
+            gate = node
+            break
+    assert gate is not None, "`run` no longer gates on studio_bin.is_file()"
+    fallbacks = {
+        child.func.id
+        for child in ast.walk(gate.test)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+    }
+    assert "_managed_cli_package_present" in fallbacks, (
+        "a missing console script must fall back to the installed package, or a "
+        "quarantined Windows install cannot start Studio"
+    )
