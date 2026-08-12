@@ -6,6 +6,7 @@ import functools
 import importlib.util
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import platform
@@ -3478,7 +3479,16 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
         with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
             body = response.read(_INSTALLER_MAX_BYTES + 1)
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+    except (
+        urllib.error.URLError,
+        # A truncated chunked transfer (IncompleteRead) or a malformed proxy response
+        # raises at the HTTP framing layer, which is neither URLError nor OSError, so
+        # it would escape and abort an update that had already succeeded.
+        http.client.HTTPException,
+        TimeoutError,
+        OSError,
+        ValueError,
+    ) as exc:
         typer.echo(f"  refresh-launcher  could not fetch {installer_name} ({exc})")
         return None
 
@@ -3519,7 +3529,16 @@ def _installer_bundled_candidates(installer_name: str) -> List[Path]:
     from the version that was just installed, not from whenever Studio was set up.
     """
     candidates: List[Path] = []
-    roots = [sysconfig.get_path("data"), sys.prefix, getattr(site, "USER_BASE", None)]
+    roots = [
+        sysconfig.get_path("data"),
+        sys.prefix,
+        getattr(site, "USER_BASE", None),
+        # A pip-installed CLI can drive an update into the managed venv rather than its
+        # own (_studio_deps.running_outside_managed_venv). Setup writes the new data
+        # files there, so without this the fallback would run the foreign CLI's older
+        # bundled installer, or none at all.
+        STUDIO_HOME / "unsloth_studio",
+    ]
     for root in roots:
         if not root:
             continue
@@ -3644,7 +3663,11 @@ def _run_fetched_installer_bash(installer: bytes, args: Sequence[str], env: dict
         typer.echo(f"  refresh-launcher  bash exec failed ({exc}), using bundled install.sh")
         return False
     if result.returncode != 0:
-        typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
+        typer.echo(
+            f"  refresh-launcher  fetched install.sh exited {result.returncode}, "
+            "using bundled install.sh"
+        )
+        return False
     return True
 
 
@@ -3691,7 +3714,11 @@ def _run_fetched_installer_ps1(
             )
             return False
         if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.ps1 exited {result.returncode}")
+            typer.echo(
+                f"  refresh-launcher  fetched install.ps1 exited {result.returncode}, "
+                "using bundled install.ps1"
+            )
+            return False
         return True
     finally:
         try:

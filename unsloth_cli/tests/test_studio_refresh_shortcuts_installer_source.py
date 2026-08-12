@@ -224,3 +224,62 @@ def test_oversized_and_bad_responses_return_none(monkeypatch, tmp_path):
 
         monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
         assert studio._fetch_installer("install.sh") is None, why
+
+
+# ── review round 1: fetched-installer failure modes ────────────────────────────────
+
+
+def test_a_fetched_installer_that_exits_nonzero_falls_back(monkeypatch, tmp_path):
+    """A broken main must not consume the fallback: the release-matched copy runs."""
+    studio = _posix(monkeypatch, tmp_path)
+    bundled = tmp_path / "install.sh"
+    bundled.write_bytes(_SH)
+    monkeypatch.setattr(studio, "_installer_bundled_candidates", lambda n: [tmp_path / n])
+    monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **k: b"FETCHED")
+
+    runs = []
+
+    class _Fail:
+        returncode = 1
+
+    class _Ok:
+        returncode = 0
+
+    def _run(argv, **kwargs):
+        runs.append((argv, kwargs.get("input")))
+        return _Fail() if kwargs.get("input") else _Ok()
+
+    monkeypatch.setattr(studio.subprocess, "run", _run)
+    studio._refresh_desktop_shortcuts()
+    assert runs == [
+        (["bash", "-s", "--", "--shortcuts-only"], b"FETCHED"),
+        (["bash", str(bundled), "--shortcuts-only"], None),
+    ]
+
+
+def test_http_framing_errors_are_fetch_failures_not_crashes(monkeypatch, tmp_path):
+    """IncompleteRead is neither URLError nor OSError, and must not abort the update."""
+    import http.client
+
+    studio = _posix(monkeypatch, tmp_path)
+    assert not issubclass(http.client.IncompleteRead, (OSError, ValueError))
+
+    for exc in (
+        http.client.IncompleteRead(b"half"),
+        http.client.BadStatusLine("nonsense"),
+        http.client.LineTooLong("header line"),
+    ):
+
+        class _Opener:
+            def open(self, *a, **k):
+                raise exc
+
+        monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
+        assert studio._fetch_installer("install.sh") is None, exc
+
+
+def test_the_managed_venv_is_searched_for_the_bundled_installer(monkeypatch):
+    """A CLI outside the managed venv updates INTO it, so that data root counts."""
+    studio = _studio()
+    managed = studio.STUDIO_HOME / "unsloth_studio" / "share" / "unsloth" / "install.sh"
+    assert managed in studio._installer_bundled_candidates("install.sh")
