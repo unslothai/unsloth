@@ -616,9 +616,7 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
 
     assert len(payloads) == 2
     first_assistant = next(
-        m
-        for m in payloads[1]["messages"]
-        if m.get("role") == "assistant" and m.get("tool_calls")
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
     )
     assert first_assistant["content"] == "Let me check that.\n\n"
     assert first_assistant["reasoning_content"] == "I should search for the weather."
@@ -657,9 +655,7 @@ def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(mon
 
     assert len(payloads) == 2
     first_assistant = next(
-        m
-        for m in payloads[1]["messages"]
-        if m.get("role") == "assistant" and m.get("tool_calls")
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
     )
     assert first_assistant["content"] == ""
     assert first_assistant["reasoning_content"] == "I must search before answering."
@@ -689,9 +685,7 @@ def test_tool_call_turn_without_reasoning_adds_no_reasoning_content(monkeypatch)
 
     assert len(payloads) == 2
     first_assistant = next(
-        m
-        for m in payloads[1]["messages"]
-        if m.get("role") == "assistant" and m.get("tool_calls")
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
     )
     assert "reasoning_content" not in first_assistant
 
