@@ -280,25 +280,25 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
     """Terminate, give it a moment, kill, and always drain and reap, so an overrunning
     probe cannot leave a zombie or a held pipe behind."""
     stderr = ""
-    try:
-        process.terminate()
-    except OSError:
-        pass
-    try:
-        _, stderr = process.communicate(timeout = _TERMINATE_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
+    # Escalate in one loop rather than nesting, so every attempt is covered by the same
+    # handler. The nested form grew a gap: an OSError raised inside the timeout branch was
+    # not a sibling of the outer OSError handler and escaped a function that must not raise.
+    for signal_child in (process.terminate, process.kill):
         try:
-            process.kill()
+            signal_child()
         except OSError:
             pass
         try:
             _, stderr = process.communicate(timeout = _TERMINATE_GRACE_SECONDS)
+            return stderr or ""
         except subprocess.TimeoutExpired:
-            # Still alive after SIGKILL: stuck in the driver. Hand it to a reaper rather
-            # than returning and letting the last reference go.
-            _reap_later(process)
-    except OSError:
-        pass
+            continue  # still alive, escalate
+        except OSError:
+            break  # pipes are unusable, so there is nothing left to drain
+
+    # Not confirmed dead: either it outlived SIGKILL, stuck in the driver, or we could not
+    # read it. Either way the last reference must not simply be dropped.
+    _reap_later(process)
     return stderr or ""
 
 

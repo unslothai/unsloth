@@ -369,6 +369,37 @@ def test_a_child_that_dies_within_the_grace_needs_no_reaper(monkeypatch):
     assert threading.active_count() <= before
 
 
+def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
+    # The first wait times out, so teardown starts; the post-kill read then fails. That
+    # error is raised inside the timeout handling, so it needs the same treatment, and the
+    # child is not confirmed dead, so it still has to reach the reaper.
+    proc = _FakeProc(returncode = None, timeouts = 1)
+    reaped = threading.Event()
+    proc.wait = lambda: reaped.set()  # type: ignore[method-assign]
+    original = proc.communicate
+
+    def _fail_after_first(timeout = None):
+        try:
+            return original(timeout = timeout)
+        except subprocess.TimeoutExpired:
+            raise
+        finally:
+            proc.communicate = _boom  # type: ignore[method-assign]
+
+    def _boom(timeout = None):
+        proc.calls.append("communicate")
+        raise OSError("handle is invalid")
+
+    proc.communicate = _fail_after_first  # type: ignore[method-assign]
+    _patch_popen(monkeypatch, proc)
+
+    result = probe_torch_device_allocation("cuda:0")
+
+    assert result.ok is False
+    assert result.reason == "probe timed out"
+    assert reaped.wait(timeout = 5), "unconfirmed child was never handed to the reaper"
+
+
 def test_a_read_failure_fails_closed_and_tears_the_child_down(monkeypatch):
     # A Windows pipe/handle failure, or a read error under resource pressure. This function
     # promises never to raise and to treat every unknown outcome as unsafe, and the child
