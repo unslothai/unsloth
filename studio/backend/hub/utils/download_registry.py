@@ -104,12 +104,11 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
     auto_reason: Optional[str] = None
     if xet_available:
         try:
-            from utils.hf_xet_fallback import xet_health
+            from utils.hf_xet_fallback import cached_xet_health
 
-            # Default probe = False: the UI polls this endpoint, so it answers from the cached
-            # verdict and local signals. The download-start path opts in, since otherwise a host
-            # with an unreachable CAS and no recorded failures yet would learn only by stalling.
-            health = xet_health(probe = probe)
+            # The UI polls this endpoint on render. Read an existing verdict, but never load Zoo:
+            # the first actual download owns that optional GPU initialization boundary.
+            health = cached_xet_health(probe = probe)
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)

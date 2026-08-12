@@ -1550,8 +1550,8 @@ def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
     A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
-    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
-    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, and datasets
+    run after it, and those C-extension imports can hold the GIL
     for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
     alone ends it with the expensive half of the warm still ahead of it, which is the window
     the grace exists for. But that marker also means "this hardware verdict is provisional,
@@ -1591,8 +1591,8 @@ async def liveness_check():
     # are the point of the route: it probes liveness every 15s and holds its startup grace
     # period open until a reply says the warm-up is over, because the warm thread's
     # `import torch` holds the GIL and can stall the next probes on a healthy process.
-    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
-    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: later
+    # transformers and datasets stages can also hold the GIL after detection settles.
     # Both are non-blocking reads of module-level state, so unlike health this neither starts
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():

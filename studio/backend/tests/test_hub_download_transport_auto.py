@@ -356,7 +356,7 @@ def test_recording_a_failure_never_raises(monkeypatch):
 
 def test_capabilities_report_what_auto_resolves_to(monkeypatch):
     fake = _types.ModuleType("utils.hf_xet_fallback")
-    fake.xet_health = lambda **kw: _types.SimpleNamespace(
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(
         use_xet = False,
         reason = "Xet failed 2 times in a row on this machine",
     )
@@ -374,7 +374,7 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
     def _boom(**kw):
         raise RuntimeError("no")
 
-    fake.xet_health = _boom
+    fake.cached_xet_health = _boom
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
     caps = download_registry.get_download_transport_capabilities()
     if not caps.xet.available:
@@ -435,10 +435,30 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
     shim.record_xet_outcome(False, "x")
 
 
-def test_capabilities_probe_is_opt_in(monkeypatch):
-    """The UI polls this endpoint on render, so it must stay cheap by default. The download-start
-    path opts in: a host with an unreachable CAS and no recorded failure yet would otherwise learn
-    by stalling."""
+def test_capabilities_read_does_not_load_zoo(monkeypatch):
+    """Opening Hub asks for capabilities; that read must not initialize optional GPU consumers."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "_optional_modules", {})
+
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        shim,
+        "_load_optional",
+        lambda module_name: loaded.append(module_name),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", shim)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities()
+
+    assert caps.xet.available is True
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert loaded == [], "a read-only capability request imported Unsloth Zoo"
+
+
+def test_cached_capabilities_forward_probe_without_loading_zoo(monkeypatch):
+    """An explicit probe may refresh an already-loaded health module, but cannot load Zoo."""
     from hub.utils import download_registry
 
     seen: list[bool] = []
@@ -451,14 +471,12 @@ def test_capabilities_probe_is_opt_in(monkeypatch):
         seen.append(probe)
         return _Health()
 
-    # Patch the sys.modules entry, not an imported alias: the endpoint does a local
-    # `from utils.hf_xet_fallback import xet_health`, and test_hf_xet_fallback.py swaps that
-    # sys.modules entry in and out, so an alias captured here can be a different module object.
+    # Patch sys.modules because the endpoint imports cached_xet_health locally.
     import sys
     import types
 
     stub = types.ModuleType("utils.hf_xet_fallback")
-    stub.xet_health = _fake_health
+    stub.cached_xet_health = _fake_health
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
 
     caps = download_registry.get_download_transport_capabilities()

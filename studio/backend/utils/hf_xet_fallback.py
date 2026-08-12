@@ -217,20 +217,37 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
-def xet_health(**kwargs: Any) -> Any:
-    """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
-
-    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
-    """
-    module = _load_optional("unsloth_zoo.hf_xet_health")
+def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
         return None
     try:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
+
         _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
+
+
+def cached_xet_health(**kwargs: Any) -> Any:
+    """Return Zoo's Xet verdict only when its health module is already loaded.
+
+    Capability reads use this path so opening Hub cannot initialize Unsloth Zoo. A real
+    download calls :func:`xet_health`, which loads the optional module and populates this cache.
+    """
+    with _load_lock:
+        module = _optional_modules.get("unsloth_zoo.hf_xet_health", _UNTRIED)
+    return None if module is _UNTRIED else _xet_health_from(module, **kwargs)
+
+
+def xet_health(**kwargs: Any) -> Any:
+    """Load and query Zoo's Xet verdict for an actual download decision.
+
+    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
+    Read-only capability requests use :func:`cached_xet_health` instead.
+    """
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    return _xet_health_from(module, **kwargs)
 
 
 def record_xet_outcome(ok: bool, reason: str = "") -> None:
@@ -543,6 +560,7 @@ __all__ = [
     "DEFAULT_XET_ATTEMPTS",
     "DownloadStallError",
     "child_should_disable_xet",
+    "cached_xet_health",
     "is_data_phase_stall",
     "xet_attempts",
     "get_hf_download_state",
