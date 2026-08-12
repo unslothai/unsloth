@@ -9394,7 +9394,6 @@ class LlamaCppBackend:
         # Values carrying URL userinfo count whatever they are named.
         try:
             from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
-
             for name, value in os.environ.items():
                 # Short values match innocuous substrings ("1", "true", a port).
                 if len(value or "") < 8:

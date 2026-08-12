@@ -50,7 +50,6 @@ def _binary_lib_dir(binary: str) -> str:
     """Directory holding ``binary``'s sibling libraries, through an entrypoint."""
     try:
         from core.inference.llama_cpp import _llama_lib_dir
-
         return str(_llama_lib_dir(binary))
     except Exception:  # noqa: BLE001 - fall back to the plain parent
         return str(Path(binary).parent)
@@ -123,7 +122,6 @@ class LlamaServerBackend:
         """
         try:
             from core.inference.llama_cpp import LlamaCppBackend
-
             probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
         except Exception:  # noqa: BLE001 - probe with the inherited env
             probe_env = None
