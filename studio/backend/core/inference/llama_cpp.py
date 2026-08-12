@@ -13033,6 +13033,23 @@ class LlamaCppBackend:
                             "left visible; pinning the child to %s.",
                             _survivors,
                         )
+                        # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided above against
+                        # gpu_indices, which is None here -- so an uncovered APU
+                        # anywhere on the host turned it on, and this narrowing
+                        # then hands the child only discrete cards, where the
+                        # setting is what _amd_apu_wants_unified_memory's own
+                        # docstring calls harmful. Same withdrawal the arch-crash
+                        # retry makes, and the same ownership check: only the value
+                        # THIS launch set, so a deliberate user one stands.
+                        if _unified_env_applied and not self._amd_apu_wants_unified_memory(
+                            _survivors
+                        ):
+                            env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
+                            _unified_env_applied = False
+                            logger.info(
+                                "Arch gate narrowed the launch to discrete GPU(s); "
+                                "dropped GGML_CUDA_ENABLE_UNIFIED_MEMORY."
+                            )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )

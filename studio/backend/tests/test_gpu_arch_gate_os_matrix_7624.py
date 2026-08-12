@@ -1302,3 +1302,86 @@ class TestForcedCpuDropsTensorMode:
         )
         cmd, _env = launches[0]
         assert cmd[cmd.index("--split-mode") + 1] == "tensor"
+
+
+class TestGatedNarrowingDropsUnifiedMemory:
+    """The unified-memory decision is made against ``gpu_indices``, which is None
+    on the fit-owned and manual-split arms -- so an uncovered APU anywhere on the
+    host turns the setting on, and the survivor mask then hands the child only
+    discrete cards, where the same code calls it harmful."""
+
+    def _apu_and_dgpu(self, monkeypatch):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+
+    def test_a_fit_owned_narrowing_withdraws_it(self, tmp_path, monkeypatch, probe_env):
+        torch = self._apu_and_dgpu(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,  # covers the dGPU, not the gfx1151 APU
+            returncode = None,
+            model_bytes = 400 * 1024**3,
+        )
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env
+
+    def test_an_inherited_user_value_still_stands(self, tmp_path, monkeypatch, probe_env):
+        """Ownership, not presence: the withdrawal only takes back what this
+        launch set, so a deliberate user value survives the narrowing."""
+        torch = self._apu_and_dgpu(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,
+            returncode = None,
+            model_bytes = 400 * 1024**3,
+            env_extra = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"},
+        )
+        _cmd, env = launches[0]
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+    def test_a_surviving_apu_keeps_it(self, tmp_path, monkeypatch, probe_env):
+        """The withdrawal is scoped to a narrowing that leaves only discrete
+        cards; an APU that survives the gate still wants the shared pool."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        torch = _fake_torch(
+            [
+                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1200", free_mib = 12049),
+            ],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            ["gfx1151"],  # covers the APU, not the gfx1200 dGPU
+            returncode = None,
+            model_bytes = 400 * 1024**3,
+        )
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+        assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"

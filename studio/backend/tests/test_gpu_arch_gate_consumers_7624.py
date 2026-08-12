@@ -682,11 +682,21 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
         assert calls == [], f"an unnarrowed host was masked anyway: {calls}"
 
-    def test_the_cpu_path_is_untouched(self, monkeypatch):
+    def test_the_cpu_path_hides_devices_at_both_layers(self, monkeypatch):
+        """CPU has to mean CPU on ROCm too. HIP consults CUDA_VISIBLE_DEVICES
+        only when HIP_VISIBLE_DEVICES is unset, so a blank CUDA mask alone leaves
+        an inherited HIP pin in charge and the child keeps a device (and the
+        VRAM its context costs) on a load that chose the CPU."""
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
         from core.rag.embed_llama_server import LlamaServerBackend
 
         env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = False)
-        assert calls == []
+        assert calls == []  # no pin: the gate has nothing to narrow on a CPU load
         assert env["CUDA_VISIBLE_DEVICES"] == ""
+        assert env["HIP_VISIBLE_DEVICES"] == "-1"
+        # ROCR hides agents BELOW HIP, so clearing it would expose more of them
+        # to the enumeration that dies on an uncovered arch. Left as inherited.
+        assert env["ROCR_VISIBLE_DEVICES"] == "0"

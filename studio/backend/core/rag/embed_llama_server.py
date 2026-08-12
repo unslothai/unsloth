@@ -287,6 +287,14 @@ class LlamaServerBackend:
         else:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
+            # HIP reads CUDA_VISIBLE_DEVICES only when HIP_VISIBLE_DEVICES is
+            # unset, so on ROCm an inherited HIP mask would keep a device (and
+            # the ~0.5 GB context it costs) visible to a child we just decided to
+            # run on the CPU. Same "-1" sentinel the chat forced-CPU path uses.
+            # An inherited ROCR mask is deliberately left alone: it hides agents
+            # at the driver layer, below HIP, so clearing it would expose MORE of
+            # them to the HSA enumeration that dies on an uncovered arch (#7624).
+            env["HIP_VISIBLE_DEVICES"] = "-1"
         return env
 
     @staticmethod
