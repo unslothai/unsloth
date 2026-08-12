@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import asyncio
 import hashlib
@@ -8,6 +9,7 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -781,45 +783,36 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
     assert isinstance(body["version"], str)
 
 
-def test_health_response_reports_desktop_capability_fields(monkeypatch):
+def _stub_routes_from_main(monkeypatch):
+    """Stand `routes` up from what main.py actually imports.
+
+    A hand-listed stub goes stale the moment a router is added, and the failure is an
+    ImportError in an unrelated health test, so read the import statements instead.
+    """
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text(encoding = "utf-8"))
+    routers, submodules = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or not node.module:
+            continue
+        if node.module == "routes":
+            routers.update(alias.name for alias in node.names)
+        elif node.module.startswith("routes."):
+            submodules.add(node.module.split(".", 1)[1])
+
     routes_module = ModuleType("routes")
     routes_module.__path__ = []
-    settings_module = ModuleType("routes.settings")
-    settings_module.router = APIRouter()
-    llama_module = ModuleType("routes.llama")
-    llama_module.router = APIRouter()
-    prompts_module = ModuleType("routes.prompts")
-    prompts_module.router = APIRouter()
-    preview_module = ModuleType("routes.preview")
-    preview_module.router = APIRouter()
-
-    for name, router in {
-        "auth_router": APIRouter(),
-        "chat_history_router": APIRouter(),
-        "data_recipe_router": APIRouter(),
-        "datasets_router": APIRouter(),
-        "export_router": APIRouter(),
-        "inference_router": APIRouter(),
-        "inference_studio_router": APIRouter(),
-        "mcp_servers_router": APIRouter(),
-        "models_router": APIRouter(),
-        "providers_router": APIRouter(),
-        "rag_router": APIRouter(),
-        "research_runs_router": APIRouter(),
-        "settings_router": settings_module.router,
-        "training_history_router": APIRouter(),
-        "training_router": APIRouter(),
-        "video_router": APIRouter(),
-    }.items():
-        setattr(routes_module, name, router)
-    routes_module.settings = settings_module
-    routes_module.llama = llama_module
-
+    for name in routers:
+        setattr(routes_module, name, APIRouter())
     monkeypatch.setitem(sys.modules, "routes", routes_module)
-    monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
-    monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
-    monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
-    monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    for name in submodules:
+        submodule = ModuleType(f"routes.{name}")
+        submodule.router = APIRouter()
+        setattr(routes_module, name, submodule)
+        monkeypatch.setitem(sys.modules, f"routes.{name}", submodule)
+
+
+def test_health_response_reports_desktop_capability_fields(monkeypatch):
+    _stub_routes_from_main(monkeypatch)
 
     import studio.backend.main as backend_main
 
@@ -828,6 +821,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
+    # The verdict only ships once the event says detection settled. Set it here rather than
+    # letting the endpoint kick a real detection: that imports torch and probes the host,
+    # which does not finish inside the one-second health budget on every runner.
+    settled = threading.Event()
+    settled.set()
+    monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", settled)
 
     seed_user()
     from auth.authentication import create_access_token

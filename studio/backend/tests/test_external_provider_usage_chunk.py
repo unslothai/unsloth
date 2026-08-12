@@ -635,3 +635,59 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def _stream_openai_responses(monkeypatch, body: bytes) -> list[str]:
+    """Drive one Responses stream through the openai provider and return its chunks."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = body,
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+    collected: list[str] = []
+
+    async def run():
+        client = _make_openai_client()
+        collected.extend(
+            await _collect(
+                client.stream_chat_completion(
+                    messages = [{"role": "user", "content": "hi"}],
+                    model = "gpt-5",
+                    max_tokens = 16,
+                )
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return collected
+
+
+def test_a_responses_type_on_the_sse_event_line_is_honoured(monkeypatch):
+    # Responses carries the type on the `event:` line as well as in the payload, and an
+    # upstream that only sends it there used to have every delta dropped.
+    chunks = _stream_openai_responses(
+        monkeypatch,
+        b"event: response.output_text.delta\ndata: {\"delta\": \"hello\"}\n\n"
+        b"event: response.completed\ndata: {}\n\n"
+        b"data: [DONE]\n\n",
+    )
+
+    assert any("hello" in chunk for chunk in chunks)
+
+
+def test_an_untyped_responses_event_does_not_kill_the_stream(monkeypatch):
+    # A payload with no type anywhere was ignored long before the type validator existed.
+    # Raising instead loses the whole reply, including the deltas that follow.
+    chunks = _stream_openai_responses(
+        monkeypatch,
+        b"data: {\"choices\": [{\"delta\": {\"content\": \"ignored\"}}]}\n\n"
+        b"event: response.output_text.delta\ndata: {\"delta\": \"kept\"}\n\n"
+        b"data: [DONE]\n\n",
+    )
+
+    assert any("kept" in chunk for chunk in chunks)

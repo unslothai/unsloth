@@ -5453,13 +5453,21 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    # The Responses type can arrive on the SSE `event:` line instead of
+                    # inside the JSON, so carry the name until the event is dispatched.
+                    event_name = ""
+
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                event_name = ""
+                                continue
+                            if line.startswith("event:"):
+                                event_name = line[len("event:") :].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5498,7 +5506,12 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = response_event_type(event)
+                            try:
+                                event_type = response_event_type(event, event_name)
+                            except ValueError:
+                                # An untyped payload was ignored here long before the
+                                # validator existed; raising kills the whole stream.
+                                continue
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
