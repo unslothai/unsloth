@@ -617,17 +617,15 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 
 # Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
 # Blocking = public attack indicators (known-malicious version, IOC
-# string) plus the provenance/integrity checks this script exists to
-# enforce before `npm ci` / `cargo fetch` runs lifecycle and build
-# scripts. Advisory = incomplete-but-not-fetchable anomalies that warn
-# but don't block. --strict makes every finding blocking.
+# string) plus the provenance/integrity checks this gate must enforce
+# before `npm ci` / `cargo fetch` runs lifecycle scripts. Advisory =
+# incomplete-but-not-fetchable anomalies. --strict blocks everything.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
-        # Provenance / integrity: a non-registry URL or an unverifiable
-        # tarball is exactly the pre-install fetch this gate must stop,
-        # so warning-only here would let attacker code onto the runner.
+        # A non-registry URL or an unverifiable tarball is the exact
+        # pre-install fetch this gate exists to stop.
         "non-registry-resolved-url",
         "missing-integrity-hash",
         "non-registry-cargo-source",

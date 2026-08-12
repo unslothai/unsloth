@@ -7,14 +7,12 @@
 # npm or cargo lockfile, on push to main, and on a daily schedule so
 # newly-published IOCs surface even when no PR opens.
 #
-# Default behavior blocks on public indicator-of-compromise strings,
+# Default behavior blocks public indicator-of-compromise strings,
 # known-malicious pinned versions, structurally broken lockfiles, and
-# dependency provenance/integrity failures (non-registry resolved URL
-# or cargo source, missing integrity hash or cargo checksum) -- those
-# are the pre-install fetches this gate exists to stop before `npm ci`
-# runs lifecycle scripts. Remaining anomalies (an incomplete entry
-# with no `resolved` URL, an unaudited lockfileVersion) are emitted as
-# GitHub Actions warnings; --strict escalates those to blocking too.
+# provenance/integrity failures (non-registry resolved URL or cargo
+# source, missing integrity hash or cargo checksum) -- the pre-install
+# fetches this gate stops before `npm ci` runs lifecycle scripts.
+# Lesser anomalies warn; --strict escalates them to blocking.
 #
 # This workflow is intentionally separate from security-audit.yml:
 #   - security-audit.yml is the umbrella job (pip-audit + npm audit +
@@ -81,8 +79,7 @@ jobs:
         run: python3 -c "import ast; ast.parse(open('scripts/lockfile_supply_chain_audit.py').read())"
 
       - name: Run lockfile supply-chain audit
-        # Default mode fails on known-malicious pinned versions, known
-        # IOC strings, broken lockfiles, and provenance/integrity
-        # failures (non-registry source, missing integrity/checksum).
-        # Lesser anomalies stay ::warning:: unless --strict is passed.
+        # Blocks known-malicious versions, IOC strings, broken lockfiles,
+        # and provenance/integrity failures. Lesser anomalies stay
+        # ::warning:: unless --strict is passed.
         run: python3 scripts/lockfile_supply_chain_audit.py
