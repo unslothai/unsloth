@@ -160,6 +160,45 @@ def test_terminal_controls_are_neutralised():
     assert echoed.startswith(log_config._TRACEBACK_ECHO_PREFIX)
 
 
+def test_bidi_controls_cannot_reorder_the_echoed_line():
+    # UAX #9 / UTR #36, the Trojan Source class (CVE-2021-42574). json.dumps escapes these
+    # for free, so the JSON record has always carried them as \\uXXXX; the echo is the only
+    # place a raw one can reach a viewer. Measured with python-bidi: the logical line
+    # "| ValueError: rejected upload ‮gnp.eliforp/sdaolpu/" DISPLAYS as
+    # "| ValueError: rejected upload /uploads/profile.png", so an attacker-chosen filename
+    # in a request-derived message rewrites the path the analyst reads.
+    exception = "ValueError: rejected upload ‮gnp.eliforp/sdaolpu/"
+    echoed = _render({"event": "request_failed", "exception": exception}).partition("\n")[2]
+    assert "‮" not in echoed
+    assert "\\u202e" in echoed
+    # The whole Bidi_Control set, not just the override: an unterminated isolate reorders
+    # a line exactly as well, and a fix that escaped only U+202E would leave it standing.
+    exotic = "ValueError: " + "".join(sorted(log_config._BIDI_CONTROLS))
+    echoed = _render({"event": "e", "exception": exotic}).partition("\n")[2]
+    for ch in log_config._BIDI_CONTROLS:
+        assert ch not in echoed
+        assert f"\\u{ord(ch):04x}" in echoed
+
+
+def test_the_escaped_set_is_exactly_unicodes_bidi_controls():
+    # Pinned to PropList.txt's Bidi_Control property so the set cannot quietly widen into
+    # all of category Cf, which would escape ZWJ / ZWNJ / soft hyphen out of legitimate
+    # text, nor narrow back to the override alone.
+    assert log_config._BIDI_CONTROLS == frozenset(
+        chr(c)
+        for c in (0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+                  0x2066, 0x2067, 0x2068, 0x2069)
+    )
+
+
+def test_zero_width_and_joining_characters_stay_readable():
+    # Cf, but they reorder nothing: ZWNJ carries meaning in Persian/Arabic and ZWJ builds
+    # emoji sequences, so escaping the whole category would mangle text that reads fine.
+    exception = "ValueError: ‌بی‌نام and \U0001f469‍\U0001f4bb"
+    echoed = _render({"event": "e", "exception": exception}).partition("\n")[2]
+    assert "‌" in echoed and "‍" in echoed
+
+
 def test_ordinary_text_is_left_readable():
     # The escape must not turn a traceback quoting non-English text into hex soup, and a
     # tab shifts alignment but cannot move the cursor back or erase, so it stays.

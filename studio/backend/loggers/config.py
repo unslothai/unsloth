@@ -122,6 +122,25 @@ def _plain_tracebacks_enabled() -> bool:
 _TRACEBACK_ECHO_PREFIX = "| "
 
 
+# Unicode's Bidi_Control characters (PropList.txt), the exact set the bidirectional
+# algorithm of UAX #9 acts on: the two marks, the Arabic letter mark, the embeddings /
+# overrides / PDF, and the isolates. UTR #36 "Unicode Security Considerations" and the
+# Trojan Source work (CVE-2021-42574) name this same set as the one to reject or render
+# visibly, and json.dumps escapes every one of them for free (ensure_ascii defaults True),
+# so the JSON record above still carries them as \uXXXX and only the echo would not.
+#
+# Deliberately NOT all of category Cf. U+200B-200D (zero width space / non-joiner /
+# joiner), U+00AD (soft hyphen) and U+FEFF are Cf too and occur in ordinary text -- ZWNJ
+# in Persian and Arabic, ZWJ in emoji sequences -- and none of them reorder anything, so
+# escaping them would trade the readability this function exists to preserve for nothing.
+_BIDI_CONTROLS = frozenset(
+    "؜"  # ARABIC LETTER MARK
+    "‎‏"  # LEFT-TO-RIGHT / RIGHT-TO-LEFT MARK
+    "‪‫‬‭‮"  # LRE, RLE, PDF, LRO, RLO
+    "⁦⁧⁨⁩"  # LRI, RLI, FSI, PDI
+)
+
+
 def _escape_unprintable(text: str) -> str:
     """Replace what a terminal would ACT on, and what stdout cannot encode, with their
     ``\\uXXXX`` spellings. Ordinary non-ASCII text is left alone, so a traceback quoting a
@@ -137,6 +156,13 @@ def _escape_unprintable(text: str) -> str:
       the JSON string. Emitted raw they let request-derived text clear or rewrite what the
       reader sees, and a backspace run can rub out the prefix in front of it, which is the
       one thing that prefix exists to guarantee.
+    * **Bidi controls.** A right-to-left override or an unterminated isolate does not need
+      a terminal to act: any viewer implementing UAX #9 -- an editor, a browser, a chat
+      client the log is pasted into -- reorders the line for the reader. Measured on the
+      echoed line, ``"| ValueError: rejected upload \\u202egnp.eliforp/sdaolpu/"``
+      DISPLAYS as ``| ValueError: rejected upload /uploads/profile.png``, so the path the
+      analyst reads is not the path that was logged. Escaped, not stripped, so the record
+      still says a bidi control was there.
 
     Tab is deliberately kept: it shifts alignment but cannot move the cursor back or erase.
     """
@@ -145,7 +171,13 @@ def _escape_unprintable(text: str) -> str:
         code = ord(ch)
         if ch == "\t":
             out.append(ch)
-        elif code < 0x20 or code == 0x7F or 0x80 <= code <= 0x9F or 0xD800 <= code <= 0xDFFF:
+        elif (
+            code < 0x20
+            or code == 0x7F
+            or 0x80 <= code <= 0x9F
+            or 0xD800 <= code <= 0xDFFF
+            or ch in _BIDI_CONTROLS
+        ):
             out.append(f"\\u{code:04x}")
         else:
             out.append(ch)
