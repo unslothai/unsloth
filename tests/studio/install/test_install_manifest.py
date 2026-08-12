@@ -50,6 +50,16 @@ def install_root(tmp_path: pathlib.Path) -> pathlib.Path:
     return root
 
 
+def _write_dist_metadata(site: pathlib.Path, name: str, version: str) -> None:
+    stem = name.replace("-", "_")
+    info = site / f"{stem}-{version}.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding = "utf-8",
+    )
+
+
 def test_parse_requirement_line_handles_the_shapes_studio_txt_uses():
     assert im._parse_requirement_line("structlog>=24.1.0") == ("structlog", "", ">=24.1.0")
     assert im._parse_requirement_line("matplotlib==3.10.9") == ("matplotlib", "", "==3.10.9")
@@ -66,6 +76,47 @@ def test_parse_requirement_line_handles_the_shapes_studio_txt_uses():
     assert name == "pywin32"
     assert "sys_platform" in marker
     assert specifier == ""
+
+
+def test_installed_versions_reports_every_canonical_metadata_record(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo_pkg", "1.0")
+    _write_dist_metadata(site, "demo-pkg", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo.pkg") == ["1.0", "2.0"]
+    assert im._installed_version("demo-pkg") is None
+
+
+def test_duplicate_package_metadata_invalidates_the_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "demo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_duplicate_zoo_metadata_invalidates_a_core_package_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "unsloth-zoo", "1.0")
+    _write_dist_metadata(site, "unsloth-zoo", "2.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["reason"] == "studio_install_metadata_conflict"
 
 
 def test_missing_requirements_rejects_an_incompatible_installed_version(tmp_path):

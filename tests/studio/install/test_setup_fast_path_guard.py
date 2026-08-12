@@ -52,6 +52,24 @@ def test_guard_can_still_force_the_dependency_pass(script: pathlib.Path):
     )
 
 
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_duplicate_core_metadata_cannot_take_the_version_fast_path(script: pathlib.Path):
+    text = script.read_text(encoding = "utf-8")
+    probe = text.find("install_manifest.installed_versions")
+    zoo_probe = text.find("installed_versions('unsloth-zoo')", probe)
+    repair = text.find("duplicate metadata found", probe)
+    if script.name.endswith(".ps1"):
+        skip = text.find("$SkipPythonDeps = $true", repair)
+    else:
+        skip = text.find("_SKIP_PYTHON_DEPS=true", repair)
+
+    assert probe != -1 and zoo_probe != -1 and repair != -1 and skip != -1
+    assert probe <= zoo_probe < repair < skip, (
+        f"{script.name} must detect duplicate metadata before an arbitrary "
+        "version can select the up-to-date fast path"
+    )
+
+
 def test_ps1_drops_the_manifest_before_its_first_install():
     """Nothing may mutate the venv while the marker still says "install finished".
 

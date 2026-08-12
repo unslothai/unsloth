@@ -287,6 +287,62 @@ def _installer_rewritten(rel: str) -> bool:
     return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
 
 
+def _installed_distribution_groups():
+    """Canonical name -> installed metadata records in this interpreter's tree."""
+    from importlib.metadata import distributions
+
+    groups: Dict[str, list] = {}
+    for dist in distributions(**_scan_paths()):
+        try:
+            name = getattr(dist, "name", None) or dist.metadata["Name"]
+        except Exception:
+            continue
+        if name:
+            groups.setdefault(_canonical(name), []).append((dist, name))
+    return groups
+
+
+def installed_metadata_conflicts(
+    limit: int = 8,
+    *,
+    names: Optional[Sequence[str]] = None,
+    exclude_names: Sequence[str] = (),
+) -> List[str]:
+    """Distributions with multiple metadata records for one canonical name.
+
+    A duplicate is an ambiguous install, even when both records name the same
+    version. importlib.metadata.version() chooses the first finder result rather
+    than identifying which RECORD owns the package tree, so none of the records
+    can safely drive the file-damage check until the package is reinstalled.
+    """
+    included = None if names is None else {_canonical(name) for name in names}
+    excluded = {_canonical(name) for name in exclude_names}
+    found: List[str] = []
+    groups = _installed_distribution_groups()
+    for canonical in sorted(groups):
+        if (included is not None and canonical not in included) or canonical in excluded:
+            continue
+        records = groups[canonical]
+        if len(records) < 2:
+            continue
+        details: List[str] = []
+        for dist, _name in records:
+            try:
+                version = dist.version or "unknown version"
+            except Exception:
+                version = "unknown version"
+            metadata_path = getattr(dist, "_path", None)
+            location = (
+                Path(str(metadata_path)).name if metadata_path else "unknown metadata path"
+            )
+            details.append(f"{version} at {location}")
+        detail = ", ".join(sorted(details))
+        found.append(f"{canonical}: multiple metadata records ({detail})")
+        if len(found) >= limit:
+            break
+    return found
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -311,6 +367,12 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     to a finding is "reinstall over the top", so a file no reinstall would
     change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
+    Multiple metadata records for one canonical distribution name are excluded
+    entirely. None is authoritative: an older RECORD can legitimately name files
+    a newer wheel removed, while choosing the first or highest version also fails
+    after an interrupted upgrade or a deliberate downgrade. Callers surface that
+    separate condition through installed_metadata_conflicts().
+
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
     distribution reachable only through an inherited PYTHONPATH would otherwise
@@ -325,48 +387,48 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     """
     import csv
     import io
-    from importlib.metadata import distributions
-
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
-    for dist in distributions(**_scan_paths()):
-        try:
-            name = dist.metadata["Name"] or "?"
-            record = dist.read_text("RECORD")
-        except Exception:
-            # An unreadable or absent RECORD says nothing about damage: editable
-            # installs and system packages legitimately have none.
-            continue
-        if not record:
-            continue
-        for row in csv.reader(io.StringIO(record)):
-            rel = row[0] if row else ""
-            # A trailing slash is a directory entry, which has nothing to check.
-            if not rel or rel.endswith("/"):
-                continue
-            # Installer-owned metadata is rewritten in place and drifts from the
-            # size recorded inside itself; .pyc is regenerated from source.
-            if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
-                continue
+    for records in _installed_distribution_groups().values():
+        ambiguous = len(records) > 1
+        for dist, name in records:
             try:
-                target = dist.locate_file(rel)
+                record = dist.read_text("RECORD")
             except Exception:
+                # An unreadable or absent RECORD says nothing about damage: editable
+                # installs and system packages legitimately have none.
                 continue
-            key = os.path.normcase(str(target))
-            # Before the filter: a dropped row still owns the path it claims.
-            owners[key] = owners.get(key, 0) + 1
-            if _shared_non_runtime(rel):
+            if not record:
                 continue
-            # The size field is optional and real wheels do leave it blank. Keep
-            # the row anyway with an unknown size: existence is still checkable,
-            # and dropping the row meant a deletion went unreported.
-            recorded: Optional[int] = None
-            if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
+            for row in csv.reader(io.StringIO(record)):
+                rel = row[0] if row else ""
+                # A trailing slash is a directory entry, which has nothing to check.
+                if not rel or rel.endswith("/"):
+                    continue
+                # Installer-owned metadata is rewritten in place and drifts from the
+                # size recorded inside itself; .pyc is regenerated from source.
+                if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                    continue
                 try:
-                    recorded = int(row[2])
-                except ValueError:
-                    recorded = None
-            entries.append((name, rel, recorded, target, key))
+                    target = dist.locate_file(rel)
+                except Exception:
+                    continue
+                key = os.path.normcase(str(target))
+                # Before either filter: a row we cannot verify still owns the path
+                # it claims, so another distribution's size is ambiguous too.
+                owners[key] = owners.get(key, 0) + 1
+                if ambiguous or _shared_non_runtime(rel):
+                    continue
+                # The size field is optional and real wheels do leave it blank. Keep
+                # the row anyway with an unknown size: existence is still checkable,
+                # and dropping the row meant a deletion went unreported.
+                recorded: Optional[int] = None
+                if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
+                    try:
+                        recorded = int(row[2])
+                    except ValueError:
+                        recorded = None
+                entries.append((name, rel, recorded, target, key))
 
     found: List[str] = []
     for name, rel, recorded, target, key in entries:

@@ -93,16 +93,51 @@ def _canonical(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _metadata_scan_paths() -> List[str]:
+    """This interpreter's site-packages roots, excluding inherited sys.path entries."""
+    import sysconfig
+
+    paths: List[str] = []
+    try:
+        configured = sysconfig.get_paths()
+    except Exception:
+        return paths
+    for key in ("purelib", "platlib"):
+        path = configured.get(key)
+        if path and path not in paths and os.path.isdir(path):
+            paths.append(path)
+    return paths
+
+
+def installed_versions(dist_name: str) -> List[str]:
+    """Every metadata version for one canonical distribution name.
+
+    More than one answer is an inconsistent environment, not a choice between
+    equivalent records. importlib.metadata.version() returns whichever record
+    the filesystem finder happens to yield first, which can be a superseded
+    dist-info left behind by an interrupted uninstall.
+    """
+    from importlib.metadata import distributions
+
+    wanted = _canonical(dist_name)
+    paths = _metadata_scan_paths()
+    kwargs = {"path": paths} if paths else {}
+    found: List[str] = []
+    try:
+        for dist in distributions(**kwargs):
+            name = getattr(dist, "name", None) or dist.metadata["Name"]
+            if name and _canonical(name) == wanted:
+                found.append(dist.version or "")
+    except Exception:
+        return []
+    return sorted(found)
+
+
 def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = None) -> Optional[str]:
     if installed is not None:
         return installed.get(_canonical(dist_name))
-    from importlib.metadata import PackageNotFoundError, version
-    try:
-        return version(dist_name)
-    except PackageNotFoundError:
-        return None
-    except Exception:
-        return None
+    versions = installed_versions(dist_name)
+    return versions[0] if len(versions) == 1 else None
 
 
 def remove_manifest(root: Optional[Path] = None) -> bool:
@@ -353,9 +388,21 @@ def verify_install(
     else:
         # `update --package X` records X, so comparing against unsloth would
         # report a permanent version change.
-        current = _installed_version(manifest.get("package") or package_name, installed)
+        manifest_package = manifest.get("package") or package_name
+        versions = installed_versions(manifest_package) if installed is None else []
+        zoo_versions = (
+            installed_versions("unsloth-zoo")
+            if installed is None and _canonical(manifest_package) != "unsloth-zoo"
+            else []
+        )
+        if installed is None:
+            current = versions[0] if len(versions) == 1 else None
+        else:
+            current = _installed_version(manifest_package, installed)
         recorded = manifest.get("package_version")
-        if current and recorded and current != recorded:
+        if installed is None and (len(versions) > 1 or len(zoo_versions) > 1):
+            reason = "studio_install_metadata_conflict"
+        elif current and recorded and current != recorded:
             reason = "studio_install_version_changed"
         elif manifest.get("requirement_files") != requirement_digests(reqs):
             reason = "studio_install_requirements_changed"

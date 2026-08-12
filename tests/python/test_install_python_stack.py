@@ -541,3 +541,48 @@ class TestBuildPipCmdUpgradeIntent:
     def test_commands_without_the_flag_are_untouched(self):
         cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
+
+
+class TestDuplicateCoreMetadataRepair:
+    def test_only_duplicate_core_packages_are_reinstalled(self, monkeypatch):
+        probes = {
+            "unsloth": iter((["2026.8.12", "2026.8.15"], ["2026.8.15"])),
+            "unsloth-zoo": iter((["2026.8.10"],)),
+        }
+        installs = []
+        invalidations = []
+
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda name: next(probes[name]),
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: invalidations.append(True))
+        monkeypatch.setattr(
+            ips,
+            "pip_install",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+        )
+
+        assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
+        assert len(installs) == 1
+        assert installs[0][1] == (
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth",
+        )
+        assert invalidations == [True]
+
+    def test_repair_fails_when_duplicate_metadata_survives(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda _name: ["2026.8.12", "2026.8.15"],
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: None)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert "duplicate package metadata remains" in capsys.readouterr().err

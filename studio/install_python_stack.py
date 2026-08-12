@@ -12,6 +12,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import glob
+import importlib
 import importlib.util
 import json
 import os
@@ -3534,6 +3535,50 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
+def _repair_duplicate_core_metadata(package_names: "tuple[str, ...]") -> bool:
+    """Reinstall managed core packages whose metadata has more than one record.
+
+    A no-dependency reinstall is intentional. It gives pip or uv one package
+    transaction in which to remove every superseded dist-info without asking a
+    resolver to replace the existing torch build. The normal dependency pass
+    still follows this repair and applies current requirements.
+    """
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    for name in package_names:
+        canonical = re.sub(r"[-_.]+", "-", name).lower()
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        if len(install_manifest.installed_versions(name)) > 1:
+            duplicates.append(name)
+
+    for name in duplicates:
+        _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
+        pip_install(
+            f"Repairing duplicate metadata for {name}",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            name,
+        )
+
+    importlib.invalidate_caches()
+    remaining = [
+        name for name in duplicates if len(install_manifest.installed_versions(name)) > 1
+    ]
+    if remaining:
+        _safe_print(
+            _red(
+                "   duplicate package metadata remains after reinstall: "
+                + ", ".join(remaining)
+            ),
+            file = sys.stderr,
+        )
+        return False
+    return True
+
+
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
     """Translate pip flags to their uv equivalents."""
     translated: list[str] = []
@@ -3940,6 +3985,12 @@ def install_python_stack() -> int:
                 "Upgrading pip",
                 [sys.executable, "-m", "pip", "install", "--upgrade", "pip"],
             )
+
+    # A superseded dist-info makes version() and every RECORD consumer choose
+    # an arbitrary package version. Repair it before any fast package operation,
+    # including installer handoffs that set skip_base after their own upgrade.
+    if not _repair_duplicate_core_metadata((package_name, "unsloth-zoo")):
+        return 1
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
