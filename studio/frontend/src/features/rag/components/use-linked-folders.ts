@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { pickNativeDocumentFolder } from "@/features/native-intents";
+import {
+  pickNativeDocumentFolder,
+  useNativePathLeasesSupported,
+} from "@/features/native-intents";
 import { isTauri } from "@/lib/api-base";
 import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import { toast } from "@/lib/toast";
@@ -36,6 +39,7 @@ export function useLinkedFolders(
   const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
+  const nativePathLeasesSupported = useNativePathLeasesSupported();
   const controllers = useRef(new Map<string, AbortController>());
   const refreshGate = useRef(
     createScopedSingleFlightRequest<
@@ -225,7 +229,7 @@ export function useLinkedFolders(
   }, [refresh, scopeKey]);
 
   const link = useCallback(async () => {
-    if (!scopeType || !scopeId || !isTauri) return;
+    if (!scopeType || !scopeId || !isTauri || !nativePathLeasesSupported) return;
     const operationScopeKey = scopeKey;
     setMutating(true);
     try {
@@ -251,7 +255,14 @@ export function useLinkedFolders(
     } finally {
       setMutating(false);
     }
-  }, [scopeKey, scopeType, scopeId, trackJob, onSourcesChanged]);
+  }, [
+    scopeKey,
+    scopeType,
+    scopeId,
+    nativePathLeasesSupported,
+    trackJob,
+    onSourcesChanged,
+  ]);
 
   const run = useCallback(
     async (folderId: string, mode: "sync" | "rebuild") => {
@@ -322,7 +333,7 @@ export function useLinkedFolders(
     jobs: stateScopeKey === scopeKey ? jobs : {},
     loading: stateScopeKey === scopeKey ? loading : true,
     mutating,
-    desktopSupported: isTauri,
+    desktopSupported: isTauri && nativePathLeasesSupported,
     link,
     sync: (folderId: string) => run(folderId, "sync"),
     rebuild: (folderId: string) => run(folderId, "rebuild"),
