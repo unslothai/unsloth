@@ -259,7 +259,9 @@ export function useChatSearchIndex(enabled: boolean): {
           // and never repopulate the cache a close or an invalidation already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
           cachedIndex = result;
-          rebuildPending = false;
+          // A build that started before the history event does not satisfy it, so the flag
+          // only clears once no rebuild is still queued.
+          if (debounceTimer === null) rebuildPending = false;
           setItems(result);
           setReady(true);
         })
