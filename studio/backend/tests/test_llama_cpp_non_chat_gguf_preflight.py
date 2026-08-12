@@ -270,3 +270,42 @@ def test_a_placeholder_architecture_still_refuses(tmp_path, repo):
     _, message = _refusal(tmp_path, arch = "pig", name = "flux2-dev-iq4_nl.gguf", identifier = repo)
     assert message is not None
     assert "cannot" in message
+
+
+def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
+    # The placeholder carries no family of its own, so both sides have to fall back to the
+    # repo id and filename, and they have to agree: naming the Images page for a file the
+    # Images picker drops is the empty promise the runnable split exists to remove.
+    from routes.models import _arch_to_task
+
+    for identifier, name, page_named in (
+        ("gguf-org/flux2-dev-gguf", "flux2-dev-iq4_nl.gguf", True),
+        ("calcuis/cosmos-predict2-gguf", "cosmos-predict2-q4_0.gguf", False),
+        ("someone/mystery-gguf", "mystery-q4_0.gguf", False),
+    ):
+        for arch in sorted(LlamaCppBackend._PLACEHOLDER_ARCHES):
+            _, message = _refusal(tmp_path, arch = arch, name = name, identifier = identifier)
+            assert message is not None
+            task = _arch_to_task(arch, name_hints = (identifier, name))
+            assert (task == "text-to-image") is page_named, (identifier, arch, task)
+            assert ("Open it from the Images page" in message) is page_named, message
+
+
+def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
+    # Wan 2.2 A14B is a two-expert MoE the Video backend cannot assemble, and Wan 2.1's repo
+    # ids resolve to no family at all, so routes.models._arch_to_task tags both
+    # image-diffusion-unsupported and the Video picker never lists them. The header says
+    # "wan" for all three, so the refusal has to consult the same family resolution rather
+    # than trusting the arch.
+    from routes.models import _arch_to_task
+
+    for identifier, name, page_named in (
+        ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", False),
+    ):
+        _, message = _refusal(tmp_path, arch = "wan", name = name, identifier = identifier)
+        assert message is not None
+        task = _arch_to_task("wan", name_hints = (identifier, name))
+        assert (task == "text-to-video") is page_named, (identifier, task)
+        assert ("Open it from the Video page" in message) is page_named, message

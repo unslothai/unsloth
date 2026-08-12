@@ -352,3 +352,40 @@ def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_
 
     assert order == ["download"]
     assert Path(media).is_file()
+
+
+def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_path):
+    # _download_gguf resolves its local copy through cached_gguf_for_load, which walks the
+    # cached variant candidates, and only then falls back to the current listing's filename.
+    # The probe has to use the same order: a repo that renamed the file for a quant while a
+    # complete older snapshot is still cached would otherwise let the probe judge one GGUF
+    # and the load open another, which is exactly the drift this preflight rules out.
+    cached = tmp_path / "renamed-ltx-2-19b-dev-Q4_K_M.gguf"
+    cached.write_bytes(_gguf_bytes(arch = "ltxv"))
+    stale = tmp_path / "listing-Q4_K_M.gguf"
+    stale.write_bytes(_gguf_bytes(arch = "llama"))
+    monkeypatch.setattr(
+        llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached)
+    )
+    message, requests = _probe(
+        monkeypatch,
+        header = b"",
+        filename = "listing-Q4_K_M.gguf",
+        local = str(stale),
+    )
+    assert message is not None and "Video page" in message
+    assert requests == []
+
+
+def test_the_probe_falls_back_to_the_listing_when_nothing_is_cached(monkeypatch, tmp_path):
+    plain = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
+    plain.write_bytes(_gguf_bytes(arch = "ltxv"))
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: None)
+    message, requests = _probe(
+        monkeypatch,
+        header = b"",
+        filename = "ltx-2-19b-dev-Q4_K_M.gguf",
+        local = str(plain),
+    )
+    assert message is not None and "Video page" in message
+    assert requests == []

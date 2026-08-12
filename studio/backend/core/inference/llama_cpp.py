@@ -7256,8 +7256,15 @@ class LlamaCppBackend:
             if not gguf_filename:
                 return None
             # A copy already in the cache answers this with no request at all, and is the
-            # only thing that can answer it while the Hub is unreachable.
-            local = _local_gguf_path(hf_repo, gguf_filename)
+            # only thing that can answer it while the Hub is unreachable. Resolved with the
+            # SAME precedence _download_gguf uses -- cached_gguf_for_load first, which walks
+            # the cached variant candidates -- because that is the file the load will open.
+            # Going by the current listing's filename instead would let the probe judge one
+            # GGUF while the load reuses another, whenever a repo renamed the file for a
+            # quant and a complete older snapshot is still cached.
+            local = cached_gguf_for_load(
+                hf_repo, hf_variant, verify_sizes = False, hf_token = hf_token
+            ) or _local_gguf_path(hf_repo, gguf_filename)
             prefix = (
                 _read_local_header(local)
                 if local
@@ -9021,6 +9028,33 @@ class LlamaCppBackend:
     _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
 
     @staticmethod
+    def _ambiguous_video_arch_is_pickable(
+        gguf_path: Optional[str], model_identifier: Optional[str]
+    ) -> bool:
+        """Whether the Video page would actually OFFER this GGUF.
+
+        The video archs are shared exactly like the image ones: ``_arch_to_task`` resolves
+        a VideoFamily from the repo id then the filename, and requires both that the family
+        is not an MoE (the GGUF loader cannot assemble those) and that the video engine can
+        build it. QuantStack/Wan2.2-T2V-A14B-GGUF declares "wan" and fails the MoE gate, so
+        promising it the Video page names a picker that hides it."""
+        try:
+            from core.inference.video_families import detect_video_family
+
+            from routes.models import _video_family_buildable
+
+            for needle in (model_identifier, os.path.basename(gguf_path or "")):
+                if not needle:
+                    continue
+                fam = detect_video_family(needle)
+                if fam is not None:
+                    return not getattr(fam, "is_moe", False) and _video_family_buildable(fam)
+            return False
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for ambiguous video arch: %s", e)
+            return True
+
+    @staticmethod
     def _ambiguous_image_arch_is_pickable(
         gguf_path: Optional[str], model_identifier: Optional[str]
     ) -> bool:
@@ -9100,9 +9134,18 @@ class LlamaCppBackend:
                     "accepts it."
                 )
             if arch in self._VIDEO_ARCHES:
+                # Shared exactly like the image archs: the canonical classifier resolves a
+                # VideoFamily by name and rejects an MoE the GGUF loader cannot assemble,
+                # so "wan" alone does not mean the Video page will list it.
+                if self._ambiguous_video_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is a text-to-video GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Video page instead."
+                    )
                 return (
                     f"This is a text-to-video GGUF (architecture '{arch}'), which cannot "
-                    "run as a chat model. Open it from the Video page instead."
+                    "run as a chat model. Studio cannot assemble this particular model "
+                    "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
                 return (
@@ -9368,10 +9411,18 @@ class LlamaCppBackend:
                     "page accepts it."
                 )
             if arch in LlamaCppBackend._VIDEO_ARCHES:
+                if LlamaCppBackend._ambiguous_video_arch_is_pickable(
+                    gguf_path, model_identifier
+                ):
+                    return (
+                        f"'{arch}' is a text-to-video GGUF, which llama-server "
+                        "cannot run as a chat/completion model. Open it from "
+                        "Unsloth's Video page instead of a chat."
+                    )
                 return (
-                    f"'{arch}' is a text-to-video GGUF, which llama-server "
-                    "cannot run as a chat/completion model. Open it from "
-                    "Unsloth's Video page instead of a chat."
+                    f"'{arch}' is a text-to-video GGUF, which llama-server cannot run as "
+                    "a chat/completion model. Studio cannot assemble this particular "
+                    "model from a GGUF, so the Video page does not list it either."
                 )
             if arch in LlamaCppBackend._IMAGE_ARCHES or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
