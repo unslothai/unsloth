@@ -672,7 +672,7 @@ def test_a_responses_type_on_the_sse_event_line_is_honoured(monkeypatch):
     # upstream that only sends it there used to have every delta dropped.
     chunks = _stream_openai_responses(
         monkeypatch,
-        b"event: response.output_text.delta\ndata: {\"delta\": \"hello\"}\n\n"
+        b'event: response.output_text.delta\ndata: {"delta": "hello"}\n\n'
         b"event: response.completed\ndata: {}\n\n"
         b"data: [DONE]\n\n",
     )
@@ -685,8 +685,8 @@ def test_an_untyped_responses_event_does_not_kill_the_stream(monkeypatch):
     # Raising instead loses the whole reply, including the deltas that follow.
     chunks = _stream_openai_responses(
         monkeypatch,
-        b"data: {\"choices\": [{\"delta\": {\"content\": \"ignored\"}}]}\n\n"
-        b"event: response.output_text.delta\ndata: {\"delta\": \"kept\"}\n\n"
+        b'data: {"choices": [{"delta": {"content": "ignored"}}]}\n\n'
+        b'event: response.output_text.delta\ndata: {"delta": "kept"}\n\n'
         b"data: [DONE]\n\n",
     )
 
