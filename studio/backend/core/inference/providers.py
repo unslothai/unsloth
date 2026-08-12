@@ -415,6 +415,7 @@ _METADATA_IPS = frozenset(
         "169.254.170.2",
         "169.254.170.23",
         "fd00:ec2::254",
+        "fd20:ce::254",
         "100.100.100.200",
         "100.100.100.110",
     )
@@ -457,7 +458,10 @@ def _canonical_host(hostname: str) -> str:
 
 def _metadata_host(hostname: str) -> bool:
     """True when ``hostname`` names a cloud metadata service."""
-    hostname = _canonical_host(hostname.translate(_IDNA_DOTS).rstrip("."))
+    # An IPv6 scope id (fd00:ec2::254%250 once the transport decodes it) keeps
+    # the address unequal to the unscoped entry while dialling the same host.
+    hostname = hostname.translate(_IDNA_DOTS).rstrip(".").split("%")[0]
+    hostname = _canonical_host(hostname)
     if hostname in _METADATA_HOST_NAMES:
         return True
     try:

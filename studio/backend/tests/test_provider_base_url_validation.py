@@ -50,6 +50,7 @@ _SUPPORTED = [
     "https://例え.テスト/v1",
     # A neighbour of the metadata address is an ordinary host.
     "http://[fd00:ec2::255]/v1",
+    "http://[fd20:ce::255]/v1",
     "https://[2606:4700:4700::1111]/v1",
     # Self-hosted gateways behind basic auth keep working.
     "https://user:pass@gw.example/v1",
@@ -135,6 +136,12 @@ def test_rejected_url_shapes(url, error):
         "http://[fd00:ec2::0.0.2.84]/latest/meta-data/",
         "http://[FD00:EC2::254]/latest/meta-data/",
         "http://[0:0:0:0:0:ffff:a9fe:a9fe]/latest/meta-data/",
+        # Google's IPv6 metadata address on IPv6-only VMs.
+        "http://[fd20:ce::254]/computeMetadata/v1/",
+        "http://[fd20:0ce:0:0:0:0:0:254]/computeMetadata/v1/",
+        # A scope id keeps the address unequal while dialling the same host.
+        "http://[fd00:ec2::254%250]/latest/meta-data/",
+        "http://[fd00:ec2::254%25eth0]/latest/meta-data/",
     ],
 )
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):
