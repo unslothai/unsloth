@@ -2507,7 +2507,7 @@ def windows_intel_gpu_in_registry() -> bool:
     return False
 
 
-def detect_host() -> HostInfo:
+def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
     is_windows = system == "Windows"
@@ -2621,9 +2621,11 @@ def detect_host() -> HostInfo:
         except OSError:
             pass
 
-    # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed
-    # NVIDIA takes precedence: when an NVIDIA GPU is usable, skip ROCm probing
-    # entirely so co-installed ROCm tools cannot misroute the host (PR 6174).
+    # Detect AMD ROCm (HIP) -- require actual GPU, not just tools installed.
+    # NVIDIA takes precedence for automatic selection: when an NVIDIA GPU is
+    # usable, skip ROCm probing so co-installed ROCm tools cannot misroute the
+    # host (PR 6174). An explicit ROCm request opts into the probe so mixed-GPU
+    # hosts can select their AMD bundle.
 
     def _amd_smi_has_gpu(stdout: str) -> bool:
         """Check for 'GPU: <number>' data rows, not just a table header."""
@@ -2632,7 +2634,7 @@ def detect_host() -> HostInfo:
     has_rocm = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = []
-    if is_linux and not has_usable_nvidia:
+    if is_linux and (probe_rocm_with_nvidia or not has_usable_nvidia):
         # WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg
         # only when HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and
         # rocminfo can live only under /opt/rocm/bin (the profile.d PATH
@@ -2672,7 +2674,7 @@ def detect_host() -> HostInfo:
                     rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
                     rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
                     break
-    elif is_windows and not has_usable_nvidia:
+    elif is_windows and (probe_rocm_with_nvidia or not has_usable_nvidia):
         # Windows: prefer active probes that validate GPU presence.
         # hipinfo / amd-smi are often NOT on PATH -- the HIP SDK installer
         # sets HIP_PATH / ROCM_PATH but does not always add the bin dir to
@@ -7349,9 +7351,27 @@ def route_backend_request(
     host: HostInfo | None = None,
 ) -> BackendRoute:
     """Apply a backend request to the host profile without fetching releases."""
+    if host is None:
+        detected_host = (
+            detect_host(probe_rocm_with_nvidia = True) if backend == "rocm" else detect_host()
+        )
+    elif backend == "rocm" and host.has_usable_nvidia and not host.has_rocm:
+        # The shared automatic profile deliberately skips AMD probes once CUDA
+        # is usable. Re-probe for an explicit ROCm option or environment request.
+        detected_host = detect_host(probe_rocm_with_nvidia = True)
+    else:
+        detected_host = host
+    if backend == "rocm":
+        # Explicit ROCm must not let normal NVIDIA precedence generate CUDA
+        # attempts that strict backend filtering then discards.
+        detected_host = dataclasses_replace(
+            detected_host,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
-        host if host is not None else detect_host(),
+        detected_host,
         override_has_rocm = override_has_rocm,
         override_rocm_gfx = override_rocm_gfx,
         force_cpu = force_cpu,

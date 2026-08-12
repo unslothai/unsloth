@@ -204,6 +204,12 @@ class LlamaBackendStatusResponse(BaseModel):
     backend_request: Optional[str] = Field(
         "auto", description = "The recorded choice; 'auto' means hardware detection."
     )
+    selection_applied: bool = Field(
+        True,
+        description = (
+            "False when Automatic now resolves to a different backend than the installed one."
+        ),
+    )
     installed_tag: Optional[str] = None
     options: list[LlamaBackendOption] = Field(default_factory = list)
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)

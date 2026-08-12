@@ -3872,7 +3872,7 @@ C_OK=""; C_WARN=""; C_ERR=""
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_NO_SPACE=false
 _LLAMA_CPP_DEGRADED=false
-_explicit_vulkan_backend=false
+_explicit_llama_backend=""
 _STUDIO_HOME_IS_CUSTOM=false
 _STUDIO_OWNED_MARKER=".unsloth-owned"
 step() { echo "step: $2"; }
@@ -3904,7 +3904,13 @@ def _setup_sh_routing_block() -> str:
     return setup_sh[start : end + len("\n    fi\n")]
 
 
-def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) -> dict[str, str]:
+def _run_setup_sh_routing(
+    status: int,
+    tmp_path: Path,
+    *,
+    install_exists: bool,
+    explicit_backend: str = "",
+) -> dict[str, str]:
     """Drive the real setup.sh exit-code chain with a stubbed helper result."""
     llama_dir = tmp_path / "llama.cpp"
     if install_exists:
@@ -3918,6 +3924,7 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
             f'LLAMA_CPP_DIR="{llama_dir}"',
             f'_PREBUILT_LOG="{log_path}"',
             f"_PREBUILT_STATUS={status}",
+            f'_explicit_llama_backend="{explicit_backend}"',
             _setup_sh_routing_block(),
             _SETUP_SH_HARNESS_TAIL,
         ]
@@ -3936,18 +3943,20 @@ def _run_setup_sh_routing(status: int, tmp_path: Path, *, install_exists: bool) 
     "POSIX script through Git Bash with Windows paths proves nothing about either",
 )
 @pytest.mark.parametrize(
-    "status, expect_source_build, expect_exit",
+    "status, explicit_backend, expect_source_build, expect_exit",
     [
-        (0, False, 0),  # installed and validated
-        (1, False, 1),  # helper error -> fail, never compile
-        (2, True, 0),  # the one status that means "prebuilt unusable, go build"
-        (3, False, 3),  # busy: a source build cannot replace locked binaries
-        (4, False, 0),  # out of disk: compiling needs more, not less
-        (137, False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
+        (0, "", False, 0),  # installed and validated
+        (1, "", False, 1),  # helper error -> fail, never compile
+        (2, "", True, 0),  # automatic selection may fall back to a source build
+        (2, "cuda", False, 1),  # concrete selections cannot change backend silently
+        (3, "", False, 3),  # busy: a source build cannot replace locked binaries
+        (4, "", False, 0),  # out of disk: compiling needs more, not less
+        (4, "rocm", False, 1),  # an old install cannot satisfy an unchecked request
+        (137, "", False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
     ],
 )
 def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
-    tmp_path, status, expect_source_build, expect_exit
+    tmp_path, status, explicit_backend, expect_source_build, expect_exit
 ):
     """Behavioural cover for the exit-code routing: runs the real block under bash.
 
@@ -3962,7 +3971,9 @@ def test_setup_sh_starts_source_build_only_for_expected_prebuilt_exit(
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to exercise the setup.sh routing block")
 
-    result = _run_setup_sh_routing(status, tmp_path, install_exists = True)
+    result = _run_setup_sh_routing(
+        status, tmp_path, install_exists = True, explicit_backend = explicit_backend
+    )
 
     assert result["returncode"] == expect_exit, result
     if expect_source_build:
@@ -3981,11 +3992,12 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "_NEED_LLAMA_SOURCE_BUILD=true" not in sh_else
     assert "setup_fail 1" in sh_else
     assert "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)" in sh_else
-    # Only the fallback statuses may queue the source build: 2 (no prebuilt) and
-    # 5, which is 2 plus a reason -- the backend the run named publishes no bundle
-    # for this host, which a source build of the detected backend still answers.
+    # Only exit 2 under automatic selection may queue a source build. Exit 5 is
+    # a concrete unavailable request and fails closed in its dedicated branch.
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
-    assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ] || [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
+    assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
+    assert 'if [ -n "$_explicit_llama_backend" ]; then' in sh_block
 
     ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
     ps_else = ps_block[ps_block.rindex("} else {") :]
@@ -3993,7 +4005,9 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "Exit-SetupFailure" in ps_else
     assert "prebuilt helper failed unexpectedly (exit code $prebuiltExit)" in ps_else
     assert ps_block.count("$NeedLlamaSourceBuild = $true") == 1
-    assert "} elseif ($prebuiltExit -eq 2 -or $prebuiltExit -eq 5) {" in ps_block
+    assert "} elseif ($prebuiltExit -eq 5) {" in ps_block
+    assert "} elseif ($prebuiltExit -eq 2) {" in ps_block
+    assert "if ($explicitLlamaBackend)" in ps_block
 
     # Statuses 3 and 4 keep their dedicated branches ahead of the catch-all.
     for needle in ('elif [ "$_PREBUILT_STATUS" -eq 3 ]', 'elif [ "$_PREBUILT_STATUS" -eq 4 ]'):

@@ -129,24 +129,24 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
     assert "--force-cpu" not in block
 
 
-def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
+def test_explicit_backend_prebuilt_failure_does_not_change_backend():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     failure = sh.index('step "llama.cpp" "prebuilt install failed"')
     source_build = sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)
-    guard = sh.index('if [ "$_explicit_vulkan_backend" = true ]', failure)
+    guard = sh.index('if [ -n "$_explicit_llama_backend" ]', failure)
     assert guard < source_build
     guarded = sh[guard:source_build]
-    assert "will not substitute a ROCm or CPU source build" in guarded
+    assert "will not substitute an unverified source backend" in guarded
     # Aborts through the helper, which exits AND emits [TAURI:ERROR] in desktop mode.
     assert "setup_fail 1" in guarded
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     failure = ps1.index('step "llama.cpp" "prebuilt install failed"')
     source_build = ps1.index("$NeedLlamaSourceBuild = $true", failure)
-    guard = ps1.index("if ($explicitVulkanBackend)", failure)
+    guard = ps1.index("if ($explicitLlamaBackend)", failure)
     assert guard < source_build
     guarded = ps1[guard:source_build]
-    assert "will not substitute a CUDA, ROCm, or CPU source build" in guarded
+    assert "will not substitute an unverified source backend" in guarded
     assert "Exit-SetupFailure" in guarded
 
 
@@ -215,11 +215,12 @@ def test_force_compile_sets_need_source_build_before_vulkan_guard():
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     assert "_legacy_force_vulkan=" in sh
-    assert "1|true|yes|on) _explicit_vulkan_backend=true" in sh
+    assert '1|true|yes|on) _explicit_llama_backend="vulkan"' in sh
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     assert "$legacyForceVulkan = $sourceLegacyForceVulkan" in ps1
     assert '$legacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
+    assert '$explicitLlamaBackend = "vulkan"' in ps1
 
 
 def _source_backend_choice_block() -> str:

@@ -2150,7 +2150,7 @@ else
     # The normalized override affects llama.cpp only, not the training backend.
     _llama_backend="$_source_backend_choice"
     _legacy_force_vulkan="$_source_legacy_force_vulkan"
-    _explicit_vulkan_backend=false
+    _explicit_llama_backend=""
     case "$_llama_backend" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
@@ -2164,7 +2164,6 @@ else
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
                 _PREBUILT_CMD+=(--llama-backend vulkan)
-                _explicit_vulkan_backend=true
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
@@ -2174,10 +2173,11 @@ else
     esac
     if [ "$_HOST_SYSTEM" != "Darwin" ]; then
         case "$_llama_backend" in
-            cpu|cuda|vulkan|hip|rocm) ;;
+            hip) _explicit_llama_backend="rocm" ;;
+            cpu|cuda|vulkan|rocm) _explicit_llama_backend="$_llama_backend" ;;
             *)
                 case "$_legacy_force_vulkan" in
-                    1|true|yes|on) _explicit_vulkan_backend=true ;;
+                    1|true|yes|on) _explicit_llama_backend="vulkan" ;;
                 esac
                 ;;
         esac
@@ -2221,12 +2221,12 @@ else
         substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
         _LLAMA_CPP_NO_SPACE=true
         _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
-        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
-        # run reports success on the backend the user asked to replace.
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+        # A preserved server may not satisfy an explicit backend request, and it
+        # leaves _LLAMA_CPP_DEGRADED false. Never report success on an unverified
+        # backend after the requested replacement ran out of space.
+        if [ -n "$_explicit_llama_backend" ]; then
+            step "llama.cpp" "$_explicit_llama_backend was explicitly requested, so the installer will not keep an unverified existing backend" "$C_ERR"
+            setup_fail 1 "$_explicit_llama_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
         fi
     elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
         step "llama.cpp" "requested backend is unavailable" "$C_ERR"
@@ -2244,10 +2244,10 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        if [ "$_explicit_vulkan_backend" = true ]; then
-            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
+        if [ -n "$_explicit_llama_backend" ]; then
+            step "llama.cpp" "$_explicit_llama_backend was explicitly requested, so the installer will not substitute an unverified source backend" "$C_ERR"
             substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
-            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
+            setup_fail 1 "$_explicit_llama_backend was explicitly requested, so the installer will not substitute an unverified source backend. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
         else
             substep "falling back to source build"
             _NEED_LLAMA_SOURCE_BUILD=true

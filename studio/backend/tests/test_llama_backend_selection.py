@@ -267,6 +267,50 @@ def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
     assert payload["backends"][0]["resolved_backend"] == "metal"
 
 
+def test_explicit_rocm_reprobes_and_suppresses_cuda_on_a_mixed_host(monkeypatch):
+    automatic_host = ilp.HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = "/usr/bin/nvidia-smi",
+        driver_cuda_version = (13, 0),
+        compute_caps = ["120"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+    mixed_host = ilp.dataclasses_replace(
+        automatic_host,
+        has_rocm = True,
+        rocm_gfx_target = "gfx1100",
+        rocm_gfx_targets = ["gfx1100"],
+    )
+    probes = []
+
+    def _detect_host(*, probe_rocm_with_nvidia = False):
+        probes.append(probe_rocm_with_nvidia)
+        return mixed_host if probe_rocm_with_nvidia else automatic_host
+
+    monkeypatch.setattr(ilp, "detect_host", _detect_host)
+
+    route = ilp.route_backend_request(
+        backend = "rocm",
+        published_repo = FORK,
+        published_release_tag = "",
+        host = automatic_host,
+    )
+
+    assert probes == [True]
+    assert route.host.has_usable_nvidia is False
+    assert route.host.has_physical_nvidia is False
+    assert route.host.has_rocm is True
+    assert route.host.rocm_gfx_target == "gfx1100"
+
+
 def test_backend_resolver_does_not_turn_a_switch_into_a_version_update(monkeypatch):
     monkeypatch.setattr(
         ilp,

@@ -5560,7 +5560,7 @@ if ($LocalLlamaCppLinked) {
                 "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
             )
         )
-        $explicitVulkanBackend = $false
+        $explicitLlamaBackend = $null
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -eq "vulkan") {
@@ -5570,21 +5570,20 @@ if ($LocalLlamaCppLinked) {
                 throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_LLAMA_CPP_BACKEND or compile llama.cpp from source."
             } else {
                 $prebuiltArgs += @("--llama-backend", "vulkan")
-                $explicitVulkanBackend = $true
                 Write-StudioLine "  llama.cpp      Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" -ForegroundColor Cyan
             }
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "cuda", "hip", "rocm")) {
             Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
-        if (
-            -not $IsMacOS -and
-            $llamaBackend -notin @("cpu", "cuda", "vulkan", "hip", "rocm") -and
-            $legacyForceVulkan -in @("1", "true", "yes", "on")
-        ) {
-            if ($windowsArm64) {
-                throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
+        if (-not $IsMacOS) {
+            if ($llamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
+                $explicitLlamaBackend = if ($llamaBackend -eq "hip") { "rocm" } else { $llamaBackend }
+            } elseif ($legacyForceVulkan -in @("1", "true", "yes", "on")) {
+                if ($windowsArm64) {
+                    throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
+                }
+                $explicitLlamaBackend = "vulkan"
             }
-            $explicitVulkanBackend = $true
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -5647,12 +5646,12 @@ if ($LocalLlamaCppLinked) {
                 if (Test-PathQuiet $_cand) { $PreservedLlamaServerFound = $true; break }
             }
             if (-not $PreservedLlamaServerFound) { $script:LlamaCppDegraded = $true }
-            # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
-            # request, and it leaves LlamaCppDegraded false, so without this the
-            # run reports success on the backend the user asked to replace.
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "Red"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+            # A preserved server may not satisfy an explicit backend request, and
+            # it leaves LlamaCppDegraded false. Never report success on an
+            # unverified backend after the requested replacement ran out of space.
+            if ($explicitLlamaBackend) {
+                step "llama.cpp" "$explicitLlamaBackend was explicitly requested, so the installer will not keep an unverified existing backend" "Red"
+                Exit-SetupFailure "$explicitLlamaBackend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
             }
         } elseif ($prebuiltExit -eq 5) {
             step "llama.cpp" "requested backend is unavailable" "Red"
@@ -5668,10 +5667,10 @@ if ($LocalLlamaCppLinked) {
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Prebuilt update failed; existing install was restored or cleaned before source build fallback" "Yellow"
             }
-            if ($explicitVulkanBackend) {
-                step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build" "Red"
+            if ($explicitLlamaBackend) {
+                step "llama.cpp" "$explicitLlamaBackend was explicitly requested, so the installer will not substitute an unverified source backend" "Red"
                 substep "Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG" "Yellow"
-                Exit-SetupFailure "Vulkan was explicitly requested, so the installer will not substitute a CUDA, ROCm, or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
+                Exit-SetupFailure "$explicitLlamaBackend was explicitly requested, so the installer will not substitute an unverified source backend. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
             } else {
                 substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
                 $NeedLlamaSourceBuild = $true
