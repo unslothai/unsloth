@@ -159,6 +159,12 @@ jobs:
           Set-AppLockerPolicy -XmlPolicy $policyPath
           & gpupdate.exe /target:computer /force
           if ($LASTEXITCODE -ne 0) { throw "gpupdate failed (exit $LASTEXITCODE)" }
+          # AppIDSvc reads the effective policy when it starts. Starting it first
+          # and setting the policy afterwards left the service enforcing nothing,
+          # and the first run of this job watched the stub launch happily for the
+          # denied user. Restart AFTER the policy is in place, every time.
+          Restart-Service -Name AppIDSvc -Force
+          (Get-Service -Name AppIDSvc).WaitForStatus('Running', [timespan]::FromSeconds(60))
 
           Get-AppLockerPolicy -Effective -Xml |
             Set-Content -LiteralPath logs\applocker-effective.xml -Encoding UTF8
@@ -227,21 +233,32 @@ jobs:
             "$env:COMPUTERNAME\$($env:UNSLOTH_PROBE_USER)",
             $securePassword
           )
-          $process = Start-Process -FilePath powershell.exe `
-            -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $wrapperPath) `
-            -Credential $credential -LoadUserProfile -WorkingDirectory $probeRoot `
-            -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr `
-            -Wait -PassThru
-          Get-Content -LiteralPath $controlOut, $controlErr |
-            Set-Content -LiteralPath logs\negative-control.log -Encoding UTF8
+          # Enforcement goes live asynchronously: the service has to load the
+          # policy and the user's token has to pick it up, and neither is
+          # signalled. Retry rather than sample once, or the job fails on timing
+          # and reports a regression that is not there.
+          $exitCode = $null
+          foreach ($attempt in 1..12) {
+            $process = Start-Process -FilePath powershell.exe `
+              -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $wrapperPath) `
+              -Credential $credential -LoadUserProfile -WorkingDirectory $probeRoot `
+              -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr `
+              -Wait -PassThru
+            $exitCode = $process.ExitCode
+            Get-Content -LiteralPath $controlOut, $controlErr |
+              Set-Content -LiteralPath logs\negative-control.log -Encoding UTF8
+            Write-Host "attempt ${attempt}: exit $exitCode"
+            if ($exitCode -eq 0) { break }
+            Start-Sleep -Seconds 10
+          }
           Get-Content -LiteralPath logs\negative-control.log | Write-Host
 
-          if ($process.ExitCode -eq 90) {
+          if ($exitCode -eq 90) {
             Write-Host "::error::$blockedExe ran for the denied user. The AppLocker policy is not enforced, so the rest of this job would prove nothing."
             exit 1
           }
-          if ($process.ExitCode -ne 0) {
-            Write-Host "::error::The negative control failed for an unexpected reason (exit $($process.ExitCode)); enforcement is unproven."
+          if ($exitCode -ne 0) {
+            Write-Host "::error::The negative control failed for an unexpected reason (exit $exitCode); enforcement is unproven."
             exit 1
           }
           Write-Host 'PASS: the denied user cannot start the generated launcher (Windows error 1260).'
