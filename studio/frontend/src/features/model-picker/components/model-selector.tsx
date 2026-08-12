@@ -43,7 +43,6 @@ import {
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
-import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import {
   type ExternalConnectionRef,
   missingExternalModel,

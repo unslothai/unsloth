@@ -167,6 +167,17 @@ jobs:
           python scripts/lint_no_parallel_clamp.py --self-test
           python scripts/lint_no_parallel_clamp.py
 
+      - name: No duplicate TypeScript import bindings
+        # #8470 landed a second copy of one import line in model-selector.tsx.
+        # tsc rejects it with TS2300, the frontend build fails, and every job
+        # that builds the frontend goes red behind it -- eleven of them, on
+        # main and on every open PR. eslint is not run in CI, so nothing saw
+        # it until tsc did, inside the slowest job in the matrix. Self-test
+        # first, so a regression in the rule fails before we trust it.
+        run: |
+          python scripts/lint_no_duplicate_ts_imports.py --self-test
+          python scripts/lint_no_duplicate_ts_imports.py
+
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake
         # before it ships. AST-based so commented-out debugger
