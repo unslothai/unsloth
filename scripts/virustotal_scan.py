@@ -201,14 +201,11 @@ SUMMARY_HEADING = "### VirusTotal release asset scan"
 def submission_packet_lines(detected: Sequence[FileReport]) -> list[str]:
     """Pre-fill a false-positive submission for every flagged asset.
 
-    The build job already assembles one of these, but only for the Windows `-setup.exe`. The
-    detections that actually arrive are not all Windows: 0.1.701-beta shipped clean everywhere
-    except the Linux AppImage, which came back `Trojan:Script/Wacatac.B!ml` -- a generic ML
-    verdict on script content -- and no packet was produced for it. Anything flagged here gets
-    one, whatever platform it came from.
+    The build job assembles one too, but only for the Windows `-setup.exe`, so the detection
+    that actually arrived -- `Trojan:Script/Wacatac.B!ml` on the 0.1.701-beta Linux AppImage --
+    produced nothing to submit. Anything flagged here gets a packet, whatever built it.
 
-    Engine names are deliberately not repeated: they are third-party text and they already
-    appear, escaped, under "Flagging engines" above.
+    Engine names are not repeated: third-party text, already escaped under "Flagging engines".
     """
     lines = [
         "",

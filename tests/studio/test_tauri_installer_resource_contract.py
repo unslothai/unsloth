@@ -40,16 +40,14 @@ def test_tauri_never_overlays_install_python_stack() -> None:
 
 
 def test_each_bundle_ships_only_the_installer_it_runs() -> None:
-    # resolve_install_script (studio/src-tauri/src/install.rs) picks install.sh on unix and
-    # install.ps1 elsewhere, so the other one was 280 KB of dead weight in every bundle. It is
-    # also the largest script body a generic classifier walking the Linux AppImage finds, which
-    # is where Microsoft's Trojan:Script/Wacatac.B!ml false positive landed (unsloth#8523).
+    # resolve_install_script picks install.sh on unix and install.ps1 elsewhere, so the other
+    # was dead weight in every bundle -- and the largest script body a classifier walking the
+    # AppImage finds, which is where Trojan:Script/Wacatac.B!ml landed.
     assert _bundled_resources("windows") == {"../../install.ps1": "install.ps1"}
     assert _bundled_resources("linux") == {"../../install.sh": "install.sh"}
     assert _bundled_resources("macos") == {"../../install.sh": "install.sh"}
 
 
 def test_no_installer_resource_leaks_through_the_shared_config() -> None:
-    # A resource in the shared config lands in every bundle regardless of platform, which is how
-    # the split above would silently regress.
+    # A resource in the shared config lands in every bundle, which is how the split regresses.
     assert _resources("tauri.conf.json") == {}

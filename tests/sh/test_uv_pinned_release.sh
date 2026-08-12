@@ -4,16 +4,13 @@
 #
 # Guards install.sh's uv bootstrap.
 #
-# It used to download astral's install.sh to a temp file, run it and delete the file --
-# which is, shape for shape, what a dropper does, and generic ML script classifiers score
-# it accordingly (the 0.1.701-beta Linux AppImage came back Trojan:Script/Wacatac.B!ml).
-# It now fetches the pinned release archive and verifies a hardcoded SHA-256 first, the
-# same move install.ps1 already made.
+# It used to download astral's install.sh to a temp file, run it and delete the file, which
+# is shape for shape what a dropper does. It now fetches the pinned release archive and
+# verifies a hardcoded SHA-256 first, the move install.ps1 already made.
 #
-# The fallback is deliberate and must stay: musl, armv7 and anything without a digest tool
-# keep the old path rather than risk a wrong target triple. These tests pin the digest
-# check (an archive that does not match must install nothing), the extraction, and the
-# fact that the fallback is reachable but is no longer the primary path.
+# The fallback must stay: musl, armv7 and hosts without a digest tool keep the old path
+# rather than risk a wrong triple. These tests pin the digest check (a mismatched archive
+# installs nothing), the extraction, and the fallback being reachable but not primary.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -37,8 +34,7 @@ else
     bad "install.sh has a pinned-release uv path"
 fi
 
-# The pinned attempt must come before the astral fallback in the file, or the fallback
-# is still what actually runs.
+# The pinned attempt must precede the fallback, or the fallback is what actually runs.
 _pinned_at=$(grep -n 'if _uv_install_pinned; then' "$INSTALL_SH" | head -1 | cut -d: -f1)
 _fallback_at=$(grep -n 'download "https://astral.sh/uv/install.sh"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 if [ -n "$_pinned_at" ] && [ -n "$_fallback_at" ] && [ "$_pinned_at" -lt "$_fallback_at" ]; then
@@ -47,8 +43,7 @@ else
     bad "the pinned path is tried before the astral fallback (pinned=$_pinned_at fallback=$_fallback_at)"
 fi
 
-# Every pinned digest must be a full lowercase SHA-256; a truncated paste would make the
-# comparison silently never match and route every host to the fallback.
+# A truncated digest would silently never match and route every host to the fallback.
 _bad_digests=$(grep -oE 'uv-[a-z0-9_]+-[a-z0-9.-]+\.tar\.gz [0-9a-f]*' "$INSTALL_SH" \
     | awk '{ if (length($2) != 64) print }' | wc -l | tr -d ' ')
 if [ "$_bad_digests" = "0" ]; then
@@ -67,12 +62,11 @@ fi
 # ── behaviour ──
 echo "=== behaviour ==="
 
-# Pull the helper block out of install.sh and drive it with a stubbed downloader, so
-# these run offline and cannot install anything outside the sandbox.
+# Drive the helper block from install.sh with a stubbed downloader: offline, sandboxed.
 awk '/^# ── uv from a pinned release ──$/,/^if ! command -v uv /' "$INSTALL_SH" \
     | sed '$d' > "$WORK/uvfns.sh"
 
-# A stand-in for the real archive: same layout (uv-<triple>/uv, uv-<triple>/uvx).
+# Stand-in for the real archive: same uv-<triple>/{uv,uvx} layout.
 mkdir -p "$WORK/src/uv-fake-triple"
 printf '#!/bin/sh\necho "uv 0.12.1 (fake)"\n' > "$WORK/src/uv-fake-triple/uv"
 printf '#!/bin/sh\necho "uvx"\n' > "$WORK/src/uv-fake-triple/uvx"

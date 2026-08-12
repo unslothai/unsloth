@@ -1,10 +1,8 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage, supported options and the web one-liner are documented in the repository README under
-# "Install Unsloth Studio" -- see https://github.com/unslothai/unsloth#unsloth-studio. They are
-# not repeated here: this file is scanned in full by AMSI before a single line of it runs, and a
-# header rehearsing download-and-run command lines is text we pay for on every install without
-# anyone reading it from inside the script.
+# Usage, options and the web one-liner: see "Install Unsloth Studio" in the README
+# (https://github.com/unslothai/unsloth#unsloth-studio). Not repeated here, because AMSI scans
+# this file in full before a line of it runs and nothing reads the header from inside.
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
 # beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
@@ -1359,10 +1357,9 @@ try {
     # Single-quote the path in the child -Command so `$` / backtick in custom
     # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
     `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -p " + `$launchPort
-    # RemoteSigned, not Bypass: the child runs an inline -Command that invokes an executable, so
-    # no script file is loaded and the two policies behave identically here -- but "Bypass" is a
-    # token AV heuristics weight, and there is no reason to spend it on a launch that needs no
-    # policy relief at all.
+    # RemoteSigned, not Bypass: the child runs an inline -Command against an executable, so no
+    # script file is loaded and the two behave identically here. No reason to spend a scored
+    # token on a launch that needs no policy relief.
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
@@ -1519,11 +1516,10 @@ exit 0
             # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
             # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
             #
-            # RemoteSigned, not Bypass: a hidden window next to a bypassed execution policy is the
-            # pair Microsoft's own detections key on (studio/src-tauri/src/install.rs makes the
-            # same call for the app's own launch). Nothing is lost by dropping it -- the installer
-            # writes launch-studio.ps1 locally, so it carries no mark-of-the-web and RemoteSigned
-            # loads it. The hidden window stays, so the shortcut behaves exactly as before.
+            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
+            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # launch. Nothing is lost: this launcher is written locally, so it carries no
+            # mark-of-the-web and RemoteSigned loads it. The hidden window stays.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
             $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""

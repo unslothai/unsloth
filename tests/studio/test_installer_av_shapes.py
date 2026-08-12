@@ -3,16 +3,12 @@
 
 """Keep the shipped installers off the shapes antivirus heuristics score.
 
-Two false positives motivated this file. A third-party AMSI provider blocked install.ps1 at parse
-time with ``ScriptContainedMaliciousContent`` (unsloth#8523) -- PowerShell hands the whole script
-block to AMSI before running a line, so every byte of the file counts, comments included. And
-Microsoft returned ``Trojan:Script/Wacatac.B!ml`` on the 0.1.701-beta Linux AppImage, a generic ML
-verdict on script content.
+An AMSI provider blocked install.ps1 at parse time (#8523) and Microsoft flagged the Linux
+AppImage `Trojan:Script/Wacatac.B!ml`. PowerShell hands the whole script block to AMSI before
+running a line, so every byte counts, comments included.
 
-None of the assertions here claim to reproduce either verdict; they pin the constructs that were
-removed so they cannot drift back in. The counterpart to that is the output lock at the bottom:
-hardening must never change what a user sees, so the remediation strings the installers print stay
-verbatim.
+Nothing here reproduces either verdict; it pins the constructs that were removed. The output
+lock at the bottom is the other half: hardening must not change what a user sees.
 """
 
 import re
@@ -36,12 +32,10 @@ _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 
 
 def _code_lines(name: str):
-    """Lines reduced to what the script actually executes.
+    """Lines reduced to what the script executes: no comments, here-strings or quoted literals.
 
-    AMSI scans comments and string literals too, so most checks here run over the whole file.
-    A few are about what the script *does* -- those use this, which drops comments, here-string
-    bodies and quoted literals. The printed remediation text lives in exactly those literals and
-    is deliberately unchanged, so it must not trip an "executes remote script" assertion.
+    Most checks here scan the whole file, since AMSI does too. The ones about what the script
+    *does* use this, so the printed remediation text does not read as an execution.
     """
     in_here_string = False
     for number, line in enumerate(_text(name).splitlines(), start = 1):
@@ -65,8 +59,8 @@ def test_script_exists(name: str) -> None:
 
 @pytest.mark.parametrize("name", PS_SCRIPTS)
 def test_no_remote_script_is_executed_in_process(name: str) -> None:
-    # Piping downloaded script text into the engine is the construct AMSI providers and cloud ML
-    # scanners score hardest. install.ps1 and studio/setup.ps1 both fetch a pinned archive now.
+    # The construct AMSI and cloud ML scanners score hardest. Both files fetch a pinned
+    # archive instead.
     for number, line in _code_lines(name):
         assert not re.search(
             r"Invoke-Expression\s*\(\s*Invoke-(RestMethod|WebRequest)", line
@@ -81,8 +75,7 @@ def test_no_remote_script_is_executed_in_process(name: str) -> None:
 
 @pytest.mark.parametrize("name", SH_SCRIPTS)
 def test_no_remote_script_is_piped_into_a_shell_first(name: str) -> None:
-    # The fallback in both files is deliberate and stays reachable, but it must never be what a
-    # mainstream host actually takes -- the pinned path has to be tried first.
+    # The astral fallback stays reachable for unpinned hosts, but must never be tried first.
     text = _text(name)
     if "astral.sh/uv/install.sh" not in text:
         return
@@ -104,8 +97,8 @@ def test_no_encoded_or_base64_command_payloads(name: str) -> None:
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
-    # Microsoft's own detections key on this pair; studio/src-tauri/src/install.rs refuses it for
-    # the app's own launch and the shortcut install.ps1 writes now matches.
+    # Microsoft's detections key on this pair; install.rs already refuses it for the app's
+    # own launch.
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         if re.search(r"-WindowStyle\s+Hidden", line, re.IGNORECASE):
             assert not re.search(
@@ -113,13 +106,11 @@ def test_a_hidden_window_never_pairs_with_a_bypassed_policy(name: str) -> None:
             ), f"{name}:{number} pairs a hidden window with a bypassed policy: {line.strip()}"
 
 
-# Every runtime-compiled P/Invoke still in the shipped installers, with why it stays. Each entry
-# costs a csc.exe compile at install time and is scored by heuristics, so adding one needs a
-# reason -- and a pure-PowerShell equivalent is almost always available.
+# Every runtime-compiled P/Invoke left in the installers. Each costs a csc.exe compile and is
+# scored, so a new entry needs a reason; a PowerShell equivalent usually exists.
 ALLOWED_PINVOKES = {
-    # Handle-based canonicalisation of linked ancestors, on security-relevant paths. No faithful
-    # Windows PowerShell 5.1 equivalent: ResolveLinkTarget is .NET 6+, and Get-Item .Target does
-    # not resolve a linked ancestor of a non-link leaf.
+    # Canonicalising linked ancestors of security-relevant paths. No PS 5.1 equivalent:
+    # ResolveLinkTarget is .NET 6+, and .Target misses a linked ancestor of a non-link leaf.
     "CreateFileW",
     "GetFinalPathNameByHandleW",
     # ANSI colour on legacy conhost.
@@ -128,12 +119,10 @@ ALLOWED_PINVOKES = {
     "SetConsoleMode",
     # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk.
     "SHChangeNotify",
-    # Resolving a PID to its image path for the venv-holder check. Opening a handle per process
-    # is a shape heuristics score, and Win32_Process.ExecutablePath answers the same question --
-    # but tests/python/test_windows_installer_concurrency_guard.py bans Get-CimInstance and
-    # $process.Path from that detector outright, because the races #7764 closed came from
-    # inferring "in use" out of anything other than a confirmed executable identity. The contract
-    # wins: a wrongly blocked install costs more than these three imports.
+    # PID -> image path for the venv-holder check. Win32_Process answers the same question,
+    # but test_windows_installer_concurrency_guard.py bans it and $process.Path there: the
+    # races #7764 closed came from inferring "in use" from anything but a confirmed executable
+    # identity. A wrongly blocked install costs more than these imports.
     "OpenProcess",
     "QueryFullProcessImageNameW",
     "CloseHandle",
@@ -148,7 +137,7 @@ def test_no_new_native_imports(name: str) -> None:
         r"DllImport\(\"[^\"]+\"[^)]*\)\][^;{]*?extern\s+[\w.\[\]]+\s+(\w+)", text
     ):
         imported.add(match.group(1))
-    # The multi-line declarations in install.ps1 need the parameter list skipped too.
+    # install.ps1's multi-line declarations put the parameter list on later lines.
     for match in re.finditer(r"extern\s+[\w.<>\[\]]+\s+(\w+)\s*\(", text):
         imported.add(match.group(1))
     unexpected = imported - ALLOWED_PINVOKES
@@ -160,8 +149,8 @@ def test_no_new_native_imports(name: str) -> None:
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
 def test_no_process_memory_apis(name: str) -> None:
-    # The installer reads a process's image path and nothing else. Reaching into another
-    # process's memory has no legitimate use here and is what the injection heuristics look for.
+    # The installer reads image paths, nothing more. Reaching into another process's memory
+    # has no use here and is what the injection heuristics look for.
     for banned in (
         "VirtualAllocEx",
         "WriteProcessMemory",
@@ -172,8 +161,8 @@ def test_no_process_memory_apis(name: str) -> None:
         assert banned not in _text(name), f"{name} references {banned}"
 
 
-# The lines the installers print when they need the user to reinstall. Hardening must not touch
-# user-visible output, and these are the ones a well-meaning search-and-replace would take out.
+# What the installers print when they need the user to reinstall. Hardening must not touch
+# user-visible output, and a search-and-replace would take exactly these out.
 REQUIRED_OUTPUT = {
     "install.ps1": ['Write-StudioLine "          irm https://unsloth.ai/install.ps1 | iex"'],
     "studio/setup.ps1": ['Write-StudioLine "        irm https://unsloth.ai/install.ps1 | iex"'],

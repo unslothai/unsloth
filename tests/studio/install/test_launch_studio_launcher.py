@@ -59,10 +59,9 @@ def test_launcher_is_windowless_powershell():
 
 
 def test_hidden_window_never_pairs_with_execution_policy_bypass():
-    # "-WindowStyle Hidden" next to "-ExecutionPolicy Bypass" is the pair AV detections key on,
-    # and studio/src-tauri/src/install.rs already refuses it for the app's own launch. The
-    # installer writes launch-studio.ps1 locally, so it has no mark-of-the-web and RemoteSigned
-    # loads it -- the hidden window costs nothing to keep, the Bypass costs a detection.
+    # The pair AV detections key on; install.rs already refuses it for the app's own launch.
+    # launch-studio.ps1 is written locally, so it has no mark-of-the-web and RemoteSigned loads
+    # it. The hidden window costs nothing to keep, the Bypass costs a detection.
     text = _text()
     for line in text.splitlines():
         if re.search(r"-WindowStyle\s+Hidden", line):

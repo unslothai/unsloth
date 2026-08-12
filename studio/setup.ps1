@@ -4268,12 +4268,11 @@ function Assert-VenvActivated {
     Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
 }
 
-# Mirrors install.ps1's Install-UvFromRelease: same archive, same destination priority and the
-# same user-PATH prepend as astral's installer, but it fetches a data file with a pinned SHA-256
-# instead of running remote script text in-process, which is what AMSI and cloud ML scanners score
-# hardest. Bumping the version means bumping all 3 hashes:
+# Mirrors install.ps1's Install-UvFromRelease: same archive, destination priority and user-PATH
+# prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
+# running remote script text in-process, which is what AMSI scores hardest. Bumping the version
+# means bumping all 3 hashes:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
-# Kept in sync with install.ps1 by tests/python/test_cross_platform_parity.py.
 $UvPinnedVersion = "0.12.1"
 $UvPinnedAssets = @{
     "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
@@ -4281,8 +4280,8 @@ $UvPinnedAssets = @{
     "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
 }
 
-# Not Get-HostMachineArch: that one answers arm64/other for the VC++ and prebuilt probes, and
-# "other" cannot pick between the x86_64 and i686 archives. Same resolution order install.ps1 uses.
+# Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
+# cannot pick between the x86_64 and i686 archives. install.ps1's resolution order.
 function Get-UvHostArch {
     $osArch = ""
     try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
@@ -4301,9 +4300,9 @@ function Get-UvHostArch {
     return "unknown"
 }
 
-# Writes to the pipeline rather than the console: the caller runs it under Invoke-SetupCommand, so
-# a quiet run swallows this exactly as it swallowed astral's installer output, and a verbose run
-# shows it. The console lines around the call site are unchanged.
+# Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
+# exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
+# the call site are unchanged.
 function Install-UvFromPinnedRelease {
     $arch = Get-UvHostArch
     if (-not $UvPinnedAssets.ContainsKey($arch)) {
@@ -4313,8 +4312,8 @@ function Install-UvFromPinnedRelease {
     $asset  = $UvPinnedAssets[$arch].Asset
     $wanted = $UvPinnedAssets[$arch].Sha256
 
-    # Same destination priority as astral's installer, so an existing uv is replaced in place and
-    # the Get-Command probe after Refresh-Environment still finds it.
+    # astral's destination priority, so an existing uv is replaced in place and the Get-Command
+    # probe after Refresh-Environment still finds it.
     $destDir = $null
     foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
         if ($candidate) { $destDir = $candidate; break }
@@ -4329,9 +4328,8 @@ function Install-UvFromPinnedRelease {
         $destDir = Join-Path $userHome ".local\bin"
     }
 
-    # Same mirrors and precedence as astral's installer; each serves the identical asset, so the
-    # pin holds across all of them. UV_DOWNLOAD_URL is not honoured: it points at an arbitrary
-    # version the pin would reject.
+    # astral's mirrors and precedence; each serves the identical asset, so one pin holds.
+    # UV_DOWNLOAD_URL is not honoured: it points at a version the pin would reject.
     $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
         @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
     } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
@@ -4384,9 +4382,8 @@ function Install-UvFromPinnedRelease {
         Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # Same PATH treatment and opt-outs astral's installer uses: an unmanaged install forces
-    # no-modify-path there, so it must here too. The user-PATH prepend is what survives the
-    # Refresh-Environment below, which rebuilds PATH from the registry.
+    # astral's PATH treatment and opt-outs: an unmanaged install forces no-modify-path there, so
+    # it must here too. The user-PATH prepend is what survives the Refresh-Environment below.
     if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
         Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
     }

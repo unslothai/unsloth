@@ -1480,13 +1480,12 @@ _setup_http_get_timed() {
 
 # ── uv from a pinned release ──
 # Same archive and destination as astral's installer, but it fetches a data file with a
-# pinned SHA-256 instead of piping remote script text into a shell. Mirrors the block in
-# install.sh (and Install-UvFromRelease in install.ps1); bumping the version means bumping
-# every hash below:
+# pinned SHA-256 instead of piping remote script text into a shell. Mirrors install.sh.
+# Bumping the version means bumping every hash:
 #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
 #
-# Deliberately covers only the four mainstream targets. musl, armv7 and anything else fall
-# through to the existing path rather than risk installing a binary for the wrong triple.
+# Only the four mainstream targets are pinned; the rest fall through to the existing path
+# rather than risk a binary for the wrong triple.
 _SETUP_UV_PINNED_VERSION="0.12.1"
 
 _setup_uv_pinned_asset() {

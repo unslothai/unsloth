@@ -41,10 +41,9 @@ fn generic_failure_message(code: i32) -> String {
 
 /// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
 /// product's verdict arrives as a parse error over the entire file before the installer's first
-/// line runs: no `[TAURI:ERROR]` marker, no phase log, and a stderr tail that reads as an
-/// unexplained failure ("+ FullyQualifiedErrorId : ScriptContainedMaliciousContent"). Match the
-/// stable error id, never the message text, which is localized. The id also arrives suffixed with
-/// the reporting cmdlet, so this is a substring test.
+/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match
+/// the stable error id, never the localized message text; the id can carry a cmdlet suffix, so
+/// this is a substring test.
 const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
 const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
 
@@ -160,8 +159,8 @@ impl InstallFailureContext {
         }
     }
 
-    /// Set from BOTH streams and before any marker handling: PowerShell writes the parse error to
-    /// stderr, but a wrapper that folded the streams together would otherwise lose it.
+    /// Both streams, before marker handling: PowerShell writes the parse error to stderr, but a
+    /// wrapper that folded the streams together would otherwise lose it.
     fn note_security_block(&mut self, text: &str) {
         if self.security_block.is_none() {
             self.security_block = security_block_guidance(text);
@@ -169,8 +168,8 @@ impl InstallFailureContext {
     }
 
     fn clear_failure(&mut self, stream: InstallOutputStream) {
-        // A run that got far enough to clear its own failure state was never blocked at parse
-        // time, so a stale verdict here would be from a previous attempt.
+        // A run that cleared its own failure state was never blocked at parse time, so a
+        // verdict here is stale.
         self.security_block = None;
         if self.explicit_error_stream == Some(stream) {
             self.explicit_error = None;
@@ -217,8 +216,8 @@ impl InstallFailureContext {
             Some(detail) => format!("Installation failed: {}", detail),
             None => generic_failure_message(code),
         };
-        // Appended, not substituted: the raw error id is what a support diagnostics report and a
-        // vendor false-positive submission both need, and the guidance is what the user needs.
+        // Appended, not substituted: the raw id is what a diagnostics report and a vendor
+        // submission need, the guidance is what the user needs.
         match self.security_block {
             Some(guidance) => format!("{} {}", base, guidance),
             None => base,
@@ -1366,9 +1365,8 @@ mod tests {
         assert!(!is_elevation_request(1, &["cmake".to_string()]));
     }
 
-    /// The exact stderr an AMSI provider produced in unsloth#8523. PowerShell scans the whole
-    /// script block while compiling it, so the parse error points at line 1 char 1 and the
-    /// installer never runs a statement -- there is no [TAURI:ERROR] marker to fall back on.
+    /// The exact stderr an AMSI provider produced in #8523. The scan covers the whole script
+    /// block, so the parse error points at line 1 char 1 and no statement ever runs.
     const AMSI_BLOCK_STDERR: [&str; 6] = [
         r"At C:\Program Files\Unsloth\install.ps1:1 char:1",
         "+ # Unsloth Studio Installer for Windows PowerShell",
@@ -1385,7 +1383,7 @@ mod tests {
             context.observe_stderr(line);
         }
         let message = context.message(1);
-        // The raw id survives: diagnostics reports and vendor submissions both need it.
+        // The raw id survives: diagnostics and vendor submissions need it.
         assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
         assert!(message.starts_with("Installation failed: "), "{message}");
         assert!(message.contains("blocked the installer before it started"), "{message}");
@@ -1394,7 +1392,7 @@ mod tests {
 
     #[test]
     fn amsi_block_is_recognised_on_stdout_and_when_the_id_carries_a_cmdlet_suffix() {
-        // A wrapper that folds stderr into stdout, and the Invoke-Expression form of the id.
+        // A wrapper folding stderr into stdout, plus the Invoke-Expression form of the id.
         let mut context = InstallFailureContext::default();
         context.observe_stdout(
             "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,\
