@@ -127,19 +127,29 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     # unless that name is taken, where it raises.
     if tool_name == "python":
         assert "absolute paths under a directory that exists do resolve" in full
-        assert "redirected into the working directory under the same base name" in full
-        assert "fails outright if that name is already taken" in full
+        # Two branches, measured: an absent convention prefix keeps the SUFFIX
+        # (/mnt/data/reports/out.csv -> ./reports/out.csv) and overwrites an
+        # existing file; any other missing parent keeps only the base name and
+        # raises when that name is taken. Describing one as both was wrong.
+        assert "the rest of the path is kept relative to the working directory" in full
+        assert "replacing any file already sitting there" in full
+        assert "only the base name is kept" in full
+        assert "fails outright if that name is taken" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
         # _build_bypass_env sets PYTHONPATH for the terminal subprocess too, so
         # python launched from a shell command carries the same shim.
         assert "Python you launch from here is the exception" in full
-        assert "lands in the working directory under its base name" in full
+        assert "gets the same rewrites" in full
     # No categorical claim about the convention paths in either: on a host where
     # /mnt/data is a real mount the shim never shadows it, so "not real" is wrong,
     # and the parent-directory rule already covers the absent case.
-    assert "/mnt/data" not in full
+    # /mnt/data may be named, but only inside the conditional describing what
+    # happens while it is ABSENT; a real mount is never shadowed, so no
+    # categorical "not real" claim may survive.
     assert "not real there" not in full
+    if tool_name == "python":
+        assert "when the directory does not exist" in full
     # True in both modes, so untouched.
     assert "persists for this conversation" in full
     assert "download link" in full

@@ -8981,12 +8981,16 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 # Measured against it:
 #
 #   python, parent exists   -> writes the real absolute path
-#   python, parent missing  -> CREATE is redirected to <cwd>/<basename> and the
-#                              requested path is never made, EXCEPT when that
-#                              name is already taken in the workdir, where the
-#                              anti-clobber branch declines and open raises
-#   python, prefix present  -> a real /mnt/data mount is never shadowed, so the
-#                              rule is the parent directory, not a prefix list
+#   python, absent convention prefix -> _remap keeps the SUFFIX relative to the
+#                              workdir (/mnt/data/reports/out.csv -> ./reports/
+#                              out.csv) and returns before the generic fallback,
+#                              so no basename collapse and no anti-clobber: an
+#                              existing ./out.csv is overwritten
+#   python, any other missing parent -> the generic fallback keeps only the base
+#                              name, and declines (open raises) when that name is
+#                              already taken in the workdir
+#   python, prefix present  -> a real /mnt/data mount is never shadowed, so a
+#                              prefix is only special while it is absent
 #   terminal, plain shell   -> no shim, so the shell's own rules
 #   terminal, launching python -> _build_bypass_env sets PYTHONPATH for the
 #                              terminal subprocess too, so that Python is patched
@@ -8998,16 +9002,19 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 _FULL_ACCESS_CLAUSE = {
     "python": (
         " The code sandbox is disabled, so absolute paths under a directory that "
-        "exists do resolve. Creating a file under a directory that does not exist "
-        "is redirected into the working directory under the same base name, and "
-        "fails outright if that name is already taken there, so say where a file "
-        "actually landed rather than assuming the path you asked for."
+        "exists do resolve. Two different rewrites apply when the directory does "
+        "not exist: under a code-interpreter convention prefix (/mnt/data, "
+        "/mnt/outputs, /tmp/outputs, /home/sandbox, /workspace) the rest of the "
+        "path is kept relative to the working directory, replacing any file "
+        "already sitting there; under any other missing directory only the base "
+        "name is kept, and the write fails outright if that name is taken. Report "
+        "where a file actually landed rather than the path you asked for."
     ),
     "terminal": (
         " The code sandbox is disabled, so absolute paths do resolve as the shell "
         "resolves them. Python you launch from here is the exception: it loads the "
-        "same shim as the python tool, so a create under a directory that does not "
-        "exist lands in the working directory under its base name instead."
+        "same shim as the python tool and gets the same rewrites, so a create "
+        "under a directory that does not exist lands in the working directory."
     ),
 }
 
