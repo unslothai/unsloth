@@ -166,6 +166,17 @@ class TestHealthVerdict:
         source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
         assert 'return True, "datasets_unavailable", datasets_unavailable_detail()' in source
 
+    def test_verdict_is_published_before_detection_settles(self):
+        """It does not depend on the hardware pass and never changes, so gating it
+        on DETECTION_COMPLETE would leave the first replies with chat_only set and
+        no reason, and the UI polling for a verdict that is already known."""
+        source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+        function = source[source.index("def _hardware_snapshot("):]
+        function = function[: function.index("\n\n\n")]
+        assert function.index("datasets_unavailable") < function.index(
+            "DETECTION_COMPLETE.is_set()"
+        )
+
     def test_frontend_explains_the_reason(self):
         frontend = _BACKEND.parent / "frontend" / "src" / "components" / "app-sidebar.tsx"
         source = frontend.read_text(encoding = "utf-8")

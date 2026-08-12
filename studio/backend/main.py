@@ -1440,6 +1440,16 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
     `device_type` as authoritative, and the sidebar's recovery poll runs only while it reads
     `chat_only_reason == "mlx_unavailable"`, so one such reply hides Train for the session.
     """
+    # Ahead of the detection guard, deliberately: an install without the datasets
+    # library cannot train on ANY device, so this verdict does not depend on the
+    # hardware pass and never changes once the install is in that tier. Reporting
+    # "still detecting" instead would leave the UI polling for a verdict that is
+    # already known, and reporting the hardware pass's own answer would tell an ARM64
+    # Windows box that training is available (issue #8495). Not inside
+    # detect_hardware(): every training-capable branch there returns early, and this
+    # is the one place the verdict is published.
+    if not datasets_available():
+        return True, "datasets_unavailable", datasets_unavailable_detail()
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
             return None
@@ -1456,14 +1466,6 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            # An install without the datasets library cannot train on ANY device, so
-            # this outranks whatever the hardware pass concluded -- on the ARM64
-            # inference-only tier a CPU/GPU verdict of "training available" would be
-            # a lie the UI acts on. Applied here rather than inside detect_hardware
-            # because every training-capable branch there returns early, and this is
-            # the one place the verdict is published (issue #8495).
-            if not datasets_available():
-                return True, "datasets_unavailable", datasets_unavailable_detail()
             return chat_only, reason, detail
     return None
 
