@@ -3061,10 +3061,11 @@ _TOOL_CODE_TIP = (
 # data rather than reading its own tool list, so the environment is stated
 # outright and the guess is redirected to a tool call.
 _TOOL_FULL_ACCESS_TIP = (
-    "Tool calls run on the user's own machine with the code sandbox and the "
-    "approval prompts disabled, so you can inspect and change the user's real "
-    "files and system. When the user asks what you can see or do on their "
-    "machine, check with a tool call instead of assuming you are isolated "
+    "Tool calls run on the machine running Unsloth Studio, with the code sandbox "
+    "and the approval prompts disabled, so you can inspect and change the real "
+    "files and system there. That machine is not always the device the user is "
+    "viewing this on: Studio can be served remotely. When asked what you can see "
+    "or do on it, check with a tool call instead of assuming you are isolated "
     "from it."
 )
 _TOOL_ARTIFACT_TIP = (
@@ -3081,7 +3082,11 @@ def _build_tool_action_nudge(
     tools: list[dict],
     model_name: str,
     full_access: bool = False,
+    full_access_only: bool = False,
 ) -> str:
+    """``full_access_only`` returns the Full access sentence alone, for a caller
+    that wants to state the environment without also introducing the general
+    tool guidance (and the date) to a path that has never carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -3092,6 +3097,8 @@ def _build_tool_action_nudge(
     has_artifact = "render_html" in tool_names
     if not (has_web or has_code or has_artifact):
         return ""
+    if full_access_only:
+        return _TOOL_FULL_ACCESS_TIP if (full_access and has_code) else ""
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -11127,6 +11134,20 @@ async def _proxy_to_external_provider(
             # The Studio loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
+            # This path runs python/terminal locally too (the loop passes
+            # disable_sandbox = bypass_permissions), so Full access has the same
+            # false-isolation problem here, and the swapped schemas alone do not
+            # settle it. Only the Full access sentence is added: this path has
+            # never carried the general tool nudge, and widening it would change
+            # every non-Full-access Codex run as a side effect.
+            if payload.bypass_permissions:
+                _codex_full_access_nudge = _build_tool_action_nudge(
+                    tools = studio_tool_payloads,
+                    model_name = model,
+                    full_access = True,
+                    full_access_only = True,
+                )
+                chat_messages = _append_to_system_message(chat_messages, _codex_full_access_nudge)
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 

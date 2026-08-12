@@ -8951,19 +8951,28 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # dropped, not reworded: where the code runs is said once, by the paths note
     # below, which both tools carry.
     ("Execute Python code in a sandbox and", "Execute Python code and"),
-    # POSIX: absolute paths DO resolve with the sandbox off, so the clause is not
-    # merely unhelpful, it is wrong.
+    # POSIX: real absolute paths DO resolve with the sandbox off, so a blanket
+    # denial is wrong. The two named conventions stay denied, because they are
+    # still handled specially: _build_bypass_env keeps _SANDBOX_SITE_DIR on
+    # PYTHONPATH, so sandbox_site/sitecustomize.py goes on healing an absent
+    # /mnt/data or /tmp/outputs onto the workdir in bypass runs too. Promising
+    # that every absolute path resolves would make the model report a write to
+    # /mnt/data that actually landed in the working directory.
     (
         "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
-        ". The code sandbox is disabled, so this runs directly on the user's own "
-        "machine and absolute paths do resolve.",
+        ". The code sandbox is disabled, so absolute paths on the machine running "
+        "Unsloth Studio do resolve; /mnt/data and /tmp/outputs are still not real "
+        "there, and writes to them are redirected into the working directory.",
     ),
     # Windows already says where the code runs and never denies absolute paths,
-    # so there is nothing false to remove; state the capability instead.
+    # so there is nothing false to remove; state the capability instead. "the
+    # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
+    # are documented remote modes (README), and the tools run on the host serving
+    # Studio, which is then not the device the user is looking at.
     (
         " You are on Windows, and this runs on the user's own machine.",
-        " You are on Windows, and this runs on the user's own machine. The code "
-        "sandbox is disabled, so absolute paths do resolve.",
+        " You are on Windows, and this runs on the machine running Unsloth Studio. "
+        "The code sandbox is disabled, so absolute paths there do resolve.",
     ),
 )
 

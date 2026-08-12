@@ -32,7 +32,11 @@ from core.inference.tools import (
     apply_full_access_tool_descriptions,
 )
 from models.inference import ChatCompletionRequest, ChatCountTokensRequest
-from routes.inference import _build_tool_action_nudge, _select_request_tools
+from routes.inference import (
+    _TOOL_FULL_ACCESS_TIP,
+    _build_tool_action_nudge,
+    _select_request_tools,
+)
 
 
 def _desc(tool: dict) -> str:
@@ -64,7 +68,11 @@ def test_full_access_descriptions_drop_the_isolation_claim(tool):
     # The one claim that is outright false with the sandbox off.
     assert "do not exist" not in description
     assert "sandbox is disabled" in description
-    assert "user's own machine" in description
+    assert "machine running Unsloth Studio" in description
+    # The remote modes (--secure / -H 0.0.0.0, README) put the tools on the host
+    # serving Studio, not on the device the user is looking at, so the prompt
+    # must not claim the two are the same.
+    assert "user's own machine" not in description
     # The workdir really is still the per-session dir in bypass mode
     # (_build_bypass_env repoints HOME/TMPDIR/TEMP/TMP at it), so the relative
     # path advice and the download-link note both have to survive.
@@ -101,17 +109,19 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform):
     assert "in a sandbox" not in full
     assert "do not exist" not in full
     assert "sandbox is disabled" in full
-    assert "absolute paths do resolve" in full
+    assert "do resolve" in full
+    assert "user's own machine" not in full
+    # _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize
+    # still heals these onto the workdir under Full access. A blanket "absolute
+    # paths resolve" would have the model report a write that went elsewhere.
+    if platform != "win32":
+        assert "/mnt/data" in full
+        assert "redirected into the working directory" in full
     # True in both modes, so untouched.
     assert "persists for this conversation" in full
     assert "download link" in full
     if platform == "win32":
         assert "You are on Windows" in full
-        assert "/mnt/data" not in full
-    else:
-        # The POSIX clause naming ChatGPT's /mnt/data is what gets rewritten.
-        assert "/mnt/data" in sandboxed
-        assert "/mnt/data" not in full
 
 
 def test_python_full_access_description_still_omits_the_shell():
@@ -202,18 +212,45 @@ def test_nudge_is_unchanged_without_full_access():
 
 def test_nudge_states_the_environment_under_full_access():
     nudge = _build_tool_action_nudge(tools = _CODE_TOOLS, model_name = "test-8B", full_access = True)
-    assert "user's own machine" in nudge
+    assert "machine running Unsloth Studio" in nudge
     assert "code sandbox and the approval prompts disabled" in nudge
+    # Studio can be served remotely, so the tools' host is not necessarily the
+    # device in front of the user.
+    assert "not always the device the user is viewing this on" in nudge
     # The actual reported failure: the model asserted isolation instead of
     # checking, so the nudge has to redirect that guess to a tool call.
     assert "check with a tool call" in nudge
+
+
+def test_full_access_only_returns_the_sentence_alone():
+    """The Codex studio-tools path has never carried the general tool nudge, so
+    it takes the Full access sentence without the date or the base guidance."""
+    only = _build_tool_action_nudge(
+        tools = _CODE_TOOLS, model_name = "test-8B", full_access = True, full_access_only = True
+    )
+    assert only == _TOOL_FULL_ACCESS_TIP
+    assert "The current date is" not in only
+    assert "Tools are available when they materially improve" not in only
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"full_access": False}, {"full_access": True, "tools": _WEB_ONLY}],
+    ids = ["not_full_access", "no_code_tool"],
+)
+def test_full_access_only_is_empty_when_it_does_not_apply(kwargs):
+    tools = kwargs.pop("tools", _CODE_TOOLS)
+    assert (
+        _build_tool_action_nudge(tools = tools, model_name = "test-8B", full_access_only = True, **kwargs)
+        == ""
+    )
 
 
 def test_full_access_tip_needs_a_code_tool():
     """web_search alone runs nothing locally, so the sandbox sentence would be
     noise (and false)."""
     nudge = _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B", full_access = True)
-    assert "user's own machine" not in nudge
+    assert "machine running Unsloth Studio" not in nudge
     assert nudge == _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B")
 
 
