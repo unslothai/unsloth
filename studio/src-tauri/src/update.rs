@@ -24,6 +24,8 @@ pub fn new_update_state() -> UpdateState {
 
 // ── Spawn ──
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
+    // Only the Windows arm below mutates it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = crate::process::build_managed_cli_command(bin, &["studio", "update"])?;
     // The only managed invocation that scrubs, and the only one that shipped doing it.
     // Elsewhere inheriting is the point, since the console script honours these. Here

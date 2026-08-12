@@ -719,3 +719,59 @@ def test_the_policy_block_helper_only_matches_1260(studio):
 
     # POSIX OSError has no winerror at all.
     assert not studio._is_application_control_block(OSError(13, "denied"))
+
+
+def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(
+    monkeypatch, studio, tmp_path
+):
+    """Quarantine removes the unsigned stub rather than denying it.
+
+    There is then nothing to run and nothing to put back, and reading that as a
+    broken update rolls a good one back exactly as the denial case did. The
+    launcher stays gone, which is fine: nothing executes it any more.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
+
+    _update(studio)
+
+    assert not launcher.exists()
+    assert not (scripts / "unsloth.exe.update-backup").exists()
+    # Only the interpreter was asked; there was no file to probe.
+    assert [call[0][0] for call in calls] == [str(scripts / "python.exe")]
+
+
+def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
+    monkeypatch, studio, tmp_path
+):
+    """Parity guard: absence excuses the launcher, never the update."""
+    _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3),
+    )
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+
+def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
+    monkeypatch, studio, tmp_path
+):
+    """Absence is only excused once recovery has failed.
+
+    A healthy CLI must not let a launcher that could have been put back stay
+    missing, or an ordinary no-op update on an unpoliced machine would quietly
+    strip the console script.
+    """
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER

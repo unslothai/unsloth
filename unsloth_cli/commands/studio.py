@@ -3816,6 +3816,11 @@ class _WindowsLauncherUpdateTransaction:
     # so it can never be confused with a real diagnostic that happens to read the
     # same way, and it never reaches a user.
     _POLICY_BLOCKED = "an Application Control policy blocked the launcher"
+    # Absence is not corruption. Quarantine takes the unsigned stub and leaves the
+    # environment intact, and nothing executes the stub any more, so the CLI can be
+    # perfectly healthy without it. Kept apart from the PE-shape failure, which is
+    # still a real one.
+    _LAUNCHER_ABSENT = "the updated launcher is not on disk"
     _RESTORE_ATTEMPTS = 3
 
     def __init__(self) -> None:
@@ -4025,9 +4030,7 @@ class _WindowsLauncherUpdateTransaction:
         but it is also unavoidable, since the only way to tell a good stub from a
         corrupt one is to start it. It is confined to the case where the launcher
         was missing or truncated, since an intact one never reaches this loop:
-        _launcher_health_error asks the interpreter and reports healthy, and if
-        the interpreter says otherwise then no launcher copy could have fixed it
-        and returning False is the right answer anyway.
+        _launcher_health_error asks the interpreter and reports healthy.
         """
         if self._launcher_health_error() is None:
             return True
@@ -4039,7 +4042,11 @@ class _WindowsLauncherUpdateTransaction:
         # one happened to be tried last.
         if candidates:
             self._restore_from(candidates[0])
-        return False
+        # No copy could be put back and started. A launcher that is simply gone,
+        # or one the policy denies, is still not a broken CLI, so ask the
+        # interpreter before giving up. Asked only here, after every candidate
+        # has been tried, so a launcher that could have been recovered still is.
+        return self._recovered_cli_health_error() is None
 
     def _launcher_runs_error(self) -> Optional[str]:
         """Whether THIS launcher file starts and answers --version.
@@ -4055,8 +4062,10 @@ class _WindowsLauncherUpdateTransaction:
         majority that have no policy at all, which is the strictly worse trade.
         """
         assert self.launcher is not None
+        if not self.launcher.exists():
+            return self._LAUNCHER_ABSENT
         if not self._is_valid_pe(self.launcher):
-            return "the updated launcher is missing or is not a non-empty PE file"
+            return "the updated launcher is not a non-empty PE file"
         try:
             result = subprocess.run(
                 [str(self.launcher), "--version"],
@@ -4088,10 +4097,26 @@ class _WindowsLauncherUpdateTransaction:
         """
         error = self._launcher_runs_error()
         if error is self._POLICY_BLOCKED:
-            return self._interpreter_health_error()
+            return self._interpreter_health_error(error)
         return error
 
-    def _interpreter_health_error(self) -> Optional[str]:
+    def _recovered_cli_health_error(self) -> Optional[str]:
+        """_launcher_health_error, once recovering the launcher has been ruled out.
+
+        Absence is the difference. A missing launcher IS worth restoring, so
+        _launcher_health_error keeps reporting it and validate_launcher goes on
+        to put the previous one back. But quarantine deletes the unsigned stub
+        rather than denying it, and no copy survives being restored either, so
+        once every candidate has failed, absence says as little about the update
+        as a policy denial does: ask the interpreter instead of failing a good
+        update and rolling it back (issue #8490).
+        """
+        error = self._launcher_runs_error()
+        if error is self._POLICY_BLOCKED or error is self._LAUNCHER_ABSENT:
+            return self._interpreter_health_error(error)
+        return error
+
+    def _interpreter_health_error(self, reason: str) -> Optional[str]:
         """Health of the managed CLI when the launcher itself cannot be started.
 
         Answers the question validate_launcher actually has -- did the update
@@ -4102,9 +4127,13 @@ class _WindowsLauncherUpdateTransaction:
         assert self.launcher is not None
         python = self.launcher.parent / "python.exe"
         if not python.is_file():
+            blocked = reason is self._POLICY_BLOCKED
+            state = (
+                "is blocked by an Application Control policy" if blocked else "is missing"
+            )
             return (
-                "the updated launcher is blocked by an Application Control policy "
-                f"and there is no managed interpreter at {python} to ask instead"
+                f"the updated launcher {state} and there is no managed interpreter "
+                f"at {python} to ask instead"
             )
         try:
             result = subprocess.run(

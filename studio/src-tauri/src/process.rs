@@ -958,7 +958,9 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
     // Old layout (bundled scripts, older upstream)
     let old_base = studio.join(".venv");
 
-    for base in [new_base, old_base] {
+    let bases = [new_base, old_base];
+
+    for base in &bases {
         #[cfg(unix)]
         let bin = base.join("bin").join("unsloth");
         #[cfg(windows)]
@@ -967,17 +969,25 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
         if bin.exists() {
             return Some(bin);
         }
+    }
 
-        // Nothing runs the console script any more, so its absence no longer means
-        // there is no install: antivirus quarantine takes the unsigned stub and
-        // leaves a perfectly working environment behind. Answering None there would
-        // report "not installed" for a Studio the interpreter can still start, and
-        // this finder gates the backend, the updater and the install-status probe.
-        // The returned path stays the canonical handle whether or not the file is
-        // there: every Windows caller reaches the CLI through its parent directory.
-        #[cfg(windows)]
+    // Second pass, Windows only. Nothing runs the console script any more, so its
+    // absence no longer means there is no install: antivirus quarantine takes the
+    // unsigned stub and leaves a perfectly working environment behind. Answering
+    // None there would report "not installed" for a Studio the interpreter can
+    // still start, and this finder gates the backend, the updater and the
+    // install-status probe. The returned path stays the canonical handle whether or
+    // not the file is there: every Windows caller reaches the CLI through its
+    // parent directory.
+    //
+    // Separate from the first pass rather than folded into it, because an
+    // interrupted migration can leave a half-built new environment beside a working
+    // legacy .venv. Accepting a bare python.exe in layout order would then target
+    // the broken one and never look at the legacy install that still has a launcher.
+    #[cfg(windows)]
+    for base in &bases {
         if base.join("Scripts").join("python.exe").exists() {
-            return Some(bin);
+            return Some(base.join("Scripts").join("unsloth.exe"));
         }
     }
 
@@ -1197,6 +1207,37 @@ mod tests {
         let invocation =
             resolve_managed_cli_invocation(&scripts.join("unsloth.exe"), &["studio"]).unwrap();
         assert_eq!(invocation.program, scripts.join("python.exe"));
+
+        fs::remove_dir_all(studio).unwrap();
+    }
+
+    // An interrupted migration leaves a half-built new environment beside a legacy
+    // one that still works. A launcher anywhere outranks a bare interpreter, or the
+    // desktop would drive the broken half and report an install it cannot start.
+    #[cfg(windows)]
+    #[test]
+    fn a_legacy_launcher_outranks_a_stubless_new_environment() {
+        let studio = temp_studio_dir("interrupted-migration");
+        let new_scripts = studio.join("unsloth_studio").join("Scripts");
+        let old_scripts = studio.join(".venv").join("Scripts");
+        fs::create_dir_all(&new_scripts).unwrap();
+        fs::create_dir_all(&old_scripts).unwrap();
+        fs::write(new_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("python.exe"), "").unwrap();
+        fs::write(old_scripts.join("unsloth.exe"), "").unwrap();
+
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(old_scripts.join("unsloth.exe")),
+            "a working legacy install must win over a partial new one"
+        );
+
+        // Once the new layout has its own launcher, layout order takes over again.
+        fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(new_scripts.join("unsloth.exe"))
+        );
 
         fs::remove_dir_all(studio).unwrap();
     }
