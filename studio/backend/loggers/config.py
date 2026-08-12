@@ -191,11 +191,59 @@ def _echoable(exception: str) -> str:
     ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
     \\n normalises every separator a message could smuggle in, including the \\r the
     export worker's log reader treats as a line break. Whatever control characters survive
-    that are escaped per line, so the prefix is the first thing on the line and stays."""
-    return "\n".join(
+    that are escaped per line, so the prefix is the first thing on the line and stays.
+
+    Capped AFTER escaping, because escaping is what makes the size unpredictable: the
+    exception field arrives already bounded by ``truncate_exception`` at
+    ``_MAX_EXC_CHARS``, but every character it replaces becomes six, so a payload that is
+    all C0 controls (a raw request body quoted into an exception message) turns 16 KiB of
+    bounded field into 98 KiB of echo. Capping the input instead would leave that same
+    multiplier in place, so the budget is spent on the escaped text."""
+    lines = [
         f"{_TRACEBACK_ECHO_PREFIX}{_escape_unprintable(part)}"
         for part in exception.rstrip().splitlines()
+    ]
+    return _cap_echoed_lines(lines, _MAX_EXC_CHARS)
+
+
+def _cap_echoed_lines(lines: list[str], limit: int) -> str:
+    """Join the echoed lines within `limit` characters, keeping the head and the tail.
+
+    Whole lines, and the omission notice carries the prefix too, so the invariant the echo
+    rests on holds for every line it emits: nothing here can begin a JSON value. A single
+    line longer than the head budget is cut mid-line rather than dropping the echo
+    entirely, which can land inside a ``\\uXXXX`` escape; that costs one garbled escape at
+    the cut and keeps the frames around it."""
+    if limit <= 0:
+        return "\n".join(lines)
+    total = sum(len(line) + 1 for line in lines)
+    if total <= limit:
+        return "\n".join(lines)
+    tail_budget = max(1, limit // 4)
+    head_budget = limit - tail_budget
+    head: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > head_budget:
+            break
+        head.append(line)
+        used += len(line) + 1
+    tail: list[str] = []
+    used = 0
+    for line in reversed(lines[len(head) :]):
+        if used + len(line) + 1 > tail_budget:
+            break
+        tail.append(line)
+        used += len(line) + 1
+    tail.reverse()
+    if not head and not tail:
+        head = [lines[0][:head_budget]]
+    dropped = len(lines) - len(head) - len(tail)
+    notice = (
+        f"{_TRACEBACK_ECHO_PREFIX}... [{dropped} lines omitted; raise "
+        "UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ..."
     )
+    return "\n".join([*head, notice, *tail])
 
 
 def with_readable_traceback(renderer):

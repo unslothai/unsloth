@@ -96,6 +96,34 @@ def test_echoed_copy_is_the_redacted_truncated_one():
     assert out.endswith("ValueError: nope")
 
 
+def test_a_control_heavy_traceback_cannot_outgrow_the_cap_by_escaping():
+    # truncate_exception bounds the FIELD, and escaping then multiplies it: every C0
+    # control becomes six characters, so 16 KiB of bounded exception used to leave as
+    # 98 KiB of echo. A request body quoted into an exception message is the reachable
+    # source of that payload, so the budget is spent on the escaped text instead.
+    payload = "HEAD\n" + ("\x1b" * 200) + "\n" + "\n".join("\x00" * 400 for _ in range(400))
+    capped = log_config.truncate_exception({"exception": payload + "\nValueError: nope"})[
+        "exception"
+    ]
+    out = _render({"event": "request_failed", "exception": capped})
+    _, _, echoed = out.partition("\n")
+    assert len(echoed) <= log_config._MAX_EXC_CHARS + 200
+    # ...and the invariant survives the cut: the notice is prefixed like every other line.
+    for line in echoed.split("\n"):
+        assert line.startswith("| "), line
+    assert "lines omitted" in echoed
+    assert echoed.endswith("ValueError: nope")
+
+
+def test_an_uncapped_traceback_is_echoed_whole():
+    # The cap only engages past the budget. A normal traceback keeps every frame.
+    body = "\n".join(f'  File "f{i}.py", line {i}, in fn' for i in range(20))
+    out = _render({"event": "request_failed", "exception": f"Traceback:\n{body}\nValueError: nope"})
+    _, _, echoed = out.partition("\n")
+    assert "lines omitted" not in echoed
+    assert echoed.count("\n") == 21
+
+
 def test_an_exception_message_cannot_forge_a_log_record():
     # CWE-117. Exception messages carry request-derived text (the truncation cap above
     # exists because a rejected upload embedded a whole request body in one), so a
