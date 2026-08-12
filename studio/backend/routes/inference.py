@@ -5959,10 +5959,6 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
-        )
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
             llama_extra_args,
@@ -5997,6 +5993,25 @@ def _estimate_gguf_kv_gb(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
+        )
+        # --embedding makes llama-server cap n_batch to n_ubatch. The loader
+        # therefore reduces slots to the same value before fitting; admission
+        # must price the process that will launch, not the original request.
+        if (
+            getattr(probe, "is_embedding_gguf", False)
+            and effective_ubatch is not None
+            and effective_ubatch < slots
+        ):
+            slots = max(1, effective_ubatch)
+            effective_ubatch = _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -6039,10 +6054,13 @@ def _estimate_gguf_kv_gb(
             ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
             act_scratch = 4 * n_embd * ub * 4
             out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            output_slots = (
+                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
+            )
             raw = (
                 2 * act_scratch + out_buffer * slots
                 if per_device_tensor
-                else act_scratch + out_buffer * max(0, slots - 1)
+                else act_scratch + out_buffer * output_slots
             )
             return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
@@ -6355,6 +6373,8 @@ def _estimate_gguf_required_gb(
                     n_ubatch = n_ubatch,
                 )
             )
+            if effective_ubatch is None and not is_diffusion:
+                effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
             if effective_ubatch:
                 # auto context: assume the native one fits at least a full micro-batch
                 budget_ctx = ctx if ctx > 0 else effective_ubatch
@@ -6394,7 +6414,8 @@ def _estimate_gguf_required_gb(
                 # Scaled per device only in tensor mode, mirroring the local branch: a
                 # layer split folds the flat buffer in once (_flat_buffer(False)), and
                 # only tensor mode replicates it on every card.
-                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
+                # The remote header is unknown, so reserve as if it enables embeddings.
+                _out_slots = max(1, n_parallel)
                 out_buffer_bytes = (
                     _ASSUMED_MAX_VOCAB
                     * effective_ubatch
@@ -16066,11 +16087,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
-    # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
-    # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
-    # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
-    # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
-    # a non-embedding target switches, then llama-server returns a no-pooling error.
+    # Auto-switch applies here too; the target launches embedding-enabled only if it pools.
     body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
