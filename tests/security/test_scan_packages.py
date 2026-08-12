@@ -375,6 +375,31 @@ def test_baseline_key_line_shift_stable_but_code_specific():
     assert sp._finding_key(base) != sp._finding_key(malicious)
 
 
+def test_network_check_sees_httpx2():
+    """httpx2 is a separate import name, not a submodule of httpx.
+
+    openai 3.0.0 requires httpx2 and routes every call through it. While the network
+    check matched only ``httpx.``, the SDK's own HTTP was invisible to each combined
+    check that needs a network half, so reading OPENAI_API_KEY next to an httpx2 call
+    did not register as secrets-plus-network at all.
+    """
+    for call in ("httpx2.get(u)", "httpx2.post(u)", "httpx2.Client()", "httpx2.AsyncClient()"):
+        assert sp.RE_NETWORK.search(call), call
+    # the original spelling still matches
+    for call in ("httpx.get(u)", "httpx.Client()"):
+        assert sp.RE_NETWORK.search(call), call
+    # and the widening stays anchored: no bare prefix or unrelated attribute
+    for miss in ("myhttpx.get(u)", "httpx23.get(u)", "httpx2.Timeout(5)"):
+        assert not sp.RE_NETWORK.search(miss), miss
+
+
+def test_httpx2_secrets_plus_network_is_one_finding():
+    """The combined check has to fire on a file that reads a secret and calls httpx2."""
+    src = 'import os, httpx2\nk = os.environ.get("OPENAI_API_KEY")\nhttpx2.Client().get(u)\n'
+    assert sp.RE_NETWORK.search(src)
+    assert sp.RE_ENV_HARVEST.search(src)
+
+
 def test_extract_evidence_records_all_matches():
     # The whole point of P1: a match appended after the first few must show up
     # in the evidence, so it changes the key instead of riding the earlier ones.

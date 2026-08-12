@@ -1794,6 +1794,38 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L530:             module = __import__(mod_path, fromlist=[\"compute_module_sizes\"])\nExec: L1366:     model.eval()",
       "evidence_hash": "d11a00fda9ab43a1390c5a10cf09f760efcbacd26c89fc18b359f063ee167135"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_client.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L210:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L220:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L244:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L816:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L826:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L850:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L147:         http_client: httpx2.Client | None = None, | L599:         http_client: httpx2.Client | None = None, | L753:         http_client: httpx2.AsyncClient | None = None, | L1216:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "ee8e7ed79d2bfe99f85f53b1bff3d0f59cfc0de3393ab31a2955ef4365005e3c"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx2.Client | None = None, | L109:                 with httpx2.Client() as client: | L134:     http_client: httpx2.Client | None = None, | L156:                 with httpx2.Client() as client:",
+      "evidence_hash": "a4b0fb17867ab99605026f7d5d753ba2d3cd0a79f5fab6d77521ec251c256a4c"
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/azure.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L215:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L218:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L539:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L542:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L38: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx2.Client, httpx2.AsyncClient]) | L101: class AzureOpenAI(BaseAzureClient[httpx2.Client, Stream[Any]], OpenAI): | L120:         http_client: httpx2.Client | None = None, | L142:         http_client: httpx2.Client | None = None, | L164:         http_client: httpx2.Client | None = None, | L190:         http_client: httpx2.Client | None = None, | L298:         http_client: httpx2.Client | None = None, | L422: class AsyncAzureOpenAI(BaseAzureClient[httpx2.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L442:         http_client: httpx2.AsyncClient | None = None, | L465:         http_client: httpx2.AsyncClient | None = None, | L488:         http_client: httpx2.AsyncClient | None = None, | L514:         http_client: httpx2.AsyncClient | None = None, | L622:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "a2048fafc6303825095270dc766eb7630cdf9b0fb2e6eb0272695dbe9cd185c1"
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/bedrock.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L105:     token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L150:     environment_token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L415:         http_client: httpx2.Client | None = None, | L531:         http_client: httpx2.Client | None = None, | L649:         http_client: httpx2.AsyncClient | None = None, | L767:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "ed7177e905325f49fc00b6329c7b4c18436af60fa52a559251a3a54618715873"
     }
   ]
 }
