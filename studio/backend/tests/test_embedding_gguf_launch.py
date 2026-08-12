@@ -221,7 +221,7 @@ class TestLoadModelEmitsTheFlag:
 
     def test_inherited_pooling_cannot_override_the_header_probe(self):
         src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
-        assert 'env.pop("LLAMA_ARG_POOLING", None)' in src
+        assert '"LLAMA_ARG_POOLING", "LLAMA_ARG_RERANKING"' in src
 
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])

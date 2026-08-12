@@ -6122,7 +6122,8 @@ def _estimate_gguf_required_gb(
                 # Scaled per device only in tensor mode, mirroring the local branch: a
                 # layer split folds the flat buffer in once (_flat_buffer(False)), and
                 # only tensor mode replicates it on every card.
-                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
+                # The remote header is unknown, so reserve as if it enables embeddings.
+                _out_slots = max(1, n_parallel)
                 out_buffer_bytes = (
                     _ASSUMED_MAX_VOCAB
                     * effective_ubatch

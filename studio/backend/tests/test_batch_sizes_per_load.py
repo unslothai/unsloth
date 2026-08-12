@@ -665,10 +665,11 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
         big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
         typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
 
-    # The term is per slot PAST the first, so one slot is unchanged by it and the
-    # llama.cpp defaults (which emit no flag at all) stay exactly at the weights.
+    # Unset batch defaults do not expose enough shape information to add a reserve.
     assert blank_1 == pytest.approx(1.0) and blank_4 == pytest.approx(1.0)
-    # 262144 * 32768 * 4 = 32 GiB for the second slot, which the mask alone missed
+    # The remote header may enable embeddings, so the first output buffer is charged.
+    assert big_1 > blank_1 + 30.0
+    # 262144 * 32768 * 4 = 32 GiB for the second slot too.
     assert big_2 > big_1 + 30.0
     # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0
