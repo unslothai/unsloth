@@ -272,3 +272,84 @@ def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])
+
+
+# Device selection after a fatal torch driver failure.
+
+
+def _patch_probe(monkeypatch, usable):
+    """Return configured probe results and record the devices checked."""
+    from utils import torch_device_probe
+
+    asked = []
+
+    def _can_allocate(device):
+        asked.append(device)
+        return usable[device]
+
+    monkeypatch.setattr(torch_device_probe, "device_can_allocate", _can_allocate)
+    return asked
+
+
+class _ImportIsACrash:
+    """Fail if sentence-transformers is reached after both device probes crash."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"sentence-transformers was reached ({name}) on a crashing host")
+
+
+def test_load_device_keeps_the_accelerator_when_it_is_usable(monkeypatch):
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    asked = _patch_probe(monkeypatch, {"cuda": True})
+    assert embeddings._load_device() == "cuda"
+    assert asked == ["cuda"]
+
+
+def test_load_device_degrades_to_cpu_when_the_accelerator_crashes(monkeypatch):
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    _patch_probe(monkeypatch, {"cuda": False, "cpu": True})
+    assert embeddings._load_device() == "cpu"
+
+
+def test_load_device_raises_when_torch_crashes_on_cpu_too(monkeypatch):
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    _patch_probe(monkeypatch, {"cuda": False, "cpu": False})
+    with pytest.raises(embeddings.TorchDeviceUnusableError):
+        embeddings._load_device()
+
+
+def test_load_device_probes_a_cpu_only_host_too(monkeypatch):
+    monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
+    asked = _patch_probe(monkeypatch, {"cpu": False})
+    with pytest.raises(embeddings.TorchDeviceUnusableError):
+        embeddings._load_device()
+    assert asked == ["cpu"]
+
+
+def test_a_real_crashing_child_moves_the_load_to_cpu(monkeypatch):
+    from utils import torch_device_probe
+
+    monkeypatch.setenv(torch_device_probe.DISABLE_ENV_VAR, "0")
+    monkeypatch.setattr(
+        torch_device_probe,
+        "_PROBE_SCRIPT",
+        "import ctypes, sys\nif sys.argv[1] != 'cpu': ctypes.string_at(0)",
+    )
+    torch_device_probe.device_can_allocate.cache_clear()
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    try:
+        assert embeddings._load_device() == "cpu"
+    finally:
+        torch_device_probe.device_can_allocate.cache_clear()
+
+
+def test_crashing_torch_falls_back_to_llama_server(monkeypatch):
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    _patch_probe(monkeypatch, {"cuda": False, "cpu": False})
+    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    monkeypatch.setitem(sys.modules, "sentence_transformers", _ImportIsACrash())
+    embeddings._model = None
+    embeddings._name = None
+    embeddings._reset_backend()
+
+    assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
