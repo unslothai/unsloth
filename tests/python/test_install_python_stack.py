@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import importlib
+import inspect
 import io
 import os
 import re
@@ -581,3 +582,73 @@ class TestDuplicateCoreMetadataRepair:
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert "duplicate package metadata remains" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "duplicate, overlay_args",
+        [
+            ("unsloth", ("--no-cache-dir", "--no-deps", "-e", "/src/unsloth")),
+            (
+                "unsloth-zoo",
+                (
+                    "--no-cache-dir",
+                    "--no-deps",
+                    "--force-reinstall",
+                    "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+                ),
+            ),
+        ],
+    )
+    def test_local_repair_restores_only_the_source_it_replaced(
+        self, monkeypatch, duplicate, overlay_args
+    ):
+        probes = {
+            name: iter((["old", "new"], ["new"]) if name == duplicate else (["new"],))
+            for name in ("unsloth", "unsloth-zoo")
+        }
+        installs = []
+
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda name: next(probes[name]),
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(
+            ips,
+            "pip_install",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+        )
+
+        assert ips._repair_duplicate_core_metadata(
+            ("unsloth", "unsloth-zoo"), local_repo = "/src/unsloth"
+        )
+        assert installs[0][1] == ("--no-cache-dir", "--no-deps", "--force-reinstall", duplicate)
+        assert installs[1][1] == overlay_args
+        assert installs[1][2]["constrain"] is False
+
+    def test_install_pass_hands_local_provenance_to_duplicate_repair(self):
+        source = inspect.getsource(ips.install_python_stack)
+        assert "local_repo=local_repo" in source.replace(" ", "")
+
+    def test_normal_local_overlay_still_applies_both_sources(self, monkeypatch):
+        installs = []
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ips,
+            "pip_install",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+        )
+
+        ips._overlay_local_core_packages("/src/unsloth")
+
+        assert [call[1] for call in installs] == [
+            ("--no-cache-dir", "--no-deps", "-e", "/src/unsloth"),
+            (
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+            ),
+        ]
+        assert all(call[2]["constrain"] is False for call in installs)

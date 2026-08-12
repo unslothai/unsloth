@@ -25,7 +25,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
 MANIFEST_SCHEMA = 1
@@ -363,15 +363,17 @@ def verify_install(
     req_root: Optional[Path] = None,
     package_name: str = "unsloth",
     installed: Optional[Dict[str, str]] = None,
+    installed_conflicts: Optional[Sequence[str]] = None,
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
     Reason strings are surfaced verbatim by the desktop preflight as its
     staleness reason, so keep them stable.
 
-    Pass `installed` (and the matching `root` / `req_root`) to describe a venv
-    other than this interpreter's; without it the version and dependency checks
-    would answer for the venv the caller happens to be running in.
+    Pass `installed`, `installed_conflicts`, and the matching `root` / `req_root`
+    to describe a venv other than this interpreter's; without them the version
+    and dependency checks would answer for the venv the caller happens to be
+    running in.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -399,8 +401,12 @@ def verify_install(
             current = versions[0] if len(versions) == 1 else None
         else:
             current = _installed_version(manifest_package, installed)
+        foreign_conflicts = {_canonical(name) for name in (installed_conflicts or ())}
+        core_conflict = _canonical(manifest_package) in foreign_conflicts or (
+            _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
+        )
         recorded = manifest.get("package_version")
-        if installed is None and (len(versions) > 1 or len(zoo_versions) > 1):
+        if core_conflict or (installed is None and (len(versions) > 1 or len(zoo_versions) > 1)):
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
             reason = "studio_install_version_changed"

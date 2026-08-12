@@ -238,6 +238,21 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
     assert state["manifest_ok"] is True
 
 
+@pytest.mark.parametrize("conflict", ["pytest", "unsloth-zoo"])
+def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_root, conflict):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    state = im.verify_install(
+        root = install_root,
+        req_root = req_root,
+        package_name = "pytest",
+        installed = {"pytest": pytest.__version__},
+        installed_conflicts = {conflict},
+    )
+
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
     # The --local dev path: an edited studio.txt must re-run the dependency
     # pass, not sit behind setup.sh's "up to date" fast path.

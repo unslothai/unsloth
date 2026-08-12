@@ -128,11 +128,13 @@ def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
     return None
 
 
-def _distributions_in(root: Path) -> Optional[Dict[str, str]]:
-    """Canonical distribution name -> version inside another venv.
+def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
+    """Installed versions and duplicate canonical names inside another venv.
 
     importlib.metadata reports the running interpreter only, so a foreign
-    site-packages has to be handed to the finder explicitly.
+    site-packages has to be handed to the finder explicitly. Keep multiplicity
+    beside the single-version map: collapsing it here would let a foreign venv
+    with ambiguous core metadata pass manifest verification.
     """
     paths = [str(path) for path in _venv_site_packages(root)]
     if not paths:
@@ -140,14 +142,19 @@ def _distributions_in(root: Path) -> Optional[Dict[str, str]]:
     from importlib.metadata import Distribution, DistributionFinder
 
     found: Dict[str, str] = {}
+    conflicts: set[str] = set()
     try:
         for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
             name = getattr(dist, "name", None) or dist.metadata["Name"]
             if name:
-                found.setdefault(_canonical(name), dist.version or "")
+                canonical = _canonical(name)
+                if canonical in found:
+                    conflicts.add(canonical)
+                else:
+                    found[canonical] = dist.version or ""
     except Exception:
         return None
-    return found
+    return found, conflicts
 
 
 def _requirements_root_in(root: Path) -> Optional[Path]:
@@ -162,6 +169,13 @@ def _supports_foreign_root(module) -> bool:
     """A manifest helper predating the installed= parameter cannot describe another venv."""
     try:
         return "installed" in inspect.signature(module.verify_install).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _supports_foreign_conflicts(module) -> bool:
+    try:
+        return "installed_conflicts" in inspect.signature(module.verify_install).parameters
     except (TypeError, ValueError):
         return False
 
@@ -188,12 +202,17 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
     # came from this CLI's own tree.
     root = _managed_root(extra_roots) or _venv_root_for_module(module)
     foreign = root is not None and _resolved(root) != _resolved(Path(sys.prefix))
-    installed = _distributions_in(root) if foreign else None
+    foreign_distributions = _distributions_in(root) if foreign else None
+    installed = foreign_distributions[0] if foreign_distributions is not None else None
+    installed_conflicts = foreign_distributions[1] if foreign_distributions is not None else set()
     req_root = _requirements_root_in(root) if foreign else None
     try:
         if installed is not None and req_root is not None and _supports_foreign_root(module):
             # That venv's own metadata: unreadable through this interpreter.
-            return module.verify_install(root = root, req_root = req_root, installed = installed)
+            kwargs = {"root": root, "req_root": req_root, "installed": installed}
+            if _supports_foreign_conflicts(module):
+                kwargs["installed_conflicts"] = installed_conflicts
+            return module.verify_install(**kwargs)
         state = module.verify_install(root = root)
         if foreign and not state["deps_ok"]:
             # The manifest came from another venv but the dependency walk ran

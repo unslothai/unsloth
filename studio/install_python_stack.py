@@ -3535,7 +3535,38 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-def _repair_duplicate_core_metadata(package_names: "tuple[str, ...]") -> bool:
+def _overlay_local_core_packages(local_repo: str, package_names = None) -> None:
+    """Apply the requested source provenance for selected core packages."""
+    selected = (
+        None
+        if package_names is None
+        else {re.sub(r"[-_.]+", "-", name).lower() for name in package_names}
+    )
+    if selected is None or "unsloth" in selected:
+        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
+        pip_install(
+            "Overlaying local repo (editable)",
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            local_repo,
+            constrain = False,
+        )
+    if selected is None or "unsloth-zoo" in selected:
+        _step(_LABEL, "overlaying unsloth-zoo from git main")
+        pip_install(
+            "Overlaying unsloth-zoo from git main",
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
+            constrain = False,
+        )
+
+
+def _repair_duplicate_core_metadata(
+    package_names: "tuple[str, ...]", *, local_repo: str = ""
+) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
     A no-dependency reinstall is intentional. It gives pip or uv one package
@@ -3562,6 +3593,13 @@ def _repair_duplicate_core_metadata(package_names: "tuple[str, ...]") -> bool:
             "--force-reinstall",
             name,
         )
+
+    # install.sh/install.ps1 may already have overlaid a checkout and git-main
+    # zoo before handing off with SKIP_STUDIO_BASE=1. The bare reinstall above
+    # repairs metadata, but changes provenance to PyPI; restore only sources the
+    # repair touched before the skipped base branch can declare success.
+    if duplicates and local_repo:
+        _overlay_local_core_packages(local_repo, duplicates)
 
     importlib.invalidate_caches()
     remaining = [name for name in duplicates if len(install_manifest.installed_versions(name)) > 1]
@@ -3984,7 +4022,7 @@ def install_python_stack() -> int:
     # A superseded dist-info makes version() and every RECORD consumer choose
     # an arbitrary package version. Repair it before any fast package operation,
     # including installer handoffs that set skip_base after their own upgrade.
-    if not _repair_duplicate_core_metadata((package_name, "unsloth-zoo")):
+    if not _repair_duplicate_core_metadata((package_name, "unsloth-zoo"), local_repo = local_repo):
         return 1
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
@@ -4042,24 +4080,7 @@ def install_python_stack() -> int:
             req = REQ_ROOT / "no-torch-runtime.txt",
         )
         if local_repo:
-            _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
-            pip_install(
-                "Overlaying local repo (editable)",
-                "--no-cache-dir",
-                "--no-deps",
-                "-e",
-                local_repo,
-                constrain = False,
-            )
-            _step(_LABEL, "overlaying unsloth-zoo from git main")
-            pip_install(
-                "Overlaying unsloth-zoo from git main",
-                "--no-cache-dir",
-                "--no-deps",
-                "--force-reinstall",
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
-                constrain = False,
-            )
+            _overlay_local_core_packages(local_repo)
     elif local_repo:
         # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
@@ -4074,24 +4095,7 @@ def install_python_stack() -> int:
             "unsloth",
             "unsloth-zoo",
         )
-        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
-        pip_install(
-            "Overlaying local repo (editable)",
-            "--no-cache-dir",
-            "--no-deps",
-            "-e",
-            local_repo,
-            constrain = False,
-        )
-        _step(_LABEL, "overlaying unsloth-zoo from git main")
-        pip_install(
-            "Overlaying unsloth-zoo from git main",
-            "--no-cache-dir",
-            "--no-deps",
-            "--force-reinstall",
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
-            constrain = False,
-        )
+        _overlay_local_core_packages(local_repo)
     elif package_name != "unsloth":
         # Custom package name (for testing): install directly.
         _progress("base packages")

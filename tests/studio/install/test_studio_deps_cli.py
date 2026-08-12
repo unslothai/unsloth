@@ -134,6 +134,7 @@ def cross_venv(tmp_path, monkeypatch):
         managed_distributions = None,
         extra_requirement = "",
         with_manifest = True,
+        duplicate_versions = (),
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -148,6 +149,13 @@ def cross_venv(tmp_path, monkeypatch):
         )
         if with_manifest:
             _write_manifest(managed, managed_site, managed_version)
+        for index, version in enumerate(duplicate_versions):
+            dist_info = managed_site / f"unsloth_duplicate_{index}-{version}.dist-info"
+            dist_info.mkdir()
+            (dist_info / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: unsloth\nVersion: {version}\n",
+                encoding = "utf-8",
+            )
 
         (caller_site / "unsloth_cli").mkdir(parents = True)
         shutil.copy(DEPS_PATH, caller_site / "unsloth_cli" / "_studio_deps.py")
@@ -188,6 +196,17 @@ def test_an_unfinished_managed_install_is_still_reported_incomplete(cross_venv):
     state = cross_venv(with_manifest = False)
     assert state["ok"] is False
     assert state["reason"] == "studio_install_incomplete"
+
+
+@pytest.mark.parametrize("duplicate_version", ["2026.6.1", "2026.5.9"])
+def test_duplicate_metadata_in_a_foreign_managed_venv_is_not_collapsed(
+    cross_venv, duplicate_version
+):
+    state = cross_venv(duplicate_versions = (duplicate_version,))
+
+    assert state["ok"] is False
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
 
 
 # ── import name vs distribution name ─────────────────────────────────
