@@ -3714,6 +3714,11 @@ NO_DATASETS_SKIP_PACKAGES = {
     "pytorch-tokenizers",
     "torch-c-dlpack-ext",
     "mecab",
+    # tensorboard itself is pure Python, but it requires grpcio, which has no
+    # win_arm64 wheel at any version and cannot build there either (its BoringSSL
+    # ASM has no ARM64 Windows target). Only the training worker writes TensorBoard
+    # logs (core/training/worker.py:3145), so this tier loses nothing it has.
+    "tensorboard",
 }
 
 # Constraint entries dropped in the ARM64 tier: the skipped packages themselves (a
@@ -3893,6 +3898,62 @@ def _filter_requirements(req: Path, skip: set[str]) -> Path:
     except OSError:
         tmp = tempfile.NamedTemporaryFile(**kwargs)
     tmp.writelines(filtered)
+    tmp.close()
+    return Path(tmp.name)
+
+
+def _win_arm64_lifts() -> dict[str, str]:
+    """{canonical name: requirement} from overrides-win-arm64.txt, or {}.
+
+    Parsed rather than duplicated so the file stays the single description of which
+    pins predate their win_arm64 wheel. install.ps1 carries the same table for the
+    files it installs before this script exists.
+    """
+    lifts: dict[str, str] = {}
+    if not _WIN_ARM64_OVERRIDES.is_file():
+        return lifts
+    try:
+        text = _WIN_ARM64_OVERRIDES.read_text(encoding = "utf-8")
+    except OSError:
+        return lifts
+    for raw in text.splitlines():
+        line = raw.split("#")[0].strip()
+        if not line:
+            continue
+        name = re.split(r"[=<>!~;\[ ]", line)[0].strip().lower().replace("_", "-")
+        if name:
+            lifts[name] = line
+    return lifts
+
+
+def _lift_requirements(req: Path, lifts: dict[str, str]) -> Path:
+    """A temp copy with pinned lines replaced by their ARM64 lift.
+
+    UV_OVERRIDE covers the resolved installs, but not the ones that pass --no-deps
+    (uv resolves nothing, so there is no requirement to override) and not the pip
+    fallback, which does not read it. Rewriting the line covers all three.
+    """
+    out: list[str] = []
+    for raw in req.read_text(encoding = "utf-8").splitlines(keepends = True):
+        bare = raw.split("#")[0].strip()
+        if bare and not bare.startswith("-"):
+            name = re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+            if name in lifts:
+                out.append(lifts[name] + "\n")
+                continue
+        out.append(raw)
+    kwargs = dict(
+        mode = "w",
+        prefix = f".{req.stem}-arm64-",
+        suffix = ".txt",
+        delete = False,
+        encoding = "utf-8",
+    )
+    try:
+        tmp = tempfile.NamedTemporaryFile(dir = req.parent, **kwargs)
+    except OSError:
+        tmp = tempfile.NamedTemporaryFile(**kwargs)
+    tmp.writelines(out)
     tmp.close()
     return Path(tmp.name)
 
@@ -4095,6 +4156,11 @@ def pip_install(
     if actual_req is not None and NO_DATASETS and NO_DATASETS_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_DATASETS_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+    if actual_req is not None and NO_DATASETS and IS_WINDOWS_ARM64_PYTHON:
+        _lifts = _win_arm64_lifts()
+        if _lifts:
+            actual_req = _lift_requirements(actual_req, _lifts)
+            temp_reqs.append(actual_req)
     if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
         # wheel. `unsloth studio update --local` does not pass

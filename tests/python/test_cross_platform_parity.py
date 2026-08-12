@@ -1095,7 +1095,7 @@ class TestArm64SkipListParity:
         win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
         expected = {
             "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
-            "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab",
+            "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard",
         }
         assert self._python_set() == expected
 
@@ -1129,6 +1129,16 @@ class TestArm64SkipListParity:
         assert powershell == {
             name: entry for name, entry in self._requirement_names(overrides).items()
         }
+
+    def test_lifts_are_applied_by_rewriting_not_only_by_uv_override(self):
+        """UV_OVERRIDE does not reach a --no-deps install (uv resolves nothing to
+        override) nor the pip fallback (it never reads the variable), and both are
+        on the tier's path -- that is how a lifted scikit-learn still source-built."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _lift_requirements(" in source
+        assert "_lift_requirements(actual_req, _lifts)" in source
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "ArmInferenceLiftPackages" in ps1
 
     def test_powershell_filter_normalises_names(self):
         """no-torch-runtime.txt spells it hf_transfer and the list spells it

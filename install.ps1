@@ -4252,7 +4252,7 @@ exit 0
     # one already degrades at runtime rather than being load-bearing.
     $script:ArmInferenceSkipPackages = @(
         "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
-        "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab"
+        "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab", "tensorboard"
     )
 
     # Pins that predate their package's first win_arm64 wheel, rewritten in place.
