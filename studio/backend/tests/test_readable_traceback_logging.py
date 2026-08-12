@@ -34,10 +34,7 @@ _TRACEBACK = (
 
 def _json_renderer():
     import structlog
-
-    return log_config.with_readable_traceback(
-        structlog.processors.JSONRenderer(sort_keys = False)
-    )
+    return log_config.with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
 
 
 def _render(event_dict):
