@@ -436,7 +436,12 @@ def test_a_retry_that_is_then_refused_hidden_states_still_falls_back(hidden_stat
     seen = []
 
     class Splatter:
-        def forward(self, input_ids = None, logits_to_keep = 0, **kwargs):
+        def forward(
+            self,
+            input_ids = None,
+            logits_to_keep = 0,
+            **kwargs,
+        ):
             seen.append((logits_to_keep, kwargs.get("output_hidden_states", False)))
             if logits_to_keep:
                 raise TypeError("sub_forward() got an unexpected keyword argument 'logits_to_keep'")

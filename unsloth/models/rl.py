@@ -1934,6 +1934,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             args,
             forward_kwargs,
         )
+
         def rejected_hidden_states(message):
             return "output_hidden_states" in message or "return_dict" in message
 
