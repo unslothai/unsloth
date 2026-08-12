@@ -3868,31 +3868,25 @@ _maybe_bootstrap_rocm_wsl() {
     # copy counts only for a --local checkout run, since this executes with no prompt and
     # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
     #
-    # PINNED, never a branch: this runs unattended and the helper installs with sudo, so
-    # fetching it from a moving ref (main) would make any rewrite of that branch arbitrary
-    # root code on every affected WSL box. A raw URL with a full commit SHA is immutable.
-    # Bump this to the merge commit whenever the helper changes, so WSL users keep getting
-    # the current helper. A lagging pin only means an older helper, never a broken install,
-    # and the librocdxg pin below is forwarded so it applies to an older helper too.
+    # PINNED, never a branch: this runs unattended and installs with sudo, so a moving ref
+    # would turn any rewrite of that branch into root code on every affected WSL box. Bump
+    # it whenever the helper changes; lagging only means an older helper, and the gate below
+    # rejects one too old to be safe.
     _ROCM_WSL_HELPER_REF="d3367edd9a1de7a0ac15aa899bd9cb97173679dc"
-    # librocdxg pin, forwarded to the helper. The ref IS the commit (v1.2.2), so an OLDER
-    # fetched helper, which knows nothing about the SHA check, still lands on exactly this
-    # revision: its `--branch <sha>` attempt fails, the full clone follows, and its checkout
-    # resolves the commit. That makes the pin hold on the `curl ... | sh` path immediately,
-    # without waiting for this file's helper pin to be bumped. Kept equal to the helper's own
-    # defaults (tests/studio/install/test_rocm_support.py enforces that they never drift). A
-    # user-set UNSLOTH_LIBROCDXG_REF wins and, with no SHA of its own, turns the helper's
-    # check off rather than failing it against our pin.
+    # librocdxg pin (v1.2.2), forwarded to the helper. The ref IS the commit, so an older
+    # helper that ignores the SHA still resolves this exact revision: its `--branch <sha>`
+    # attempt fails and the full clone plus checkout land on it. Kept equal to the helper's
+    # defaults; a test enforces that. A user-set ref wins and, with no SHA of its own, turns
+    # the helper's check off rather than failing against our pin.
     _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
     _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
     if [ -z "$_rw_dxg_ref" ]; then
         _rw_dxg_ref="4955d12888a3ec57057f1cf8660c2485e415e74c"
         [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="$_rw_dxg_ref"
     fi
-    # Whenever a SHA is known it is authoritative, so forward it AS the ref. That covers the
-    # operator who pins a branch/tag plus its expected SHA: a helper old enough to ignore the
-    # SHA would otherwise clone that symbolic ref unverified, whereas a commit ref resolves
-    # to the one revision they authorised on every helper vintage.
+    # A known SHA is authoritative, so forward it AS the ref: an operator pinning a branch
+    # plus its expected commit would otherwise have that symbolic ref cloned unverified by a
+    # helper old enough to ignore the SHA.
     if [ -n "$_rw_dxg_sha" ]; then
         _rw_dxg_ref="$_rw_dxg_sha"
     fi
@@ -3909,13 +3903,11 @@ _maybe_bootstrap_rocm_wsl() {
         fi
     fi
 
-    # Run ONLY a helper that declares the contract below (see the helper's own header):
-    # verifies the clone against the pinned SHA, and treats a checkout it could not resolve
-    # as fatal. A helper without it resolves the forwarded ref through `git checkout ...
-    # || true` and would build the repository's default HEAD as root once that ref stopped
-    # existing upstream. Requiring the declaration, rather than guessing from some string in
-    # the file, is what makes this path fail closed whatever the pin above or a user's older
-    # checkout happens to supply.
+    # Run ONLY a helper declaring the contract (defined in its header): verifies the clone
+    # against the pinned SHA, and treats an unresolvable checkout as fatal. One without it
+    # swallows that failure and would build the repo's default HEAD as root once the pinned
+    # ref stopped existing. Gating on the declaration is what makes this fail closed whatever
+    # the pin, or a user's older checkout, supplies.
     if ! grep -q "^UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2$" "$_rw_helper" 2>/dev/null; then
         substep "ROCm-on-WSL helper predates the pinned-source check; using CPU fallback." "$C_WARN"
         [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
