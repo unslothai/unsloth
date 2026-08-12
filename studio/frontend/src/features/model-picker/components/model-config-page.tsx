@@ -347,13 +347,27 @@ function AdvancedGpuSlider({
 // Driven in whole percent so a dragged value round-trips exactly and reuses
 // AdvancedGpuSlider's step of 1; the fraction is rebuilt at the API boundary.
 function VramBudgetRow() {
+  // Every branch that reads the budget is gated on a discrete GPU. macOS reports
+  // none (_get_gpu_memory returns [] there), so the Metal path sizes itself from
+  // _APPLE_UNIFIED_MEMORY_FRACTION and calls the context fitter with
+  // budget_frac = 1.0, and this slider cannot move anything. Showing it anyway
+  // would promise "applies on the next load" for a setting Macs ignore, and the
+  // reload hint would fire for a reload that changes nothing.
+  const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Fraction a debounced save has not sent yet, so unmount can flush it instead of
+  // dropping it. Cleared the moment the PUT is issued.
+  const pendingFraction = useRef<number | null>(null);
   const adviceId = useId();
 
   useEffect(() => {
     let cancelled = false;
+    if (isMac) {
+      // Nothing to show, so do not even ask; the row is hidden below.
+      return;
+    }
     loadVramBudgetSettings().then((loaded) => {
       if (cancelled || !loaded) {
         return;
@@ -364,22 +378,38 @@ function VramBudgetRow() {
     return () => {
       cancelled = true;
     };
-  }, []);
+    // deviceType settles once /api/health answers, so re-run if the seed guess flips.
+  }, [isMac]);
 
-  // Clear a pending save on unmount so a drag that ends as the panel closes does
-  // not fire a PUT against a torn-down view.
+  // Flush, don't drop. The timer is cleared so nothing fires against a torn-down
+  // view, but the pending fraction is still sent: this is a server-wide setting
+  // held nowhere else, so a drag followed within the debounce window by Run, by
+  // the Advanced toggle, or by closing the panel would otherwise be discarded with
+  // no way to get it back. The view is gone, so the response only reaches the
+  // subscribers, not this component's state.
   useEffect(
     () => () => {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
+        saveTimer.current = null;
       }
+      const fraction = pendingFraction.current;
+      pendingFraction.current = null;
+      if (fraction === null) {
+        return;
+      }
+      updateVramBudgetSettings(fraction).catch((error: unknown) => {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to save VRAM budget",
+        );
+      });
     },
     [],
   );
 
   // A null response means the backend predates this endpoint; hide rather than
   // render a control that cannot save.
-  if (!settings || percent === null) {
+  if (isMac || !settings || percent === null) {
     return null;
   }
 
@@ -391,8 +421,15 @@ function VramBudgetRow() {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
     }
+    pendingFraction.current = vramPercentToFraction(next);
     saveTimer.current = setTimeout(() => {
-      updateVramBudgetSettings(vramPercentToFraction(next))
+      saveTimer.current = null;
+      const fraction = pendingFraction.current;
+      pendingFraction.current = null;
+      if (fraction === null) {
+        return;
+      }
+      updateVramBudgetSettings(fraction)
         .then(setSettings)
         .catch((error: unknown) => {
           toast.error(

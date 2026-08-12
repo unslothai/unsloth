@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   installLocalStorageFake,
@@ -56,4 +58,65 @@ test("fractionToPercent rounds rather than truncating", () => {
 test("percentToFraction tolerates a non-integer slider value", () => {
   assert.equal(vramPercentToFraction(90.4), 0.9);
   assert.equal(vramPercentToFraction(90.6), 0.91);
+});
+
+// The debounced save lives in a component this suite cannot mount (no DOM in the
+// node runner, and renderToStaticMarkup never runs effects or their cleanup), so
+// the unmount contract is asserted against the source, as the chat-adapter tests
+// do. The bug it guards: clearing the timer without sending the pending fraction
+// silently discarded a slider drag that was followed within 400ms by Run, by the
+// Advanced toggle, or by closing the panel. The budget is server-wide and is not
+// carried in the per-model config, so nothing else could recover it.
+const pageSource = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/model-picker/components/model-config-page.tsx",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+
+function vramBudgetRowSource(): string {
+  const start = pageSource.indexOf("function VramBudgetRow()");
+  assert.ok(start >= 0, "VramBudgetRow is no longer defined");
+  const end = pageSource.indexOf("\n}\n", start);
+  assert.ok(end > start, "could not delimit VramBudgetRow");
+  return pageSource.slice(start, end);
+}
+
+test("unmount flushes the pending budget save instead of dropping it", () => {
+  const row = vramBudgetRowSource();
+  const cleanupStart = row.indexOf("useEffect(\n    () => () => {");
+  assert.ok(cleanupStart >= 0, "the unmount-only effect is gone");
+  const cleanup = row.slice(cleanupStart, row.indexOf("\n    [],\n  );", cleanupStart));
+  // Still cancels the timer, so no callback fires against a torn-down view...
+  assert.match(cleanup, /clearTimeout\(saveTimer\.current\)/);
+  // ...but the value the user set is sent rather than discarded.
+  assert.match(cleanup, /updateVramBudgetSettings\(fraction\)/);
+  // Fire-and-forget: the component is gone, so the response must not be routed
+  // back into its state.
+  assert.doesNotMatch(cleanup, /\.then\(setSettings\)/);
+});
+
+test("commit records the fraction the unmount flush would send", () => {
+  const row = vramBudgetRowSource();
+  const commitStart = row.indexOf("const commit = (next: number) => {");
+  assert.ok(commitStart >= 0, "commit is gone");
+  const commit = row.slice(commitStart);
+  // Recorded before the timer is armed, so a drag that never reaches the timeout
+  // still has a value to flush.
+  assert.ok(
+    commit.indexOf("pendingFraction.current = vramPercentToFraction(next)") <
+      commit.indexOf("setTimeout("),
+    "the pending fraction must be recorded before the debounce is armed",
+  );
+  // ...and cleared once the debounced PUT goes out, so unmount cannot re-send a
+  // save that already happened.
+  const timer = commit.slice(commit.indexOf("setTimeout("));
+  assert.ok(
+    timer.indexOf("pendingFraction.current = null") <
+      timer.indexOf("updateVramBudgetSettings(fraction)"),
+    "the debounced save must clear the pending fraction before sending",
+  );
 });

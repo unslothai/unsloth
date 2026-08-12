@@ -173,3 +173,51 @@ class TestActiveFractionWiring:
     def test_llama_cpp_defaults_to_the_old_constant(self):
         import core.inference.llama_cpp as lc
         assert lc._active_vram_fraction() == lc._CTX_FIT_VRAM_FRACTION
+
+
+class TestLaunchedMarker:
+    """``_vram_fraction_launched`` must describe the child that is actually running.
+
+    The settings route reports "reload required" by comparing the saved budget
+    against this marker, so a path that returns without launching must leave it
+    alone. The duplicate-load fast path is the reachable one: the route declines
+    to reuse a resident model while its audio probe is unfinished, so the request
+    reaches ``load_model``, which adopts the live server and returns without
+    replacing it.
+    """
+
+    @staticmethod
+    def _resident_backend(monkeypatch, *, launched: float, active: float):
+        import core.inference.llama_cpp as lc
+
+        backend = lc.LlamaCppBackend()
+        # is_loaded / is_active only test "is not None"; nothing here talks to it.
+        backend._process = object()
+        backend._healthy = True
+        backend._vram_fraction_launched = launched
+        # The saved budget the next load would use, different from the running one.
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: active)
+        monkeypatch.setattr(
+            backend, "adopt_load_intent_if_matched", lambda _intent: True
+        )
+        return backend, lc
+
+    def test_duplicate_load_leaves_the_running_child_marker(self, monkeypatch):
+        backend, lc = self._resident_backend(monkeypatch, launched = 0.97, active = 0.85)
+        backend._audio_probed = True
+
+        assert backend.load_model(lc.GgufLoadIntent(model_identifier = "owner/repo"))
+        # Nothing relaunched, so the child is still sized against 0.97 and the
+        # route must keep asking for a reload.
+        assert backend._vram_fraction_launched == pytest.approx(0.97)
+
+    def test_marker_is_committed_with_the_rest_of_the_launch_state(self):
+        # Guards the placement: next to _requested_n_batch, inside the block that
+        # only a launch which reached _healthy=True executes, not at the top of
+        # load_model where no child exists yet.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "self._vram_fraction_launched=_vram_fracself._requested_n_batch" in compact

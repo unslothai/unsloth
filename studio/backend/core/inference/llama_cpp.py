@@ -9181,6 +9181,7 @@ class LlamaCppBackend:
         swa_full: bool = False,
         kv_unified: bool = True,
         flash_attn: bool = True,
+        vram_fraction: Optional[float] = None,
     ) -> tuple[int, int, list[int], Optional[list[int]]]:
         """Plan a ``--split-mode tensor`` load. Pure: no model or GPU needed.
 
@@ -9213,9 +9214,11 @@ class LlamaCppBackend:
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
         # _gpu_usable so the 5% cushion is kept on every path, not dropped here.
-        # Resolved once above the closure: re-reading per GPU could straddle a
-        # settings write and rank two cards against different budgets.
-        _tp_frac = _active_vram_fraction()
+        # The caller's already-resolved budget when it has one, so a load prices
+        # placement and ranking against the SAME fraction even if a save lands
+        # mid-load. Resolved here only for the direct callers (tests) that have
+        # no load to inherit from, and once, not per GPU.
+        _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
 
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
@@ -10105,9 +10108,12 @@ class LlamaCppBackend:
         # fitting against another mis-orders mixed-total setups. Defaults to
         # _CTX_FIT_VRAM_FRACTION, so an unset budget is the historical behaviour.
         _vram_frac = _active_vram_fraction()
-        # What this child is actually sized against, so the settings route can say
-        # whether a saved budget needs a reload instead of guessing from "loaded".
-        self._vram_fraction_launched = _vram_frac
+        # _vram_fraction_launched is NOT set here: it records what the running child
+        # was sized against, and this far up nothing has launched yet. The
+        # duplicate-load fast path below, a cancellation and every failed preflight
+        # all return with the previous child still serving, so writing the marker
+        # here would tell the settings route that a stale child already carries the
+        # new budget and hide the reload it needs. Committed at the launch site.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -11701,6 +11707,12 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
+                            # The budget this load already resolved, not a second
+                            # read: a save landing mid-load would otherwise size
+                            # placement against a different fraction from the
+                            # ranking above, and _vram_fraction_launched would
+                            # record neither.
+                            vram_fraction = _vram_frac,
                         )
                         use_fit = False
                     elif gpus and self._can_estimate_kv() and effective_ctx > 0:
@@ -13750,6 +13762,11 @@ class LlamaCppBackend:
                 # marker intact, and the diffusion runner returns well before it without
                 # consuming, or paying for, any llama-server capability.
                 self._capability_probe_inconclusive = _launch_probe_inconclusive
+                # The VRAM budget this child was actually sized against. Committed
+                # here with the rest of the known-good state, so a duplicate-load
+                # fast path or a failed launch leaves the previous child's marker
+                # intact and the settings route keeps asking for the reload.
+                self._vram_fraction_launched = _vram_frac
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
