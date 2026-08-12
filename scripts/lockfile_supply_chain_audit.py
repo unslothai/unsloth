@@ -617,12 +617,21 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 
 # Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
 # Blocking = public attack indicators (known-malicious version, IOC
-# string). Advisory = structural anomalies that warn but don't block.
-# --strict makes every finding blocking.
+# string) plus the provenance/integrity checks this script exists to
+# enforce before `npm ci` / `cargo fetch` runs lifecycle and build
+# scripts. Advisory = incomplete-but-not-fetchable anomalies that warn
+# but don't block. --strict makes every finding blocking.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
+        # Provenance / integrity: a non-registry URL or an unverifiable
+        # tarball is exactly the pre-install fetch this gate must stop,
+        # so warning-only here would let attacker code onto the runner.
+        "non-registry-resolved-url",
+        "missing-integrity-hash",
+        "non-registry-cargo-source",
+        "missing-cargo-checksum",
         # A structurally broken lockfile might hide a real attack.
         "malformed-lockfile",
         "missing-lockfile",
@@ -769,7 +778,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "[lockfile-audit] Refusing to proceed. Each blocking finding "
         "above is either a public indicator-of-compromise, a known-"
-        "malicious pinned version, or a structurally broken lockfile. "
+        "malicious pinned version, an unverifiable / non-registry "
+        "dependency source, or a structurally broken lockfile. "
         "Investigate before running `npm ci` or `cargo fetch`.",
         file = sys.stderr,
     )
