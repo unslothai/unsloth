@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 import os
@@ -72,6 +73,22 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         ):
             return attn_bias
 
+    # Do not rewrite a shared mask in place. Model-parallel forwards pass the
+    # same causal mask to every layer, and xFormers may retain earlier biases for
+    # backward after a later layer has moved to another device.
+    source_bias = attn_bias
+    attn_bias = copy.copy(source_bias)
+    copied_seqinfo = {}
+    for name in ("q_seqinfo", "k_seqinfo"):
+        seqinfo = getattr(source_bias, name, None)
+        if seqinfo is None:
+            continue
+        moved_seqinfo = copied_seqinfo.get(id(seqinfo))
+        if moved_seqinfo is None:
+            moved_seqinfo = copy.copy(seqinfo)
+            copied_seqinfo[id(seqinfo)] = moved_seqinfo
+        setattr(attn_bias, name, moved_seqinfo)
+
     move = getattr(attn_bias, "to", None)
     if callable(move):
         moved = move(device)
@@ -84,7 +101,8 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
 
     # Older xFormers exposes ``to`` only on the sequence metadata and mutates it
     # in place. This also handles newer versions whose top-level ``to`` loses the
-    # concrete bias type.
+    # concrete bias type. The metadata copies above keep both cases isolated from
+    # the source mask.
     seen = set()
     for name in ("q_seqinfo", "k_seqinfo"):
         seqinfo = getattr(attn_bias, name, None)

@@ -141,9 +141,11 @@ def test_xformers_bias_move_supports_legacy_in_place_metadata():
     bias = _LegacyBias()
     moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
 
-    assert moved is bias
+    assert moved is not bias
     assert moved.q_seqinfo is moved.k_seqinfo
     assert moved.q_seqinfo.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo.device == torch.device("cuda:0")
 
 
 def test_xformers_bias_move_replaces_all_shared_metadata_aliases():
@@ -167,10 +169,13 @@ def test_xformers_bias_move_replaces_all_shared_metadata_aliases():
     original = bias.q_seqinfo
     moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
 
-    assert moved is bias
+    assert moved is not bias
     assert moved.q_seqinfo is moved.k_seqinfo
     assert moved.q_seqinfo is not original
     assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo is original
+    assert bias.q_seqinfo.seqstart.device == torch.device("cuda:0")
 
 
 def test_xformers_bias_move_preserves_causal_type_when_to_demotes():
@@ -197,12 +202,20 @@ def test_xformers_bias_move_preserves_causal_type_when_to_demotes():
         pass
 
     bias = _CausalBias(_ReturningSeqInfo("cuda:0"))
-    moved = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+    first = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:1"))
+    second = packing_utils.move_xformers_attention_bias(bias, torch.device("cuda:2"))
 
-    assert moved is bias
-    assert type(moved) is _CausalBias
-    assert moved.q_seqinfo is moved.k_seqinfo
-    assert moved.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert first is not bias
+    assert type(first) is _CausalBias
+    assert first.q_seqinfo is first.k_seqinfo
+    assert first.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert second is not bias
+    assert type(second) is _CausalBias
+    assert second.q_seqinfo is second.k_seqinfo
+    assert second.q_seqinfo.seqstart.device == torch.device("cuda:2")
+    assert first.q_seqinfo.seqstart.device == torch.device("cuda:1")
+    assert bias.q_seqinfo is bias.k_seqinfo
+    assert bias.q_seqinfo.seqstart.device == torch.device("cuda:0")
 
 
 def test_xformers_bias_move_skips_matching_metadata_device():
@@ -244,9 +257,6 @@ def test_real_xformers_packed_mask_validates_on_each_device():
         assert masks[1].q_seqinfo.seqstart.device == torch.device("cuda:1")
         assert masks[1] is not masks[0]
 
-        query = torch.zeros((1, 8, 1, 64), dtype = torch.float16, device = "cuda:1")
-        Inputs(query = query, key = query, value = query, attn_bias = masks[1]).validate_inputs()
-
         config = attention_dispatch.AttentionConfig(
             backend = attention_dispatch.XFORMERS,
             n_kv_heads = 1,
@@ -258,21 +268,42 @@ def test_real_xformers_packed_mask_validates_on_each_device():
             kv_seq_len = 8,
             n_heads = 1,
             head_dim = 64,
-            requires_grad = False,
+            requires_grad = True,
             seq_info = None,
             attention_mask = None,
             causal_mask = masks[0],
         )
-        model_query = query.transpose(1, 2)
-        output = attention_dispatch.run_attention(
-            config = config,
-            context = context,
-            Q = model_query,
-            K = model_query,
-            V = model_query,
-        )
-        assert output.device == torch.device("cuda:1")
-        assert bool(torch.isfinite(output).all())
+        queries = []
+        outputs = []
+        for index in (0, 1):
+            device = torch.device(f"cuda:{index}")
+            query = torch.zeros(
+                (1, 8, 1, 64), dtype = torch.float16, device = device, requires_grad = True
+            )
+            Inputs(query = query, key = query, value = query, attn_bias = masks[index]).validate_inputs()
+            model_query = query.transpose(1, 2)
+            outputs.append(
+                attention_dispatch.run_attention(
+                    config = config,
+                    context = context,
+                    Q = model_query,
+                    K = model_query,
+                    V = model_query,
+                )
+            )
+            queries.append(query)
+
+        assert masks[0].q_seqinfo.seqstart.device == torch.device("cuda:0")
+        for index, output in enumerate(outputs):
+            assert output.device == torch.device(f"cuda:{index}")
+            assert bool(torch.isfinite(output).all())
+
+        # Start backward only after the second shard has consumed the shared
+        # source mask, matching model-parallel layer execution.
+        for query, output in zip(queries, outputs):
+            output.sum().backward()
+            assert query.grad is not None
+            assert bool(torch.isfinite(query.grad).all())
     finally:
         packing_utils.clear_packed_caches()
 
