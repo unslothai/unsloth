@@ -1096,30 +1096,22 @@ public static class UnslothStudioFinalPathV2
     }
 
     # ── Managed CLI invocation, Application Control safe ──
-    # `unsloth` is a console script, and on Windows packaging materializes that as a
-    # generated, unsigned launcher .exe. AppLocker, WDAC and Smart App Control deny it
-    # while the venv's python.exe -- a copy of the signed CPython binary -- still runs,
-    # so the installer died at "running unsloth studio setup" (#8490). Everything this
-    # script drives goes through the interpreter instead. The console script is still
-    # installed and still hardlinked into the shim dir; a machine with no policy sees
-    # byte-identical behavior.
+    # Windows materializes the `unsloth` console script as a generated, unsigned .exe.
+    # AppLocker, WDAC and Smart App Control deny it while the venv's python.exe, a copy
+    # of the signed CPython binary, still runs, so setup died at "running unsloth studio
+    # setup" (#8490). Everything here goes through the interpreter instead; the console
+    # script is still installed and hardlinked, so an unaffected machine sees no change.
     #
-    # The string is byte-identical to WINDOWS_CLI_ENTRYPOINT in
-    # studio/src-tauri/src/process.rs, which the whole desktop already runs. argv[0] is
-    # assigned BEFORE the import: unsloth_cli/__init__.py decides at import time whether
-    # it is the console-script entry point (Windows UTF-8 stream setup, the -np<N>
-    # rewrite), and typer reads the same value for the program name in usage text. Get
-    # the order wrong and the CLI is subtly not the CLI.
-    #
-    # The sys.path[:1] filter is the other half of behaving like the console script.
-    # `python -c` puts the working directory on sys.path[0] and a console script does
-    # not, so an unrelated `unsloth_cli` folder in whatever directory the user happened
-    # to be in would shadow the managed package. The comprehension drops exactly that
-    # one entry and leaves every other path alone; under -P or PYTHONSAFEPATH there is
-    # nothing to drop and it is a no-op. Isolating the interpreter with -I would also
-    # have removed it, but -I implies -E, and discarding PYTHONPATH, PYTHONWARNINGS,
-    # PYTHONHASHSEED and user site-packages is a behavior change on machines with no
-    # policy at all -- measured: the console script honors PYTHONPATH and -I does not.
+    # Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs. Two
+    # halves, both load bearing:
+    #   argv[0] BEFORE the import, because unsloth_cli/__init__ decides at import time
+    #   whether it is the console script (UTF-8 streams, the -np<N> rewrite) and typer
+    #   reads it for the program name in usage text.
+    #   sys.path[:1] drops the working directory `python -c` adds and a console script
+    #   does not, so a stray `unsloth_cli` folder cannot shadow the managed package. It
+    #   is a no-op under -P or PYTHONSAFEPATH. -I would drop it too, but -I implies -E,
+    #   and discarding PYTHONPATH, PYTHONWARNINGS and user site-packages diverges from
+    #   the console script on machines with no policy at all.
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
     # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
@@ -1154,76 +1146,64 @@ public static class UnslothStudioFinalPathV2
         return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
     }
 
-    # One pre-quoted command line for Start-Process, which is not the same thing as an
-    # argument array. Start-Process joins an -ArgumentList array with spaces and quotes
-    # nothing, so passing the trampoline as an array element hands python a dozen
-    # arguments instead of one. The trampoline contains no double quote and no
+    # One pre-quoted command line, not an argument array: Start-Process joins
+    # -ArgumentList with spaces and quotes nothing, so the trampoline as an array
+    # element reaches python as a dozen arguments. It holds no double quote and no
     # backslash, so wrapping it is unambiguous under CommandLineToArgvW.
     function Get-ManagedUnslothCliCommandLine {
         param([string[]]$Arguments = @())
 
         $quoted = '"' + $script:UnslothCliTrampoline + '"'
-        # Callers today pass bare subcommands, but the signature invites a path: quote
-        # anything with whitespace, or `--model C:\my models\a.gguf` reaches the child
-        # as three arguments after Start-Process joins the line back together.
+        # Callers pass bare subcommands today, but the signature invites a path:
+        # unquoted, `--model C:\my models\a.gguf` arrives as three arguments.
         $safeArgs = @($Arguments | ForEach-Object {
             if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
         })
         return (@("-X", "utf8", "-c", $quoted) + $safeArgs) -join " "
     }
 
-    # Run the managed `unsloth` CLI through the interpreter.
-    #
-    # The exit code is published in $script:ManagedUnslothCliExit rather than returned,
-    # because the child's stdout shares this function's output stream: `return
-    # $LASTEXITCODE` would hand the caller the child's output with the code appended,
-    # and capturing the output to avoid that would stop it streaming to the console and
-    # to the Tauri log. $null means the interpreter never started under Application
-    # Control, which is not an exit code and must not be confused with one.
+    # Run the managed `unsloth` CLI through the interpreter. The exit code is published
+    # in $script:ManagedUnslothCliExit rather than returned, because the child's stdout
+    # shares this function's output stream and capturing it would stop the install
+    # streaming to the console and the Tauri log. $null means the interpreter never
+    # started under Application Control, which is not an exit code.
     function Invoke-ManagedUnslothCli {
         param(
             [Parameter(Mandatory = $true)][string]$Python,
             [string[]]$Arguments = @()
         )
 
-        # -X utf8 rather than the PYTHONUTF8 env var, so the child's own output comes
-        # back decodable whatever the console code page is. No -I: it would also
-        # discard PYTHONPATH and friends, which the console script honors, and the
-        # trampoline already drops the working directory sys.path entry that -c adds.
-        # Identical form to the desktop's build_managed_cli_command.
+        # -X utf8, not the env var, so the child decodes whatever the console code page
+        # is. No -I: it would discard PYTHONPATH and friends, which the console script
+        # honors, and the trampoline already drops the -c working-directory entry.
+        # Same form as the desktop's build_managed_cli_command.
         $pythonArgs = @("-X", "utf8", "-c", $script:UnslothCliTrampoline) + $Arguments
         $script:ManagedUnslothCliExit = $null
         try {
-            # Stale from an earlier native command otherwise; a child that exits 0
-            # without printing would inherit it.
+            # Otherwise a child that exits 0 inherits the last native command's code.
             $global:LASTEXITCODE = 0
             & $Python @pythonArgs
             $script:ManagedUnslothCliExit = [int]$LASTEXITCODE
         } catch {
-            # A nonzero exit does not land here ($PSNativeCommandUseErrorActionPreference
-            # is off), so anything caught is a failure to create the process at all.
+            # $PSNativeCommandUseErrorActionPreference is off, so a nonzero exit never
+            # lands here: anything caught is a failure to create the process at all.
             if (-not (Test-ApplicationControlBlock $_)) { throw }
         }
     }
 
-    # Does Application Control deny this launcher on this machine?
-    #
-    # There is no way to ask Windows without trying: AppLocker's own cmdlets need the
-    # policy and an admin token, and WDAC and Smart App Control expose nothing at all.
-    # So start it and see. A denial costs nothing -- CreateProcess fails synchronously,
-    # no child is ever created, and the 1260 comes straight back as a Win32Exception.
-    # A machine with no policy pays one `--version`, measured at a quarter second.
-    #
-    # Nothing is killed on the success path. The generated stub launches python as a
-    # CHILD process, so killing the stub would orphan that child; `--version` exits on
-    # its own, and if it somehow does not, the wait simply gives up and reports "not
-    # blocked", which is the truth -- it started.
+    # Does Application Control deny this launcher here? Windows cannot be asked without
+    # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
+    # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
+    # child, 1260 straight back); an unaffected machine pays one `--version`, measured
+    # at a quarter second. Nothing is killed on success: the stub runs python as a
+    # child, so killing it would orphan that child, and a wait that times out reports
+    # "not blocked", which is the truth.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
 
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-        # Answered once per run: the PATH-shadow warning and the launch instructions can
-        # both ask, and the answer cannot change between them.
+        # Both the PATH-shadow warning and the launch instructions ask, and the answer
+        # cannot change between them.
         if ($null -ne $script:ShimLaunchBlockedCache -and
             $script:ShimLaunchBlockedPath -eq $Path) {
             return $script:ShimLaunchBlockedCache
@@ -1233,9 +1213,8 @@ public static class UnslothStudioFinalPathV2
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $Path
             $psi.Arguments = "--version"
-            # UseShellExecute = false is what makes a policy denial surface here as a
-            # Win32Exception instead of a shell dialog, and it is required before
-            # output can be redirected away from the installer's own console.
+            # UseShellExecute = false surfaces a denial as a Win32Exception rather than
+            # a shell dialog, and is required before output can be redirected.
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $psi.RedirectStandardOutput = $true
@@ -1254,10 +1233,10 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # Relative path from $From (a directory) to $To, or $null when there is no common
-    # root to walk back to (different volumes, UNC vs local). Written out longhand
-    # because Path.GetRelativePath is .NET Core only and Uri.MakeRelativeUri
-    # percent-encodes the spaces, '#' and '%' that appear in real profile paths.
+    # Relative path from $From (a directory) to $To, or $null with no common root
+    # (different volumes, UNC vs local). Longhand because Path.GetRelativePath is .NET
+    # Core only and Uri.MakeRelativeUri percent-encodes the spaces, '#' and '%' that
+    # appear in real profile paths.
     function Get-RelativeShimPath {
         param(
             [Parameter(Mandatory = $true)][AllowEmptyString()][string]$From,
@@ -1275,19 +1254,17 @@ public static class UnslothStudioFinalPathV2
                $fromParts[$shared] -eq $toParts[$shared]) {
             $shared++
         }
-        # Guarded, not assumed: a range whose start passes its end counts DOWN in
-        # PowerShell, so $toParts[2..1] would silently return the path reversed rather
-        # than the empty tail it reads like.
+        # Guarded: a PowerShell range whose start passes its end counts DOWN, so
+        # $toParts[2..1] returns the path reversed, not the empty tail it reads like.
         if ($shared -ge $toParts.Count) { return $null }
         $up = @("..") * ($fromParts.Count - $shared)
         $down = @($toParts[$shared..($toParts.Count - 1)])
         return (@($up + $down) -join '\')
     }
 
-    # The `unsloth.cmd` companion to the shim .exe. A pure function of the two paths so
-    # a re-run reproduces it byte for byte; the interpreter is reached through %~dp0
-    # rather than baked absolute, which keeps profile paths containing spaces, '$',
-    # brackets and apostrophes out of the file entirely. CRLF and ASCII, no BOM:
+    # The `unsloth.cmd` companion to the shim .exe. A pure function of the two paths, so
+    # a re-run reproduces it byte for byte, and %~dp0 keeps profile paths containing
+    # spaces, '$', brackets and apostrophes out of the file. CRLF and ASCII, no BOM:
     # cmd.exe reads a BOM as part of the first command.
     function Get-UnslothCmdShimContent {
         param(
@@ -1306,9 +1283,8 @@ public static class UnslothStudioFinalPathV2
             "rem Runs the Unsloth CLI through the managed interpreter. The generated",
             "rem unsloth.exe beside it is unsigned, and Windows Application Control",
             "rem denies it on managed machines; this file is the way through.",
-            # A caller that turned delayed expansion on (cmd /V:ON, or the machine-wide
-            # DelayedExpansion default) would otherwise eat a '!' out of every argument
-            # before python ever sees it. exit /b ends the scope, so nothing leaks.
+            # With delayed expansion on (cmd /V:ON, or the machine-wide default) a '!'
+            # is eaten out of every argument. exit /b ends the scope, so nothing leaks.
             "setlocal DisableDelayedExpansion",
             "`"$target`" -X utf8 -c `"$script:UnslothCliTrampoline`" %*",
             "@exit /b %errorlevel%"
@@ -1325,9 +1301,8 @@ public static class UnslothStudioFinalPathV2
             [Parameter(Mandatory = $true)][string]$PythonPath
         )
 
-        # Everything inside the try, including the probes: this runs under the venv
-        # rollback guard, so an unexpected throw here would undo a successful install
-        # over a launcher that is not even required to exist.
+        # Probes inside the try too: this runs under the venv rollback guard, so a throw
+        # here would undo a successful install over an optional launcher.
         $shimCmd = Join-Path $ShimDir "unsloth.cmd"
         try {
             if (Test-Path -LiteralPath $shimCmd -PathType Container) {
@@ -1352,10 +1327,10 @@ public static class UnslothStudioFinalPathV2
         }
     }
 
-    # Is this bin\unsloth.cmd one we wrote? Only then does it prove the root is ours.
-    # The name alone is a plausible wrapper for anything built on unsloth, and the
-    # callers use the answer to decide whether a user-chosen directory may be deleted.
-    # Mirrored in scripts/uninstall.ps1 (_IsUnslothCmdShim) and studio/setup.ps1.
+    # Is this bin\unsloth.cmd one we wrote? The name alone is a plausible wrapper for
+    # anything built on unsloth, and callers use the answer to decide whether a
+    # user-chosen directory may be deleted. Mirrored in scripts/uninstall.ps1
+    # (_IsUnslothCmdShim) and studio/setup.ps1.
     function Test-UnslothCmdShimFile {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
@@ -1830,12 +1805,11 @@ exit 0
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
                         $shortcut = $wshell.CreateShortcut($linkPath)
-                        # CreateShortcut on an existing .lnk returns it populated, so the
-                        # incumbent's fields are readable before anything is assigned. Save()
-                        # rewrites the file even when every field already matches, which moves
-                        # the timestamp on every no-op reinstall; skip it when there is nothing
-                        # to change. IconLocation carries the ",0" index back, so compare it
-                        # against the same string we would set.
+                        # CreateShortcut returns an existing .lnk populated, so the
+                        # incumbent's fields are readable before anything is assigned.
+                        # Save() rewrites even when every field matches, moving the
+                        # timestamp on a no-op reinstall. IconLocation carries the ",0"
+                        # index back, so compare against the string we would set.
                         $shortcutUnchanged = (Test-Path -LiteralPath $linkPath -PathType Leaf) -and
                             ($shortcut.TargetPath -eq $shortcutTarget) -and
                             ($shortcut.Arguments -eq $shortcutArgs) -and
@@ -1927,9 +1901,9 @@ exit 0
             # throw (not Exit-InstallFailure) so non-Tauri callers see rc != 0.
             throw "managed Python missing"
         }
-        # `unsloth studio update` reaches the installer only through here, so an install
-        # made before the .cmd existed would never get one without this: the population
-        # that needs the escape hatch most is exactly the one that upgrades into it.
+        # `unsloth studio update` reaches the installer only through here, so without
+        # this an install predating the .cmd never gets one -- and that population is
+        # exactly the one that needs the escape hatch.
         # No-op when the bytes already match, and never fatal.
         $ShortcutShimDir = Join-Path $StudioHome "bin"
         if (Test-Path -LiteralPath $ShortcutShimDir -PathType Container) {
@@ -4961,9 +4935,8 @@ exit 0
     # never touches the system Node/npm.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
-    # Still tested, never executed: pip generates the console script whatever the
-    # machine's policy says about running it, so its presence remains the cheapest
-    # "this wheel shipped the CLI" signal. The shim below hardlinks it.
+    # Tested, never executed: pip generates the console script whatever the policy says
+    # about running it, so it stays the cheapest "this wheel shipped the CLI" signal.
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
     if (-not (Test-Path -LiteralPath $UnslothExe)) {
         Write-TauriLog "ERROR" "unsloth CLI was not installed correctly"
@@ -5194,10 +5167,9 @@ exit 0
             Write-StudioLine "       & '$VenvPython' -m unsloth_cli studio -p 8888" -ForegroundColor Yellow
         }
     }
-    # Companion launcher for machines whose Application Control policy denies the
-    # generated .exe. PATHEXT resolves .EXE ahead of .CMD, so bare `unsloth` still picks
-    # the .exe wherever it runs and nothing changes for anyone else; on a machine that
-    # denies it, `unsloth.cmd` is what the user has left.
+    # Companion launcher for machines whose policy denies the generated .exe. PATHEXT
+    # resolves .EXE ahead of .CMD, so bare `unsloth` still picks the .exe wherever it
+    # runs; where it is denied, `unsloth.cmd` is what the user has left.
     Write-UnslothCmdShim -ShimDir $ShimDir -PythonPath $VenvPython
 
     # Add to PATH only when a launcher exists. Either one counts: if the .exe could not
@@ -5309,9 +5281,8 @@ exit 0
         } else {
             step "launch" "to start later, run:"
             # PATHEXT resolves .EXE before .CMD, so bare `unsloth` picks the generated
-            # console script and a machine that denies it would be handed a command that
-            # cannot run. Probed rather than assumed: an unaffected machine must see the
-            # same line it has always seen.
+            # console script, which a denying machine cannot run. Probed, not assumed:
+            # an unaffected machine must see the line it has always seen.
             if (Test-ShimLaunchBlocked -Path $ShimExe) {
                 substep "unsloth.cmd studio -p 8888"
                 substep "(Windows Application Control denies the generated unsloth.exe on this machine;"
@@ -5328,10 +5299,9 @@ exit 0
         # Single-quote the printed paths so $-vars / backticks in custom roots
         # do not reparse when the user pastes the command.
         $_actLiteral = "'" + ((Join-Path $VenvDir "Scripts\Activate.ps1") -replace "'", "''") + "'"
-        # Activating the venv puts Scripts\unsloth.exe first, and PATHEXT prefers .EXE
-        # over .CMD, so on a machine that denies the generated console script every
-        # bare `unsloth` below is unusable. Same probe, same reason: the text an
-        # unaffected machine sees must not change.
+        # Activating the venv puts Scripts\unsloth.exe first and PATHEXT prefers .EXE,
+        # so every bare `unsloth` below is unusable where the policy denies it. Same
+        # probe, same reason: unaffected machines must see unchanged text.
         $_shimBlocked = Test-ShimLaunchBlocked -Path $ShimExe
         $_bareLaunch = if ($_shimBlocked) { "unsloth.cmd studio -p 8888" } else { "unsloth studio -p 8888" }
         if ($StudioRedirectMode -eq 'env') {

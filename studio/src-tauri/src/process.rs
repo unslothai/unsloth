@@ -984,21 +984,20 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
 /// python.exe beside it - a copy of the signed CPython binary - still runs, so
 /// every managed CLI invocation goes through the interpreter instead.
 ///
-/// The leading sys.path edit is what `-I` used to buy, without the rest of what
-/// `-I` did. `python -c` puts the working directory on sys.path[0], which the
-/// console script never does, so a stray unsloth_cli directory beside the caller
-/// would shadow the managed package. Stripping exactly that one entry closes it,
-/// and leaves everything else the console script honours alone: `-I` implies
-/// `-E`, which discarded PYTHONPATH, PYTHONWARNINGS, PYTHONHASHSEED,
-/// PYTHONPROFILEIMPORTTIME and user site-packages and made this an observably
-/// different program on machines with no policy at all. The comprehension is a
-/// no-op under -P or PYTHONSAFEPATH, where sys.path[0] is already absent.
+/// The leading sys.path edit is what `-I` used to buy, without the rest of it.
+/// `python -c` puts the working directory on sys.path[0] and the console script
+/// never does, so a stray unsloth_cli beside the caller would shadow the managed
+/// package; stripping that one entry closes it and leaves alone everything the
+/// console script honours. `-I` implies `-E`, which discarded PYTHONPATH,
+/// PYTHONWARNINGS, PYTHONHASHSEED, PYTHONPROFILEIMPORTTIME and user
+/// site-packages, an observable difference on machines with no policy at all.
+/// The comprehension is a no-op under -P or PYTHONSAFEPATH.
 ///
 /// sys.argv[0] is assigned before the import because unsloth_cli decides at
-/// import time whether it is the console script, and that gates the Windows
-/// UTF-8 stream reconfigure and the -np<N> argv rewrite. It also sets Typer's
-/// prog_name to "unsloth": the generated stub prints "unsloth.exe" in usage and
-/// error text, so this reads slightly cleaner rather than matching byte for byte.
+/// import time whether it is the console script, which gates the Windows UTF-8
+/// stream reconfigure and the -np<N> argv rewrite. It also sets Typer's
+/// prog_name to "unsloth"; the stub prints "unsloth.exe", so usage text reads
+/// slightly cleaner here rather than matching byte for byte.
 #[cfg(windows)]
 pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
@@ -1042,12 +1041,10 @@ pub(crate) fn resolve_managed_cli_invocation(
                 python.display()
             ));
         }
-        // No -I: it would discard every PYTHON* variable and user site-packages,
-        // which the console script honours, and the trampoline strips the one
-        // sys.path entry -I was actually needed for. -X utf8 stays, so this
-        // process still writes UTF-8 into read_lossy_lines whatever the locale,
-        // and a caller's PYTHONIOENCODING can still override it exactly as it
-        // overrides the console script's.
+        // No -I, for the reason on WINDOWS_CLI_ENTRYPOINT. -X utf8 stays, so this
+        // process writes UTF-8 into read_lossy_lines whatever the locale, and a
+        // caller's PYTHONIOENCODING overrides it exactly as it overrides the
+        // console script's.
         let mut argv: Vec<std::ffi::OsString> = ["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT]
             .into_iter()
             .map(std::ffi::OsString::from)
@@ -1074,11 +1071,10 @@ pub(crate) fn build_managed_cli_command(
     args: &[&str],
 ) -> Result<Command, String> {
     let cmd = resolve_managed_cli_invocation(bin, args)?.to_command();
-    // PYTHONHOME and PYTHONPATH are deliberately left alone. They were removed
-    // back when the argv carried -I, which implies -E and dropped them anyway,
-    // so the calls were belt and braces over a child that could not read them.
-    // Without -I they would bite: the console script this replaces honours both,
-    // and scrubbing them here would make the swap observable.
+    // PYTHONHOME and PYTHONPATH are deliberately left alone. Removing them was
+    // belt and braces under -I, which dropped them anyway. Without -I it would
+    // bite: the console script honours both, so scrubbing them here would make
+    // the swap observable.
     Ok(cmd)
 }
 
@@ -1179,8 +1175,7 @@ mod tests {
         assert_eq!(
             invocation.args,
             vec![
-                // No -I: it implies -E, which made the child ignore every
-                // PYTHON* variable the console script honours.
+                // No -I; see WINDOWS_CLI_ENTRYPOINT.
                 OsString::from("-X"),
                 OsString::from("utf8"),
                 OsString::from("-c"),
@@ -1198,11 +1193,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn managed_invocation_does_not_isolate_the_interpreter() {
-        // -I was measured to be an observable difference on a machine with no
-        // policy at all: PYTHONPROFILEIMPORTTIME=1 produced ~24 KB of stderr
-        // from the console script and nothing from the trampoline, and
-        // PYTHONPATH stopped shadowing. The sys.path edit in the trampoline
-        // covers the one thing -I was needed for.
+        // Measured on a machine with no policy: PYTHONPROFILEIMPORTTIME=1 gave
+        // ~24 KB of stderr from the console script and nothing from a -I
+        // trampoline, and PYTHONPATH stopped shadowing.
         let (dir, _python, bin) = managed_venv("managed-cli-no-isolation");
         let invocation = resolve_managed_cli_invocation(&bin, &["-h"]).unwrap();
 
@@ -1239,9 +1232,8 @@ mod tests {
     fn managed_commands_leave_the_python_environment_alone() {
         use std::ffi::OsStr;
 
-        // Scrubbing PYTHONHOME / PYTHONPATH was harmless under -I, which
-        // discarded them anyway. Without -I it would be a behaviour change the
-        // console script does not make, so the builders must not touch them.
+        // Harmless under -I, which discarded them anyway; without it, a change
+        // the console script does not make.
         let (dir, _python, bin) = managed_venv("managed-cli-env");
         let cmd = build_managed_cli_command(&bin, &["-h"]).unwrap();
         for name in ["PYTHONHOME", "PYTHONPATH"] {
@@ -1467,10 +1459,9 @@ pub fn start_backend(
             return Err(msg);
         }
     };
-    // The program actually spawned, not the console script it was resolved from.
-    // This line is what a user attaches to an issue, and on Windows the two now
-    // differ: naming the stub would point every Application Control report at a
-    // binary this process never starts.
+    // The program actually spawned, not the console script it resolved from. This
+    // line is what a user attaches to an issue, and naming the stub would point
+    // every Application Control report at a binary we never start.
     let start_line = format!(
         "Starting backend: {:?} {:?}",
         invocation.program, invocation.args
@@ -1515,9 +1506,8 @@ pub fn start_backend(
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its
     // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
-    // The backend itself also gets UTF-8 from the -X utf8 in its argv; these
-    // reach it too now that the trampoline no longer passes -I (which implied
-    // -E), and they carry on down to whatever it spawns.
+    // The backend gets UTF-8 from -X utf8 in its argv; these reach it too now
+    // that -I is gone, and carry on down to whatever it spawns.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");

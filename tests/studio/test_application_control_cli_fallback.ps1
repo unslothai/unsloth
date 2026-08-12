@@ -20,13 +20,8 @@ $install = Join-Path $repo "install.ps1"
 
 # The one canonical spelling, repeated in install.ps1, studio/src-tauri/src/process.rs and
 # unsloth_cli/commands/studio.py. Written out here rather than read from any of them, so a
-# silent edit on any side fails a check instead of being copied into the expectation.
-#
-# Two halves, both load-bearing. argv[0] is assigned before the import because unsloth_cli
-# decides at import time whether it is the console script. The sys.path[:1] filter drops the
-# working-directory entry that `python -c` adds and a console script does not, which is what
-# lets the invocation stay off -I: -I would have dropped it too, but also PYTHONPATH,
-# PYTHONWARNINGS and user site-packages, which the console script honours.
+# silent edit on any side fails a check instead of being copied into the expectation. Both
+# halves are load bearing; the rationale is on WINDOWS_CLI_ENTRYPOINT in process.rs.
 $Trampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
 
 function Get-FunctionText {
