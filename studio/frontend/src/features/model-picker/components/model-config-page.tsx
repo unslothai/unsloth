@@ -347,11 +347,12 @@ function AdvancedGpuSlider({
 // Driven in whole percent so a dragged value round-trips exactly and reuses
 // AdvancedGpuSlider's step of 1; the fraction is rebuilt at the API boundary.
 function VramBudgetRow() {
-  // Every branch that reads the budget is gated on a discrete GPU. macOS reports
-  // none (_get_gpu_memory returns [] there), so the Metal path sizes itself from
-  // _APPLE_UNIFIED_MEMORY_FRACTION and calls the context fitter with
-  // budget_frac = 1.0, and this slider cannot move anything. Showing it anyway
-  // would promise "applies on the next load" for a setting Macs ignore, and the
+  // Every branch that reads the budget is gated on a discrete GPU, so the caller
+  // renders this only when one exists and the mode is not Manual. macOS is gated
+  // here as well: it reports no discrete GPUs (_get_gpu_memory returns [] there),
+  // so the Metal path sizes itself from _APPLE_UNIFIED_MEMORY_FRACTION and calls
+  // the context fitter with budget_frac = 1.0. Showing the slider anyway would
+  // promise "applies on the next load" for a setting those paths ignore, and the
   // reload hint would fire for a reload that changes nothing.
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
@@ -580,9 +581,12 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {/* Sits with the GPU controls but applies in Default mode too: the budget
-          drives the auto-fit, which is exactly what Manual mode opts out of. */}
-      {!isDiffusion && <VramBudgetRow />}
+      {/* The budget drives the auto-fit, which is exactly what Manual mode opts
+          out of: both manual branches plan with an empty device list, so the
+          fraction reaches nothing. It also needs a discrete GPU to act on, and
+          gpuDevices is empty on CPU-only hosts. Promising "applies on the next
+          load" in either case would be false. */}
+      {!isDiffusion && !isManual && gpuDevices.length > 0 && <VramBudgetRow />}
       {!isDiffusion && isManual && (
         <>
           <AdvancedGpuSlider

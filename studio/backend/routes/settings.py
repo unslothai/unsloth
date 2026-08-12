@@ -231,6 +231,16 @@ class VramBudgetPayload(BaseModel):
     # model-memory switches do, because there is only one field to write.
     fraction: Optional[float] = Field(default = None, ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
 
+    @field_validator("fraction", mode = "before")
+    @classmethod
+    def _reject_bool(cls, value: object) -> object:
+        # bool is a subclass of int, so non-strict parsing turns True into 1.0
+        # and stores the maximum budget instead of returning 422. The util's own
+        # guard never sees the bool, because pydantic has already coerced it.
+        if isinstance(value, bool):
+            raise ValueError("fraction must be a number, not a boolean")
+        return value
+
 
 class VramBudgetResponse(BaseModel):
     fraction: float
@@ -491,6 +501,13 @@ def _vram_budget_reload_required(fraction: float) -> bool:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
+        # A load that has planned but not yet spawned has no _process, so
+        # is_active is still False while the child is already committed to the
+        # fraction it captured. Answer from the pending value in that window,
+        # as _active_launch_placement does for the Model Memory path.
+        pending = getattr(backend, "_vram_fraction_pending", None)
+        if pending is not None:
+            return float(pending) != float(fraction)
         if not backend.is_active:
             return False
         launched = getattr(backend, "_vram_fraction_launched", None)

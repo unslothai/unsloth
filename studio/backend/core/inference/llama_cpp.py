@@ -3358,6 +3358,10 @@ class LlamaCppBackend:
         # load. Lets the settings route report a stale budget rather than assuming
         # every save needs a reload.
         self._vram_fraction_launched: Optional[float] = None
+        # The budget a load has already committed to but not yet published,
+        # covering the window between planning and Popen the same way
+        # _memory_launch_pending does for the Model Memory placement.
+        self._vram_fraction_pending: Optional[float] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
@@ -13370,10 +13374,12 @@ class LlamaCppBackend:
                 # child is already committed. Popen clears it, and so does every
                 # exit below, so a failed spawn cannot leave it stuck on.
                 self._memory_launch_pending = True
+                self._vram_fraction_pending = _vram_frac if gpus else None
                 try:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
+                    self._vram_fraction_pending = None
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -13765,8 +13771,12 @@ class LlamaCppBackend:
                 # The VRAM budget this child was actually sized against. Committed
                 # here with the rest of the known-good state, so a duplicate-load
                 # fast path or a failed launch leaves the previous child's marker
-                # intact and the settings route keeps asking for the reload.
-                self._vram_fraction_launched = _vram_frac
+                # intact and the settings route keeps asking for the reload. None
+                # when placement never consulted it: every consumer is gated on a
+                # non-empty gpus, so manual mode and hosts with no discrete GPU
+                # would otherwise be stamped with a budget they never applied and
+                # then be asked to reload for a change that cannot move anything.
+                self._vram_fraction_launched = _vram_frac if gpus else None
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
@@ -14396,6 +14406,15 @@ class LlamaCppBackend:
         ):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
+        # Same shape as the Model Memory check above: the budget is server-wide,
+        # so a save leaves the intent identical and this would report
+        # already-loaded with the child still sized against the old fraction.
+        # None means placement never used it (manual, or no discrete GPU), where
+        # a reload would change nothing.
+        _launched_frac = self._vram_fraction_launched
+        if _launched_frac is not None and float(_launched_frac) != _active_vram_fraction():
+            logger.info("VRAM budget changed since launch; forcing a reload")
+            return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
             return False
         self._record_matching_gpu_request(
@@ -14562,6 +14581,7 @@ class LlamaCppBackend:
             self._memory_policy_active = False
             self._memory_mlock_applicable = True
             self._memory_launch_pending = False
+            self._vram_fraction_pending = None
             self._loaded_by_user_action = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True

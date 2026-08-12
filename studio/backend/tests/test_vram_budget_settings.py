@@ -209,6 +209,49 @@ class TestLaunchedMarker:
         # route must keep asking for a reload.
         assert backend._vram_fraction_launched == pytest.approx(0.97)
 
+    @staticmethod
+    def _adoptable(monkeypatch, *, launched):
+        """A backend whose every other adopt predicate already matches."""
+        import core.inference.llama_cpp as lc
+
+        backend = lc.LlamaCppBackend()
+        backend._process = object()
+        backend._healthy = True
+        backend._vram_fraction_launched = launched
+        monkeypatch.setattr(backend, "matches_load_source", lambda _i: True)
+        monkeypatch.setattr(backend, "_runtime_matches_intent", lambda _i, _e: True)
+        monkeypatch.setattr(backend, "_record_matching_gpu_request", lambda *_a, **_k: None)
+        return backend, lc
+
+    def test_adopt_is_refused_when_the_budget_changed(self, monkeypatch):
+        # The intent is identical, because the budget is server-wide and carried
+        # on no request field. Without this check the route answers
+        # already_loaded and the slider silently does nothing.
+        backend, lc = self._adoptable(monkeypatch, launched = 0.97)
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.85)
+
+        assert not backend.adopt_load_intent_if_matched(
+            lc.GgufLoadIntent(model_identifier = "owner/repo")
+        )
+
+    def test_adopt_is_allowed_when_the_budget_is_unchanged(self, monkeypatch):
+        backend, lc = self._adoptable(monkeypatch, launched = 0.97)
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.97)
+
+        assert backend.adopt_load_intent_if_matched(
+            lc.GgufLoadIntent(model_identifier = "owner/repo")
+        )
+
+    def test_adopt_is_allowed_when_placement_never_used_the_budget(self, monkeypatch):
+        # Manual mode and hosts with no discrete GPU plan with an empty device
+        # list, so the marker is None and a reload could not change placement.
+        backend, lc = self._adoptable(monkeypatch, launched = None)
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.85)
+
+        assert backend.adopt_load_intent_if_matched(
+            lc.GgufLoadIntent(model_identifier = "owner/repo")
+        )
+
     def test_marker_is_committed_with_the_rest_of_the_launch_state(self):
         # Guards the placement: next to _requested_n_batch, inside the block that
         # only a launch which reached _healthy=True executes, not at the top of
@@ -218,4 +261,75 @@ class TestLaunchedMarker:
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert "self._vram_fraction_launched=_vram_fracself._requested_n_batch" in compact
+        assert (
+            "self._vram_fraction_launched=_vram_fracifgpuselseNoneself._requested_n_batch"
+            in compact
+        )
+
+    def test_marker_is_none_when_placement_had_no_devices(self):
+        # gpus is emptied by both manual branches and is empty on a host with no
+        # discrete GPU, and every consumer of the fraction is gated on it, so a
+        # value there would be a budget the child never applied.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "self._vram_fraction_pending=_vram_fracifgpuselseNone" in compact
+
+
+class TestRouteContract:
+    """The two places the HTTP layer can answer wrongly on well-formed input."""
+
+    @staticmethod
+    def _settings_module():
+        import routes.settings as rs
+        return rs
+
+    def test_payload_rejects_a_boolean_fraction(self):
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and
+        # stores the maximum budget instead of returning 422. The util's own
+        # bool guard never sees it, because pydantic coerced it first.
+        import pydantic
+        import pytest as _pytest
+
+        rs = self._settings_module()
+        with _pytest.raises(pydantic.ValidationError):
+            rs.VramBudgetPayload.model_validate({"fraction": True})
+        with _pytest.raises(pydantic.ValidationError):
+            rs.VramBudgetPayload.model_validate_json('{"fraction": true}')
+        assert rs.VramBudgetPayload.model_validate({"fraction": 0.9}).fraction == 0.9
+        assert rs.VramBudgetPayload.model_validate({"fraction": None}).fraction is None
+
+    def test_reload_required_answers_from_a_load_that_has_not_spawned(self, monkeypatch):
+        # The window this covers: load_model has captured its fraction and fixed
+        # the placement, but _process is still None, so is_active would report no
+        # reload while the child is already committed to the pre-save value.
+        rs = self._settings_module()
+
+        class _Backend:
+            is_active = False
+            _vram_fraction_pending = 0.97
+            _vram_fraction_launched = None
+
+        monkeypatch.setattr(rs, "get_llama_cpp_backend", lambda: _Backend(), raising = False)
+        import routes.inference as ri
+
+        monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(), raising = False)
+
+        assert rs._vram_budget_reload_required(0.85)
+        assert not rs._vram_budget_reload_required(0.97)
+
+    def test_reload_not_required_when_no_load_is_in_flight(self, monkeypatch):
+        rs = self._settings_module()
+
+        class _Backend:
+            is_active = False
+            _vram_fraction_pending = None
+            _vram_fraction_launched = 0.97
+
+        import routes.inference as ri
+
+        monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(), raising = False)
+
+        assert not rs._vram_budget_reload_required(0.85)
