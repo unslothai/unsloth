@@ -190,7 +190,10 @@ def test_xformers_bias_move_skips_matching_metadata_device():
     assert packing_utils.move_xformers_attention_bias(bias, torch.device("cpu")) is bias
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two CUDA devices")
+@pytest.mark.skipif(
+    torch.cuda.device_count() < 2 or packing_utils._XFormersBlockMask is None,
+    reason = "needs xFormers and two CUDA devices",
+)
 def test_real_xformers_packed_mask_validates_on_each_device():
     from xformers.ops.fmha.common import Inputs
     packing_utils.clear_packed_caches()
