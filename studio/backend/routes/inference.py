@@ -6083,6 +6083,8 @@ def _estimate_gguf_required_gb(
                     n_ubatch = n_ubatch,
                 )
             )
+            if effective_ubatch is None and not is_diffusion:
+                effective_ubatch = LlamaCppBackend._DEFAULT_N_UBATCH
             if effective_ubatch:
                 # auto context: assume the native one fits at least a full micro-batch
                 budget_ctx = ctx if ctx > 0 else effective_ubatch

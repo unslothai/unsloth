@@ -269,7 +269,7 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
         big = route._estimate_gguf_required_gb(
             config, max_seq_length = 32768, n_batch = 65536, n_ubatch = 65536
         )
-    assert base == pytest.approx(1.0)
+    assert base > 1.5
     # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
@@ -665,8 +665,9 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
         big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
         typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
 
-    # Unset batch defaults do not expose enough shape information to add a reserve.
-    assert blank_1 == pytest.approx(1.0) and blank_4 == pytest.approx(1.0)
+    # Unset fields still launch at llama.cpp's known default 512-token micro-batch.
+    assert blank_1 > 1.5
+    assert blank_4 > blank_1 + 1.5
     # The remote header may enable embeddings, so the first output buffer is charged.
     assert big_1 > blank_1 + 30.0
     # 262144 * 32768 * 4 = 32 GiB for the second slot too.
