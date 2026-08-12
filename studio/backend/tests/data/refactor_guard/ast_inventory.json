@@ -858,6 +858,53 @@
       "REPROMPT_MAX_CHARS": {
         "kind": "assign"
       },
+      "StreamingMarkupStripper": {
+        "bases": [],
+        "decorators": [],
+        "kind": "class",
+        "methods": {
+          "__init__": {
+            "decorators": [],
+            "signature": "self, enabled_tool_names: Optional[set]=None, *, seg_final: bool=True"
+          },
+          "_full_strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_is_extension": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_needs_whole_buffer": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_note": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_reset": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "_think_block": {
+            "decorators": [],
+            "signature": "self, text: str, first: int"
+          },
+          "_unchanged": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "reset": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          }
+        }
+      },
       "TOOL_ERROR_NUDGE": {
         "kind": "assign"
       },
@@ -909,10 +956,16 @@
       "_EMBEDDED_MARKER_RE": {
         "kind": "assign"
       },
+      "_EXTENSION_SAMPLE": {
+        "kind": "assign"
+      },
       "_FUNC_CLOSE_TAG_RE": {
         "kind": "assign"
       },
       "_GEMMA_ANCHOR_CLOSERS": {
+        "kind": "assign"
+      },
+      "_GEMMA_BARE_SENTINEL": {
         "kind": "assign"
       },
       "_GEMMA_BARE_TC_PREFIX_RE": {
@@ -1038,6 +1091,12 @@
       "_REPEAT_TRAIL_PUNCT": {
         "kind": "assign"
       },
+      "_SENTINEL_MAX_LEN": {
+        "kind": "assign"
+      },
+      "_STRIP_SENTINELS": {
+        "kind": "assign"
+      },
       "_TC_END_TAG_RE": {
         "kind": "assign"
       },
@@ -1095,6 +1154,11 @@
         "kind": "def",
         "signature": "content: str"
       },
+      "_first_sentinel": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
+      },
       "_gemma_balanced_brace_end": {
         "decorators": [],
         "kind": "def",
@@ -1149,6 +1213,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, pos: int"
+      },
+      "_is_provisional_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, found: int"
       },
       "_leading_json_value_end": {
         "decorators": [],
@@ -1240,6 +1309,11 @@
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
       },
+      "_safe_cut": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, first: int"
+      },
       "_signal_inside_leading_wrapperless_gemma": {
         "decorators": [],
         "kind": "def",
@@ -1282,6 +1356,11 @@
       },
       "_trim_param_value": {
         "kind": "assign"
+      },
+      "_unmatched_think_closer": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int=0"
       },
       "_whole_content_is_json_value": {
         "decorators": [],

@@ -285,6 +285,10 @@ _ARG_FIXTURES = {
     "n": lambda text: len(text),
     "vs": lambda text: 0,
     "needle": lambda text: "[",
+    # ``_safe_cut`` wants the real first-sentinel offset: at 0 it returns 0 for every
+    # input and pins nothing.
+    "first": lambda text: _parser_first_sentinel(text),
+    "found": lambda text: max(_parser_first_sentinel(text), 0),
     "out": lambda text: [],
     "previous": lambda text: text,
     "markers": lambda text: _tool_healing_build_markers(text),
