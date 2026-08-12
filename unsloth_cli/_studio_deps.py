@@ -293,8 +293,10 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             "reason": "studio_install_incomplete",
         }
     try:
-        if installed is not None and req_root is not None and _verify_install_supports(
-            module, "installed"
+        if (
+            installed is not None
+            and req_root is not None
+            and _verify_install_supports(module, "installed")
         ):
             # That venv's own metadata: unreadable through this interpreter.
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
