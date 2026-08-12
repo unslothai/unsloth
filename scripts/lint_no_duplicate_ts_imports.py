@@ -69,6 +69,12 @@ _IMPORT = re.compile(
 
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
+    # Prettier keeps line and block comments inside a long import list. Left in,
+    # `piece.split()` reads `//` as the binding, which both loses the real name
+    # and reports the next commented import as a duplicate of it -- a hard CI
+    # fail on ordinary TypeScript.
+    clause = re.sub(r"/\*.*?\*/", " ", clause, flags = re.DOTALL)
+    clause = re.sub(r"//[^\n]*", " ", clause)
     clause = clause.strip()
     if clause.startswith("type "):
         clause = clause[len("type ") :]
@@ -178,6 +184,18 @@ def _self_test() -> int:
             "a multi-line clause is one statement",
             'import {\n  alpha,\n  beta,\n} from "m";\nimport { beta } from "n";\n',
             ["beta"],
+        ),
+        (
+            "a comment inside the import list is not a binding",
+            'import {\n  // the primary widget\n  alpha,\n} from "m";\n'
+            'import {\n  /* helpers */\n  beta,\n} from "n";\n',
+            [],
+        ),
+        (
+            "a commented import list still reports its real duplicate",
+            'import {\n  // the primary widget\n  alpha,\n} from "m";\n'
+            'import {\n  // again\n  alpha,\n} from "n";\n',
+            ["alpha"],
         ),
         (
             "the word import inside a string is not an import",
