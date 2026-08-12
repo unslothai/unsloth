@@ -867,9 +867,7 @@ def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         child.kill()
-        (tmp_path / f"studio-8889-{child.pid}.pid").write_text(
-            f"{child.pid}\n", encoding = "utf-8"
-        )
+        (tmp_path / f"studio-8889-{child.pid}.pid").write_text(f"{child.pid}\n", encoding = "utf-8")
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if run.live_sibling_backend() is None:
@@ -879,6 +877,7 @@ def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
         assert run.live_sibling_backend() is None, "a zombie was taken for a serving backend"
     finally:
         child.wait()
+
 
 def test_every_record_call_can_be_repeated(tmp_path):
     # Startup and shutdown both run more than once in a long-lived embedded
