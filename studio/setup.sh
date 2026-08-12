@@ -1923,6 +1923,7 @@ fi
 # dead, and aborting here would turn a diagnosable install into a failed one.
 _setup_torch_probe_answered=false
 _setup_torch_sees_gpu=false
+_setup_torch_sees_xpu=false
 _setup_torch_devices=0
 _setup_torch_ver=""
 _setup_torch_hip=""
@@ -1938,7 +1939,7 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
     else
         # Sentinel-prefixed and matched line-anchored below, so a stdout banner
         # from a noisy import cannot be read as the answer.
-        _setup_torch_probe='import signal; signal.alarm(90); import torch; print("UNSLOTHTORCHGPU=" + ("1" if torch.cuda.is_available() else "0") + "|" + str(torch.cuda.device_count()) + "|" + torch.__version__ + "|" + str(getattr(torch.version, "hip", None) or ""))'
+        _setup_torch_probe='import signal; signal.alarm(90); import torch; print("UNSLOTHTORCHGPU=" + ("1" if torch.cuda.is_available() else "0") + "|" + str(torch.cuda.device_count()) + "|" + torch.__version__ + "|" + str(getattr(torch.version, "hip", None) or "") + "|" + ("1" if (hasattr(torch, "xpu") and torch.xpu.is_available()) else "0"))'
         if command -v timeout >/dev/null 2>&1; then
             _setup_torch_out=$(timeout 90 "$VENV_DIR/bin/python" -c "$_setup_torch_probe" 2>/dev/null || true)
         else
@@ -1952,14 +1953,19 @@ if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
             _setup_torch_devices=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f2)
             _setup_torch_ver=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f3)
             _setup_torch_hip=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f4)
+            # Asked in the SAME bounded probe as CUDA, so the suppression turns on the
+            # runtime actually being usable rather than on the wheel label: a +xpu wheel
+            # with a dead Intel runtime answers 0 here and must still be reported.
+            [ "$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f5)" = "1" ] && _setup_torch_sees_xpu=true
         fi
     fi
-    # A hybrid Intel/NVIDIA host on the XPU wheel answers False here and still runs on
-    # the GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU
-    # verdict there would be a false alarm about a working machine, which is worse than
-    # staying quiet, so an XPU-ready venv suppresses it.
+    # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs
+    # on the GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU
+    # verdict there would be a false alarm about a working machine. Gate on what the probe
+    # SAW, not on the wheel label: a +xpu wheel whose Intel runtime is broken falls through
+    # to CPU exactly like the hosts this check exists for, and must still be reported.
     if [ "$_setup_torch_probe_answered" = true ] && [ "$_setup_torch_sees_gpu" = false ] \
-        && [ "$_setup_xpu_ready" = false ]; then
+        && [ "$_setup_torch_sees_xpu" = false ]; then
         if [ "$_setup_amd_detected" = true ]; then
             step "gpu check" "PyTorch cannot see the AMD GPU reported above" "$C_ERR"
             substep "detected by the installer: AMD ROCm${_setup_gfx:+ ($_setup_gfx)}${_setup_mkt:+ -- $_setup_mkt}" "$C_ERR"

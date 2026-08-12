@@ -58,14 +58,14 @@ Get-TorchGpuVisibility -PythonExe 'C:\v\Scripts\python.exe'
 $script:codeSink = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_8473_probe_code.txt"
 
 Write-Host "torch's own answer is read, in full"
-$seen = Invoke-Vis "UNSLOTHTORCHGPU=1|2|2.9.0+rocm6.4|6.4.43482"
+$seen = Invoke-Vis "UNSLOTHTORCHGPU=1|2|2.9.0+rocm6.4|6.4.43482|0"
 Check "an answer is an answer"    ($seen.Answered)
 Check "the GPU is visible"        ($seen.SeesGpu)
 Check "device count"              ($seen.DeviceCount -eq 2)
 Check "torch version"             ($seen.TorchVersion -eq "2.9.0+rocm6.4")
 Check "torch.version.hip"         ($seen.Hip -eq "6.4.43482")
 
-$blind = Invoke-Vis "UNSLOTHTORCHGPU=0|0|2.9.0+cpu|"
+$blind = Invoke-Vis "UNSLOTHTORCHGPU=0|0|2.9.0+cpu||0"
 Check "the mismatch is an answer too" ($blind.Answered)
 Check "the GPU is not visible"        (-not $blind.SeesGpu)
 Check "a cpu wheel has no hip"        ($blind.Hip -eq "")
@@ -73,7 +73,7 @@ Check "the cpu wheel is named"        ($blind.TorchVersion -eq "2.9.0+cpu")
 
 Write-Host "and only the sentinel line is the answer"
 # torch prints to stdout on some hosts; an unanchored match would read the banner.
-$spoof = Invoke-Vis "warning: overriding UNSLOTHTORCHGPU=1|8|2.9.0|6.4`nUNSLOTHTORCHGPU=0|0|2.9.0+cpu|"
+$spoof = Invoke-Vis "warning: overriding UNSLOTHTORCHGPU=1|8|2.9.0|6.4|1`nUNSLOTHTORCHGPU=0|0|2.9.0+cpu||0"
 Check "a banner cannot spoof it"  ($spoof.Answered -and -not $spoof.SeesGpu)
 
 Write-Host "a probe that did not answer accuses nobody"
@@ -151,10 +151,11 @@ Check "an arch-less AMD host still counts" ($report -match 'elseif \(\$HasROCm\)
 # A hybrid Intel/NVIDIA host on the XPU wheel answers SeesGpu=False and still runs on the
 # GPU, because _detect_hardware_locked falls through from CUDA to XPU. Accusing that host of
 # running on CPU is a false alarm about a working machine (#8473). Test-VenvTorchIsXpu reads
-# torch/version.py off disk, so the suppression cannot hang on a stalled Arc driver.
-Check "the XPU suppression is present"    ($report -match 'Test-VenvTorchIsXpu')
-Check "it suppresses, not merely reports" ($report -match 'not \(Test-VenvTorchIsXpu')
-Check "it guards the mismatch arm"        ($report -match '\$_gpuVisibility\.SeesGpu -and[\s\S]{0,120}Test-VenvTorchIsXpu')
+# probe, so a +xpu wheel whose Intel runtime is dead is still reported.
+Check "the XPU suppression is present"    ($report -match 'SeesXpu')
+Check "it suppresses, not merely reports" ($report -match 'not \$_gpuVisibility\.SeesXpu')
+Check "it guards the mismatch arm"        ($report -match '\$_gpuVisibility\.SeesGpu -and[\s\S]{0,120}SeesXpu')
+Check "the suppression reads the probe, not the wheel label" (-not ($report -match 'Test-VenvTorchIsXpu'))
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }

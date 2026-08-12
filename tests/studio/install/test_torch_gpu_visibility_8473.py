@@ -105,7 +105,6 @@ def _run_block(
     *,
     amd: bool = False,
     nvidia: bool = False,
-    xpu: bool = False,
     gfx: str = "",
     marketing: str = "",
     env: dict[str, str] | None = None,
@@ -142,7 +141,6 @@ def _run_block(
             f'VENV_DIR="{venv}"',
             f"_setup_nvidia_usable={'true' if nvidia else 'false'}",
             f"_setup_amd_detected={'true' if amd else 'false'}",
-            f"_setup_xpu_ready={'true' if xpu else 'false'}",
             f'_setup_gfx="{gfx}"',
             f'_setup_mkt="{marketing}"',
             block_text,
@@ -175,8 +173,9 @@ def _answer(
     count: str = "0",
     version: str = "2.9.0+cpu",
     hip: str = "",
+    xpu: str = "0",
 ) -> str:
-    return f"UNSLOTHTORCHGPU={available}|{count}|{version}|{hip}"
+    return f"UNSLOTHTORCHGPU={available}|{count}|{version}|{hip}|{xpu}"
 
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason = "setup.sh is the POSIX installer")
@@ -365,8 +364,8 @@ def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
     machine still runs on its GPU, because _detect_hardware_locked falls through from
     CUDA to XPU (hardware.py). Reporting a CPU verdict there is a false alarm about a
     working host, which is worse than saying nothing (#8473)."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
-    result = _run_block(block, venv, tmp_path, nvidia = True, xpu = True)
+    venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "1"))
+    result = _run_block(block, venv, tmp_path, nvidia = True)
     out = result["stdout"]
     assert "PyTorch cannot see" not in out
     assert "No visible GPU" not in out
@@ -377,6 +376,17 @@ def test_a_working_xpu_host_is_not_accused_of_running_on_cpu(block, tmp_path):
 def test_a_cpu_only_hybrid_host_is_still_reported(block, tmp_path):
     """The suppression is XPU-specific, not a blanket mute: with no XPU the same
     invisible-GPU host must still be reported."""
-    venv = _make_venv(tmp_path, stdout = _answer("0"))
-    result = _run_block(block, venv, tmp_path, nvidia = True, xpu = False)
+    venv = _make_venv(tmp_path, stdout = _answer("0", xpu = "0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True)
     assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+
+
+def test_an_xpu_wheel_with_a_dead_runtime_is_still_reported(block, tmp_path):
+    """The suppression must turn on what the probe SAW, not on the wheel label. A +xpu
+    wheel whose Intel runtime is broken answers False for both CUDA and XPU and falls
+    through to CPU exactly like the hosts this check exists for, so a disk-only
+    'is this an XPU wheel' test would silence the one case that needs saying (#8473)."""
+    venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+xpu", xpu = "0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True)
+    assert "PyTorch cannot see the NVIDIA GPU reported above" in result["stdout"]
+    assert "torch 2.9.0+xpu" in result["stdout"]

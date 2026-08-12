@@ -1082,22 +1082,26 @@ function Test-TorchXpuAvailable {
 function Get-TorchGpuVisibility {
     param([string]$PythonExe, [int]$TimeoutSec = 90)
     $result = [pscustomobject]@{
-        Answered = $false; SeesGpu = $false; DeviceCount = 0
+        Answered = $false; SeesGpu = $false; SeesXpu = $false; DeviceCount = 0
         TorchVersion = ""; Hip = ""; Error = ""
     }
     # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
     $code = "import torch; print('UNSLOTHTORCHGPU=' + ('1' if torch.cuda.is_available() else '0') + " +
         "'|' + str(torch.cuda.device_count()) + '|' + torch.__version__ + " +
-        "'|' + str(getattr(torch.version, 'hip', None) or ''))"
+        "'|' + str(getattr(torch.version, 'hip', None) or '') + " +
+        "'|' + ('1' if (hasattr(torch, 'xpu') and torch.xpu.is_available()) else '0'))"
     $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code -TimeoutSec $TimeoutSec
     $result.Error = $probe.Error
     # Line-anchored like every other probe here, so a stdout banner cannot be read as the answer.
-    if ($probe.Ok -and $probe.Output -match '(?m)^UNSLOTHTORCHGPU=([01])\|(\d+)\|(\S*)\|(\S*)\s*$') {
+    if ($probe.Ok -and $probe.Output -match '(?m)^UNSLOTHTORCHGPU=([01])\|(\d+)\|(\S*)\|(\S*)\|([01])\s*$') {
         $result.Answered = $true
         $result.SeesGpu = ($Matches[1] -eq "1")
         $result.DeviceCount = [int]$Matches[2]
         $result.TorchVersion = $Matches[3]
         $result.Hip = $Matches[4]
+        # Same bounded probe as CUDA, so the suppression turns on the runtime being usable
+        # rather than on the wheel label: a +xpu wheel with a dead Intel runtime answers 0.
+        $result.SeesXpu = ($Matches[5] -eq "1")
     }
     return $result
 }
@@ -5141,13 +5145,13 @@ if ($_gpuCheckAnnounced -and -not $NoTorchMode -and
     -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
     (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
     $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy
-    # A hybrid Intel/NVIDIA host on the XPU wheel answers False here and still runs on the
-    # GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU verdict
-    # there would be a false alarm about a working machine, which is worse than staying
-    # quiet, so an XPU venv suppresses it. Read off disk, like the rest of the XPU guards,
-    # so a stalled Arc driver cannot hang this on `import torch`.
+    # A hybrid Intel/NVIDIA host on the XPU wheel answers False for CUDA and still runs on
+    # the GPU: _detect_hardware_locked falls through from CUDA to XPU. Reporting a CPU
+    # verdict there would be a false alarm about a working machine. Gate on what the probe
+    # SAW, not on the wheel label: a +xpu wheel whose Intel runtime is broken falls through
+    # to CPU exactly like the hosts this check exists for, and must still be reported.
     if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu -and
-        -not (Test-VenvTorchIsXpu -VenvPath $VenvDir)) {
+        -not $_gpuVisibility.SeesXpu) {
         $_gpuCheckHip = if ($_gpuVisibility.Hip) { $_gpuVisibility.Hip } else { "none" }
         step "gpu check" "PyTorch cannot see the $_gpuCheckAnnounced reported above" "Red"
         substep "torch.cuda.is_available() is False in $VenvDir" "Red"
