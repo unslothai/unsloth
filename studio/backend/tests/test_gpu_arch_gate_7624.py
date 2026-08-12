@@ -77,6 +77,187 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
 
 
+# Every shape the install marker can arrive in, as (label, marker file contents).
+# The marker is written by the installer but read back after arbitrary upgrades,
+# partial writes, disk damage and hand-editing, so the reader is treated as
+# parsing untrusted input. A callable receives the marker path and lays out
+# something other than a plain JSON file.
+_MARKER_CORPUS = [
+    ("absent_file", None),
+    ("empty_file", ""),
+    ("invalid_json", "{not json"),
+    ("truncated_json", '{"mapped_targets": ["gfx1030"'),
+    ("marker_is_a_list", '["gfx1030"]'),
+    ("marker_is_null", "null"),
+    ("marker_is_a_string", '"hello"'),
+    ("marker_is_empty_dict", "{}"),
+    ("targets_null", '{"mapped_targets": null}'),
+    ("targets_empty_string", '{"mapped_targets": ""}'),
+    ("targets_bare_string", '{"mapped_targets": "gfx1030"}'),
+    ("targets_empty_list", '{"mapped_targets": []}'),
+    ("targets_list_of_null", '{"mapped_targets": [null]}'),
+    ("targets_list_of_int", '{"mapped_targets": [123]}'),
+    ("targets_blank_strings", '{"mapped_targets": ["", "  "]}'),
+    ("targets_dict", '{"mapped_targets": {"a": "gfx1030"}}'),
+    ("targets_huge_list", json.dumps({"mapped_targets": [f"gfx{i:04d}" for i in range(5000)]})),
+    ("cuda_bundle", '{"asset": "app-linux-x64-cuda12.tar.gz"}'),
+    ("vulkan_bundle", '{"asset": "app-linux-x64-vulkan.tar.gz", "mapped_targets": []}'),
+    ("non_utf8_bytes", lambda p: p.write_bytes(b"\xff\xfe\x00garbage")),
+    ("directory_in_place_of_file", lambda p: p.mkdir()),
+    (
+        "permission_denied",
+        lambda p: (p.write_text(json.dumps({"mapped_targets": ["gfx1030"]})), p.chmod(0o000)),
+    ),
+    # Forwards compatibility: mapped_targets is remote data (it comes from the
+    # release manifest, which versions independently of this code), so a future
+    # publish can put a token in it that no device will ever report.
+    ("future_generic_target", '{"mapped_targets": ["gfx11-generic"]}'),
+    ("future_generic_target_dashed", '{"mapped_targets": ["gfx10-3-generic"]}'),
+    ("future_family_label", '{"mapped_targets": ["gfx110X"]}'),
+    ("future_mixed_concrete_and_generic", '{"mapped_targets": ["gfx1100", "gfx11-generic"]}'),
+]
+
+
+class TestInstalledLlamaGfxArchsCorpus:
+    """The gate must degrade to "unknown" on every malformed marker.
+
+    Two failure directions matter and only one of them is obvious. Raising is
+    fatal because this runs inside the GPU probe. Returning a non-None set that
+    no device can match is just as fatal and much quieter: _get_gpu_memory then
+    drops every GPU and llama-server silently runs on the CPU. So the contract
+    is None (fail open) or a set of concrete archs, never anything in between.
+    """
+
+    @pytest.mark.parametrize("label,payload", _MARKER_CORPUS, ids = [c[0] for c in _MARKER_CORPUS])
+    def test_never_raises_and_never_fails_closed(self, label, payload, tmp_path):
+        import utils.llama_cpp_freshness as freshness
+
+        root = tmp_path / label
+        root.mkdir()
+        marker = root / "UNSLOTH_PREBUILT_INFO.json"
+        if callable(payload):
+            payload(marker)
+        elif payload is not None:
+            marker.write_text(payload, encoding = "utf-8")
+        # The walk-up memoizes per binary path; each case gets its own root.
+        freshness._marker_cache.clear()
+
+        archs = LlamaCppBackend._installed_llama_gfx_archs(
+            str(root / "build" / "bin" / "llama-server")
+        )
+
+        if archs is None:
+            return
+        assert isinstance(archs, frozenset)
+        # Not merely non-empty: every token must be one a device can report,
+        # otherwise the set gates every GPU off the host.
+        assert archs, f"{label} returned an empty set, which would drop every GPU"
+        assert all(
+            LlamaCppBackend._CONCRETE_GFX_ARCH.match(a) for a in archs
+        ), f"{label} returned unmatchable tokens {sorted(archs)}"
+
+    def test_empty_set_is_converted_to_none(self, tmp_path):
+        # `return archs or None` is what does this. Pinned explicitly because a
+        # frozenset() return would type-check fine and fail closed at runtime.
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": ["", "   ", ":"]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
+
+    def test_non_list_targets_are_rejected_before_iteration(self, tmp_path, monkeypatch):
+        # Pins the isinstance(targets, list) guard on its own. Every non-list
+        # json.loads can produce is ALSO caught downstream (a bare "gfx1030"
+        # iterates into single characters, none of which is a concrete arch), so
+        # the corpus above cannot tell the guard apart from its absence. A tuple
+        # is not JSON-reachable, which is the point: it isolates the guard from
+        # the token check, so relaxing one cannot quietly disarm the other.
+        import utils.llama_cpp_freshness as freshness
+        monkeypatch.setattr(
+            freshness, "read_install_marker", lambda _b: {"mapped_targets": ("gfx1030",)}
+        )
+        assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
+
+    def test_concrete_targets_still_gate(self, tmp_path):
+        # The corpus is all about degrading safely; this pins that the normal
+        # case is untouched, so "never fails closed" cannot be met by gutting
+        # the feature.
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1030", "gfx90a"]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset(
+            {"gfx1030", "gfx90a"}
+        )
+
+
+class TestForwardsCompatibleArchTokens:
+    """A future release manifest may record a target that is not a concrete
+    per-device arch. ROCm 6.3+ ships generic code objects (gfx11-generic,
+    gfx10-3-generic) that run across a whole family, and this repo's own
+    manifest already carries umbrella family labels (gfx110X, gfx120X) in the
+    sibling gfx_target field. rocminfo/torch still report the CONCRETE arch for
+    a device, so exact-set membership against a generic token matches nothing
+    and would drop every GPU on the host. Fail open on any token we cannot
+    interpret instead.
+    """
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "gfx11-generic",
+            "gfx10-3-generic",
+            "gfx9-4-generic",
+            "gfx110X",
+            "gfx120X",
+            "gfx103X",
+            "generic",
+            "all",
+            "native",
+        ],
+    )
+    def test_non_concrete_token_disables_the_gate(self, token, tmp_path):
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": [token]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
+
+    def test_one_bad_token_disables_the_whole_gate(self, tmp_path):
+        # Deliberately all-or-nothing. Keeping just the concrete half of
+        # ["gfx1100", "gfx11-generic"] would gate a gfx1101 device off a build
+        # that the generic object actually covers.
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1100", "gfx11-generic"]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
+
+    @pytest.mark.parametrize(
+        "token", ["gfx803", "gfx900", "gfx906", "gfx908", "gfx90a", "gfx90c", "gfx942", "gfx950"]
+    )
+    def test_real_concrete_archs_are_accepted(self, token, tmp_path):
+        # The published manifest's mapped_targets entries, plus the CDNA parts
+        # whose trailing hex letter a digits-only pattern would wrongly reject.
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": [token]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset({token})
+
+    def test_every_published_mapped_target_is_accepted(self, tmp_path):
+        # Verbatim from llama-prebuilt-manifest.json of the unslothai/llama.cpp
+        # release (b10360-mix-87da1a2): the union of every ROCm bundle's
+        # mapped_targets. A pattern that rejected any of these would silently
+        # turn the gate off for real installs.
+        published = [
+            "gfx908", "gfx90a",
+            "gfx1030", "gfx1031", "gfx1032", "gfx1034",
+            "gfx1100", "gfx1101", "gfx1102", "gfx1103",
+            "gfx1150", "gfx1151",
+            "gfx1200", "gfx1201",
+        ]  # fmt: skip
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": published})
+        assert LlamaCppBackend._installed_llama_gfx_archs(binary) == frozenset(published)
+
+    def test_generic_target_keeps_every_gpu(self, tmp_path, monkeypatch, rocm_probe_env):
+        # End to end: without the guard this host loses BOTH cards and drops to
+        # CPU, because neither gfx1100 nor gfx1101 equals "gfx11-generic".
+        _binary_with_marker(tmp_path, {"mapped_targets": ["gfx11-generic"]})
+        monkeypatch.setitem(
+            sys.modules, "torch", _fake_torch(["gfx1100", "gfx1101"], [12000, 13000])
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12000),
+            (1, 13000),
+        ]
+
+
 class TestKernelImageInvalidMarker:
     def test_detects_rocm_arch_mismatch(self):
         tail = (

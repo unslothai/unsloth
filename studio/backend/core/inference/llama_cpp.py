@@ -5399,6 +5399,14 @@ class LlamaCppBackend:
             strip_device = True,
         )
 
+    # A concrete per-device gfx arch: "gfx" then digits, with the optional
+    # trailing hex letter real parts carry (gfx90a, gfx90c). Deliberately does
+    # NOT match the two other kinds of token that can appear in an arch list:
+    # ROCm 6.3+ generic code objects (gfx11-generic, gfx10-3-generic), which
+    # cover a whole family, and the manifest's umbrella family labels (gfx110X,
+    # gfx120X). No device ever reports either as its own arch.
+    _CONCRETE_GFX_ARCH = re.compile(r"^gfx[0-9][0-9a-f]{2,4}$")
+
     @staticmethod
     def _installed_llama_gfx_archs(binary: Optional[str] = None) -> Optional[frozenset]:
         """Concrete gfx archs the installed llama.cpp ROCm prebuilt was built
@@ -5418,7 +5426,27 @@ class LlamaCppBackend:
             archs = frozenset(
                 str(t).split(":")[0].strip().lower() for t in targets if str(t).strip()
             )
-            return archs or None
+            if not archs:
+                return None
+            # The gate is exact-set membership against what the device reports,
+            # so it is only meaningful while every token is a concrete arch. One
+            # token that no device can ever report -- a generic code object, a
+            # family label, or plain garbage from a malformed marker -- matches
+            # nothing, drops EVERY GPU and silently forces CPU, which is worse
+            # than not gating at all. The marker is remote data (mapped_targets
+            # comes from the release manifest, which versions independently of
+            # this code), so treat a list we do not fully understand as unknown
+            # and fail open. All-or-nothing on purpose: dropping just the odd
+            # token out of ["gfx1100", "gfx11-generic"] would leave a set that
+            # under-reports what the build actually covers.
+            unknown = sorted(a for a in archs if not LlamaCppBackend._CONCRETE_GFX_ARCH.match(a))
+            if unknown:
+                logger.warning(
+                    f"install marker mapped_targets has non-concrete arch tokens "
+                    f"{unknown}; skipping the GPU arch gate"
+                )
+                return None
+            return archs
         except Exception as e:
             logger.debug(f"install marker arch read failed: {e}")
             return None
