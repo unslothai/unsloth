@@ -8974,39 +8974,29 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 
 
 # What "the sandbox is off" actually means for paths, per tool. Shared by both
-# platform substitutions, because the split is the shim, not the OS.
+# platform substitutions: the split is the shim, not the OS. _build_bypass_env
+# keeps _SANDBOX_SITE_DIR on PYTHONPATH for BOTH tools, so sitecustomize.py still
+# loads, and being a CPython startup hook is what separates them. Measured:
 #
-# _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize.py
-# still loads. It is a CPython startup hook, which is what splits the two tools.
-# Measured against it:
-#
-#   python, parent exists   -> writes the real absolute path
-#   python, absent convention prefix -> _remap keeps the SUFFIX relative to the
-#                              workdir (/mnt/data/reports/out.csv -> ./reports/
-#                              out.csv) and returns before the generic fallback,
-#                              so no basename collapse and no anti-clobber: an
-#                              existing ./out.csv is overwritten
-#   python, any other missing parent -> the generic fallback keeps only the base
-#                              name, and declines (open raises) when that name is
-#                              already taken in the workdir by an UNRELATED file.
-#                              The .unsloth_sandbox_remap.json sidecar carries the
-#                              healed mapping across calls, so rewriting the same
-#                              invented path re-serves its own target instead
-#   python, prefix present  -> a real /mnt/data mount is never shadowed, so a
-#                              prefix is only special while it is absent
-#   python, unpatched API   -> only open/io.open/os.open and the mkdir family are
-#                              wrapped, so os.rename / os.symlink raise instead;
-#                              shutil.copy is the awkward middle, writing the
-#                              rewritten file through open and then raising in
-#                              copymode against the path it was handed
-#   terminal, plain shell   -> no shim, so the shell's own rules
-#   terminal, launching python -> _build_bypass_env sets PYTHONPATH for the
-#                              terminal subprocess too, so that Python is patched
-#                              exactly like the python tool
-#
-# Hence no categorical claim about /mnt/data in either: on a host where it is a
-# real mount, Full access can read and write it like any other directory, and
-# the general parent-directory rule already covers it when it is absent.
+#   python, parent exists    -> writes the real absolute path
+#   python, absent prefix    -> _remap keeps the SUFFIX under the workdir
+#                               (/mnt/data/reports/out.csv -> ./reports/out.csv)
+#                               and returns before the generic fallback, so no
+#                               basename collapse and no anti-clobber
+#   python, other missing parent -> the fallback keeps only the base name, and
+#                               raises when an UNRELATED file holds it; the
+#                               .unsloth_sandbox_remap.json sidecar lets a rewrite
+#                               of the same invented path re-serve its own target
+#   python, prefix present   -> a real /mnt/data mount is never shadowed, so a
+#                               prefix is special only while absent, which is why
+#                               the clause names one inside a conditional and
+#                               never categorically
+#   python, unpatched API    -> only open/io.open/os.open and the mkdir family are
+#                               wrapped: os.rename and os.symlink raise, while
+#                               shutil.copy writes the rewritten file through open
+#                               and then raises in copymode
+#   terminal                 -> the shell's own rules, except for Python it
+#                               launches, which is patched like the python tool
 _FULL_ACCESS_CLAUSE = {
     "python": (
         " The code sandbox is disabled, so absolute paths under a directory that "
@@ -9017,12 +9007,11 @@ _FULL_ACCESS_CLAUSE = {
         "already sitting there; under any other missing directory only the base "
         "name is kept, and the write fails outright if that name is taken by an "
         "unrelated file, though rewriting the same absolute path just replaces "
-        "what your own earlier call left there. Both "
-        "reach only open() and the mkdir calls, so os.rename, os.symlink and the "
-        "like are never rewritten and simply fail, and a helper such as "
-        "shutil.copy can write the rewritten file and still raise on a later "
-        "step. Report where a file actually landed rather than the path you asked "
-        "for."
+        "what your own earlier call left there. Both reach only open() and the "
+        "mkdir calls, so os.rename, os.symlink and the like are never rewritten "
+        "and simply fail, and a helper such as shutil.copy can write the "
+        "rewritten file and still raise on a later step. Report where a file "
+        "actually landed rather than the path you asked for."
     ),
     "terminal": (
         " The code sandbox is disabled, so absolute paths do resolve as the shell "

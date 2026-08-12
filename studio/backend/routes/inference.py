@@ -3092,11 +3092,10 @@ _TOOL_CODE_TIP = (
     "Use code execution for math, calculations, data processing, or to parse "
     "and analyze information from tool results."
 )
-# Full access (permission_mode='full') only, and only alongside python/terminal.
-# The schemas alone do not undo the model's prior: asked "can you see the files
-# on my laptop", a local chat model answers "no, I am sandboxed" from training
-# data rather than reading its own tool list, so the environment is stated
-# outright and the guess is redirected to a tool call.
+# Full access only, and only alongside python/terminal. The schemas alone do not
+# undo the model's prior: asked "can you see the files on my laptop" it answers
+# "no, I am sandboxed" from training data rather than reading its own tool list,
+# so the environment is stated outright and the guess sent to a tool call.
 # Fixed order so the sentence reads the same whichever way the caller listed them.
 _LOCAL_CODE_TOOLS = ("python", "terminal")
 
@@ -11189,12 +11188,11 @@ async def _proxy_to_external_provider(
             # The Studio loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
-            # This path runs python/terminal locally too (the loop passes
-            # disable_sandbox = bypass_permissions), so Full access has the same
-            # false-isolation problem here, and the swapped schemas alone do not
-            # settle it. Only the Full access sentence is added: this path has
-            # never carried the general tool nudge, and widening it would change
-            # every non-Full-access Codex run as a side effect.
+            # This path runs python/terminal locally too (disable_sandbox =
+            # bypass_permissions), so it has the same false-isolation problem.
+            # Only the Full access sentence is added: the path has never carried
+            # the general tool nudge, and widening it would change every
+            # non-Full-access Codex run as a side effect.
             if payload.bypass_permissions:
                 _codex_full_access_nudge = _build_tool_action_nudge(
                     tools = studio_tool_payloads,

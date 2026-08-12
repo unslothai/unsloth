@@ -1680,10 +1680,9 @@ export async function buildLocalTokenCountExtras(
     // request that never mentions them, so every pill being off has to say so.
     // The permission level rides along because `--enable-tools` still outranks
     // that false in _effective_enable_tools, so a CLI policy can inject
-    // python/terminal into a pill-less request; the completion sends the level
-    // on every local chat, and without it here the count would price the
-    // sandboxed schemas against an unsandboxed completion. Inert whenever the
-    // false stands and no tool list is built.
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
     return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
