@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Apple Silicon CPU frequency correction (issue #8519).
+"""Apple Silicon CPU frequency correction (issue #8519).
 
 psutil <= 7.2.2 divides the pmgr voltage-state tables by 1e6 unconditionally, so
-on M4 (where Apple switched the tables from Hz to kHz) it reports "4 MHz" for a
-4.5 GHz part. cpu_frequency_mhz() re-reads the tables via ioreg and falls back to
-rescaling psutil's value.
+on M4, where Apple switched them from Hz to kHz, it reports "4 MHz" for a 4.5 GHz
+part. cpu_frequency_mhz() re-reads the tables via ioreg, else rescales psutil.
 """
 
 import platform
@@ -211,8 +210,7 @@ class TestCpuFrequencyMhz:
         assert hardware.cpu_frequency_mhz() is None
 
     def test_psutil_without_cpu_freq_at_all_falls_back_to_ioreg(self, monkeypatch):
-        # Observed on GitHub's Apple Silicon runners: psutil ships without the
-        # attribute, so the call raises AttributeError rather than returning.
+        # GitHub's Apple Silicon runners: no attribute, so the call raises.
         import sys
 
         monkeypatch.setattr(hardware, "is_apple_silicon", lambda: True)
@@ -263,9 +261,8 @@ class TestOnRealAppleSilicon:
     def test_reported_frequency_is_plausible(self):
         mhz = hardware.cpu_frequency_mhz()
         if mhz is None:
-            # Virtualised Apple Silicon (GitHub's macos-14/15 runners) ships a
-            # psutil with no cpu_freq at all AND no pmgr voltage-state tables,
-            # so None is the correct answer and the UI just omits the row.
+            # Virtualised Apple Silicon (GitHub's macos-14/15 runners) has
+            # neither cpu_freq nor pmgr tables; the UI just omits the row.
             pytest.skip("neither psutil nor ioreg exposes a CPU clock on this host")
         assert hardware._MIN_PLAUSIBLE_CPU_MHZ <= mhz <= hardware._MAX_PLAUSIBLE_CPU_MHZ
 
@@ -277,9 +274,8 @@ class TestOnRealAppleSilicon:
         peak = hardware._read_apple_cpu_peak_mhz()
         if peak is None:
             pytest.skip("no voltage-state tables exposed on this host")
-        # There is nothing to compare against where psutil has no reading of its
-        # own: an M5 raises, and a virtualised host has no cpu_freq at all. The
-        # tables still work there, which is the whole point of the fallback.
+        # Nothing to compare against where psutil has no reading of its own: an
+        # M5 raises, a virtualised host has no cpu_freq. The tables still work.
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
             pytest.skip("psutil exposes no cpu_freq on this host")

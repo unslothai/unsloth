@@ -239,7 +239,7 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
-# Apple Silicon M4+ only: psutil <= 7.2.2 reads the CPU clock ~1000x too small.
+# Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()

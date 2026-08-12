@@ -1964,7 +1964,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     memory = psutil.virtual_memory()
 
-    # Corrects psutil's ~1000x-too-small reading on Apple Silicon M4+ (issue #8519).
+    # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
     cpu_freq_mhz = cpu_frequency_mhz()
 
     try:

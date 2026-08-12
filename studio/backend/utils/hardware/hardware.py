@@ -1282,35 +1282,30 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
 
 
 # ── CPU frequency on Apple Silicon ──────────────────────────────────────────
-# psutil reads the pmgr IORegistry "voltage-statesN-sram" tables and divides the
-# raw entries by 1e6 to reach MHz. Apple switched those tables from Hz to kHz on
-# M4, so psutil (<= 7.2.2) reports ~1000x too small there -- a 4.5 GHz M4 Pro
-# shows up as "4 MHz" in Settings > System. Upstream fix is giampaolo/psutil#2824
-# (merged, unreleased). Until it ships we read the tables ourselves through
-# ioreg, using the same unit heuristic as that PR, and fall back to scaling
-# psutil's value. Once a fixed psutil lands, its value is already plausible and
-# neither correction runs.
+# psutil divides the pmgr "voltage-statesN-sram" IORegistry tables by 1e6 to
+# reach MHz, but Apple switched them from Hz to kHz on M4, so psutil <= 7.2.2
+# shows a 4.5 GHz M4 Pro as "4 MHz" in Settings > System (issue #8519). Upstream
+# fix is giampaolo/psutil#2824, merged and unreleased; until it ships we read the
+# tables ourselves through ioreg with that PR's heuristics, else rescale psutil's
+# value. A fixed psutil is already plausible, so neither correction runs.
 
-# Real Apple Silicon clocks are 0.6-4.6 GHz, so a raw Hz entry sits well above
-# 1e8 and a raw kHz entry well below it.
+# Apple clocks are 0.6-4.6 GHz, so a raw Hz entry sits above 1e8 and kHz below.
 _CPU_FREQ_UNIT_THRESHOLD = 100_000_000
 _MIN_PLAUSIBLE_CPU_MHZ = 500
 _MAX_PLAUSIBLE_CPU_MHZ = 20000
-# Tables peaking below this are GPU/NPU rails, not CPU clusters: it clears every
-# Apple GPU peak so far yet stays under the slowest CPU cluster shipped (M1
-# E-core, 2064 MHz).
+# Below this a table is a GPU/NPU rail: above every Apple GPU peak so far, under
+# the slowest CPU cluster shipped (M1 E-core, 2064 MHz).
 _CPU_CLUSTER_MIN_PEAK_MHZ = 2000
 _VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
 
-# Peak CPU MHz is fixed for the life of the host, and /api/system polls every few
-# seconds, so the ioreg call is made once. Sentinel distinguishes "not probed yet"
-# from "probed, unavailable".
+# Fixed for the life of the host and /api/system polls every few seconds, so
+# probe once. The sentinel separates "not probed yet" from "probed, unavailable".
 _apple_cpu_peak_mhz: Any = "unprobed"
 _apple_cpu_peak_lock = threading.Lock()
 
 
 def _voltage_state_freqs_mhz(blob: bytes) -> list:
-    """Decode a voltage-statesN-sram blob into plausible MHz values.
+    """Plausible MHz from a voltage-statesN-sram blob.
 
     Each entry is 8 bytes: little-endian uint32 frequency then uint32 voltage.
     """
@@ -1335,8 +1330,7 @@ def _peak_cpu_mhz_from_ioreg_entries(entries) -> Optional[float]:
             if not isinstance(value, (bytes, bytearray)) or not _VOLTAGE_STATES_KEY.match(str(key)):
                 continue
             freqs = _voltage_state_freqs_mhz(bytes(value))
-            # Table indexes were renumbered on M5, so classify each table by its
-            # own peak rather than trusting a hardcoded index.
+            # M5 renumbered the indexes, so classify by peak, not by index.
             if freqs and max(freqs) >= _CPU_CLUSTER_MIN_PEAK_MHZ:
                 peaks.append(max(freqs))
     return max(peaks) if peaks else None
@@ -1348,9 +1342,9 @@ def _read_apple_cpu_peak_mhz() -> Optional[float]:
     if _apple_cpu_peak_mhz != "unprobed":
         return _apple_cpu_peak_mhz
 
-    # /api/system is polled from several worker threads, so without the lock a
-    # burst of first requests spawns one ioreg each and a slow failing probe can
-    # land last, overwriting a good reading with None for the rest of the run.
+    # /api/system is polled from several worker threads; unlocked, a burst of
+    # first requests spawns one ioreg each and a slow failing probe landing last
+    # poisons the cache for the rest of the run.
     with _apple_cpu_peak_lock:
         if _apple_cpu_peak_mhz != "unprobed":
             return _apple_cpu_peak_mhz
@@ -1390,7 +1384,7 @@ def cpu_frequency_mhz() -> Optional[float]:
         freq = psutil.cpu_freq()
     except Exception as e:
         # Not fatal on Apple Silicon: the IORegistry read below stands in. psutil
-        # raises here on M5, where the table indexes it hardcodes are absent.
+        # raises here on M5, whose tables are not at the indexes it hardcodes.
         logger.debug("Failed to get CPU frequency: %s", e)
 
     current = getattr(freq, "current", None) if freq else None
@@ -1406,9 +1400,8 @@ def cpu_frequency_mhz() -> Optional[float]:
         return round(exact, 2)
     if not usable:
         return None
-    # ioreg unavailable: recover the order of magnitude from psutil's kHz-as-Hz
-    # reading. psutil truncates in integer arithmetic, so this lands on the GHz
-    # step (4 -> 4000 MHz) rather than the exact peak.
+    # No tables: recover the magnitude from psutil's kHz-as-Hz reading. It
+    # truncates in integer arithmetic, so this lands on the GHz step, not the peak.
     return round(float(current) * 1000, 2)
 
 
