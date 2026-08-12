@@ -638,11 +638,10 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
 
 
 def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
-    """The Responses API puts the type in the SSE ``event:`` line and the data
-    object need not repeat it. Reading only the JSON leaves the type missing, and
-    since an unreadable frame is skipped rather than fatal, the event would be
-    dropped silently: usage from response.completed would never surface. Frame is
-    written raw, not through _openai_sse, which always repeats the type in data."""
+    """The type lives in the SSE ``event:`` line and the data object need not repeat
+    it. Read from the JSON alone the frame looks type-less, and since such a frame is
+    skipped rather than fatal, response.completed usage would silently never surface.
+    Written raw, since _openai_sse always repeats the type in data."""
     body = (
         b"event: response.completed\n"
         b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'

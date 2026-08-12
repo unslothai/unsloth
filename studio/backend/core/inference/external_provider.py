@@ -5454,8 +5454,7 @@ class ExternalProviderClient:
                         return f"data: {_json.dumps(chunk)}"
 
                     # The Responses API carries the event type in the SSE `event:` field and
-                    # may pair it with an empty data object, so the name has to survive to
-                    # the data line that follows it.
+                    # the data object need not repeat it, so the name must reach the data line.
                     sse_event_name = ""
                     try:
                         while True:
@@ -5464,10 +5463,8 @@ class ExternalProviderClient:
                             except StopAsyncIteration:
                                 break
                             if not line:
-                                # The blank line ends the event, and an SSE event name never
-                                # carries into the next one. Clearing here, the single place
-                                # an event can end, keeps a stale `response.failed` from
-                                # turning a later data-only frame into a fatal error.
+                                # A name never carries past the blank line that ends its event,
+                                # or a stale `response.failed` would fail a later frame.
                                 sse_event_name = ""
                                 continue
                             if line.startswith("event:"):
@@ -5510,18 +5507,13 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            # Falls back to the SSE name, which is where the type
-                            # lives when the data object carries none; without it a
-                            # `event: response.completed` + `data: {}` frame raises
-                            # and kills the whole completion.
                             try:
                                 event_type = response_event_type(event, sse_event_name)
                             except ValueError:
-                                # An OpenAI-compatible endpoint behind this base URL can
-                                # answer a Responses request with Chat Completions frames.
-                                # Skipping one unrecognisable frame is the pre-existing
-                                # behaviour and beats failing the whole completion; the
-                                # ChatGPT path stays strict, where the shape is guaranteed.
+                                # An OpenAI-compatible endpoint behind this base URL can answer
+                                # a Responses request with Chat Completions frames, so skipping
+                                # an unrecognisable frame beats failing the whole completion.
+                                # The ChatGPT path stays strict, where the shape is guaranteed.
                                 continue
                             _record_openai_response_id(event)
 
