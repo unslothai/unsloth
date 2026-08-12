@@ -61,6 +61,7 @@ def _probe(
     filename: str = "model-Q4_K_M.gguf",
     identifier = None,
     local: str | None = None,
+    patch_cache: bool = True,
 ):
     """Run the remote probe against a canned header, recording whether it went to the Hub."""
     requests: list[tuple[str, str]] = []
@@ -72,7 +73,10 @@ def _probe(
     monkeypatch.setattr(
         llama_cpp_module, "_resolve_variant_gguf_files", lambda *_a, **_k: (filename, [])
     )
-    monkeypatch.setattr(diffusion_compat, "_local_gguf_path", lambda *_a, **_k: local)
+    # The verified cache lookup is the only way a local copy enters the probe now. A test
+    # that installs its own stub for it passes patch_cache = False and keeps that stub.
+    if patch_cache:
+        monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: local)
     monkeypatch.setattr(diffusion_compat, "_read_gguf_header", _fake_remote)
     message = LlamaCppBackend._remote_non_chat_gguf_refusal(
         hf_repo = "owner/model",
@@ -352,37 +356,36 @@ def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_
 
 
 def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_path):
-    # _download_gguf resolves its local copy through cached_gguf_for_load and only then
-    # falls back to the listing's filename. The probe uses the same order: a repo that
-    # renamed the file for a quant while a complete older snapshot is cached would otherwise
-    # let the probe judge one GGUF and the load open another.
+    # _download_gguf resolves its local copy through cached_gguf_for_load, which walks the
+    # cached variant candidates rather than trusting the current listing's filename. The
+    # probe follows it: a repo that renamed the file for a quant while a complete older
+    # snapshot is cached would otherwise let the probe judge one GGUF and the load open
+    # another. The listing name here is deliberately not the cached one.
     cached = tmp_path / "renamed-ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
-    stale = tmp_path / "listing-Q4_K_M.gguf"
-    stale.write_bytes(_gguf_bytes(arch = "llama"))
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached))
     message, requests = _probe(
         monkeypatch,
         header = b"",
         filename = "listing-Q4_K_M.gguf",
-        local = str(stale),
+        patch_cache = False,
     )
     assert message is not None and "Video page" in message
     assert requests == []
 
 
-def test_the_probe_falls_back_to_the_listing_when_nothing_is_cached(monkeypatch, tmp_path):
-    plain = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
-    plain.write_bytes(_gguf_bytes(arch = "ltxv"))
-    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: None)
+def test_nothing_cached_means_the_hub_is_asked(monkeypatch, tmp_path):
+    # With no verified cache hit the probe range-reads the Hub rather than reaching for an
+    # unverified path: a candidate the verified lookup rejected is one _download_gguf is
+    # about to skip, so judging it would judge a file the load will not open.
     message, requests = _probe(
         monkeypatch,
-        header = b"",
+        header = _gguf_bytes(arch = "ltxv"),
         filename = "ltx-2-19b-dev-Q4_K_M.gguf",
-        local = str(plain),
+        local = None,
     )
     assert message is not None and "Video page" in message
-    assert requests == []
+    assert requests == [("owner/model", "ltx-2-19b-dev-Q4_K_M.gguf")]
 
 
 def test_a_refused_load_leaves_the_resident_process_state_alone(monkeypatch):
@@ -442,7 +445,9 @@ def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch
         return str(cached) if verify_sizes else "/should/not/be/used.gguf"
 
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _cached)
-    message, requests = _probe(monkeypatch, header = b"", filename = "listing-Q4_K_M.gguf")
+    message, requests = _probe(
+        monkeypatch, header = b"", filename = "listing-Q4_K_M.gguf", patch_cache = False
+    )
     assert seen == [True]
     assert message is not None and "Video page" in message
     assert requests == []
@@ -509,3 +514,53 @@ def test_the_probe_guard_sits_above_the_teardown_in_source():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     guarded = src.index("with _hf_offline_if_unreachable():\n                    _early_non_chat")
     assert guarded < src.index("# ── Phase 1: kill old process")
+
+
+def test_the_route_entry_point_judges_an_intent_before_the_arbiter(monkeypatch, tmp_path):
+    # What the route calls. load_model's own copy runs before ITS teardown but after
+    # acquire_for has evicted a resident Images/Video pipeline and the reload confirmation
+    # has cancelled the running chats, so the route needs a verdict of its own.
+    media = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
+    media.write_bytes(_gguf_bytes(arch = "ltxv"))
+    intent = GgufLoadIntent(
+        model_identifier = "unsloth/LTX-2-GGUF",
+        gguf_path = str(media),
+    )
+    message = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
+    assert message is not None and "Video page" in message
+
+    chat = tmp_path / "qwen3-0.6b-Q4_K_M.gguf"
+    chat.write_bytes(_gguf_bytes(arch = "qwen3"))
+    assert (
+        LlamaCppBackend.non_chat_gguf_refusal_for_intent(
+            GgufLoadIntent(model_identifier = "unsloth/Qwen3-0.6B-GGUF", gguf_path = str(chat))
+        )
+        is None
+    )
+
+
+def test_the_route_entry_point_fails_open(monkeypatch, tmp_path):
+    # A probe that raises is not a verdict: the load proceeds and the checks inside it stay
+    # as the backstop.
+    def _boom(*_a, **_k):
+        raise RuntimeError("hub down")
+
+    monkeypatch.setattr(LlamaCppBackend, "_remote_non_chat_gguf_refusal", _boom)
+    assert (
+        LlamaCppBackend.non_chat_gguf_refusal_for_intent(
+            GgufLoadIntent(model_identifier = "owner/model", hf_repo = "owner/model")
+        )
+        is None
+    )
+
+
+def test_the_route_asks_before_it_takes_the_gpu():
+    # Source order, since the eviction it protects is the arbiter's, not the loader's.
+    import inspect as _inspect
+
+    from routes import inference as inference_routes
+
+    src = _inspect.getsource(inference_routes)
+    refusal = src.index("non_chat_gguf_refusal_for_intent")
+    acquire = src.index("lambda: gguf_load_stack.enter_context(chat_load_in_flight())")
+    assert refusal < acquire

@@ -699,6 +699,10 @@ def _hf_unreachable() -> bool:
     return hf_unreachable()
 
 
+# GGUF value-type ids for the unsigned ints, and their widths: uint8, uint16, uint32, uint64.
+_GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
+
+
 @contextlib.contextmanager
 def _hf_offline_if_unreachable():
     """Force HF offline for this block only when the Hub is unreachable; restores on exit
@@ -3371,7 +3375,7 @@ class LlamaCppBackend:
         self._is_diffusion: bool = False
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
-        self._gguf_declares_split: bool = False
+        self._gguf_split_index: Optional[int] = None
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
@@ -7205,6 +7209,38 @@ class LlamaCppBackend:
         return probe._non_chat_gguf_refusal(gguf_path)
 
     @classmethod
+    def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
+        """The header verdict for a resolved load intent, or None.
+
+        The copy inside ``load_model`` runs before the teardown, but not before everything
+        the ROUTE destroys on the way in: ``acquire_for(CHAT)`` evicts a resident Images or
+        Video pipeline, and the reload confirmation cancels the running generations, both
+        ahead of the call. A media GGUF picked from chat would therefore still cost the
+        resident pipeline and the in-flight chats before being refused. The route asks here
+        first; the checks inside the load stay as the backstop for every path that does not
+        come through it. Fails open exactly as they do."""
+        try:
+            gguf_path = getattr(intent, "gguf_path", None)
+            hf_repo = getattr(intent, "hf_repo", None)
+            identifier = getattr(intent, "model_identifier", None)
+            if gguf_path and not hf_repo and Path(gguf_path).is_file():
+                return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
+            if hf_repo:
+                # Same offline window the download runs in: the repo probe asks the Hub
+                # before it reads any local header, and those calls would otherwise wait out
+                # their retry backoff on an unreachable Hub.
+                with _hf_offline_if_unreachable():
+                    return cls._remote_non_chat_gguf_refusal(
+                        hf_repo = hf_repo,
+                        hf_variant = getattr(intent, "hf_variant", None),
+                        hf_token = getattr(intent, "hf_token", None),
+                        model_identifier = identifier,
+                    )
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
+        return None
+
+    @classmethod
     def _remote_non_chat_gguf_refusal(
         cls,
         *,
@@ -7232,7 +7268,6 @@ class LlamaCppBackend:
         refusal cheaper, never refuse a load the full-file check would have allowed."""
         try:
             from core.inference.diffusion_compat import (
-                _local_gguf_path,
                 _read_gguf_header,
                 _read_local_header,
             )
@@ -7240,7 +7275,7 @@ class LlamaCppBackend:
             logger.debug("GGUF header probe unavailable: %s", e)
             return None
         try:
-            gguf_filename, _shards = _resolve_variant_gguf_files(hf_repo, hf_variant, hf_token)
+            gguf_filename, shards = _resolve_variant_gguf_files(hf_repo, hf_variant, hf_token)
             if not gguf_filename:
                 return None
             # A cached copy answers this with no request, and is the only thing that can
@@ -7253,7 +7288,19 @@ class LlamaCppBackend:
             # metadata, so the probe still answers offline.
             local = cached_gguf_for_load(
                 hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token
-            ) or _local_gguf_path(hf_repo, gguf_filename)
+            )
+            if local is None and not hf_variant:
+                # No variant means cached_gguf_for_load declines outright, so mirror the
+                # other half of _download_gguf: the complete candidate for this filename,
+                # size-checked against its own revision. Never the bare local path -- a
+                # candidate the verified lookup just REJECTED would come straight back
+                # through it, and the probe would judge a truncated snapshot the load is
+                # about to skip in favour of a fresh download.
+                candidate = _cached_complete_candidate(hf_repo, gguf_filename, list(shards))
+                if candidate is not None and _cached_candidate_matches_revision_size(
+                    hf_repo, candidate, hf_token
+                ):
+                    local = candidate[0]
             prefix = (
                 _read_local_header(local)
                 if local
@@ -7319,7 +7366,7 @@ class LlamaCppBackend:
         self._architecture = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
-        self._gguf_declares_split = False
+        self._gguf_split_index = None
 
         try:
             canvas_seen = False
@@ -7377,10 +7424,17 @@ class LlamaCppBackend:
                         # gguf-split puts the whole metadata block in shard 1 and gives every
                         # later shard only split.no / split.count / split.tensors.count
                         # (measured on unsloth/DeepSeek-R1-GGUF: shard 1 has 48 KV pairs from
-                        # general.architecture = "deepseek2", shard 2 has those 3). Caught
-                        # here since none is WANTED, so the value reader skips them.
-                        if key.startswith("split."):
-                            self._gguf_declares_split = True
+                        # general.architecture = "deepseek2", shard 2 has those 3). Read the
+                        # INDEX, not just the presence: shard 1 carries these keys too, so
+                        # presence alone would cover a whole set rather than its tail.
+                        if key == "split.no":
+                            width = _GGUF_UINT_WIDTHS.get(vtype)
+                            if width is not None:
+                                raw = f.read(width)
+                                if len(raw) < width:
+                                    break
+                                self._gguf_split_index = int.from_bytes(raw, "little")
+                                continue
                     except (struct.error, UnicodeDecodeError):
                         break
 
@@ -9151,31 +9205,52 @@ class LlamaCppBackend:
 
         # A shard past the first of a gguf-split set declares no architecture (shard 1 holds
         # it) but is no media GGUF, and llama.cpp's own "model must be loaded with the first
-        # split" is more use than "carries no metadata". Only reachable with a hand-written
-        # variant: every producer here strips the shard suffix and sorts, landing on shard 1.
-        if self._gguf_declares_split:
+        # split" is more use than "carries no metadata". Keyed on split.no > 0 and on nothing
+        # having been declared: shard 1 carries the split keys too, and a placeholder arch is
+        # blanked above, so a looser test would wave through the very files the placeholder
+        # handling exists to catch. Only reachable with a hand-written variant anyway: every
+        # producer here strips the shard suffix and sorts, landing on shard 1.
+        if self._architecture is None and (self._gguf_split_index or 0) > 0:
             return None
 
         # No architecture declared: not loadable by llama-server whatever it is. Say which
         # page runs it when the identifiers make that clear.
         needles = [n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n]
+        # Naming a page here answers to the same predicates as the arch branches above: a
+        # family that resolves is not enough, the picker also drops an MoE it cannot
+        # assemble and a family no installed engine can build. Detect first, then ask
+        # whether the page would list it, so a resolved-but-unbuildable family gets the
+        # honest message rather than a page it is missing from.
         try:
             from core.inference.video_families import detect_video_family
             if any(detect_video_family(n) is not None for n in needles):
+                if self._video_arch_is_pickable(None, gguf_path, self._model_identifier):
+                    return (
+                        "This is a text-to-video model, not a chat model: its GGUF carries "
+                        "no llama.cpp model metadata, so llama-server cannot load it. Open "
+                        "it from the Video page instead."
+                    )
                 return (
-                    "This is a text-to-video model, not a chat model: its GGUF carries no "
-                    "llama.cpp model metadata, so llama-server cannot load it. Open it "
-                    "from the Video page instead."
+                    "This is a text-to-video model, not a chat model, and its GGUF carries "
+                    "no llama.cpp model metadata. Studio cannot assemble this particular "
+                    "model from a GGUF either, so the Video page does not list it."
                 )
         except Exception as e:  # noqa: BLE001 -- naming the page is a nicety, never a gate
             logger.debug("Video family probe failed during non-chat GGUF preflight: %s", e)
         try:
             from core.inference.diffusion_families import detect_family
             if any(detect_family(n) is not None for n in needles):
+                if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        "This is an image-generation model, not a chat model: its GGUF "
+                        "carries no llama.cpp model metadata, so llama-server cannot load "
+                        "it. Open it from the Images page instead."
+                    )
                 return (
-                    "This is an image-generation model, not a chat model: its GGUF carries "
-                    "no llama.cpp model metadata, so llama-server cannot load it. Open it "
-                    "from the Images page instead."
+                    "This is an image-generation model, not a chat model, and its GGUF "
+                    "carries no llama.cpp model metadata. Studio cannot assemble this "
+                    "particular model from a GGUF either, so the Images page does not list "
+                    "it."
                 )
         except Exception as e:  # noqa: BLE001
             logger.debug("Image family probe failed during non-chat GGUF preflight: %s", e)

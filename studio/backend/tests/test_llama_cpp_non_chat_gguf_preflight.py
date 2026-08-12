@@ -356,3 +356,41 @@ def test_the_first_shard_is_the_one_a_variant_resolves_to():
         picked = _gguf_files_for_variant(files, variant)
         assert picked and picked[0].endswith("-00001-of-00010.gguf"), variant
         assert len(_gguf_extra_shards(picked, picked[0])) == 9
+
+
+def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
+    # The split exemption keys on split.no > 0 AND nothing declared. A placeholder arch is
+    # blanked before the name-based branch, so keying on the split keys alone would have
+    # waved through the very files the placeholder handling exists to catch, and shard 1 of
+    # any set carries those keys too.
+    body = b""
+    key, val = b"general.architecture", b"pig"
+    body += struct.pack("<Q", len(key)) + key + struct.pack("<I", 8)
+    body += struct.pack("<Q", len(val)) + val
+    for k, v in ((b"split.no", 0), (b"split.count", 2)):
+        body += struct.pack("<Q", len(k)) + k + struct.pack("<I", 4) + struct.pack("<I", v)
+    gguf = tmp_path / "flux2-dev-iq4_nl-00001-of-00002.gguf"
+    gguf.write_bytes(struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", 1, 3) + body)
+    backend = LlamaCppBackend()
+    backend._model_identifier = "gguf-org/flux2-dev-gguf"
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._gguf_split_index == 0
+    message = backend._non_chat_gguf_refusal(str(gguf))
+    assert message is not None
+    assert "Open it from the Images page" in message
+
+
+def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
+    # A family that resolves is not enough for the arch branches, and it is not enough here
+    # either: routes.models drops an MoE the loader cannot assemble, so the Video page would
+    # not list Wan 2.2 A14B however its GGUF is packaged.
+    from routes.models import _arch_to_task
+
+    for identifier, name, page_named in (
+        ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
+    ):
+        _, message = _refusal(tmp_path, arch = None, name = name, identifier = identifier)
+        assert message is not None
+        assert (_arch_to_task("wan", name_hints = (identifier, name)) == "text-to-video") is page_named
+        assert ("Open it from the Video page" in message) is page_named, message

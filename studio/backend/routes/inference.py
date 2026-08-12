@@ -8011,6 +8011,19 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
+        # Ahead of the arbiter, because acquire_for evicts a resident Images/Video pipeline
+        # and the confirmation below cancels the running generations. The same header check
+        # runs inside load_model before ITS teardown, but by then both are already gone, so
+        # a media GGUF picked from chat would cost the pipeline and the chats to learn what
+        # a header-sized read already knew. Fails open into that copy.
+        if config.is_gguf and gguf_intent is not None:
+            _non_chat = await asyncio.to_thread(
+                llama_backend.non_chat_gguf_refusal_for_intent, gguf_intent
+            )
+            if _non_chat:
+                logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
+                raise HTTPException(status_code = 400, detail = _non_chat)
+
         if chat_load_needs_gpu:
             await asyncio.to_thread(
                 acquire_for,
