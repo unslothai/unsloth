@@ -628,11 +628,7 @@ class TestDuplicateCoreMetadataRepair:
         self, monkeypatch, duplicate, overlay_args
     ):
         probes = {
-            name: iter(
-                (["old", "new"], ["new"], [], ["new"])
-                if name == duplicate
-                else (["new"],)
-            )
+            name: iter((["old", "new"], ["new"], [], ["new"]) if name == duplicate else (["new"],))
             for name in ("unsloth", "unsloth-zoo")
         }
         installs = []
