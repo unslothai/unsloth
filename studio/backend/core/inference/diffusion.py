@@ -426,12 +426,10 @@ def _fit_within(img: Any, max_w: int, max_h: int) -> Any:
     """Downscale a PIL image to fit inside a ``max_w`` x ``max_h`` box, preserving aspect ratio;
     a no-op when it already fits. NEVER enlarges -- growing a source is the Upscale workflow.
 
-    img2img derives its output size from the upload, which left the Resolution control on the
-    Images page inert for Transform: a 4000px photo generated at the 2048 clamp and the refusal
-    it triggered ("Generating at 2048x2048 needs about N GB...") named a size the user had no way
-    to change, no matter how small they set the sliders. Bounding the upload by the requested box
-    makes that control mean what it says for the one workflow where the user picks an output size
-    AND the source alone decides it."""
+    img2img takes its output size from the upload, which left the Resolution control inert for
+    Transform: a 4000px photo generated at the 2048 clamp and the refusal it raised named a size
+    the sliders could not change. Bounding the upload by the requested box makes that control
+    mean what it says."""
     from PIL import Image
 
     w, h = img.size
@@ -4762,22 +4760,16 @@ class DiffusionBackend:
         (c10::BFloat16) should be the same``.
 
         ``_align_vae_dtype`` pins the VAE to the DENOISER's dtype, but the img2img /
-        inpaint pipelines never consult either: they preprocess the upload to fp32 and
-        then cast it to whatever the TEXT ENCODER produced (``prompt_embeds[0].dtype``
-        in ``ZImageImg2ImgPipeline.prepare_latents``), which is a third dtype nobody
-        reconciles. Whenever the text encoder settles on fp32 -- an fp32-shard family
-        like Z-Image whose TE was not cast with the denoiser, a GGUF/prequantised
-        denoiser paired with a base-precision encoder -- the VAE encoder's first conv
-        sees an fp32 activation against bf16 weights and raises, and the only trace the
-        user gets is an opaque failure toast.
+        inpaint pipelines consult neither: they cast the upload to whatever the TEXT
+        ENCODER produced (``prompt_embeds[0].dtype`` in ``ZImageImg2ImgPipeline``), a
+        third dtype nobody reconciles. When that lands on fp32 against bf16 VAE weights
+        the first conv raises, and the user sees only an opaque failure toast.
 
         Wrapping ``encode`` rather than widening ``_align_vae_dtype`` is deliberate: the
         mismatch is between the pipeline's chosen input dtype and the VAE, so the fix has
-        to live at that boundary to hold for every family and every diffusers version,
-        instead of tracking which attribute each pipeline happens to read this release.
-        The latents are handed back untouched -- both flow-matching entry points
-        (``scale_noise``) and the schedulers upcast the sample to fp32 anyway, so
-        re-casting here would only add a copy.
+        to live at that boundary to hold for every family and diffusers version, instead
+        of tracking which attribute each pipeline reads this release. Latents come back
+        untouched -- ``scale_noise`` and the schedulers upcast to fp32 anyway.
 
         Idempotent (a re-wrap on a warm pipe is a no-op) and best-effort: any failure
         leaves the original ``encode`` in place."""
@@ -4791,9 +4783,8 @@ class DiffusionBackend:
 
             @functools.wraps(original)
             def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
-                # Guarded per call, not once at wrap time: _align_vae_dtype re-casts the
-                # VAE and a txt2img decode re-upcasts it, so the dtype is only knowable
-                # here. A probe that fails forwards the tensor exactly as it arrived.
+                # Probed per call, not at wrap time: _align_vae_dtype and a txt2img decode
+                # both re-cast the VAE. A failed probe forwards the tensor as it arrived.
                 try:
                     if isinstance(x, torch.Tensor):
                         target = next(
@@ -5307,11 +5298,10 @@ class DiffusionBackend:
                 if init_pil is not None and workflow in ("img2img", "inpaint", "edit"):
                     # img2img/inpaint take output size from the upload, so bound the longest side to 2048 (a phone photo would OOM).
                     if workflow == "img2img":
-                        # ...and for Transform specifically, bound it by the REQUESTED size too,
-                        # so the Resolution control caps the output instead of being inert. Only
-                        # img2img: an inpaint payload is a canvas the mask was painted against
-                        # (Extend sends a deliberately ENLARGED one), and shrinking that to a
-                        # slider the user never aimed at those workflows would break them.
+                        # ...and bound Transform by the REQUESTED size too, so the Resolution
+                        # control caps the output instead of being inert. img2img only: an
+                        # inpaint payload is the canvas the mask was painted against (Extend
+                        # sends a deliberately ENLARGED one), so shrinking it would break them.
                         init_pil = _fit_within(init_pil, min(2048, width), min(2048, height))
                     elif workflow == "inpaint":
                         init_pil = _clamp_max_side(init_pil, 2048)
@@ -5322,8 +5312,8 @@ class DiffusionBackend:
                 if init_pil is not None:
                     # Keep the VAE encode dtype consistent with the input image.
                     self._align_vae_dtype(pipe, state.family.denoiser_attr)
-                    # ...and with whatever dtype the PIPELINE hands the encoder, which is
-                    # neither of the two the line above reconciles.
+                    # ...and with the dtype the PIPELINE hands the encoder, which is neither
+                    # of the two the line above reconciles.
                     self._make_vae_encode_dtype_safe(pipe)
 
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
@@ -5415,9 +5405,9 @@ class DiffusionBackend:
                         batch_size = guard_batch,
                         # The hint the load planned with, so the distilled / edit multipliers match.
                         family = state.variant_hint,
-                        # img2img is now bounded by the Resolution control (see _fit_within), so
-                        # "generate at a smaller resolution" is actionable there. The rest take
-                        # their size from the upload alone, so they get the upload-side remedy.
+                        # img2img is bounded by the Resolution control (see _fit_within), so
+                        # "generate at a smaller resolution" is actionable there; the rest size
+                        # from the upload alone and get the upload-side remedy.
                         source_driven = workflow in ("inpaint", "upscale", "edit"),
                         logger = logger,
                     )

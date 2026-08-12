@@ -8593,8 +8593,8 @@ def test_generate_guard_measures_the_input_image_not_the_sliders(
         )
     message = str(excinfo.value)
     assert "2048x2048" in message
-    # ...and it must not advise changing the Resolution control, which cannot move that
-    # number for a workflow whose canvas comes from the upload.
+    # ...and must not advise changing the Resolution control, which cannot move that number
+    # for a workflow whose canvas comes from the upload.
     assert "Upload a smaller source image" in message
     assert "smaller resolution" not in message
 
@@ -8602,11 +8602,9 @@ def test_generate_guard_measures_the_input_image_not_the_sliders(
 def test_transform_fits_the_upload_to_the_sliders_instead_of_refusing(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # Reported: Transform refused with "not enough memory to generate at 2048x2048" however
-    # small the Resolution controls were set, because img2img derived its output from the
-    # upload alone. The upload is now fitted to the requested box, so the same 2048 source at
-    # 1024 sliders renders instead of being refused -- and renders at the size that was asked
-    # for, not at the source's.
+    # Reported: Transform refused at 2048x2048 however small the sliders were set, because
+    # img2img sized from the upload alone. Fitting the upload to the requested box renders
+    # instead of refusing, at the size that was asked for.
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
 
     out = backend.generate(

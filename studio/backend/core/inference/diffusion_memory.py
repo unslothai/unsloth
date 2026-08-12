@@ -1018,12 +1018,10 @@ def image_activation_shortfall_message(
     """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
     cannot fit the free device budget, else None.
 
-    ``source_driven`` says the size being refused comes from an UPLOADED image rather than the
-    Resolution control (inpaint / extend / upscale / edit all derive it from the source). Telling
-    those callers to "generate at a smaller resolution" points them at a control that cannot
-    change the number in the refusal, which is how a reported Image Transform failure turned into
-    "I had to figure out by myself that I had to resize the image before uploading". Same verdict
-    either way; only the remedy sentence differs.
+    ``source_driven`` says the refused size comes from an UPLOADED image rather than the
+    Resolution control (inpaint / extend / upscale / edit). Telling those callers to "generate at
+    a smaller resolution" points them at a control that cannot change the number in the refusal.
+    Same verdict either way; only the remedy sentence differs.
 
     Why this is a refusal and not another tuning knob: weights can be offloaded, activations
     cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention

@@ -3,11 +3,10 @@
 
 """CPU-only unit tests for the Transform output-size bound and the refusal it produces.
 
-Reported: Image Transform refused with "not enough memory to generate at 2048x2048" no matter
-how small the Resolution controls were set, because img2img took its output size from the upload
-(clamped to a fixed 2048) and the refusal then advised changing a control that could not move
-that number. ``_fit_within`` makes the control bound the source, and ``source_driven`` fixes the
-remedy sentence for the workflows where it still cannot.
+Reported: Image Transform refused at 2048x2048 no matter how small the Resolution controls were
+set, because img2img sized from the upload (clamped to a fixed 2048) and the refusal then advised
+changing a control that could not move that number. ``_fit_within`` makes the control bound the
+source; ``source_driven`` fixes the remedy sentence where it still cannot.
 """
 
 from __future__ import annotations
@@ -27,15 +26,15 @@ def _img(w: int, h: int):
 
 
 def test_oversized_source_is_bounded_by_the_requested_box():
-    # The reported case: a big upload with the sliders set small. 4000x3000 into 512x512.
+    # The reported case: a big upload with the sliders set small.
     out = _fit_within(_img(4000, 3000), 512, 512)
     assert out.size == (512, 384)  # fits the box, aspect ratio preserved
 
 
 def test_bound_is_the_box_not_just_the_longest_side():
-    # A wide box and a square source: the HEIGHT is what binds, which a longest-side clamp misses.
+    # A wide box and a square source: the HEIGHT binds, which a longest-side clamp misses.
     assert _fit_within(_img(1024, 1024), 1024, 256).size == (256, 256)
-    # The old longest-side clamp leaves that source untouched -- the two are not interchangeable.
+    # The longest-side clamp leaves it untouched -- the two are not interchangeable.
     assert _clamp_max_side(_img(1024, 1024), 1024).size == (1024, 1024)
 
 
@@ -53,8 +52,7 @@ def test_one_axis_over_still_downscales_both():
 
 
 def test_degenerate_box_does_not_produce_a_zero_dimension():
-    # A zero/negative box can only come from a malformed request, but a 0-px side would raise
-    # deep inside the VAE instead of anywhere the caller can act on.
+    # Only a malformed request gets here, but a 0-px side would raise deep inside the VAE.
     out = _fit_within(_img(1000, 10), 1, 1)
     assert out.size[0] >= 1 and out.size[1] >= 1
 
@@ -70,7 +68,7 @@ def _cuda(free_mib: int, total_mib: int) -> DeviceMemory:
 
 
 def _shortfall(**kwargs) -> str:
-    # A 4096x4096 ask on a card with ~14 GB free is well past both arms of the guard.
+    # 4096x4096 on a card with ~14 GB free is well past both arms of the guard.
     message = image_activation_shortfall_message(
         device_memory = _cuda(free_mib = 14000, total_mib = 16000),
         width = 4096,

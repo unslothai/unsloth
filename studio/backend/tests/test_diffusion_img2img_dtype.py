@@ -3,12 +3,11 @@
 
 """CPU-only unit tests for the image-conditioned VAE encode dtype guard.
 
-Image Transform on a bf16 denoiser whose text encoder settled on fp32 died with
-``RuntimeError: Input type (float) and bias type (c10::BFloat16) should be the same``:
-``ZImageImg2ImgPipeline.prepare_latents`` casts the preprocessed upload to
-``prompt_embeds[0].dtype`` and feeds it straight to ``vae.encode``, so neither the
-denoiser dtype nor the VAE's own dtype gets a say. ``_make_vae_encode_dtype_safe``
-closes that gap at the encoder boundary. No torch autograd, no GPU, no diffusers.
+Image Transform on a bf16 denoiser whose text encoder settled on fp32 died with ``Input type
+(float) and bias type (c10::BFloat16) should be the same``: ``prepare_latents`` casts the upload
+to ``prompt_embeds[0].dtype`` and feeds it straight to ``vae.encode``, so neither the denoiser
+dtype nor the VAE's own gets a say. ``_make_vae_encode_dtype_safe`` closes that gap at the
+encoder boundary. No GPU, no diffusers.
 """
 
 from __future__ import annotations
@@ -44,8 +43,7 @@ def test_encode_input_is_cast_to_the_vae_dtype():
     DiffusionBackend._make_vae_encode_dtype_safe(pipe)
     out = vae.encode(torch.zeros(1, 3, 64, 64, dtype = torch.float32))
     assert vae.seen_dtype == torch.bfloat16
-    # The wrapper is transparent: the encoder's return value passes straight through.
-    assert out == "latents"
+    assert out == "latents"  # the wrapper is transparent
 
 
 def test_encode_input_is_cast_the_other_direction_too():
@@ -78,8 +76,7 @@ def test_non_tensor_input_passes_through_untouched():
 
 def test_wrapping_is_idempotent():
     import torch
-    # generate() runs this on every image-conditioned call against a warm pipe; stacking
-    # wrappers per generation would be an unbounded call-depth leak.
+    # generate() runs this on every image-conditioned call, so stacking wrappers would leak depth.
     vae = _RecordingVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(vae = vae)
     DiffusionBackend._make_vae_encode_dtype_safe(pipe)
@@ -90,8 +87,7 @@ def test_wrapping_is_idempotent():
 
 def test_dtype_is_read_at_call_time_not_wrap_time():
     import torch
-    # _align_vae_dtype may re-cast the VAE after the wrap (and a txt2img decode re-upcasts
-    # it), so a dtype snapshotted at wrap time would go stale on the very next call.
+    # _align_vae_dtype (and a txt2img decode) re-cast the VAE, so a wrap-time snapshot goes stale.
     vae = _RecordingVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     vae._dtype = torch.float32
@@ -101,8 +97,7 @@ def test_dtype_is_read_at_call_time_not_wrap_time():
 
 def test_missing_vae_and_broken_probe_are_no_ops():
     import torch
-    # Best-effort: a pipe without a VAE, and a VAE whose parameters() raises, must never
-    # turn a working generation into a 500.
+    # Best-effort: a missing VAE, or one whose parameters() raises, must never become a 500.
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace())
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = None))
 
@@ -112,6 +107,6 @@ def test_missing_vae_and_broken_probe_are_no_ops():
 
     vae = _BrokenVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
-    # The probe fails inside the call, so the tensor is forwarded exactly as it arrived.
+    # The probe fails inside the call, so the tensor is forwarded as it arrived.
     vae.encode(torch.zeros(1, 3, 8, 8, dtype = torch.float32))
     assert vae.seen_dtype == torch.float32

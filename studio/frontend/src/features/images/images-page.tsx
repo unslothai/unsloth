@@ -3990,9 +3990,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             <Field
               label="Resolution"
               hint={
-                // The image-conditioned workflows derive their output from the source, so a hint
-                // that reads as "this is the output size" is wrong there. Transform caps the
-                // source by this box (keeping its aspect ratio); the rest ignore it entirely.
+                // Image-conditioned workflows size from the source, so "this is the output size"
+                // is wrong there: Transform caps the source by this box, the rest ignore it.
                 workflow === "transform"
                   ? "Caps the output size. The source image is scaled down to fit inside this box, keeping its aspect ratio, so the result may be smaller than the values shown."
                   : workflow === "inpaint" ||
