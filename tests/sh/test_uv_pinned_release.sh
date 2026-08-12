@@ -18,9 +18,8 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
-ok()   { echo "  PASS: $1"; PASS=$((PASS + 1)); }
-bad()  { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
-check() { if [ "$2" = "0" ]; then ok "$1"; else bad "$1"; fi }
+ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
+bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
