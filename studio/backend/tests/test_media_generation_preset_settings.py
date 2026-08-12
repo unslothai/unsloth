@@ -9,8 +9,8 @@ from routes import settings as settings_routes
 from storage import studio_db
 
 
-def _client(monkeypatch) -> TestClient:
-    stored = {}
+def _client(monkeypatch, stored = None) -> TestClient:
+    stored = {} if stored is None else stored
     monkeypatch.setattr(
         studio_db,
         "get_app_setting",
@@ -260,3 +260,56 @@ def test_rejected_capacity_write_does_not_consume_its_version(monkeypatch):
         ).status_code
         == 200
     )
+
+
+def test_a_blob_written_by_another_build_still_reads(monkeypatch):
+    # extra = "forbid" is right for a submitted payload and wrong for reading storage back: a single
+    # field from a newer build must not cost the user every recipe this build can still render.
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "Landscape",
+                "currentParams": {"steps": 24, "aFieldFromLater": 1},
+                "somethingElseEntirely": True,
+                "customPresets": [
+                    {
+                        "name": "Landscape",
+                        "params": {"steps": 24, "aFieldFromLater": 1},
+                        "alsoNew": "x",
+                    }
+                ],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert body["saved"] is True
+    assert body["activePreset"] == "Landscape"
+    assert body["currentParams"]["steps"] == 24
+    assert [preset["name"] for preset in body["customPresets"]] == ["Landscape"]
+    assert body["customPresets"][0]["params"]["steps"] == 24
+
+
+def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "Broken",
+                "currentParams": {"steps": 999_999},
+                "customPresets": [
+                    {"name": "Broken", "params": {"steps": 999_999}},
+                    {"name": "Readable", "params": {"steps": 24}},
+                ],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    # Still "saved", so the client does not mistake this for a fresh install and overwrite it.
+    assert body["saved"] is True
+    assert [preset["name"] for preset in body["customPresets"]] == ["Readable"]
+    assert body["activePreset"] == "Default"

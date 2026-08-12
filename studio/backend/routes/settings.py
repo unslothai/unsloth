@@ -4,11 +4,11 @@
 import functools
 import re
 import threading
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from auth.storage import rotate_preview_link_secret
@@ -207,9 +207,50 @@ class VideoGenerationPresetSettings(VideoGenerationPresetState):
     saved: bool = False
 
 
+def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
+    for candidate in (annotation, *get_args(annotation)):
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+def _readable(model: type[BaseModel], value: Any) -> Any:
+    """Drop what this build's schema does not define, keeping every field it does.
+
+    `extra = "forbid"` is right for a submitted payload but wrong for reading storage back: a blob
+    holding one field from a newer build would otherwise fail validation, and a stored recipe the
+    user can no longer read is worse than one missing a field this build cannot render anyway.
+    """
+    if isinstance(value, list):
+        return [_readable(model, item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    readable = {}
+    for name, field in model.model_fields.items():
+        if name not in value:
+            continue
+        nested = _nested_model(field.annotation)
+        readable[name] = _readable(nested, value[name]) if nested else value[name]
+    return readable
+
+
 def _get_generation_preset_settings(kind, schema):
     stored = get_media_generation_preset_settings(kind)
-    response = schema.model_validate(stored)
+    try:
+        response = schema.model_validate(_readable(schema, stored))
+    except ValidationError:
+        # A value this build cannot represent at all. Keep the named recipes that still read, so
+        # one unreadable entry does not cost the user the rest of the list.
+        logger.warning("Discarding unreadable %s generation preset settings", kind)
+        presets = schema.model_fields["customPresets"].annotation
+        item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
+        readable = []
+        for raw in _readable(item, stored.get("customPresets", []) or []):
+            try:
+                readable.append(item.model_validate(raw))
+            except ValidationError:
+                continue
+        response = schema(customPresets = readable)
     response.saved = bool(stored)
     return response
 
