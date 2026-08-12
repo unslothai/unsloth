@@ -50,6 +50,7 @@ def _pin_prequant_safe_globals(real_prequant_safe_globals):
     """Apply the shared stand-in allowlist (see conftest) to every test in this module."""
     return real_prequant_safe_globals
 
+
 GROUP = 16  # a power of 4, small enough to keep the test model tiny
 
 
