@@ -25,6 +25,7 @@ if str(_BACKEND) not in sys.path:
 
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
+import utils.whisper_cpp_update as whisper_upd  # noqa: E402
 
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
@@ -109,6 +110,11 @@ def _clean_state(monkeypatch, tmp_path):
                     "backend": backend,
                     "available": True,
                     "resolved_backend": "cuda" if backend == "auto" else backend,
+                    "asset": (
+                        "app-b9596-mix-abc-linux-x64-cuda12.tar.gz"
+                        if backend in ("auto", "cuda")
+                        else f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz"
+                    ),
                 }
                 for backend in ("auto", "cpu", "cuda", "rocm", "vulkan")
             ]
@@ -230,12 +236,54 @@ def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
 
 
 def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
-    _install(monkeypatch, tmp_path, backend = "vulkan", backend_request = "vulkan")
+    _install(
+        monkeypatch,
+        tmp_path,
+        asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+        backend = "vulkan",
+        backend_request = "vulkan",
+    )
 
     action = upd.start_backend_switch("vulkan")
 
     assert action["started"] is False
     assert action["reason"] == "already_selected"
+
+
+def test_same_backend_with_a_new_resolved_asset_is_reinstalled(monkeypatch, tmp_path):
+    install_dir = _install(
+        monkeypatch,
+        tmp_path,
+        asset = "app-b9596-mix-abc-linux-x64-cuda12-old.tar.gz",
+        backend = "cuda",
+        backend_request = "cuda",
+    )
+    monkeypatch.setattr(
+        upd,
+        "_resolve_backends_for_host",
+        lambda install_dir, **kwargs: {
+            "backends": [
+                {
+                    "backend": "cuda",
+                    "available": True,
+                    "resolved_backend": "cuda",
+                    "asset": "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
+                }
+            ]
+        },
+    )
+    _patch_installer(
+        monkeypatch,
+        on_start = lambda cmd, kwargs: _write_install(
+            install_dir,
+            asset = "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
+            backend = "cuda",
+            backend_request = "cuda",
+        ),
+    )
+
+    assert upd.start_backend_switch("cuda")["started"] is True
+    assert _await_job()["state"] == "success"
 
 
 def test_auto_reapplies_when_hardware_detection_changes(monkeypatch, tmp_path):
@@ -410,6 +458,99 @@ def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, t
     assert status["backend"] == "cpu"
     assert status["backend_request"] == "auto"
     assert status["selection_applied"] is False
+
+
+def test_status_reports_when_the_resolved_asset_has_changed(monkeypatch, tmp_path):
+    _install(
+        monkeypatch,
+        tmp_path,
+        asset = "app-b9596-mix-abc-linux-x64-cuda12-old.tar.gz",
+        backend = "cuda",
+        backend_request = "cuda",
+    )
+
+    status = upd.get_backend_status()
+
+    assert status["backend"] == "cuda"
+    assert status["backend_request"] == "cuda"
+    assert status["selection_applied"] is False
+
+
+def test_status_reports_a_pending_slim_whisper_repair(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        whisper_upd,
+        "repair_pairing_plan",
+        lambda backend, **kwargs: {"phase": {"repair": True}},
+    )
+
+    status = upd.get_backend_status()
+
+    assert status["selection_applied"] is False
+
+
+def test_a_failed_whisper_repair_can_retry_without_reinstalling_llama(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        upd,
+        "_whisper_phase_plan",
+        lambda backend, *, llama_will_run: (
+            {"phase": {"repair": True}} if not llama_will_run else {}
+        ),
+    )
+    calls = 0
+
+    def _repair(phase, set_progress):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary whisper download failure")
+        return {"message": "Re-paired whisper.cpp with the cuda backend."}
+
+    monkeypatch.setattr(whisper_upd, "run_repair_phase", _repair)
+
+    assert upd.start_backend_switch("auto")["started"] is True
+    first = _await_job()
+    assert first["state"] == "error"
+    assert first["phases"]["llama"]["state"] == "skipped"
+
+    assert upd.start_backend_switch("auto")["started"] is True
+    second = _await_job()
+    assert second["state"] == "success"
+    assert second["phases"]["llama"]["state"] == "skipped"
+    assert calls == 2
+
+
+def test_whisper_repair_treats_only_incompatibility_as_unavailable(monkeypatch):
+    monkeypatch.setattr(whisper_upd, "_installed_llama_backend", lambda: "vulkan")
+    monkeypatch.setattr(
+        whisper_upd,
+        "_install_latest_while_blocked_with_maintenance",
+        lambda phase, set_progress: (_ for _ in ()).throw(
+            whisper_upd._flow.InstallerExit(2, "incompatible")
+        ),
+    )
+
+    result = whisper_upd.run_repair_phase({"installed_backend": "cuda"}, lambda progress: None)
+
+    assert "no whisper.cpp build is published" in result["message"]
+
+
+@pytest.mark.parametrize("returncode", [1, 3])
+def test_whisper_repair_surfaces_retryable_installer_failures(monkeypatch, returncode):
+    monkeypatch.setattr(whisper_upd, "_installed_llama_backend", lambda: "vulkan")
+    monkeypatch.setattr(
+        whisper_upd,
+        "_install_latest_while_blocked_with_maintenance",
+        lambda phase, set_progress: (_ for _ in ()).throw(
+            whisper_upd._flow.InstallerExit(returncode, "retryable")
+        ),
+    )
+
+    with pytest.raises(whisper_upd._flow.InstallerExit) as raised:
+        whisper_upd.run_repair_phase({"installed_backend": "cuda"}, lambda progress: None)
+
+    assert raised.value.returncode == returncode
 
 
 def test_status_surfaces_an_environment_pin(monkeypatch, tmp_path):

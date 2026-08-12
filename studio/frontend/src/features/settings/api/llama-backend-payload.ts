@@ -55,7 +55,7 @@ export interface LlamaBackendStatus {
   backend: LlamaEffectiveBackend | null;
   /** The recorded choice; null when this client does not recognize it. */
   backendRequest: LlamaBackend | null;
-  /** Whether that choice currently resolves to the installed backend. */
+  /** Whether that choice resolves to the installed bundle and paired sidecars. */
   selectionApplied: boolean;
   installedTag: string | null;
   options: LlamaBackendOption[];

@@ -469,6 +469,40 @@ def _env_backend_override() -> Optional[str]:
     return "vulkan" if legacy in ("1", "true", "yes", "on") else None
 
 
+def _resolved_selection_applied(
+    marker: Optional[dict], backend_request: Optional[str], option: Optional[dict]
+) -> bool:
+    """Whether the installed bundle is the exact result of this resolution."""
+    if not marker or not option or not option.get("available"):
+        return False
+    resolved_backend = normalize_backend(option.get("resolved_backend"))
+    resolved_asset = option.get("asset")
+    return (
+        marker_backend_request(marker) == backend_request
+        and marker_backend(marker) == resolved_backend
+        and isinstance(resolved_asset, str)
+        and bool(resolved_asset)
+        and marker.get("asset") == resolved_asset
+    )
+
+
+def _whisper_pairing_applied(
+    backend_request: Optional[str], installed_backend: Optional[str]
+) -> bool:
+    """Whether a managed slim whisper install already matches llama.cpp."""
+    if backend_request is None or installed_backend is None:
+        return True
+    try:
+        from utils import whisper_cpp_update
+        plan = whisper_cpp_update.repair_pairing_plan(
+            backend_request, resolved_backend = installed_backend
+        )
+    except Exception as exc:  # pragma: no cover - status must remain available
+        logger.debug("llama backend: whisper pairing probe failed", error = str(exc))
+        return True
+    return plan.get("phase") is None
+
+
 def get_backend_status(*, force_refresh: bool = False) -> dict:
     """Return the installed backend and host-compatible alternatives."""
     binary = _find_binary()
@@ -483,7 +517,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         "backend": marker_backend(marker),
         "backend_request": marker_backend_request(marker),
         # Becomes false only after the resolver proves that the recorded request
-        # now selects a different backend. Unknown status must not invite an apply.
+        # needs another bundle or sidecar repair. Unknown status must not invite an apply.
         "selection_applied": True,
         "installed_tag": (marker or {}).get("release_tag") or (marker or {}).get("tag"),
         "options": [],
@@ -529,11 +563,17 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         )
     status["options"] = options
     current = next(
-        (option for option in options if option["backend"] == status["backend_request"]),
+        (
+            entry
+            for entry in resolved.get("backends") or []
+            if normalize_backend(entry.get("backend")) == status["backend_request"]
+        ),
         None,
     )
-    if current and current["available"] and current["resolved_backend"] is not None:
-        status["selection_applied"] = current["resolved_backend"] == status["backend"]
+    if current and current.get("available"):
+        status["selection_applied"] = _resolved_selection_applied(
+            marker, status["backend_request"], current
+        ) and _whisper_pairing_applied(status["backend_request"], status["backend"])
     return status
 
 
@@ -968,28 +1008,39 @@ def start_backend_switch(backend: str) -> dict:
             "job": job,
         }
     marker = read_install_marker(_find_binary())
-    if marker_backend_request(marker) == normalized and marker_backend(marker) == resolved_backend:
-        with _job_lock:
-            job = dict(_job)
-        return {
-            "started": False,
-            "reason": "already_selected",
-            "message": f"llama.cpp is already set to {normalized}.",
-            "job": job,
+    if _resolved_selection_applied(marker, normalized, option):
+        already_selected = {
+            "skip_reason": "already_selected",
+            "refusal": {
+                "started": False,
+                "reason": "already_selected",
+                "message": f"llama.cpp is already set to {normalized}.",
+            },
         }
+        # A previous llama switch may have landed before a transient whisper
+        # repair failure. Let the shared job retry only that remaining phase.
+        return _start_llama_job(backend_request = normalized, llama_plan = already_selected)
     return _start_llama_job(backend_request = normalized, llama_plan = llama_plan)
 
 
 def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or
-    re-pair with the new backend for a switch. Fail-open to a skip either way, so
-    whisper can never block llama."""
+    re-pair with the new backend for a switch. Probe failures skip the phase, but
+    a repair that starts and fails remains visible and retryable."""
     if backend_request is None:
         return (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
     if not llama_will_run:
-        return {}
+        try:
+            from utils import whisper_cpp_update
+            installed_backend = whisper_cpp_update._installed_llama_backend()
+            return whisper_cpp_update.repair_pairing_plan(
+                backend_request, resolved_backend = installed_backend
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("llama switch: whisper retry probe failed", error = str(exc))
+            return {}
     try:
         from utils import whisper_cpp_update
         return whisper_cpp_update.repair_pairing_plan(backend_request)
@@ -1016,8 +1067,7 @@ def _start_llama_job(
     llama_spec = llama_plan.get("spec")
     whisper_plan = _whisper_phase_plan(backend_request, llama_will_run = llama_spec is not None)
     whisper_spec = (whisper_plan or {}).get("phase")
-    # Never re-pair whisper unless the llama switch runs too.
-    if llama_spec is None and (backend_request is not None or whisper_spec is None):
+    if llama_spec is None and whisper_spec is None:
         # Nothing to run: answer with the llama refusal so the existing reasons
         # (local_link / up_to_date / already_selected / ...) keep their meaning.
         refusal = dict(llama_plan["refusal"])
@@ -1080,11 +1130,12 @@ def _start_llama_job(
     running = " + ".join(
         name for name, spec in (("llama.cpp", llama_spec), ("whisper.cpp", whisper_spec)) if spec
     )
-    starting_message = (
-        f"Installing the {backend_request} llama.cpp build..."
-        if backend_request is not None
-        else f"Downloading and installing the latest {running} prebuilt..."
-    )
+    if backend_request is not None and llama_spec is not None:
+        starting_message = f"Installing the {backend_request} llama.cpp build..."
+    elif backend_request is not None:
+        starting_message = "Re-pairing whisper.cpp with llama.cpp..."
+    else:
+        starting_message = f"Downloading and installing the latest {running} prebuilt..."
 
     with _job_lock:
         if _job["state"] == _JOB_RUNNING:

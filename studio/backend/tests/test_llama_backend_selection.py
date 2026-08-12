@@ -520,6 +520,18 @@ def test_an_install_applies_the_choice_its_marker_recorded(monkeypatch, tmp_path
     assert seen == ["vulkan"]
 
 
+def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tmp_path):
+    seen = _stub_selection(monkeypatch, available = {"auto"})
+    marker_path = _marker(tmp_path, backend = "sycl", backend_request = "sycl")
+
+    with pytest.raises(ilp.UnknownBackendRequest):
+        ilp.install_prebuilt(tmp_path, "latest", FORK, "")
+
+    assert seen == []
+    marker = json.loads((marker_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["backend_request"] == "sycl"
+
+
 def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkeypatch, tmp_path):
     # Re-detect after hardware invalidates a stored choice.
     seen = _stub_selection(monkeypatch, available = {"auto"})

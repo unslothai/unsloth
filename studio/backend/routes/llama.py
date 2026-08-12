@@ -207,7 +207,8 @@ class LlamaBackendStatusResponse(BaseModel):
     selection_applied: bool = Field(
         True,
         description = (
-            "False when Automatic now resolves to a different backend than the installed one."
+            "False when the recorded choice now resolves to a different bundle or "
+            "its managed whisper.cpp pairing still needs repair."
         ),
     )
     installed_tag: Optional[str] = None

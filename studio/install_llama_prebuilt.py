@@ -554,6 +554,10 @@ class BackendUnavailable(PrebuiltFallback):
     """
 
 
+class UnknownBackendRequest(RuntimeError):
+    """A newer installer recorded a backend this version cannot preserve."""
+
+
 _os_error_messages = _core._os_error_messages
 is_busy_lock_error = _core.is_busy_lock_error
 
@@ -6833,7 +6837,9 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
     return _normalized_llama_backend(llama_backend) or llama_backend_from_env()
 
 
-def persisted_backend_request(install_dir: Path | None) -> str | None:
+def persisted_backend_request(
+    install_dir: Path | None, *, reject_unknown: bool = False
+) -> str | None:
     """Return the recorded backend choice, with legacy marker compatibility."""
     if install_dir is None:
         return None
@@ -6845,6 +6851,11 @@ def persisted_backend_request(install_dir: Path | None) -> str | None:
         return recorded
     if marker.get("backend_request") is not None:
         # Unknown explicit choices must not be mistaken for automatic detection.
+        if reject_unknown:
+            raise UnknownBackendRequest(
+                "this install records an unsupported llama.cpp backend choice "
+                f"({marker.get('backend_request')!r}); update Studio before replacing it"
+            )
         return None
     if bool(marker.get("force_cpu")):
         return "cpu"
@@ -6856,6 +6867,11 @@ def persisted_backend_request(install_dir: Path | None) -> str | None:
         return "auto"
     if legacy == "vulkan":
         return "vulkan"
+    if reject_unknown:
+        raise UnknownBackendRequest(
+            "this install records an unsupported legacy llama.cpp backend choice "
+            f"({legacy!r}); update Studio before replacing it"
+        )
     return None
 
 
@@ -6873,7 +6889,7 @@ def effective_backend_request(
     # The legacy environment override has the same precedence as its replacement.
     if force_vulkan_requested():
         return "vulkan", True
-    return persisted_backend_request(install_dir), False
+    return persisted_backend_request(install_dir, reject_unknown = True), False
 
 
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
@@ -8047,7 +8063,7 @@ def describe_installed_backend(install_dir: Path | None) -> dict[str, Any] | Non
         backend = _backend_from_asset_name(marker.get("asset"))
     return {
         "backend": backend,
-        "backend_request": persisted_backend_request(install_dir) or "auto",
+        "backend_request": persisted_backend_request(install_dir),
         "asset": marker.get("asset"),
         "release_tag": marker.get("release_tag") or marker.get("tag"),
         "repo": marker.get("published_repo"),

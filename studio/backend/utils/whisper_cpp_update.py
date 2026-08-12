@@ -414,7 +414,7 @@ def _installed_llama_backend() -> Optional[str]:
         return None
 
 
-def repair_pairing_plan(backend: str) -> dict:
+def repair_pairing_plan(backend: str, *, resolved_backend: Optional[str] = None) -> dict:
     """Plan re-pairing for a slim whisper install that borrows llama's ggml."""
     plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
     binary = _find_binary()
@@ -429,7 +429,8 @@ def repair_pairing_plan(backend: str) -> dict:
         # Carries its own ggml, so llama's backend is not its backend.
         plan["skip_reason"] = "self_contained"
         return plan
-    if backend != "auto" and marker.get("backend") == backend:
+    target_backend = resolved_backend or (backend if backend != "auto" else None)
+    if target_backend is not None and marker.get("backend") == target_backend:
         plan["skip_reason"] = "already_paired"
         return plan
     script = _installer_script()
@@ -457,7 +458,7 @@ def repair_pairing_plan(backend: str) -> dict:
 
 
 def run_repair_phase(phase: dict, set_progress) -> dict:
-    """Best-effort re-pair whisper after a successful llama backend switch."""
+    """Re-pair whisper after a successful llama backend switch."""
     backend = _installed_llama_backend()
     if backend is None:
         logger.info("whisper repair: skipped, llama backend unknown")
@@ -470,6 +471,14 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
         result = _install_latest_while_blocked_with_maintenance(phase, set_progress)
     except _flow.InstallerExit as exc:
         # 2 is the installer's "no compatible release", the ordinary case here.
+        if exc.returncode != 2:
+            logger.warning(
+                "whisper repair: failed",
+                backend = backend,
+                returncode = exc.returncode,
+                error = str(exc),
+            )
+            raise
         logger.info(
             "whisper repair: skipped",
             backend = backend,
@@ -482,11 +491,9 @@ def run_repair_phase(phase: dict, set_progress) -> dict:
                 f"published for this llama.cpp release on {backend} yet."
             ),
         }
-    except Exception as exc:  # noqa: BLE001 - the switch already landed
+    except Exception as exc:  # noqa: BLE001 - the shared job reports partial success
         logger.warning("whisper repair: failed", backend = backend, error = str(exc))
-        return {
-            "message": "Dictation still uses the previous backend; re-pairing it failed.",
-        }
+        raise
     # Describe the backend change instead of an incidental version change.
     result["message"] = f"Re-paired whisper.cpp with the {backend} backend."
     return result
