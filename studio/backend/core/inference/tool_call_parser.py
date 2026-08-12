@@ -271,7 +271,8 @@ _TC_FUNC_START_RE = re.compile(r'<function(?:=([\w\.\-]+)|\s+name="([\w\.\-]+)")
 # Body ends at ``</tool_call>`` (Hermes) or ``</function>`` (Qwen3.5 / MiniCPM-5)
 # so it stops at the close even when prose follows (else prose leaked into args).
 _TC_END_TAG_RE = re.compile(r"</(?:tool_call|function)>")
-_TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
+# Byte-identical to the healer's; shared so the pair cannot drift.
+_TC_FUNC_CLOSE_RE = _tool_healing._TC_FUNC_CLOSE_RE
 # Horizontal whitespace only (``[^\S\n]*``, not ``\s*``) so the wrapping newline +
 # first-line indentation survive; ``_trim_param_value`` trims one newline, preserving
 # code indentation (SGLang qwen3_coder).
@@ -361,34 +362,10 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
-def _balanced_bracket_end(text: str, start: int) -> int | None:
-    """Index of the ``]`` matching ``[`` at ``text[start]`` (ignores brackets in JSON strings)."""
-    if start >= len(text) or text[start] != "[":
-        return None
-    depth = 0
-    in_string = False
-    esc = False
-    i = start
-    while i < len(text):
-        ch = text[i]
-        if in_string:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    return i
-        i += 1
-    return None
+# Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span
+# early and leave the rest of a malformed call on screen.
+def _balanced_bracket_end(src: str, start: int) -> "int | None":
+    return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
 
 
 def _skip_mistral_call_id(text: str, pos: int) -> int:
@@ -694,6 +671,45 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def strip_segment(
+    segment: str,
+    *,
+    seg_final: bool,
+    enabled_tool_names: Optional[set] = None,
+) -> str:
+    """Strip tool-call markup from one non-``<think>`` segment.
+
+    The single definition of the scan order, shared by the GGUF and safetensors paths.
+    ``routes/inference.py`` keeps a deliberately different order for the passthrough
+    path, pinned by ``tests/test_route_strip_drift.py``. ``seg_final`` enables the
+    end-of-turn arms (markerless Gemma, open tails, trailing partial rehearsal).
+    """
+    seg = _strip_mistral_closed_calls(segment)
+    # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form, through the shared
+    # balanced scan. Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
+    seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
+    if seg_final:
+        # Markerless Gemma ``call:NAME{...}``, name-gated like the parse gate.
+        seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
+    # Scan, not regex, so a literal ``<function=...>`` inside a value stays data.
+    seg = _strip_function_xml_calls(seg, final = seg_final)
+    # GLM 4.x: scan to the call's real </tool_call>, so a literal one inside a value is
+    # data. Qwen <tool_call>{json} is left to the regex arms.
+    seg = _strip_glm_calls(seg, final = seg_final)
+    pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
+    for pat in pats:
+        seg = pat.sub("", seg)
+    if seg_final:
+        # Trailing partial rehearsal the balanced scan cannot close; gated so prose
+        # ``foo[ARGS] ...`` survives.
+        seg = _tool_healing.apply_tool_strip_patterns(
+            seg,
+            [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
+            enabled_tool_names = enabled_tool_names,
+        )
+    return seg
+
+
 def strip_tool_markup(
     text: str,
     *,
@@ -713,33 +729,11 @@ def strip_tool_markup(
         text = _strip_mistral_reasoning(text)
 
     def _strip_segment(segment: str, is_last: bool) -> str:
-        seg_final = final and is_last
-        seg = _strip_mistral_closed_calls(segment)
-        # Bare reasoning-rehearsal ``name[ARGS]{json}`` and the Mistral name form promote through
-        # the shared balanced scan, so strip them the same way (any nesting depth removed whole).
-        # The rehearsal arm is name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
-        seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
-        if seg_final:
-            # Markerless Gemma ``call:NAME{...}`` (name-gated, mirrors the parse gate); end-of-turn only.
-            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
-        # Scan-strip the function-XML form (parser-accurate: a literal ``<function=...>`` in a
-        # value is data, not a call); the regex arms below cover the other formats.
-        seg = _strip_function_xml_calls(seg, final = seg_final)
-        # GLM 4.x: scan to the call's real </tool_call> so a literal one inside a value is data,
-        # not a leak. Qwen <tool_call>{json} is left to the regex arms.
-        seg = _strip_glm_calls(seg, final = seg_final)
-        pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
-        for pat in pats:
-            seg = pat.sub("", seg)
-        if seg_final:
-            # Drop a trailing partial bare rehearsal (``name[ARGS]`` with a truncated or absent
-            # body) the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
-            seg = _tool_healing.apply_tool_strip_patterns(
-                seg,
-                [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
-                enabled_tool_names = enabled_tool_names,
-            )
-        return seg
+        return strip_segment(
+            segment,
+            seg_final = final and is_last,
+            enabled_tool_names = enabled_tool_names,
+        )
 
     # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is
     # not executed, so it must not be stripped from display either); a literal think marker
@@ -1282,51 +1276,24 @@ def _parse_tool_call_json(
     return out
 
 
-def _trim_param_value(val: str) -> str:
-    """Trim one wrapping newline the template adds around an XML parameter value
-    (``<parameter=k>\nVALUE\n</parameter>``), preserving inner indentation.
-    ``str.strip()`` destroyed code/diff indentation; SGLang's qwen3_coder trims only
-    the wrapping newline."""
-    if val.startswith("\n"):
-        val = val[1:]
-    if val.endswith("\n"):
-        val = val[:-1]
-    return val
+# Identical to the healer's copy; imported so the two cannot drift.
+_trim_param_value = _tool_healing._trim_param_value
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
     """True if ``pos`` sits inside an unclosed ``<parameter>``/``<param>`` block --
     i.e. a ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an
     argument value (e.g. code that prints tool-call XML), not a real nested call.
-    Compares the last parameter opener before ``pos`` against the last
-    parameter/function close before it."""
-    last_param_open = -1
-    for m in _TC_PARAM_START_RE.finditer(text, 0, pos):
-        last_param_open = m.start()
-    if last_param_open < 0:
-        return False
-    # The parameter's OWN close tag decides: while it closes after ``pos`` the position is
-    # argument data, even across several literal function closes. Only an unclosed
-    # parameter (heal mode) falls back to the first function close.
-    own_closes = [
-        c
-        for c in (
-            text.find("</parameter>", last_param_open),
-            text.find("</param>", last_param_open),
-        )
-        if c >= 0
-    ]
-    if own_closes:
-        return min(own_closes) > pos
-    func_closes = [
-        c
-        for c in (
-            text.find("</function>", last_param_open),
-            text.find("</tool_call>", last_param_open),
-        )
-        if c >= 0
-    ]
-    return not func_closes or pos < min(func_closes)
+
+    The healer's algorithm over a wider vocabulary (``<param name="...">`` openers,
+    ``</tool_call>`` closers for GLM 4.x / Kimi K2); only that is passed in."""
+    return _tool_healing._inside_open_parameter(
+        text,
+        pos,
+        param_start_re = _TC_PARAM_START_RE,
+        param_closers = ("</parameter>", "</param>"),
+        func_closers = ("</function>", "</tool_call>"),
+    )
 
 
 def _parse_function_xml(
@@ -1966,34 +1933,8 @@ def _parse_gemma_tool_calls(
     return out
 
 
-def _balanced_brace_end(text: str, brace_pos: int) -> int | None:
-    """Index of the ``}`` matching ``{`` at ``brace_pos`` (ignores braces in JSON strings)."""
-    if brace_pos >= len(text) or text[brace_pos] != "{":
-        return None
-    depth = 0
-    in_string = False
-    esc = False
-    i = brace_pos
-    while i < len(text):
-        ch = text[i]
-        if in_string:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return i
-        i += 1
-    return None
+# Shared with the healer; its Gemma quoting sits behind a flag this module never sets.
+_balanced_brace_end = _tool_healing._balanced_brace_end
 
 
 def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:

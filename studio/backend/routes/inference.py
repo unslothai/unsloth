@@ -37,7 +37,7 @@ import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
-from dataclasses import replace
+from dataclasses import fields as dataclass_fields, replace
 
 
 import re as _re
@@ -4198,9 +4198,10 @@ def _gguf_request_intent(
     n_parallel: int,
     **changes,
 ) -> GgufLoadIntent:
+    # ``dataclass_fields``, not ``vars``: same names, but no reliance on ``__dict__``.
     settings = {
         name: getattr(request, name)
-        for name in vars(source)
+        for name in (f.name for f in dataclass_fields(source))
         if hasattr(request, name) and (name != "hf_token" or source.hf_repo)
     }
     settings.update(

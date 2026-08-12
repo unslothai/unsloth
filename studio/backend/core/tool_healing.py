@@ -256,7 +256,14 @@ def _balanced_brace_end(
     brace_start: int,
     *,
     gemma_quotes: bool = False,
-) -> int:
+) -> int | None:
+    """Index of the ``}`` matching the ``{`` at ``brace_start``, or None.
+
+    Shared with ``core/inference/tool_call_parser.py``. The guard makes a mispositioned
+    call return None instead of reporting an unrelated brace.
+    """
+    if brace_start >= len(content) or content[brace_start] != "{":
+        return None
     depth = 0
     i = brace_start
     in_string = False
@@ -285,12 +292,27 @@ def _balanced_brace_end(
             if depth == 0:
                 return i
         i += 1
-    return -1
+    return None
 
 
-def _balanced_bracket_end(src: str, start: int) -> int:
-    """Index of the ``]`` matching the ``[`` at ``start``, or -1. Tracks nested
-    ``[]``/``{}`` and double-quoted strings."""
+def _balanced_bracket_end(
+    src: str,
+    start: int,
+    *,
+    braces_count: bool = True,
+) -> int | None:
+    """Index of the ``]`` matching the ``[`` at ``start``, or None. Tracks nesting and
+    double-quoted strings.
+
+    With ``braces_count`` (the default) braces count toward the same depth, so a
+    truncated object cannot close an array early; the Gemma array normalizer needs that.
+    The display strip in ``tool_call_parser.py`` counts brackets only, so a stray ``}``
+    cannot end the span early and leave the rest of a malformed call visible.
+    """
+    if start >= len(src) or src[start] != "[":
+        return None
+    openers = "[{" if braces_count else "["
+    closers = "]}" if braces_count else "]"
     depth = 0
     i = start
     in_string = False
@@ -304,14 +326,14 @@ def _balanced_bracket_end(src: str, start: int) -> int:
                 in_string = False
         elif ch == '"':
             in_string = True
-        elif ch in "[{":
+        elif ch in openers:
             depth += 1
-        elif ch in "]}":
+        elif ch in closers:
             depth -= 1
             if depth == 0:
                 return i
         i += 1
-    return -1
+    return None
 
 
 def _decode_array_items(text: str, body_start: int, body_end: int):
@@ -409,7 +431,6 @@ def _iter_bracket_spans(
         kind, m = min(live, key = lambda km: km[1].start())
         if kind == "array":
             end = _balanced_bracket_end(text, m.end())
-            end = None if end < 0 else end
         else:
             end = _balanced_json_span(text, m.end())
         if end is None:
@@ -571,7 +592,7 @@ def _quote_gemma_object_keys(src: str) -> str:
                 # Array value: quote bare string elements (e.g. labels:[bug,ui])
                 # so json.loads succeeds instead of dropping the call.
                 arr_end = _balanced_bracket_end(src, i)
-                if arr_end < 0:
+                if arr_end is None:
                     parts.append(src[i:])
                     i = len(src)
                 else:
@@ -611,20 +632,42 @@ def _gemma_arguments_to_json(args_src: str) -> dict:
     return json.loads(src)
 
 
-def _inside_open_parameter(content: str, pos: int) -> bool:
-    """Return True when ``pos`` falls inside an unclosed parameter value."""
+def _inside_open_parameter(
+    content: str,
+    pos: int,
+    *,
+    param_start_re = None,
+    param_closers = (_PARAM_CLOSE_TAG,),
+    func_closers = (_FUNC_CLOSE_TAG,),
+) -> bool:
+    """Return True when ``pos`` falls inside an unclosed parameter value.
+
+    The opener regex and closer tags are parameters so
+    ``core/inference/tool_call_parser.py`` can share this body with its wider vocabulary
+    (``<param name="...">`` openers, ``</param>`` / ``</tool_call>`` closers).
+    """
+    if param_start_re is None:
+        param_start_re = _TC_PARAM_START_RE
     last_param_start = -1
-    for match in _TC_PARAM_START_RE.finditer(content, 0, pos):
+    for match in param_start_re.finditer(content, 0, pos):
         last_param_start = match.start()
     if last_param_start < 0:
         return False
     # The parameter's OWN close tag decides: if it closes after ``pos`` the position is
     # argument data (even across literal function closes); an unclosed one falls back to func close.
-    own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
-    if own_close >= 0:
-        return own_close > pos
-    func_close = content.find(_FUNC_CLOSE_TAG, last_param_start)
-    return func_close < 0 or pos < func_close
+    own_closes = [
+        found
+        for found in (content.find(tag, last_param_start) for tag in param_closers)
+        if found >= 0
+    ]
+    if own_closes:
+        return min(own_closes) > pos
+    func_closes = [
+        found
+        for found in (content.find(tag, last_param_start) for tag in func_closers)
+        if found >= 0
+    ]
+    return not func_closes or pos < min(func_closes)
 
 
 def _func_close_index(content: str, body_start: int, body: str) -> int:
@@ -701,7 +744,8 @@ def _build_markers(content: str):
             if _inside_open_parameter(content, m.start()):
                 continue
             brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            markers.append((m.start(), brace_end, kind, m))
+            # Keep the ``-1`` sentinel: ``marker_coverage`` consumers test ``brace_end < 0``.
+            markers.append((m.start(), -1 if brace_end is None else brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
     return markers
 
@@ -1057,7 +1101,7 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
         if start < cursor:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
-        if brace_end < 0:
+        if brace_end is None:
             # Unbalanced: nothing completes from here on. Drop the rest if final,
             # else keep it; stop either way (rescanning would be quadratic).
             if final:
@@ -1088,7 +1132,7 @@ def _gemma_span_ranges(text: str) -> list:
         if start < cursor:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
-        if brace_end < 0:
+        if brace_end is None:
             break
         close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
         if close is None:
