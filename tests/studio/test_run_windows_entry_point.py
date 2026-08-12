@@ -90,9 +90,9 @@ def _launch_head_value() -> ast.expr:
 def test_windows_respawns_through_the_interpreter_not_the_console_script():
     """The blocked executable must not be argv[0] of the child on Windows."""
     branch = _launch_head_value()
-    assert isinstance(branch, ast.IfExp), (
-        f"expected launch_head to branch per platform, got {ast.dump(branch)}"
-    )
+    assert isinstance(
+        branch, ast.IfExp
+    ), f"expected launch_head to branch per platform, got {ast.dump(branch)}"
     # Windows arm: _managed_cli_argv(studio_python), i.e. the interpreter form.
     assert isinstance(branch.body, ast.Call), ast.dump(branch.body)
     assert isinstance(branch.body.func, ast.Name)
@@ -100,9 +100,9 @@ def test_windows_respawns_through_the_interpreter_not_the_console_script():
         "the Windows arm must build the interpreter argv via _managed_cli_argv, got "
         f"{ast.dump(branch.body.func)}"
     )
-    assert [
-        arg.id for arg in branch.body.args if isinstance(arg, ast.Name)
-    ] == ["studio_python"], "the interpreter argv must be built from studio_python"
+    assert [arg.id for arg in branch.body.args if isinstance(arg, ast.Name)] == [
+        "studio_python"
+    ], "the interpreter argv must be built from studio_python"
     # POSIX arm: [str(studio_bin)] -- unchanged, and what os.execvp needs.
     assert isinstance(branch.orelse, ast.List) and len(branch.orelse.elts) == 1
     posix_head = branch.orelse.elts[0]
@@ -136,21 +136,19 @@ def test_the_trampoline_is_the_one_the_rust_and_powershell_sides_use():
             isinstance(t, ast.Name) and t.id == "_WINDOWS_CLI_ENTRYPOINT" for t in node.targets
         ):
             python_value = ast.literal_eval(node.value)
-    assert python_value == canonical, (
-        f"_WINDOWS_CLI_ENTRYPOINT in {_STUDIO.name} has drifted: {python_value!r}"
-    )
+    assert (
+        python_value == canonical
+    ), f"_WINDOWS_CLI_ENTRYPOINT in {_STUDIO.name} has drifted: {python_value!r}"
 
-    rust = (_REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(
-        encoding = "utf-8"
-    )
-    assert f'"{canonical}"' in rust, (
-        "WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs has drifted"
-    )
+    rust = (_REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding = "utf-8")
+    assert (
+        f'"{canonical}"' in rust
+    ), "WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs has drifted"
 
     powershell = (_REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
-    assert f'$script:UnslothCliTrampoline = "{canonical}"' in powershell, (
-        "$script:UnslothCliTrampoline in install.ps1 has drifted"
-    )
+    assert (
+        f'$script:UnslothCliTrampoline = "{canonical}"' in powershell
+    ), "$script:UnslothCliTrampoline in install.ps1 has drifted"
 
 
 def test_the_interpreter_argv_carries_no_isolation_flag():
@@ -161,7 +159,7 @@ def test_the_interpreter_argv_carries_no_isolation_flag():
     for that either.
     """
     source = _STUDIO.read_text(encoding = "utf-8")
-    assert '"-X", "utf8", "-c"' in source, (
-        "the interpreter argv must be `-X utf8 -c <trampoline>`, in that order"
-    )
+    assert (
+        '"-X", "utf8", "-c"' in source
+    ), "the interpreter argv must be `-X utf8 -c <trampoline>`, in that order"
     assert '"-I"' not in source, "-I breaks PYTHON* parity with the console script"

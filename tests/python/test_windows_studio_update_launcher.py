@@ -653,7 +653,9 @@ def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, t
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
-def test_a_policy_block_with_no_interpreter_reports_the_block(monkeypatch, studio, tmp_path, capsys):
+def test_a_policy_block_with_no_interpreter_reports_the_block(
+    monkeypatch, studio, tmp_path, capsys
+):
     """Nothing left to ask: say what Windows said rather than inventing a cause."""
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     (scripts / "python.exe").unlink()

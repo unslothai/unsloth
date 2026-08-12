@@ -71,12 +71,14 @@ def _installed_package_dir() -> Path | None:
     The probe therefore has to strip the cwd exactly as the trampoline does, or
     it would answer for a search path the tests never use.
     """
-    probe = _run([
-        *INTERPRETER,
-        "-c",
-        "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
-        "import unsloth_cli; print(os.path.dirname(unsloth_cli.__file__))",
-    ])
+    probe = _run(
+        [
+            *INTERPRETER,
+            "-c",
+            "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+            "import unsloth_cli; print(os.path.dirname(unsloth_cli.__file__))",
+        ]
+    )
     if probe.returncode != 0:
         return None
     return Path(probe.stdout.decode("utf-8", "replace").strip())
@@ -210,8 +212,7 @@ def test_the_attached_np_short_is_still_canonicalised(monkeypatch):
     runpy.run_module("unsloth_cli", run_name = "__main__", alter_sys = True)
 
     assert recorded["argv"] == ["unsloth", "studio", "run", "-np", "8"], (
-        "__main__ must apply the console-script argv canonicalisation; got "
-        f"{recorded['argv']}"
+        "__main__ must apply the console-script argv canonicalisation; got " f"{recorded['argv']}"
     )
     # Without this click prints `Usage: python -m unsloth_cli`, because it reads
     # __main__.__package__ rather than argv[0].

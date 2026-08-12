@@ -4135,8 +4135,7 @@ class _WindowsLauncherUpdateTransaction:
             )
         except subprocess.TimeoutExpired:
             return (
-                "the managed Python CLI timed out after "
-                f"{self._VERSION_TIMEOUT_SECONDS} seconds"
+                f"the managed Python CLI timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
             )
         except OSError as exc:
             return f"the managed Python CLI could not run --version ({exc})"

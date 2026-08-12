@@ -874,7 +874,9 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
         setup_save,
     )
-    setup_invoke = install_source.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs", setup_set)
+    setup_invoke = install_source.index(
+        "Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs", setup_set
+    )
     setup_restore = install_source.index(
         "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff",
         setup_invoke,
