@@ -547,7 +547,7 @@ function inventoryRowBaseModel(
   if (row.kind === "local") {
     return row.baseModelHubId ?? row.baseModel ?? detectBaseModel(row.tags);
   }
-  return detectBaseModel(row.tags);
+  return row.baseModel ?? detectBaseModel(row.tags);
 }
 
 function cachedRowActive(

@@ -43,6 +43,7 @@ import { memo, useDeferredValue, useMemo } from "react";
 import { selectActiveJob, useDownloadManagerStore } from "../download-manager";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
+import { detectBaseModel } from "../lib/model-capabilities";
 import {
   formatLibrary,
   formatLocalUpdated,
@@ -595,7 +596,11 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
-            baseModel={model.baseModelHubId ?? model.baseModel}
+            baseModel={
+              model.baseModelHubId ??
+              model.baseModel ??
+              detectBaseModel(model.tags)
+            }
             className="size-[60px] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">

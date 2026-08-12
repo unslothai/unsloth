@@ -62,6 +62,8 @@ export interface CachedInventoryRow {
   // run to tens of GB and the row is how they are seen and deleted, but never a pick.
   companion?: boolean;
   tags?: string[];
+  /** `base_model` from the cached card; the Hub's synthesized tags are not on disk. */
+  baseModel?: string | null;
   libraryName?: string | null;
   quantMethod?: string | null;
   liveDownload?: boolean;

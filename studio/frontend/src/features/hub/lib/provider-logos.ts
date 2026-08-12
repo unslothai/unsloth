@@ -318,6 +318,16 @@ export function matchProviderLogoByOwner(owner: string): ProviderLogo | null {
 	return null;
 }
 
+// Hub relation qualifiers, which prefix the id in a `base_model:` tag. detectBaseModel
+// unwraps `quantized:` only, so strip the rest here before reading the owner.
+const BASE_MODEL_RELATIONS: readonly string[] = [
+	"quantized:",
+	"finetune:",
+	"adapter:",
+	"merge:",
+	"preference:",
+];
+
 /**
  * Provider behind a `base_model:` id, or null. Owner wins: it is the publisher of
  * record, and resolves even when the base repo name matches nothing. A bare id
@@ -326,7 +336,14 @@ export function matchProviderLogoByOwner(owner: string): ProviderLogo | null {
 export function providerLogoFromBaseModel(
 	baseModelId: string | null | undefined,
 ): ProviderLogo | null {
-	const id = baseModelId?.trim();
+	let id = baseModelId?.trim();
+	if (!id) return null;
+	for (const relation of BASE_MODEL_RELATIONS) {
+		if (id.toLowerCase().startsWith(relation)) {
+			id = id.slice(relation.length).trim();
+			break;
+		}
+	}
 	if (!id) return null;
 	const slash = id.indexOf("/");
 	if (slash === -1) return matchProviderLogo(id);

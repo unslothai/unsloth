@@ -56,6 +56,18 @@ test("an unknown base owner falls through to the base repo name", () => {
   assert.equal(providerLogoFromBaseModel(null), null);
 });
 
+test("relation qualifiers are stripped before the owner is read", () => {
+  for (const relation of ["quantized", "finetune", "adapter", "merge"]) {
+    assert.equal(
+      providerLogoFromBaseModel(`${relation}:meta-models/Muse-Glimmer-30B`)?.id,
+      "meta-llama",
+      relation,
+    );
+  }
+  // A repo whose own name starts with a relation word is not a qualifier.
+  assert.equal(providerLogoFromBaseModel("mergekit-community/x"), null);
+});
+
 test("only relabeled owners inherit a provider mark", () => {
   assert.equal(
     resolveOwnerProviderLogo(
@@ -80,4 +92,27 @@ test("every declared base-model owner is unique to one provider", () => {
       seen.set(key, provider.id);
     }
   }
+});
+
+test("a cached row carries the backend's card base model into the logo", async () => {
+  const { register } = await import("node:module");
+  register("./bundler-resolver.mjs", import.meta.url);
+  const { buildCachedInventoryRow } = await import(
+    "../src/features/hub/inventory/view-models.ts"
+  );
+
+  const row = buildCachedInventoryRow(
+    {
+      repo_id: "unsloth/Muse-Glimmer-30B-GGUF",
+      size_bytes: 20_000_000_000,
+      base_model: "meta-models/Muse-Glimmer-30B",
+    },
+    "gguf",
+  );
+
+  assert.equal(row.baseModel, "meta-models/Muse-Glimmer-30B");
+  assert.equal(
+    resolveOwnerProviderLogo(row.owner, row.repo, row.baseModel)?.id,
+    "meta-llama",
+  );
 });

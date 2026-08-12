@@ -173,6 +173,7 @@ export function buildCachedInventoryRow(
     single_file?: boolean;
     companion?: boolean;
     tags?: string[];
+    base_model?: string | null;
     library_name?: string | null;
     quant_method?: string | null;
     inventory_id?: string | null;
@@ -236,6 +237,7 @@ export function buildCachedInventoryRow(
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
     tags: row.tags,
+    baseModel: row.base_model ?? null,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
     optimistic: row.optimistic,

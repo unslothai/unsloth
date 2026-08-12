@@ -570,6 +570,11 @@ def _scan_cached_gguf(
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
+                # GGUF repos skip the checkpoint metadata pass, so read the card
+                # directly for the provider logo's base-model fallback.
+                gguf_base_model = _cached_repo_base_model(gguf_snapshot or snapshot_path)
+                if gguf_base_model is not None:
+                    row["base_model"] = gguf_base_model
                 row.update(
                     _cache_inventory_fields(
                         repo_id,
@@ -907,6 +912,25 @@ def _read_model_card_frontmatter(path: Path) -> dict:
         return {}
 
 
+def _card_base_model(card: dict) -> Optional[str]:
+    # The Hub API synthesizes `base_model:<id>` tags, but the card on disk carries
+    # only the raw `base_model` key, as a string or a list.
+    value = card.get("base_model")
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, list):
+        for entry in value:
+            if isinstance(entry, str) and entry.strip():
+                return entry.strip()
+    return None
+
+
+def _cached_repo_base_model(snapshot: Optional[Path]) -> Optional[str]:
+    if snapshot is None:
+        return None
+    return _card_base_model(_read_model_card_frontmatter(snapshot / "README.md"))
+
+
 def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = None) -> dict:
     # Describe the directory the row hands out, not merely the newest.
     if snapshot is None:
@@ -938,6 +962,9 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
         clean_tags = [tag.strip() for tag in tags if isinstance(tag, str) and tag.strip()]
         if clean_tags:
             result["tags"] = clean_tags
+    base_model = _card_base_model(card)
+    if base_model is not None:
+        result["base_model"] = base_model
     return result
 
 
