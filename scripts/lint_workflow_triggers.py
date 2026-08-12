@@ -40,13 +40,13 @@ RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
 PUBLISH_WORKFLOW_NAMES: tuple[str, ...] = ("release-desktop.yml",)
 
 # A workflow that runs this script is a "host". `pull_request` resolves the
-# workflow file from the PR merge ref, so a host carrying a `paths` /
-# `paths-ignore` filter can be skipped by the very PR that adds it -- the gate
-# would then never run for workflow changes, which is the hole this whole
-# script exists to close. Hosts must therefore trigger on unfiltered
-# `pull_request`.
+# workflow file from the PR merge ref, so any narrowing a PR adds to its host
+# takes effect for that same PR -- the gate then never runs on the workflow
+# change it exists to review, which is the hole this whole script closes.
+# `paths` is only the obvious key: `branches`, `branches-ignore` and `types`
+# skip PRs just as well. So a host must trigger on a bare `pull_request:` with
+# no configuration at all, and its lint step must be able to fail the run.
 LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
-PATH_FILTER_KEYS: tuple[str, ...] = ("paths", "paths-ignore")
 
 
 def _normalise_on(on_field):
@@ -87,8 +87,8 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-def _runs_lint(yaml_doc) -> bool:
-    """True when a job step actually runs this script.
+def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
+    """(job, step) pairs whose `run` invokes this script.
 
     Reads the parsed steps rather than the raw text: a commented-out
     `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
@@ -96,28 +96,30 @@ def _runs_lint(yaml_doc) -> bool:
     """
     jobs = yaml_doc.get("jobs") if isinstance(yaml_doc, dict) else None
     if not isinstance(jobs, dict):
-        return False
+        return []
+    found = []
     for job in jobs.values():
         steps = job.get("steps") if isinstance(job, dict) else None
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if not isinstance(step, dict):
-                continue
-            if LINT_SCRIPT_NAME in str(step.get("run") or ""):
-                return True
-    return False
+            if isinstance(step, dict) and LINT_SCRIPT_NAME in str(step.get("run") or ""):
+                found.append((job, step))
+    return found
 
 
-def _pull_request_path_filters(yaml_doc) -> list[str]:
-    """Path-filter keys on the `pull_request` trigger, if any."""
+def _pull_request_restrictions(yaml_doc) -> list[str]:
+    """Keys narrowing the `pull_request` trigger. A gate wants none of them."""
     on = _on_field(yaml_doc)
-    if not isinstance(on, dict):
-        return []
-    pr = on.get("pull_request")
-    if not isinstance(pr, dict):
-        return []
-    return [k for k in PATH_FILTER_KEYS if k in pr]
+    pr = on.get("pull_request") if isinstance(on, dict) else None
+    return sorted(pr) if isinstance(pr, dict) else []
+
+
+def _is_truthy(value) -> bool:
+    """YAML truthiness, treating any `${{ ... }}` expression as possibly true."""
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() not in ("", "false")
 
 
 def main() -> int:
@@ -181,16 +183,30 @@ def main() -> int:
                         "comment somewhere in the file, with a justification."
                     )
 
-        if _runs_lint(doc):
-            filters = _pull_request_path_filters(doc)
-            if filters:
+        lint_steps = _lint_steps(doc)
+        if lint_steps:
+            problems = []
+            restrictions = _pull_request_restrictions(doc)
+            if restrictions:
+                problems.append(
+                    f"its 'pull_request' trigger is narrowed by "
+                    f"{' + '.join(restrictions)}, so a PR adding that skips "
+                    "this workflow for its own PR"
+                )
+            if any(
+                _is_truthy(job.get("continue-on-error"))
+                or _is_truthy(step.get("continue-on-error"))
+                for job, step in lint_steps
+            ):
+                problems.append(
+                    "its lint step is continue-on-error, so findings cannot "
+                    "fail the run"
+                )
+            if problems:
                 findings.append(
-                    f"{path.name}: runs {LINT_SCRIPT_NAME} but its "
-                    f"'pull_request' trigger has {' + '.join(filters)}. A PR "
-                    "adding that filter skips this workflow for its own PR, so "
-                    "the trigger gate never runs on the workflow change it is "
-                    "meant to review. Drop the filter, or host the lint in a "
-                    "workflow that runs on every PR."
+                    f"{path.name}: runs {LINT_SCRIPT_NAME} but "
+                    + ", and ".join(problems)
+                    + ". The gate must run, and be able to fail, on every PR."
                 )
             elif "pull_request" in triggers:
                 unfiltered_hosts.append(path)

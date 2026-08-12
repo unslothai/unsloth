@@ -72,42 +72,69 @@ def test_lint_rejects_pull_request_target_in_yaml_extension(tmp_path):
     assert "BANNED trigger 'pull_request_target'" in proc.stderr
 
 
-def _host_workflow(filter_key: str | None) -> str:
-    """A workflow that runs the lint, optionally with a path filter."""
-    flt = f"    {filter_key}:\n      - 'studio/**'\n" if filter_key else ""
+def _host_workflow(restriction: str = "", step_extra: str = "") -> str:
+    """A workflow that runs the lint, optionally narrowed or non-blocking."""
     return (
         "name: host\n"
         "on:\n"
-        "  pull_request:\n" + flt + "jobs:\n"
+        "  pull_request:\n" + restriction + "jobs:\n"
         "  lint:\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
-        "      - run: python3 scripts/lint_workflow_triggers.py\n"
+        "      - run: python3 scripts/lint_workflow_triggers.py\n" + step_extra
     )
 
 
-@pytest.mark.parametrize("filter_key", ["paths", "paths-ignore"])
-def test_lint_rejects_path_filter_on_its_own_host(tmp_path, filter_key):
-    """A host with a path filter can be skipped by the PR that adds it.
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("paths", "      - 'studio/**'\n"),
+        ("paths-ignore", "      - 'studio/**'\n"),
+        ("branches", "      - some-other-branch\n"),
+        ("branches-ignore", "      - main\n"),
+        ("types", "      - closed\n"),
+    ],
+)
+def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
+    """A host narrowed any way can be skipped by the PR that narrows it.
 
     `pull_request` resolves the workflow file from the PR merge ref, so the
-    filter takes effect for its own PR and the gate never runs on the change
-    it exists to review. Both filter keys are the same bypass.
+    restriction takes effect for its own PR and the gate never runs on the
+    change it exists to review. `paths` is only the most obvious key: a
+    branch or event-type restriction skips ordinary PRs just as well.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
-    (wf / "host.yml").write_text(_host_workflow(filter_key))
+    (wf / "host.yml").write_text(_host_workflow(f"    {key}:\n{value}"))
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
-    assert filter_key in proc.stderr
+    assert key in proc.stderr
     assert "host.yml" in proc.stderr
 
 
-def test_lint_accepts_unfiltered_host(tmp_path):
-    """An unfiltered `pull_request` host satisfies the wiring requirement."""
+@pytest.mark.parametrize("where", ["step", "job"])
+def test_lint_rejects_a_non_blocking_host(tmp_path, where):
+    """`continue-on-error` means findings cannot fail the run."""
     wf = tmp_path / "wf"
     wf.mkdir()
-    (wf / "host.yml").write_text(_host_workflow(None))
+    if where == "step":
+        body = _host_workflow(step_extra = "        continue-on-error: true\n")
+    else:
+        body = _host_workflow().replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    continue-on-error: true\n",
+        )
+    (wf / "host.yml").write_text(body)
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "continue-on-error" in proc.stderr
+
+
+def test_lint_accepts_unfiltered_host(tmp_path):
+    """A bare `pull_request:` host that can fail satisfies the requirement."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(_host_workflow())
     proc = _run(wf, require_host = True)
     assert proc.returncode == 0, proc.stderr
 
@@ -171,10 +198,15 @@ def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
 
 
 def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
+    """Rules in file order, INCLUDING ownerless ones.
+
+    A pattern with no owners is valid CODEOWNERS and clears ownership for what
+    it matches, so skipping those lines would miss a silent carve-out.
+    """
     rules = []
     for line in text.splitlines():
         fields = line.split("#", 1)[0].split()
-        if len(fields) > 1:
+        if fields:
             rules.append((fields[0], fields[1:]))
     return rules
 
@@ -207,14 +239,28 @@ CODEOWNERS_PROBES = (
 
 
 def test_workflow_changes_require_code_owner_review():
-    """CODEOWNERS must give @danielhanchen the EFFECTIVE ownership.
+    """Every workflow must keep an EFFECTIVE code owner.
 
     The lint cannot stop a PR that disables the lint's own host workflow, so
     owner review is the merge-time control. GitHub applies only the last
     matching pattern, so checking that a rule exists somewhere is not enough:
-    a broader rule appended below would silently take over.
+    a later rule, broad or narrow, silently takes over. Any workflow can hand
+    a fork PR the base repo's secrets, so every one of them is checked, not
+    just the lint host. Delegating a workflow to another maintainer is fine;
+    leaving one unowned is not.
     """
     text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
+    workflows = sorted(
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / ".github" / "workflows").iterdir()
+        if p.suffix in (".yml", ".yaml")
+    )
+    assert workflows, "no workflow files found"
+    for probe in workflows:
+        assert _effective_owners(text, probe), (
+            f"CODEOWNERS leaves {probe} with no effective owner; a later "
+            "pattern overrode the .github/workflows/ rule."
+        )
     for probe in CODEOWNERS_PROBES:
         owners = _effective_owners(text, probe)
         assert "@danielhanchen" in owners, (
@@ -223,15 +269,22 @@ def test_workflow_changes_require_code_owner_review():
         )
 
 
-def test_codeowners_guard_catches_a_later_broader_rule():
-    """The guard itself must fail when a trailing rule takes precedence."""
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ("* @someone-else", ["@someone-else"]),
+        ("/.github/ @someone-else", ["@someone-else"]),
+        (f"/{CODEOWNERS_PROBES[0]} @someone-else", ["@someone-else"]),
+        # A pattern with no owners is valid, and clears ownership.
+        (f"/{CODEOWNERS_PROBES[0]}", []),
+    ],
+    ids = ["catch-all", "parent-dir", "narrower-file", "ownerless"],
+)
+def test_codeowners_guard_catches_a_later_rule(override, expected):
+    """The guard must fail whichever way a trailing rule takes precedence."""
     text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
-    for override in ("* @someone-else", "/.github/ @someone-else"):
-        for probe in CODEOWNERS_PROBES:
-            owners = _effective_owners(f"{text}\n{override}\n", probe)
-            assert owners == ["@someone-else"], (
-                f"{override!r} should win for {probe}, got {owners}"
-            )
+    owners = _effective_owners(f"{text}\n{override}\n", CODEOWNERS_PROBES[0])
+    assert owners == expected, f"{override!r} should win, got {owners}"
 
 
 def test_lint_rejects_unjustified_workflow_run(tmp_path):
