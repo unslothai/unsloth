@@ -537,11 +537,15 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
     network-reachable launch is never silent about code execution."""
     if enable_tools is False:
         return "Server-side tools are DISABLED (--disable-tools)."
-    state = (
-        "ENABLED (--enable-tools)"
-        if enable_tools
-        else "ENABLED by default (a request's enable_tools: false is honored)"
-    )
+    if enable_tools is None:
+        # This launcher installs no tools-on default (that is `unsloth studio
+        # run`), so the request decides and the Studio UI sends its pills.
+        return (
+            "Server-side tools follow each request's enable_tools; the Studio UI's "
+            "tool toggles decide. Pass --enable-tools to force them on for every "
+            "request."
+        )
+    state = "ENABLED (--enable-tools)"
     if secure:
         return (
             f"Server-side tools are {state}, reachable via the authenticated "
@@ -2118,16 +2122,20 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
-    """Install the server-side tool policy. Tools default on for every bind, so a
-    request that says nothing about tools gets them; a request that says
-    `enable_tools: false` still turns them off. An explicit
-    --enable-tools/--disable-tools becomes a hard override that beats the request
-    either way. Host is never inspected here."""
-    from state.tool_policy import set_tool_policy, set_tool_policy_default
+    """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
+    unset, so each request's own enable_tools decides. Host is never inspected
+    here.
 
-    set_tool_policy_default(True)
+    The tools-on default for an omitted `enable_tools` belongs to `unsloth studio
+    run`, which installs it itself (that is the launcher that has always forced
+    tools on). Installing it here too would extend it to `unsloth studio`, the
+    desktop app and Colab, where paths built around "omitted means off" -- n > 1,
+    max_tool_calls_per_message: 0, the pre-switch passthrough guard -- would
+    start seeing it."""
     if enable_tools is None:
         return
+    from state.tool_policy import set_tool_policy
+
     set_tool_policy(enable_tools)
 
 

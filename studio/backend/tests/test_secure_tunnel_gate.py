@@ -148,9 +148,9 @@ def test_run_server_accepts_enable_tools_kwarg():
 
 
 def test_tool_policy_not_auto_disabled_by_bind():
-    # Tools default on for every bind, and no flag installs no hard override, so a
-    # request's own enable_tools: false still turns them off. The backend never
-    # changes the policy from host/secure.
+    # No flag installs neither an override nor a tools-on default on any bind: the
+    # default belongs to `unsloth studio run`, which installs it itself. The
+    # backend never changes the policy from host/secure.
     import run
     from state.tool_policy import (
         get_tool_policy,
@@ -162,7 +162,7 @@ def test_tool_policy_not_auto_disabled_by_bind():
         reset_tool_policy()
         run._apply_cli_tool_policy(None)  # no flag, on any bind
         assert get_tool_policy() is None, host  # no override: request off honored
-        assert get_tool_policy_default() is True, host  # omitted enable_tools -> on
+        assert get_tool_policy_default() is None, host  # no default from this path
 
     reset_tool_policy()
     run._apply_cli_tool_policy(True)  # --enable-tools: forced on
@@ -192,16 +192,11 @@ def test_tool_policy_notice_wording():
     # The plain-server startup banner states the resolved policy for every bind.
     import run
 
-    # No flag: tools are on by default on every bind, and the banner says the
-    # request can still opt out.
+    # No flag on this launcher: no tools-on default, so the request decides.
     for host, secure_mode in (("127.0.0.1", False), ("0.0.0.0", False), ("127.0.0.1", True)):
         notice = run._tool_policy_notice(host, secure_mode, None)
-        assert "ENABLED by default" in notice, notice
-        assert "enable_tools: false is honored" in notice, notice
-
-    assert "loopback" in run._tool_policy_notice("127.0.0.1", False, None)
-    assert "network-reachable" in run._tool_policy_notice("0.0.0.0", False, None)
-    assert "Cloudflare HTTPS tunnel" in run._tool_policy_notice("127.0.0.1", True, None)
+        assert "follow each request's enable_tools" in notice, notice
+        assert "--enable-tools to force them on" in notice, notice
 
     assert run._tool_policy_notice("0.0.0.0", False, False) == (
         "Server-side tools are DISABLED (--disable-tools)."
@@ -220,7 +215,7 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
     out = capsys.readouterr().out
     assert "Server-side tools" in out
-    assert "network-reachable" in out
+    assert "follow each request's enable_tools" in out
 
 
 def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
