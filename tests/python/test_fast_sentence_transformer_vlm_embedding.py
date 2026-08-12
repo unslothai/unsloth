@@ -65,10 +65,10 @@ def _cfg(**attrs):
 def _parse_source_module():
     """Compile and parse the module under test without importing it, so these checks
     run on every machine including CPU-only runners with no torch installed."""
-    source = _SOURCE_PATH.read_text(encoding="utf-8")
+    source = _SOURCE_PATH.read_text(encoding = "utf-8")
     # compile() raises SyntaxError on a broken module -> the test fails, never skips.
     compile(source, str(_SOURCE_PATH), "exec")
-    return ast.parse(source, filename=str(_SOURCE_PATH))
+    return ast.parse(source, filename = str(_SOURCE_PATH))
 
 
 def _class_node(tree, name):
@@ -99,9 +99,7 @@ def test_source_module_compiles_and_defines_expected_symbols():
     module_level_assignments = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            module_level_assignments.update(
-                t.id for t in node.targets if isinstance(t, ast.Name)
-            )
+            module_level_assignments.update(t.id for t in node.targets if isinstance(t, ast.Name))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             module_level_assignments.add(node.target.id)
     assert "_DEFAULT_TARGET_MODULES" in module_level_assignments
@@ -134,9 +132,9 @@ def test_is_vlm_embedding_config_detects_vision_config():
     detect = FastSentenceTransformer._is_vlm_embedding_config
 
     # A Qwen3-VL-Embedding-style config carries a nested vision_config.
-    assert detect(_cfg(model_type="qwen3_vl", vision_config=_cfg(depth=24))) is True
+    assert detect(_cfg(model_type = "qwen3_vl", vision_config = _cfg(depth = 24))) is True
     # Architecture-name fallback (no vision_config attribute surfaced).
-    assert detect(_cfg(architectures=["Qwen3VLForConditionalGeneration"])) is True
+    assert detect(_cfg(architectures = ["Qwen3VLForConditionalGeneration"])) is True
 
 
 def test_is_vlm_embedding_config_rejects_text_models():
@@ -145,8 +143,8 @@ def test_is_vlm_embedding_config_rejects_text_models():
 
     assert detect(None) is False
     # A plain decoder text embedder (e.g. Qwen3-Embedding) must NOT be treated as VLM.
-    assert detect(_cfg(model_type="qwen3", architectures=["Qwen3Model"])) is False
-    assert detect(_cfg(model_type="bert", architectures=["BertModel"])) is False
+    assert detect(_cfg(model_type = "qwen3", architectures = ["Qwen3Model"])) is False
+    assert detect(_cfg(model_type = "bert", architectures = ["BertModel"])) is False
 
 
 def test_get_peft_model_exposes_vision_lora_flags():
@@ -177,10 +175,10 @@ def _synthetic_images():
     collapse check below flaky, which is the whole reason they are this far apart."""
     from PIL import Image
 
-    dark = Image.new("RGB", (112, 112), color=(8, 8, 24))
+    dark = Image.new("RGB", (112, 112), color = (8, 8, 24))
     dark.paste((250, 240, 30), (0, 0, 56, 56))
 
-    light = Image.new("RGB", (112, 112), color=(245, 245, 235))
+    light = Image.new("RGB", (112, 112), color = (245, 245, 235))
     light.paste((10, 40, 160), (56, 56, 112, 112))
 
     return dark, light
@@ -224,22 +222,25 @@ def test_vlm_embedding_matches_stock_st():
     image_only_inputs = [{"image": img_a}, {"image": img_b}]
 
     # Control FIRST, before importing unsloth, so its global patches never touch the ref.
-    ctrl = SentenceTransformer(model_id, device=device, model_kwargs={"torch_dtype": dtype})
+    ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
     ctrl_emb = np.asarray(
-        ctrl.encode(texts, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        ctrl.encode(texts, normalize_embeddings = True, batch_size = 2), dtype = np.float32
     )
     ctrl_img_text_emb = np.asarray(
-        ctrl.encode(image_text_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        ctrl.encode(image_text_inputs, normalize_embeddings = True, batch_size = 2), dtype = np.float32
     )
     ctrl_img_emb = np.asarray(
-        ctrl.encode(image_only_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        ctrl.encode(image_only_inputs, normalize_embeddings = True, batch_size = 2), dtype = np.float32
     )
 
     import unsloth  # noqa: F401
     from unsloth import FastSentenceTransformer
 
     fast = FastSentenceTransformer.from_pretrained(
-        model_id, dtype=dtype, load_in_4bit=False, load_in_16bit=True,
+        model_id,
+        dtype = dtype,
+        load_in_4bit = False,
+        load_in_16bit = True,
     )
 
     # Must keep the base multimodal model (returns last_hidden_state), not the LM head.
@@ -258,19 +259,19 @@ def test_vlm_embedding_matches_stock_st():
     )
 
     fast_emb = np.asarray(
-        fast.encode(texts, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        fast.encode(texts, normalize_embeddings = True, batch_size = 2), dtype = np.float32
     )
 
     cos = (ctrl_emb * fast_emb).sum(1) / (
-        np.linalg.norm(ctrl_emb, axis=1) * np.linalg.norm(fast_emb, axis=1)
+        np.linalg.norm(ctrl_emb, axis = 1) * np.linalg.norm(fast_emb, axis = 1)
     )
-    assert float(cos.min()) > 0.99, (
-        f"VLM embedding text parity regressed: min cosine {float(cos.min()):.5f} <= 0.99"
-    )
+    assert (
+        float(cos.min()) > 0.99
+    ), f"VLM embedding text parity regressed: min cosine {float(cos.min()):.5f} <= 0.99"
 
     def _cosines(reference, candidate):
         return (reference * candidate).sum(1) / (
-            np.linalg.norm(reference, axis=1) * np.linalg.norm(candidate, axis=1)
+            np.linalg.norm(reference, axis = 1) * np.linalg.norm(candidate, axis = 1)
         )
 
     for label, inputs, reference in (
@@ -278,12 +279,12 @@ def test_vlm_embedding_matches_stock_st():
         ("image", image_only_inputs, ctrl_img_emb),
     ):
         fast_img_emb = np.asarray(
-            fast.encode(inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+            fast.encode(inputs, normalize_embeddings = True, batch_size = 2), dtype = np.float32
         )
         img_cos = _cosines(reference, fast_img_emb)
-        assert float(img_cos.min()) > 0.99, (
-            f"VLM {label} parity regressed: min cosine {float(img_cos.min()):.5f} <= 0.99"
-        )
+        assert (
+            float(img_cos.min()) > 0.99
+        ), f"VLM {label} parity regressed: min cosine {float(img_cos.min()):.5f} <= 0.99"
 
         # Two deliberately dissimilar images must not collapse to the same vector. With the
         # same text on both rows of the image+text batch, a collapse means only the text is

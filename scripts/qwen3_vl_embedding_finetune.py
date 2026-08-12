@@ -53,11 +53,17 @@ def build_dataset() -> Dataset:
     return Dataset.from_list(
         [
             {
-                "anchor": {"image": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba", "text": "a photo of a cat"},
+                "anchor": {
+                    "image": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba",
+                    "text": "a photo of a cat",
+                },
                 "positive": {"text": "a small domesticated feline resting"},
             },
             {
-                "anchor": {"image": "https://images.unsplash.com/photo-1543466835-00a7907e9de1", "text": "a photo of a dog"},
+                "anchor": {
+                    "image": "https://images.unsplash.com/photo-1543466835-00a7907e9de1",
+                    "text": "a photo of a dog",
+                },
                 "positive": {"text": "a domesticated canine looking at the camera"},
             },
         ]
@@ -69,53 +75,54 @@ def main() -> None:
     #    processor_kwargs forwards image-resolution controls to the processor.
     model = FastSentenceTransformer.from_pretrained(
         MODEL_ID,
-        load_in_16bit=True,
-        pooling_mode="lasttoken",  # decoder embedders pool the last token
-        processor_kwargs={"min_pixels": 28 * 28, "max_pixels": 600 * 600},
+        load_in_16bit = True,
+        pooling_mode = "lasttoken",  # decoder embedders pool the last token
+        processor_kwargs = {"min_pixels": 28 * 28, "max_pixels": 600 * 600},
     )
 
     # 2. Attach LoRA. Default finetune_vision_layers=False keeps the vision tower
     #    frozen and tunes only the language projections (cheap, common recipe).
     model = FastSentenceTransformer.get_peft_model(
         model,
-        r=8,
-        lora_alpha=16,
-        finetune_vision_layers=False,
-        finetune_language_layers=True,
+        r = 8,
+        lora_alpha = 16,
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
     )
 
     dataset = build_dataset()
     loss = MultipleNegativesRankingLoss(model)  # == InfoNCE with in-batch negatives
 
     args = SentenceTransformerTrainingArguments(
-        output_dir="outputs/qwen3-vl-embedding",
-        num_train_epochs=1,
-        per_device_train_batch_size=2,
-        learning_rate=1e-4,
-        bf16=True,
-        batch_sampler=BatchSamplers.NO_DUPLICATES,  # avoid a positive as its own negative
-        logging_steps=1,
-        report_to="none",
+        output_dir = "outputs/qwen3-vl-embedding",
+        num_train_epochs = 1,
+        per_device_train_batch_size = 2,
+        learning_rate = 1e-4,
+        bf16 = True,
+        batch_sampler = BatchSamplers.NO_DUPLICATES,  # avoid a positive as its own negative
+        logging_steps = 1,
+        report_to = "none",
     )
 
     trainer = SentenceTransformerTrainer(
-        model=model,
-        args=args,
-        train_dataset=dataset,
-        loss=loss,
+        model = model,
+        args = args,
+        train_dataset = dataset,
+        loss = loss,
     )
     trainer.train()
 
     # 3. Encode a multimodal query and save merged 16-bit weights.
     query = model.encode(
-        {"image": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba", "text": "kitten close-up"},
-        normalize_embeddings=True,
+        {
+            "image": "https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba",
+            "text": "kitten close-up",
+        },
+        normalize_embeddings = True,
     )
     print("query embedding shape:", query.shape)  # -> (2048,)
 
-    model.save_pretrained_merged(
-        "outputs/qwen3-vl-embedding-merged", save_method="merged_16bit"
-    )
+    model.save_pretrained_merged("outputs/qwen3-vl-embedding-merged", save_method = "merged_16bit")
 
 
 if __name__ == "__main__":

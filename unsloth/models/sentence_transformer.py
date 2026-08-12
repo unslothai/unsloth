@@ -37,6 +37,7 @@ import transformers
 from packaging.version import Version
 import re
 from transformers import AutoModel, AutoConfig, AutoProcessor
+
 try:
     from transformers import AutoModelForImageTextToText
 except ImportError:  # older transformers
