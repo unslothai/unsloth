@@ -9136,9 +9136,7 @@ class LlamaCppBackend:
         # away a certain verdict and put the teardown back. The walk still gates the
         # no-architecture fallback below, which is the case where an incomplete read is
         # genuinely indistinguishable from a file that declares nothing.
-        if arch not in self._DIFFUSION_ARCHES and not getattr(
-            self, "_gguf_header_parsed", False
-        ):
+        if arch not in self._DIFFUSION_ARCHES and not getattr(self, "_gguf_header_parsed", False):
             return None
         if arch in self._PLACEHOLDER_ARCHES:
             # A placeholder that names no architecture at all: treat it exactly like a GGUF

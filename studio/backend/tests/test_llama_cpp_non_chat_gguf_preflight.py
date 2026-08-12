@@ -315,7 +315,6 @@ def test_an_arch_that_names_its_own_family_still_gets_the_video_page(tmp_path):
     # page. Resolving by repo id and filename alone answered the opposite and told the user
     # Studio cannot assemble a model it can.
     from routes.models import _arch_to_task
-
     for identifier, name in (
         ("someone/generic-gguf", "model-Q4_K_M.gguf"),
         (None, "checkpoint-q4_0.gguf"),

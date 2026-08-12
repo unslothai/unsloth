@@ -436,7 +436,13 @@ def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     seen: list[bool] = []
 
-    def _cached(_repo, _variant, *, verify_sizes = False, hf_token = None):
+    def _cached(
+        _repo,
+        _variant,
+        *,
+        verify_sizes = False,
+        hf_token = None,
+    ):
         seen.append(verify_sizes)
         return str(cached) if verify_sizes else "/should/not/be/used.gguf"
 
@@ -458,6 +464,7 @@ def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch,
 
     # The no-architecture fallback still needs the complete walk: an unfinished read there
     # is indistinguishable from a file that declares nothing.
-    quiet = _probe(monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096),
-                   filename = "mystery-Q4_K_M.gguf")[0]
+    quiet = _probe(
+        monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096), filename = "mystery-Q4_K_M.gguf"
+    )[0]
     assert quiet is None
