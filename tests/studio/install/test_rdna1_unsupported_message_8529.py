@@ -495,10 +495,20 @@ class TestAdviceIsNotEmittedForRdna1:
         "AMD GPUs older than RDNA 2" would send those users to Vulkan and CPU torch
         for nothing."""
         src = _normalised(PACKAGE_ROOT / "README.md")
-        assert "AMD GPUs older than RDNA 2" not in src, (
-            "README: claims ROCm PyTorch covers nothing older than RDNA 2, which is "
-            "wrong for gfx906"
+        # Any spelling of the generation cutoff, not one literal: "every AMD GPU older
+        # than RDNA 2" slipped past an exact-string ban while contradicting the gfx906
+        # carve-out two sentences later.
+        blanket = re.search(r"AMD GPUs? older than RDNA ?2", src, re.IGNORECASE)
+        assert not blanket, (
+            f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
+            "than RDNA 2, which is wrong for gfx906"
         )
+        # The group has to be named by its members, or the carve-out below has nothing
+        # to carve out of.
+        for _member in ("Polaris", "RDNA 1"):
+            assert _member in src, (
+                f"README: never names {_member} as part of the unsupported group"
+            )
         assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
         # The carve-out has to be true of the installer, not just of the README.
         assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
