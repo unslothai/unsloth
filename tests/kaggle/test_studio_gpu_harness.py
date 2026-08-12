@@ -108,10 +108,24 @@ def test_a_cpu_only_log_reports_no_device_buffer():
 
 
 def test_a_cuda_bundle_is_recognised_from_its_marker(tmp_path):
+    """Written against a marker the installer actually produces.
+
+    This test used to write ``{"install_kind": "linux-cuda"}`` and assert it
+    came back, which is how the bug survived: the marker on disk has no
+    install_kind key, so the assertion agreed with the payload about a field
+    neither of them was reading from reality. Six hardware runs reported
+    install_kind=None with a working CUDA llama.cpp installed, and this test
+    was green for all six.
+    """
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps({"install_kind": "linux-cuda", "tag": "b1234"}))
-    assert gpu_assert.install_kind(marker) == "linux-cuda"
-    assert gpu_assert.is_cuda_install("linux-cuda")
+    marker.write_text(json.dumps({
+        "tag": "b10360",
+        "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
+        "runtime_line": "cuda13",
+        "coverage_class": "older",
+    }))
+    assert gpu_assert.install_kind(marker) == "cuda13"
+    assert gpu_assert.is_cuda_install(gpu_assert.install_kind(marker))
 
 
 @pytest.mark.parametrize("kind", ["linux-cpu", "linux-vulkan", "linux-rocm", None, ""])
@@ -1133,7 +1147,7 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     install_dir = session.studio_home / "llama.cpp"
     install_dir.mkdir(parents = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"install_kind": "linux-cuda"})
+        json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
 
     seen = {}
@@ -1156,7 +1170,7 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
 
     recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
     assert len(recorded) == 1
-    assert recorded[0]["llama_cpp_install_kind"] == "linux-cuda"
+    assert recorded[0]["llama_cpp_install_kind"] == "cuda13"
     # install.sh --local claims to put a llama.cpp on disk. Recording what
     # was there first is what keeps "install.sh installed nothing" and
     # "install.sh installed a CPU bundle" distinguishable once this step
@@ -1179,7 +1193,7 @@ def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_p
     install_dir = session.studio_home / "llama.cpp"
     install_dir.mkdir(parents = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"install_kind": "linux-cpu"})
+        json.dumps({"asset": "app-b1-linux-x64-cpu.tar.gz", "runtime_line": "cpu"})
     )
 
     monkeypatch.setattr(
@@ -1224,7 +1238,7 @@ def test_the_llama_cpp_marker_falls_back_to_the_canonical_location(tmp_path, mon
     canonical = fake_home / ".unsloth" / "llama.cpp"
     canonical.mkdir(parents = True)
     (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"install_kind": "linux-cuda"})
+        json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
     monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
 
@@ -1232,7 +1246,7 @@ def test_the_llama_cpp_marker_falls_back_to_the_canonical_location(tmp_path, mon
     studio_home.mkdir()
     found = module.llama_cpp_marker(studio_home)
     assert found is not None, "the canonical ~/.unsloth/llama.cpp was not consulted"
-    assert module.install_kind(found) == "linux-cuda"
+    assert module.install_kind(found) == "cuda13"
 
 
 def test_an_explicit_studio_home_install_wins_over_the_canonical_one(tmp_path, monkeypatch):
@@ -1242,15 +1256,17 @@ def test_an_explicit_studio_home_install_wins_over_the_canonical_one(tmp_path, m
     fake_home = tmp_path / "home"
     canonical = fake_home / ".unsloth" / "llama.cpp"
     canonical.mkdir(parents = True)
-    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"install_kind": "linux-cpu"}))
+    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"asset": "app-b1-linux-x64-cpu.tar.gz", "runtime_line": "cpu"})
+    )
     monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
 
     studio_home = tmp_path / "studio_home"
     (studio_home / "llama.cpp").mkdir(parents = True)
     (studio_home / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"install_kind": "linux-cuda"})
+        json.dumps({"asset": "app-b1-linux-x64-cuda13-older.tar.gz", "runtime_line": "cuda13"})
     )
-    assert module.install_kind(module.llama_cpp_marker(studio_home)) == "linux-cuda"
+    assert module.install_kind(module.llama_cpp_marker(studio_home)) == "cuda13"
 
 
 def test_no_llama_cpp_anywhere_is_still_reported_as_absent(tmp_path, monkeypatch):
@@ -1263,3 +1279,50 @@ def test_no_llama_cpp_anywhere_is_still_reported_as_absent(tmp_path, monkeypatch
     studio_home.mkdir()
     assert module.llama_cpp_marker(studio_home) is None
     assert module.install_kind(None) is None
+
+
+def test_the_marker_never_carried_an_install_kind(tmp_path):
+    """The bug behind six runs of install_kind=None, pinned.
+
+    install_llama_prebuilt.py writes `install_kind` only into the JSON its
+    resolver prints to stdout. The marker it writes to disk records asset, tag,
+    runtime_line, coverage_class and bundle_profile. Reading `install_kind`
+    from the marker therefore answered None for every bundle on every box,
+    including a working CUDA one, and the export assertion failed on that.
+    """
+    module = _load_payload()
+    marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    # Exactly the shape the installer writes: no install_kind anywhere.
+    marker.write_text(json.dumps({
+        "requested_tag": "b10360",
+        "tag": "b10360",
+        "release_tag": "b10360-mix-87da1a2",
+        "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
+        "runtime_line": "cuda13",
+        "coverage_class": "older",
+        "bundle_profile": "mix",
+    }))
+    kind = module.install_kind(marker)
+    assert kind is not None, (
+        "a marker with no install_kind key must still say what was installed; "
+        "answering None here is what failed six hardware runs"
+    )
+    assert module.is_cuda_install(kind)
+
+
+def test_a_non_cuda_runtime_line_is_not_a_cuda_install():
+    """The assertion still has to be able to fail."""
+    module = _load_payload()
+    for kind in ("cpu", "vulkan", "rocm", "metal", None, ""):
+        assert not module.is_cuda_install(kind), f"{kind!r} classified as CUDA"
+
+
+def test_a_future_cuda_major_is_recognised():
+    """Matching a fixed set of names fails closed on the next CUDA major,
+    reporting a working install as not-CUDA -- the same failure this fix is
+    for. The match is on the runtime line's shape instead."""
+    module = _load_payload()
+    assert module.is_cuda_install("cuda14")
+    assert module.is_cuda_install("app-bX-linux-x64-cuda99-portable.tar.gz")
+    # And not on a word that merely contains "cuda".
+    assert not module.is_cuda_install("cudart")

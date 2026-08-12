@@ -78,6 +78,11 @@ _CUDA_BUFFER_RE = re.compile(
 # linux-rocm -- is not the build this leg exists to exercise.
 CUDA_INSTALL_KINDS = frozenset({"linux-cuda", "linux-arm64-cuda"})
 
+# "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime
+# line or an asset filename. Anchored on the digit so "cudart" or a repo name
+# containing "cuda" cannot match on its own.
+_CUDA_RUNTIME_RE = re.compile(r"cuda\d+")
+
 
 def parse_compute_apps(csv_text: str) -> dict[int, int]:
     """``nvidia-smi --query-compute-apps=pid,used_gpu_memory`` as {pid: MiB}.
@@ -131,11 +136,29 @@ def cuda_buffer_mib(log_text: str) -> float | None:
 
 
 def install_kind(marker_path: Path | None) -> str | None:
-    """``install_kind`` from a llama.cpp install's UNSLOTH_PREBUILT_INFO.json.
+    """What KIND of llama.cpp bundle is installed, from its marker.
+
+    There is no ``install_kind`` key in UNSLOTH_PREBUILT_INFO.json and there
+    never was. ``install_llama_prebuilt.py`` writes ``install_kind`` only into
+    the JSON its resolver prints to stdout (line ~7678); the marker it writes
+    to disk (~line 5931) records ``asset``, ``tag``, ``runtime_line``,
+    ``coverage_class``, ``bundle_profile`` and no kind at all.
+
+    So reading ``install_kind`` from the marker answered None on every box, for
+    every bundle, including a perfectly good CUDA one -- six hardware runs
+    reported ``install_kind=None`` and failed the export assertion for it while
+    a working CUDA llama.cpp sat on disk. The installer said as much when asked
+    to install again: "existing llama.cpp install already matches selected
+    release b10360-mix-87da1a2; skipping download and install".
+
+    ``runtime_line`` is the field that answers the question actually being
+    asked. It is ``cuda12``/``cuda13`` for the CUDA bundles and names the
+    non-CUDA backends otherwise, and it is written on the same line of the same
+    dict as the asset, so the two cannot disagree. ``asset`` is the fallback
+    for a marker old enough to predate it.
 
     ``None`` in means no marker was found, and answers ``None`` rather than
-    raising: ``llama_cpp_marker`` returns ``None`` for that case and every
-    caller here feeds it straight in.
+    raising: ``llama_cpp_marker`` returns ``None`` for that case.
     """
     if marker_path is None:
         return None
@@ -145,12 +168,28 @@ def install_kind(marker_path: Path | None) -> str | None:
         return None
     if not isinstance(payload, dict):
         return None
-    kind = payload.get("install_kind")
-    return str(kind) if kind else None
+    runtime_line = payload.get("runtime_line")
+    if runtime_line:
+        return str(runtime_line)
+    asset = payload.get("asset")
+    return str(asset) if asset else None
 
 
 def is_cuda_install(kind: str | None) -> bool:
-    return bool(kind) and kind in CUDA_INSTALL_KINDS
+    """Is this a CUDA bundle?
+
+    ``kind`` is now a ``runtime_line`` (``cuda12``, ``cuda13``, ...) or, for a
+    marker too old to carry one, an asset filename like
+    ``app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz``. Both are matched
+    by looking for a cuda runtime line rather than by equality against a fixed
+    set, because the set would need a new entry on every CUDA major and would
+    fail closed -- reporting a working cuda14 install as not-CUDA -- which is
+    the same failure mode this whole function just spent six runs in.
+    """
+    if not kind:
+        return False
+    lowered = str(kind).lower()
+    return bool(_CUDA_RUNTIME_RE.search(lowered)) or lowered in CUDA_INSTALL_KINDS
 
 
 # Where a llama.cpp install can be, most specific first. STUDIO_HOME is checked
