@@ -571,7 +571,11 @@ def test_a_switch_that_installs_nothing_plans_no_whisper_phase(monkeypatch):
     assert _whisper_phase_plan("cuda", llama_will_run = True)["phase"]["repair"] is True
 
 
-def _slim_whisper(monkeypatch, tmp_path, install_kind = "slim") -> str:
+def _slim_whisper(
+    monkeypatch,
+    tmp_path,
+    install_kind = "slim",
+) -> str:
     whisper_dir = tmp_path / f"whisper.cpp-{install_kind}"
     binary = _write_install(whisper_dir, install_kind = install_kind)
     (whisper_dir / MARKER).rename(whisper_dir / whisper_upd._INSTALL_MARKER_NAME)

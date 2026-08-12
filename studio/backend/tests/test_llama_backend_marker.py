@@ -105,6 +105,7 @@ def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
     is not, and the picker would then happily overwrite the newer choice.
     """
     from routes.llama import LlamaBackendStatusResponse
+
     response = LlamaBackendStatusResponse(backend_request = "sycl")
 
     assert response.backend_request == "sycl"

@@ -389,7 +389,9 @@ def test_ps1_backend_gpu_opt_out_is_accepted(value):
 
 def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
-    branch = ps1.index('if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan")')
+    branch = ps1.index(
+        'if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan")'
+    )
     guarded = ps1[branch : ps1.index("Vulkan selected for GGUF inference", branch)]
     assert "elseif ($windowsArm64)" in guarded
     assert "no Windows ARM64 Vulkan bundle is published" in guarded
