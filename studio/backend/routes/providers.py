@@ -230,9 +230,7 @@ async def update_provider_config(
                         is_enabled = bool(existing["is_enabled"]),
                         models = existing.get("models") or [],
                         available_models = existing.get("available_models") or [],
-                        studio_tool_execution = bool(
-                            existing.get("studio_tool_execution", 0)
-                        ),
+                        studio_tool_execution = bool(existing.get("studio_tool_execution", 0)),
                     )
                 except Exception:
                     logger.exception(
