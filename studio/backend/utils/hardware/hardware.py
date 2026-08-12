@@ -1079,6 +1079,43 @@ def rocm_windows_free_is_untrusted() -> bool:
     return sys.platform == "win32" and IS_ROCM
 
 
+def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
+    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403).
+
+    Guards that budget against free VRAM (the image activation refusal, llama.cpp
+    slot fitting, the video preflight) cannot be handed a figure that says the
+    whole card is free while a model is resident: on Windows WDDM the overflow
+    does not raise, the driver satisfies it from host RAM, and the process grows
+    past the card instead of failing, so an optimistic reading removes the only
+    protection there is.
+
+    Free is capped at what this process's own torch allocator has NOT reserved,
+    which is a true upper bound on free VRAM. It still cannot see another
+    process's allocations, so it is a ceiling, not a measurement; a caller that
+    adds torch's reclaimable cache back (as the diffusion snapshot does) recovers
+    exactly ``total - allocated``. Off Windows ROCm this returns the driver's own
+    numbers untouched.
+
+    ``module`` defaults to ``torch.cuda``; pass ``torch.xpu`` or the resolved
+    device module to probe another backend. Exceptions propagate, so callers keep
+    their existing "unreadable card decides nothing" handling.
+    """
+    import torch
+
+    mod = module if module is not None else torch.cuda
+    free_bytes, total_bytes = mod.mem_get_info() if device is None else mod.mem_get_info(device)
+    free_bytes, total_bytes = int(free_bytes), int(total_bytes)
+    if not rocm_windows_free_is_untrusted():
+        return free_bytes, total_bytes
+    try:
+        reserved = int(mod.memory_reserved() if device is None else mod.memory_reserved(device))
+    except Exception as e:
+        # No allocator accounting to cap against: the driver figure is all there is.
+        logger.debug("memory_reserved probe failed while capping free VRAM: %s", e)
+        return free_bytes, total_bytes
+    return min(free_bytes, max(0, total_bytes - reserved)), total_bytes
+
+
 def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
     """Query torch for per-GPU name, total VRAM, and used VRAM.
 
