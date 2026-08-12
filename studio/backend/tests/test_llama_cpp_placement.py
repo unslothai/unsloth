@@ -557,6 +557,44 @@ def test_a_busy_second_gpu_does_not_condemn_a_drafter_the_first_one_holds(tmp_pa
     assert backend.spec_fallback_reason is None
 
 
+def test_a_cpu_offloaded_sidecar_releases_the_byte_accurate_reserve(tmp_path):
+    """-ngld 0 puts the drafter in host memory, and a separate sidecar displaces
+    the embedded head that mtp_overhead_fn was sized from, so nothing speculative
+    is GPU-resident. The flat fraction already stands down here; the byte-accurate
+    callback did not, so the fit went on charging GPU bytes for a drafter that
+    allocates none, cutting the context or taking --fit for them.
+    """
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._nextn_predict_layers = 1
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "supports_mtp": True,
+        "mtp_token": "mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    charged = []
+    _fit = backend._fit_context_to_vram
+
+    def recording_fit(requested, *args, **kwargs):
+        fn = kwargs.get("mtp_overhead_fn")
+        charged.append(0 if fn is None else int(fn(requested) or 0))
+        return _fit(requested, *args, **kwargs)
+
+    backend._fit_context_to_vram = recording_fit
+
+    _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        n_ctx = 8192,
+        extra_args = ("--spec-draft-ngl", "0"),
+    )
+
+    assert charged, "the fit never ran, so this proves nothing"
+    assert set(charged) == {0}
+
+
 def test_an_mla_model_keeps_the_reason_that_actually_dropped_its_drafter(tmp_path):
     """An MLA embedded-MTP model has no drafter to save: Auto drops it by policy,
     because llama.cpp's MLA/DSA MTP path is slower than no speculation at all. If

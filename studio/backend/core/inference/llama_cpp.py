@@ -11356,153 +11356,176 @@ class LlamaCppBackend:
                         # Fewest GPUs first, ranked by usable VRAM: the same order and
                         # the same budget the auto placement loop uses, so the answer is
                         # about placements that loop could actually choose.
-                        _probe_ranked = sorted(
-                            gpus,
-                            key = lambda g: _gpu_usable(g, _probe_frac(False)),
-                            reverse = True,
-                        )
-                        # Same floor as the placement loop's _auto_min_gpus: a tensor
-                        # downgrade raises _layer_min_gpus to keep the request
-                        # multi-GPU, and a one-GPU placement the loop is forbidden to
-                        # choose must not be the one that saves the drafter.
+                        def _probe_rank(drafter: bool) -> list:
+                            return sorted(
+                                gpus,
+                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                reverse = True,
+                            )
+
                         _probe_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
-                        _probe_min_gpus = max(
-                            1,
-                            min(
-                                _layer_min_gpus,
-                                sum(
-                                    1
-                                    for g in _probe_ranked
-                                    if _gpu_usable(g, _probe_frac(False)) > _probe_overhead_mib
-                                )
-                                or 1,
-                            ),
-                        )
+
+                        def _probe_floor(ranked: list, drafter: bool) -> int:
+                            # Same floor as the placement loop's _auto_min_gpus: a tensor
+                            # downgrade raises _layer_min_gpus to keep the request
+                            # multi-GPU, and a one-GPU placement the loop is forbidden to
+                            # choose must not be the one that saves the drafter.
+                            return max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, _probe_frac(drafter))
+                                        > _probe_overhead_mib
+                                    )
+                                    or 1,
+                                ),
+                            )
+
+                        # Both rankings, because an unsized drafter costs five points of
+                        # pin fraction and that can reorder heterogeneous cards: a busy
+                        # 80 GB card can lead at 0.97 while an idle 24 GB card leads at
+                        # 0.92. The placement loop re-sorts under the fraction that load
+                        # ends up with, so a prefix only the drafter's own ranking
+                        # produces is still a placement it can choose, and condemning the
+                        # drafter without pricing it there is a drop of a drafter that
+                        # fits. Identical when the two orders agree, which is every
+                        # homogeneous machine.
+                        _probe_orders = [_probe_rank(False)]
+                        _ranked_w = _probe_rank(True)
+                        if [id(g) for g in _ranked_w] != [id(g) for g in _probe_orders[0]]:
+                            _probe_orders.append(_ranked_w)
                         _target_fits_somewhere = False
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
-                        for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
-                            _subset = _probe_ranked[:_n]
-                            _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
-                            _base_wo = _probe_base(False, _n)
-                            _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
-                            # Explicit context is honored verbatim, so that is what the
-                            # drafter has to fit alongside; Auto gets its own best cap.
-                            _ctx_wo = (
-                                effective_ctx
-                                if explicit_ctx
-                                else self._fit_context_to_vram(
-                                    effective_ctx,
-                                    _budget_wo,
-                                    _base_wo,
-                                    cache_type_kv,
-                                    swa_full = swa_full,
-                                    n_parallel = n_parallel,
-                                    kv_unified = planned_kv_unified,
-                                    n_ubatch = _effective_ubatch,
-                                    flash_attn = planned_flash_attn,
-                                    mtp_engaged = False,
-                                    mtp_overhead_fn = None,
-                                    compute_ctx_bytes_fn = _cc_n,
-                                    budget_frac = 1.0,
-                                    total_mib = None,
-                                )
-                            )
-                            if _ctx_wo <= 0:
-                                continue
-                            _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
-                            _foot_wo = (_base_wo + _shared) / (1024 * 1024)
-                            if _foot_wo > _budget_wo:
-                                continue
-                            # The pooled figure hides the compute buffer every device
-                            # replicates: on a heterogeneous split the weakest card can
-                            # be unable to hold the context the pool priced, and the
-                            # placement loop caps to what it does hold. Charging the
-                            # drafter at the uncapped context condemns it at a context
-                            # this load can never reach. Same reserve expression and
-                            # same cap the auto-context loop below applies (_reserve_at
-                            # / _every_gpu_holds_reserve / _cap_ctx_to_per_device_reserve),
-                            # so the two cannot disagree. Auto only: an explicit context
-                            # is honored verbatim, never capped, and overflows to --fit.
-                            _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
-                            _probe_reserve_at = lambda c, _k = _n: (
-                                (_pipeline_overhead_bytes if _k > 1 else 0) + _cc_bytes(c, _k) // _k
-                            )
-                            if not self._every_gpu_holds_reserve(
-                                _usable_wo, _probe_reserve_at(_ctx_wo)
-                            ):
-                                if explicit_ctx:
-                                    # Honored verbatim, so there is nothing to cap: this
-                                    # subset simply cannot hold it, and _select_gpus_
-                                    # split_aware will say so too by going to --fit.
-                                    # Calling it a fit here would drop the drafter and
-                                    # then report a pin that never happened.
-                                    continue
-                                _ctx_wo = self._cap_ctx_to_per_device_reserve(
-                                    _ctx_wo, _usable_wo, _probe_reserve_at
+                        for _probe_ranked in _probe_orders:
+                            if _both_fit_somewhere:
+                                break
+                            _probe_min_gpus = _probe_floor(_probe_ranked, False)
+                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
+                                _subset = _probe_ranked[:_n]
+                                _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
+                                _base_wo = _probe_base(False, _n)
+                                _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
+                                # Explicit context is honored verbatim, so that is what the
+                                # drafter has to fit alongside; Auto gets its own best cap.
+                                _ctx_wo = (
+                                    effective_ctx
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _budget_wo,
+                                        _base_wo,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = False,
+                                        mtp_overhead_fn = None,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
                                 )
                                 if _ctx_wo <= 0:
                                     continue
-                                # Every pooled term shrinks with the context, so this
-                                # cannot newly fail; re-price rather than lean on it.
                                 _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
                                 _foot_wo = (_base_wo + _shared) / (1024 * 1024)
                                 if _foot_wo > _budget_wo:
                                     continue
-                            _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
-                                1024 * 1024
-                            )
-                            _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
-                            if not _target_fits_somewhere:
-                                _target_fits_somewhere = True
-                                _probe_ctx, _probe_need, _probe_have = (
-                                    _ctx_wo,
-                                    _foot_w,
-                                    _budget_w,
+                                # The pooled figure hides the compute buffer every device
+                                # replicates: on a heterogeneous split the weakest card can
+                                # be unable to hold the context the pool priced, and the
+                                # placement loop caps to what it does hold. Charging the
+                                # drafter at the uncapped context condemns it at a context
+                                # this load can never reach. Same reserve expression and
+                                # same cap the auto-context loop below applies (_reserve_at
+                                # / _every_gpu_holds_reserve / _cap_ctx_to_per_device_reserve),
+                                # so the two cannot disagree. Auto only: an explicit context
+                                # is honored verbatim, never capped, and overflows to --fit.
+                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                                _probe_reserve_at = lambda c, _k = _n: (
+                                    (_pipeline_overhead_bytes if _k > 1 else 0) + _cc_bytes(c, _k) // _k
                                 )
-                            if _foot_w <= _budget_w:
-                                _both_fit_somewhere = True
-                                break
-                            # Both do not fit at the target's own context. The placement
-                            # loop does not simply move on: it re-caps the context WITH
-                            # the drafter charged and accepts this subset at whatever
-                            # that leaves. So if a smaller context would hold both here,
-                            # this is the placement the load takes and the drafter is
-                            # paid for in context, which is the trade being refused. It
-                            # only moves to a larger subset when no context fits both.
-                            _ctx_w = (
-                                0
-                                if explicit_ctx
-                                else self._fit_context_to_vram(
-                                    _ctx_wo,
-                                    _budget_w,
-                                    _probe_base(True, _n),
-                                    cache_type_kv,
-                                    swa_full = swa_full,
-                                    n_parallel = n_parallel,
-                                    kv_unified = planned_kv_unified,
-                                    n_ubatch = _effective_ubatch,
-                                    flash_attn = planned_flash_attn,
-                                    mtp_engaged = True,
-                                    mtp_overhead_fn = mtp_overhead_fn,
-                                    compute_ctx_bytes_fn = _cc_n,
-                                    budget_frac = 1.0,
-                                    total_mib = None,
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_wo, _probe_reserve_at(_ctx_wo)
+                                ):
+                                    if explicit_ctx:
+                                        # Honored verbatim, so there is nothing to cap: this
+                                        # subset simply cannot hold it, and _select_gpus_
+                                        # split_aware will say so too by going to --fit.
+                                        # Calling it a fit here would drop the drafter and
+                                        # then report a pin that never happened.
+                                        continue
+                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                        _ctx_wo, _usable_wo, _probe_reserve_at
+                                    )
+                                    if _ctx_wo <= 0:
+                                        continue
+                                    # Every pooled term shrinks with the context, so this
+                                    # cannot newly fail; re-price rather than lean on it.
+                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                    if _foot_wo > _budget_wo:
+                                        continue
+                                _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
+                                    1024 * 1024
                                 )
-                            )
-                            if (
-                                _ctx_w > 0
-                                and (
-                                    _probe_base(True, _n)
-                                    + _kv_bytes(_ctx_w)
-                                    + _cc_n(_ctx_w)
-                                    + _mtp_bytes(_ctx_w)
+                                _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
+                                if not _target_fits_somewhere:
+                                    _target_fits_somewhere = True
+                                    _probe_ctx, _probe_need, _probe_have = (
+                                        _ctx_wo,
+                                        _foot_w,
+                                        _budget_w,
+                                    )
+                                if _foot_w <= _budget_w:
+                                    _both_fit_somewhere = True
+                                    break
+                                # Both do not fit at the target's own context. The placement
+                                # loop does not simply move on: it re-caps the context WITH
+                                # the drafter charged and accepts this subset at whatever
+                                # that leaves. So if a smaller context would hold both here,
+                                # this is the placement the load takes and the drafter is
+                                # paid for in context, which is the trade being refused. It
+                                # only moves to a larger subset when no context fits both.
+                                _ctx_w = (
+                                    0
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        _ctx_wo,
+                                        _budget_w,
+                                        _probe_base(True, _n),
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = True,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
                                 )
-                                / (1024 * 1024)
-                                <= _budget_w
-                            ):
-                                break
+                                if (
+                                    _ctx_w > 0
+                                    and (
+                                        _probe_base(True, _n)
+                                        + _kv_bytes(_ctx_w)
+                                        + _cc_n(_ctx_w)
+                                        + _mtp_bytes(_ctx_w)
+                                    )
+                                    / (1024 * 1024)
+                                    <= _budget_w
+                                ):
+                                    break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False
@@ -11526,6 +11549,18 @@ class LlamaCppBackend:
                                 _probe_need / 1024,
                                 _probe_have / 1024,
                             )
+
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that
+                        # launches is the separate CPU-offloaded one, and any embedded
+                        # head it displaced does not run. The flat fraction below is
+                        # already gated on this, but the byte-accurate callback is not:
+                        # _fit_context_to_vram invokes any non-None mtp_overhead_fn
+                        # whatever mtp_engaged says, and the _mtp_bytes sites are
+                        # unconditional, so the fit would still shrink the context or
+                        # take --fit for VRAM no drafter allocates.
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
 
                     # Flat MTP reserve fraction: used only as the fallback when the
                     # byte-accurate mtp_overhead_fn can't size the draft KV (dims

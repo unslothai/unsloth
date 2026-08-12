@@ -5749,7 +5749,10 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
             # the basename restores every quant and charges the repo's F16.
             matched = {n: s for n, s in sizes.items() if hint in n.lower()}
             sizes = matched or sizes
-        bounded = dflash_budget_bytes(sizes, _gguf_extra_shards)
+        # require_full_sizes: a family the listing sized only in part would other-
+        # wise be charged its known shards, and this caller has a cache measurement
+        # and then a reserve to fall back on, both of which beat a partial sum.
+        bounded = dflash_budget_bytes(sizes, _gguf_extra_shards, require_full_sizes = True)
         if bounded:
             return bounded
         # Zero from a non-empty listing means one of two things. Every family
@@ -5757,6 +5760,11 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
         # Complete families whose sizes the listing did not carry: something WILL
         # load and we simply do not know how big, which is the cache-then-reserve
         # case, not a free load.
+        # A listing that named GGUFs and still bounds at zero has told us one of two
+        # things. Every family is an incomplete split: the fetch can load none of
+        # them, nothing becomes resident, and zero is the answer. Otherwise a family
+        # does load and the listing simply did not say how big, which is the
+        # cache-then-reserve case below rather than a free load.
         if sizes and not any(split_listing_is_complete(sizes, name) for name in sizes):
             return 0
     except Exception as e:

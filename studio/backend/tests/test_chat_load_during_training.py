@@ -2051,6 +2051,25 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # longer reaches.
         self.assertAlmostEqual(charged, 13.0, places = 6)
 
+    def test_a_split_drafter_sized_in_part_is_not_charged_its_known_half(self):
+        """llama-server maps every shard, so a two-shard sidecar listed as 3 GiB
+        plus an unknown is not a 3 GiB sidecar. Charging the known half admits a
+        chat load that then exhausts VRAM beside the training job this guard is
+        protecting; the cache measurement, else the reserve, is the honest answer."""
+        partial_sizes = SimpleNamespace(
+            siblings = [
+                SimpleNamespace(rfilename = "drafter-00001-of-00002.gguf", size = 3 * 1024**3),
+                SimpleNamespace(rfilename = "drafter-00002-of-00002.gguf", size = None),
+            ]
+        )
+        with (
+            patch("huggingface_hub.model_info", return_value = partial_sizes),
+            patch("huggingface_hub.scan_cache_dir", return_value = SimpleNamespace(repos = [])),
+            patch("utils.hf_cache_settings.active_hf_hub_cache", return_value = "/hub"),
+        ):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        self.assertEqual(charged, self.route._REMOTE_DRAFTER_RESERVE_BYTES)
+
     def test_a_remote_drafter_that_is_neither_listable_nor_cached_pays_the_reserve(self):
         """Nothing to measure and nothing to download over the Hub that just
         refused the listing, so the reserve is a cushion rather than a bound."""
