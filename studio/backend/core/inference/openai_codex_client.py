@@ -442,6 +442,7 @@ class OpenAICodexClient:
         reasoning_effort: str | None,
         tools: list[dict[str, Any]] | None,
         tool_choice: Any,
+        response_format: dict[str, Any] | None = None,
         cancel_event: threading.Event | None = None,
     ) -> AsyncGenerator[str, None]:
         instructions, input_items = _responses_input(messages)
@@ -461,6 +462,18 @@ class OpenAICodexClient:
             "tool_choice": "auto",
             "parallel_tool_calls": True,
         }
+        response_type = response_format.get("type") if isinstance(response_format, dict) else None
+        if response_type == "json_object":
+            body["text"]["format"] = {"type": "json_object"}
+        elif response_type == "json_schema":
+            schema = response_format.get("json_schema")
+            if isinstance(schema, dict) and isinstance(schema.get("schema"), dict):
+                body["text"]["format"] = {
+                    "type": "json_schema",
+                    "name": str(schema.get("name") or "response"),
+                    "schema": schema["schema"],
+                    "strict": bool(schema.get("strict", True)),
+                }
         # Pi intentionally does not forward a token cap here. ChatGPT's Codex
         # Responses endpoint rejects max_output_tokens even though the public
         # Responses API accepts it; the subscription service applies its own cap.

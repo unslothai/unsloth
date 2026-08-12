@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from core.inference.openai_codex_client import OpenAICodexClient
+from core.inference.tool_loop_controller import strip_result_for_model
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -80,6 +81,8 @@ class CodexRunContext:
     messages: list[dict[str, Any]]
     model: str
     reasoning_effort: str | None
+    response_format: dict[str, Any] | None = None
+    continue_final_message: bool = False
 
 
 @dataclass(frozen = True)
@@ -116,10 +119,14 @@ async def stream_codex_with_studio_tools(
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
 
-    skip_autoinject = (
+    skip_autoinject = run.continue_final_message or (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
     )
-    autoinject = None if skip_autoinject else build_rag_autoinject(conversation, rag_scope)
+    autoinject = (
+        None
+        if skip_autoinject
+        else await asyncio.to_thread(build_rag_autoinject, conversation, rag_scope)
+    )
     if autoinject:
         for event in autoinject["events"]:
             yield _sse(event)
@@ -141,6 +148,7 @@ async def stream_codex_with_studio_tools(
             model = model,
             max_tokens = None,
             reasoning_effort = reasoning_effort,
+            response_format = run.response_format,
             tools = tools if tools_available else None,
             tool_choice = "auto" if tools_available else "none",
             cancel_event = cancel_event,
@@ -258,21 +266,28 @@ async def stream_codex_with_studio_tools(
                     else:
                         decision_slot = None
                         timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
-                        result = await asyncio.to_thread(
-                            execute_tool,
-                            name,
-                            arguments,
-                            cancel_event = cancel_event,
-                            timeout = timeout,
-                            session_id = session_id,
-                            thread_id = thread_id,
-                            rag_scope = rag_scope,
-                            disable_sandbox = bypass_permissions,
-                        )
+                        try:
+                            result = await asyncio.to_thread(
+                                execute_tool,
+                                name,
+                                arguments,
+                                cancel_event = cancel_event,
+                                timeout = timeout,
+                                session_id = session_id,
+                                thread_id = thread_id,
+                                rag_scope = rag_scope,
+                                disable_sandbox = bypass_permissions,
+                            )
+                        except Exception as exc:
+                            if cancel_event.is_set():
+                                return
+                            result = f"Error: tool raised an exception: {exc}"
                 finally:
                     if decision_slot is not None:
                         abort_tool_decision(decision_slot, approval_id)
             result_text = result if isinstance(result, str) else json.dumps(result)
+
+            model_result = strip_result_for_model(result_text, name)
             yield _sse(
                 {
                     "type": "tool_end",
@@ -288,6 +303,6 @@ async def stream_codex_with_studio_tools(
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": name,
-                    "content": result_text,
+                    "content": model_result,
                 }
             )

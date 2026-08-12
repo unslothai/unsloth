@@ -11102,6 +11102,8 @@ async def _proxy_to_external_provider(
                 messages = chat_messages,
                 model = model,
                 reasoning_effort = payload.reasoning_effort,
+                response_format = _extract_response_format(payload),
+                continue_final_message = _continue_final_message(payload),
             )
             policy = (
                 CodexToolPolicy(
@@ -11163,6 +11165,7 @@ async def _proxy_to_external_provider(
                         model = run.model,
                         max_tokens = _effective_max_tokens(payload),
                         reasoning_effort = run.reasoning_effort,
+                        response_format = run.response_format,
                         tools = tool_payloads,
                         tool_choice = payload.tool_choice,
                         cancel_event = cancel_event,
