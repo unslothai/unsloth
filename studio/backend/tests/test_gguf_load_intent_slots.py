@@ -3,17 +3,10 @@
 
 """``GgufLoadIntent`` stays reflectable, and the signal exceptions stay slotted.
 
-``@dataclass(slots=True)`` was tried on the intent and reverted. It is a 3.10 feature so
-it would have needed a version gate anyway, but the deciding fact is that it removes the
-instance ``__dict__``: ``vars(intent)`` then raises ``TypeError``, which broke every GGUF
-load through ``routes/inference.py::_gguf_request_intent`` and the MTP crash-recovery
-assertions in ``test_tensor_parallel.py``. Reflection over this dataclass is part of how
-callers use it, and the intent is built a handful of times per load, so there was no
-speed to buy with that risk.
-
-This file pins both halves of that conclusion: the intent keeps working through
-reflection, and the empty ``__slots__`` on the signal exceptions (which nothing reflects
-over) stay in place.
+``@dataclass(slots=True)`` was tried on the intent and reverted: it removes the instance
+``__dict__``, so ``vars(intent)`` raises ``TypeError`` and every GGUF load through
+``_gguf_request_intent`` (plus the MTP recovery assertions in ``test_tensor_parallel.py``)
+broke. Both halves of that conclusion are pinned here.
 """
 
 import copy
@@ -48,12 +41,7 @@ def intent():
 
 
 def test_intent_keeps_its_instance_dict(intent):
-    """The revert, pinned: reflection over the intent must keep working.
-
-    ``routes/inference.py::_gguf_request_intent`` and several tests enumerate the intent
-    through ``vars()``. Adding ``slots=True`` removes ``__dict__`` and turns every one of
-    those into a TypeError at load time.
-    """
+    """The revert, pinned: several callers enumerate the intent through ``vars()``."""
     assert not hasattr(GgufLoadIntent, "__slots__")
     assert set(vars(intent)) == {f.name for f in dataclasses.fields(intent)}
 
@@ -110,10 +98,8 @@ def test_fields_and_asdict_are_unaffected(intent):
 def test_signal_exceptions_carry_empty_slots(exception):
     """These only ever signal, and the empty ``__slots__`` records that.
 
-    It does not remove the instance dict: ``BaseException`` declares one itself, so every
-    exception instance keeps it however a subclass is declared. What the declaration buys
-    is the statement of intent plus the guarantee that the class carries no slot of its
-    own, which is what the assertion below pins.
+    It does not remove the instance dict (``BaseException`` declares one itself); what it
+    buys is the intent plus the guarantee that the class carries no slot of its own.
     """
     assert exception.__slots__ == ()
     assert "__dict__" in vars(BaseException)
@@ -130,8 +116,7 @@ def test_llama_server_not_found_is_still_a_runtime_error():
 def test_field_names_are_enumerable_without_reflection(intent):
     """``dataclasses.fields`` answers the same question ``vars()`` does.
 
-    ``_gguf_request_intent`` uses it now. It is equivalent on this class (every field is
-    assigned in ``__init__``) and does not depend on the instance carrying a ``__dict__``,
-    which is the property that broke when slots were tried.
+    What ``_gguf_request_intent`` uses now: equivalent on this class, and independent of
+    the instance ``__dict__`` that slots would have removed.
     """
     assert [f.name for f in dataclasses.fields(intent)] == list(vars(intent))

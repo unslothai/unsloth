@@ -261,10 +261,9 @@ def strip_tool_markup_streaming(
     text = _strip_mistral_reasoning(text)
 
     def _seg(segment: str, is_last: bool) -> str:
-        # Scan order lives in the parser's ``strip_segment`` (seg_final -> is_last) so this
-        # path, the GGUF streaming path and ``strip_tool_markup`` cannot drift apart. Its
-        # end-of-turn arms run only on the last segment (a bare ``foo[ARGS]`` before
-        # <think> is prose).
+        # Scan order lives in the parser's ``strip_segment`` so this path, the GGUF
+        # streaming path and ``strip_tool_markup`` cannot drift. Its end-of-turn arms
+        # run only on the last segment.
         return _parser_strip_segment(
             segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
         )

@@ -79,11 +79,9 @@ def test_no_quadratic_blowup_on_unclosed_markers():
 def test_the_two_bracket_depth_rules_stay_separate():
     """The scanner is shared; the depth rule is not, and both callers need their own.
 
-    The healer counts ``{``/``}`` toward the bracket depth so a truncated object inside
-    an array cannot close the array early, which its Gemma array normalizer relies on.
-    The display strip counts brackets only: a stray ``}`` decrementing the depth would
-    end the span at that brace and leave the rest of a malformed call, closing bracket
-    included, on screen.
+    The healer counts braces toward the bracket depth (its Gemma array normalizer needs
+    that); the display strip counts brackets only, or a stray ``}`` would end the span
+    early and leave the rest of a malformed call on screen.
     """
     from core import tool_healing
     from core.inference.tool_call_parser import _balanced_bracket_end, strip_tool_markup

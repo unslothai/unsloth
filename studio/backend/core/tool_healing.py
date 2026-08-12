@@ -259,10 +259,8 @@ def _balanced_brace_end(
 ) -> int | None:
     """Index of the ``}`` matching the ``{`` at ``brace_start``, or None.
 
-    Shared with ``core/inference/tool_call_parser.py``, which imports this rather than
-    keeping its own copy. Callers are expected to point at the ``{``; the guard makes a
-    mispositioned call return None instead of scanning on and reporting an unrelated
-    brace.
+    Shared with ``core/inference/tool_call_parser.py``. The guard makes a mispositioned
+    call return None instead of reporting an unrelated brace.
     """
     if brace_start >= len(content) or content[brace_start] != "{":
         return None
@@ -306,12 +304,10 @@ def _balanced_bracket_end(
     """Index of the ``]`` matching the ``[`` at ``start``, or None. Tracks nesting and
     double-quoted strings.
 
-    With ``braces_count`` (the default) ``{`` and ``}`` count toward the same depth as
-    ``[`` and ``]``, so a truncated object inside an array does not let the scan close
-    the array early; the Gemma array normalizer relies on that. The display strip in
-    ``tool_call_parser.py`` passes ``braces_count = False`` and counts brackets only,
-    which is what it has always done: a stray ``}`` before the real ``]`` would otherwise
-    end the span early and leave the rest of a malformed call visible.
+    With ``braces_count`` (the default) braces count toward the same depth, so a
+    truncated object cannot close an array early; the Gemma array normalizer needs that.
+    The display strip in ``tool_call_parser.py`` counts brackets only, so a stray ``}``
+    cannot end the span early and leave the rest of a malformed call visible.
     """
     if start >= len(src) or src[start] != "[":
         return None
@@ -646,11 +642,9 @@ def _inside_open_parameter(
 ) -> bool:
     """Return True when ``pos`` falls inside an unclosed parameter value.
 
-    The opener regex and closer tags are parameters because
-    ``core/inference/tool_call_parser.py`` shares this body with a wider vocabulary:
-    it also recognises ``<param name="...">`` openers and treats ``</param>`` and
-    ``</tool_call>`` as closers (GLM 4.x / Kimi K2). The algorithm is the same, so it
-    lives here once rather than in two copies that can drift apart.
+    The opener regex and closer tags are parameters so
+    ``core/inference/tool_call_parser.py`` can share this body with its wider vocabulary
+    (``<param name="...">`` openers, ``</param>`` / ``</tool_call>`` closers).
     """
     if param_start_re is None:
         param_start_re = _TC_PARAM_START_RE
@@ -750,8 +744,7 @@ def _build_markers(content: str):
             if _inside_open_parameter(content, m.start()):
                 continue
             brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            # Keep the ``-1`` sentinel here: ``marker_coverage`` is a cross-module
-            # contract and its consumers test ``brace_end < 0``.
+            # Keep the ``-1`` sentinel: ``marker_coverage`` consumers test ``brace_end < 0``.
             markers.append((m.start(), -1 if brace_end is None else brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
     return markers

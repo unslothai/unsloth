@@ -362,9 +362,8 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
-# Shared with the healer, but keeping this module's depth rule: brackets only. A stray
-# ``}`` must not end the span early and leave the rest of a malformed call on screen.
-# (The healer counts braces too, which its Gemma array normalizer needs.)
+# Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span
+# early and leave the rest of a malformed call on screen.
 def _balanced_bracket_end(src: str, start: int) -> "int | None":
     return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
 
@@ -680,18 +679,14 @@ def strip_segment(
 ) -> str:
     """Strip tool-call markup from one non-``<think>`` segment.
 
-    The single definition of the scan order. It used to be copy-pasted into
-    ``llama_cpp.py`` and ``safetensors_agentic.py``; both call here now, so the order
-    cannot drift between the GGUF and safetensors paths. ``routes/inference.py`` keeps a
-    deliberately different order for the passthrough path, pinned by
-    ``tests/test_route_strip_drift.py``. ``seg_final`` enables the end-of-turn arms
-    (markerless Gemma, open tails, trailing partial rehearsal) that must not run
-    mid-segment.
+    The single definition of the scan order, shared by the GGUF and safetensors paths.
+    ``routes/inference.py`` keeps a deliberately different order for the passthrough
+    path, pinned by ``tests/test_route_strip_drift.py``. ``seg_final`` enables the
+    end-of-turn arms (markerless Gemma, open tails, trailing partial rehearsal).
     """
     seg = _strip_mistral_closed_calls(segment)
-    # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form go through the shared
-    # balanced scan (any nesting depth removed whole). Name-gated: an inactive
-    # ``foo[ARGS]{..}`` is prose and is kept.
+    # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form, through the shared
+    # balanced scan. Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
         # Markerless Gemma ``call:NAME{...}``, name-gated like the parse gate.
@@ -705,8 +700,8 @@ def strip_segment(
     for pat in pats:
         seg = pat.sub("", seg)
     if seg_final:
-        # Trailing partial rehearsal (``name[ARGS]`` with a truncated or absent body) that
-        # the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
+        # Trailing partial rehearsal the balanced scan cannot close; gated so prose
+        # ``foo[ARGS] ...`` survives.
         seg = _tool_healing.apply_tool_strip_patterns(
             seg,
             [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
@@ -1290,10 +1285,8 @@ def _inside_open_parameter(text: str, pos: int) -> bool:
     i.e. a ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an
     argument value (e.g. code that prints tool-call XML), not a real nested call.
 
-    Same algorithm as the healer's, over a wider vocabulary: this module's opener regex
-    also matches ``<param name="...">``, and GLM 4.x / Kimi K2 close a call with
-    ``</tool_call>`` rather than ``</function>``. Only the vocabulary is passed in; the
-    body lives in ``core.tool_healing``."""
+    The healer's algorithm over a wider vocabulary (``<param name="...">`` openers,
+    ``</tool_call>`` closers for GLM 4.x / Kimi K2); only that is passed in."""
     return _tool_healing._inside_open_parameter(
         text,
         pos,
@@ -1940,8 +1933,7 @@ def _parse_gemma_tool_calls(
     return out
 
 
-# Shared with the healer. Its Gemma ``<|"|>`` quoting sits behind a keyword-only flag this
-# module never sets, so positional calls behave identically.
+# Shared with the healer; its Gemma quoting sits behind a flag this module never sets.
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 

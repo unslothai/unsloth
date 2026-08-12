@@ -3,19 +3,12 @@
 
 """Pins the known divergence between the route display strip and the canonical one.
 
-``routes/inference.py::_strip_tool_xml_for_display`` predates
-``core/inference/tool_call_parser.py`` (it goes back to the February route refactor,
-before the parser existed) and never picked up the markdown-code gating that landed in
-``core/tool_healing.py``. The GGUF, safetensors and ``strip_tool_markup`` paths all share
-one scan order now; this one still has its own.
+``routes/inference.py::_strip_tool_xml_for_display`` predates the parser and never picked
+up the markdown-code gating in ``core/tool_healing.py``, so it deletes a rehearsal inside
+a fenced code block that the canonical strip keeps.
 
-The difference is not cosmetic: the route strip deletes a rehearsal that sits inside a
-fenced code block, so an assistant answer that *shows* what a tool call looks like has the
-example removed. The canonical strip keeps it.
-
-Changing the route path changes what users see on a shipped streaming route, so it is left
-alone here and pinned instead: this test fails if either side moves, which makes the
-follow-up a deliberate decision rather than an accident.
+Changing a shipped streaming route changes what users see, so it is pinned rather than
+fixed here: this test fails if either side moves, making the follow-up deliberate.
 """
 
 import sys

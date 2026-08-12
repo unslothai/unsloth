@@ -4198,8 +4198,7 @@ def _gguf_request_intent(
     n_parallel: int,
     **changes,
 ) -> GgufLoadIntent:
-    # ``dataclass_fields``, not ``vars``: under ``slots=True`` there is no instance
-    # ``__dict__`` and ``vars()`` raises. Both enumerate the same names.
+    # ``dataclass_fields``, not ``vars``: same names, but no reliance on ``__dict__``.
     settings = {
         name: getattr(request, name)
         for name in (f.name for f in dataclass_fields(source))

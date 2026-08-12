@@ -5,18 +5,14 @@
 
 Three independent checks, none of which trusts a reading of the diff:
 
-1. **AST inventory** - every top-level name, its signature, decorators, and every
-   ``re.compile`` pattern literal, for each guarded module. A refactor that drops or
-   renames a symbol other modules import shows up as an inventory diff.
-2. **Golden outputs** - every guarded function is driven over a corpus of tool-call
-   text and its output recorded. A refactor must reproduce those bytes exactly.
-   Each function is also asserted idempotent where that is meaningful
-   (``f(f(x)) == f(x)`` for the strip functions).
+1. **AST inventory** - every top-level name, signature, decorator and ``re.compile``
+   literal per guarded module, so a dropped or renamed symbol shows up as a diff.
+2. **Golden outputs** - every guarded function driven over a corpus of tool-call text,
+   its output recorded, and the strip functions asserted idempotent.
 3. **Patch-target routing** - the test suite patches module globals by string
-   (``patch("core.inference.llama_cpp.subprocess.run")``). Moving a function to
-   another module leaves those patches pointing at a namespace nobody reads, so the
-   test still passes while exercising unpatched code. This check asserts every
-   string patch target still resolves.
+   (``patch("core.inference.llama_cpp.subprocess.run")``). A moved function leaves those
+   pointing at a namespace nobody reads, so the test passes while exercising unpatched
+   code; this asserts every target still resolves.
 
 Usage::
 
@@ -58,8 +54,7 @@ GUARDED_MODULES = {
 }
 
 # Modules whose behaviour is pinned by golden outputs. Importing these must not pull in
-# the inference stack, so llama_cpp is deliberately absent: its strip closure is covered
-# by the streaming replay in test_refactor_guard.py.
+# the inference stack, so llama_cpp is deliberately absent.
 BEHAVIOUR_MODULES = ("core.tool_healing", "core.inference.tool_call_parser")
 
 
@@ -76,10 +71,8 @@ _RE_CALLS = frozenset(
 def _compiled_patterns(mod_name: str) -> dict:
     """Every compiled pattern reachable in the module's namespace, by its actual text.
 
-    The AST half records the *source* of each ``re.compile`` call, so a pattern built by
-    interpolating a constant (``re.compile(_DEEPSEEK_OPEN_RE_SRC + "...")``) pins only
-    the constant's name. Reading ``.pattern`` off the live objects pins what was actually
-    compiled, which is the thing that decides behaviour.
+    The AST half records call *source*, so a pattern interpolating a constant pins only
+    that constant's name. ``.pattern`` off the live object pins what was compiled.
     """
     module = importlib.import_module(mod_name)
     out = {}
@@ -93,12 +86,10 @@ def _compiled_patterns(mod_name: str) -> dict:
 
 
 def _pattern_literals(tree: ast.Module) -> dict:
-    """Every ``re.compile(...)`` call in the module, as a sorted multiset of its source.
+    """Every ``re.compile(...)`` call in the module, as a multiset of its source.
 
-    A regex rewrite is the easiest way to silently change stripping behaviour, so the
-    literals are pinned separately from the symbol table. Keyed by the call text rather
-    than by line number, so moving or deleting unrelated code does not register as a
-    pattern change.
+    A regex rewrite is the easiest silent change to stripping behaviour, so the literals
+    are pinned separately. Keyed by call text, so moving unrelated code is not a change.
     """
     calls = []
     for node in ast.walk(tree):
@@ -119,12 +110,11 @@ def _pattern_literals(tree: ast.Module) -> dict:
 def ast_inventory() -> dict:
     """Top-level surface per guarded module, at the detail that module needs.
 
-    The two modules the refactor restructures are pinned in full: signatures, decorators,
-    methods and every ``re.compile`` literal. The rest are pinned by name and kind only.
-    They are here because this refactor must not drop a symbol out of them, and that is
-    all the detail that question needs; pinning their signatures as well would turn this
-    into a tripwire that fails on every later, unrelated change to files as busy as
-    ``llama_cpp.py``, and a baseline that is regenerated reflexively guards nothing.
+    The two restructured modules are pinned in full: signatures, decorators, methods and
+    every ``re.compile`` literal. The rest are pinned by name and kind only, which is all
+    "did this drop a symbol" needs; pinning their signatures too would fail on every
+    later unrelated change to files as busy as ``llama_cpp.py``, and a baseline that gets
+    regenerated reflexively guards nothing.
     """
     inventory = {}
     for mod_name, path in GUARDED_MODULES.items():
@@ -141,8 +131,7 @@ def ast_inventory() -> dict:
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             symbols[target.id] = {"kind": "assign"}
-                # An annotated global is an AnnAssign, not an Assign, so it needs its
-                # own arm or it is missing from the inventory entirely.
+                # An annotated global is an AnnAssign, not an Assign, so it needs its own arm.
                 elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                     symbols[node.target.id] = {"kind": "assign"}
                 continue
@@ -198,9 +187,8 @@ def runtime_inventory() -> dict:
 
 # ─────────────────────────── 2. Corpus + golden outputs ───────────────────────────
 
-# Literal fragments spliced by the fuzzer: every serialization the parsers claim to handle,
-# plus the shapes that historically broke them (markup nested in an argument value, a
-# rehearsal inside a fenced code block, truncated tails).
+# Fragments spliced by the fuzzer: every serialization the parsers claim to handle, plus
+# the shapes that historically broke them.
 _FRAGMENTS = (
     '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>',
     '<tool_call>{"name": "search", "arguments": {"q": "</tool_call> literal"}}</tool_call>',
@@ -231,9 +219,8 @@ _FRAGMENTS = (
     '<|tool_call_argument_begin|>{"city": "Paris"}<|tool_call_end|>'
     "<|tool_calls_section_end|>",
     "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>",
-    # One format's markup inside another's argument value. Concatenating whole calls never
-    # reaches the arm-order question, so a swap of two arms inside ``strip_segment`` is
-    # invisible without these.
+    # One format's markup inside another's argument value: without these, a swap of two
+    # arms inside ``strip_segment`` is invisible.
     "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>",
     '<tool_call>{"name": "search", "arguments": {"q": "<function=get_weather>"}}</tool_call>',
     '<tool_call>{"name": "search", "arguments": {"q": "[TOOL_CALLS]other[ARGS]{}"}}</tool_call>',
@@ -279,8 +266,8 @@ def build_corpus(seed: int = 20260811, count: int = 600) -> list:
 
 
 # One fixture per required positional parameter beyond the text. Offsets are derived from
-# the text, not fixed at 0, so the balanced scanners start on a real delimiter. Without
-# these the driver returns ``<undrivable>`` and the digest pins nothing.
+# the text so the balanced scanners start on a real delimiter; without these the driver
+# returns ``<undrivable>`` and the digest pins nothing.
 _ARG_FIXTURES = {
     "brace_start": lambda text: max(text.find("{"), 0),
     "brace_pos": lambda text: max(text.find("{"), 0),
@@ -292,7 +279,7 @@ _ARG_FIXTURES = {
     "hard_stop": lambda text: len(text),
     "i": lambda text: 0,
     "idx": lambda text: 0,
-    # Scan origin of a strip pass, which starts at 0 exactly as the Gemma strip does.
+    # Scan origin of a strip pass, 0 as the Gemma strip does.
     "floor": lambda text: 0,
     "p": lambda text: 0,
     "n": lambda text: len(text),
@@ -307,8 +294,7 @@ _ARG_FIXTURES = {
 
 
 # Offsets a predicate is asked about. One offset is not coverage for a function whose job
-# is to answer differently at different positions: at end-of-text only,
-# ``_inside_open_parameter`` had two distinct values over the entire corpus.
+# is to answer differently at different positions.
 _SWEEP_PARAMS = frozenset({"pos"})
 
 # Marks a driver result that holds one entry per boolean variant.
@@ -329,9 +315,8 @@ def _sweep_offsets(text: str):
 def _gemma_argument_body(text: str) -> str:
     """A raw Gemma argument body out of ``text``, which is what this parser takes.
 
-    Handed a whole corpus entry it raises ``JSONDecodeError`` on all but one of them, so
-    its digest pinned the exception rather than any of the key quoting, bare value or
-    array normalization behaviour it exists for.
+    Handed a whole corpus entry it almost always raises ``JSONDecodeError``, so its digest
+    pinned the exception rather than the key quoting and array normalization it exists for.
     """
     from core import tool_healing
 
@@ -361,18 +346,16 @@ def _tool_healing_all_pats():
 def _drive(func, text: str):
     """Call ``func`` with ``text`` however its signature wants it.
 
-    Returns a JSON-safe result, or a marker string when the function raises. An
-    exception is itself pinned behaviour: a refactor that stops raising, or starts,
-    is a change.
+    Returns a JSON-safe result, or a marker string when the function raises: a refactor
+    that stops raising, or starts, is a change.
     """
     params = inspect.signature(func).parameters
     names = list(params)
     kwargs = {}
     if "enabled_tool_names" in params:
         kwargs["enabled_tool_names"] = set(_ENABLED_NAMES)
-    # Keyword-only and mostly required, so the positional loop below skips them; without
-    # them the strip and parse entry points raise ``TypeError`` on every input. Driven at
-    # BOTH values: pinning ``final = True`` says nothing about the streaming path.
+    # Keyword-only, so the positional loop below skips them. Driven at BOTH values:
+    # pinning ``final = True`` says nothing about the streaming path.
     combos = [{}]
     for flag in _BOTH_WAYS:
         if flag in params:
@@ -384,8 +367,8 @@ def _drive(func, text: str):
     adapter = _TEXT_ADAPTERS.get(getattr(func, "__name__", ""))
     args = [adapter(text) if adapter else text]
     sweep = None
-    # Positional index arguments come from the first plausible offset, not 0, so the
-    # balanced scanners are exercised on a real opening delimiter.
+    # Index arguments come from the first plausible offset, not 0, so the balanced
+    # scanners are exercised on a real opening delimiter.
     for extra in names[1:]:
         if extra in kwargs or params[extra].kind == inspect.Parameter.KEYWORD_ONLY:
             continue
@@ -466,11 +449,9 @@ def _guarded_functions(mod_name):
 def golden_outputs(corpus) -> dict:
     """A digest per guarded function over the whole corpus.
 
-    Storing every output would be a 7 MB file in the repo for no extra guarantee: any
-    byte that changes anywhere in a function's results changes its digest. The corpus is
-    rebuilt deterministically from ``build_corpus`` rather than checked in, so its own
-    digest is recorded too and a corpus edit reports as exactly that instead of as 40
-    unrelated behaviour changes.
+    Storing every output would be a 7 MB file for no extra guarantee. The corpus is
+    rebuilt from ``build_corpus`` rather than checked in, so its own digest is recorded
+    too and a corpus edit reports as that instead of as 40 behaviour changes.
     """
     out = {"corpus": _digest([len(corpus), corpus])}
     for mod_name in BEHAVIOUR_MODULES:
@@ -489,8 +470,7 @@ def _digest(value) -> str:
 def first_divergence(corpus, mod_name, func_name):
     """Recompute one function's outputs so a digest mismatch can be localised.
 
-    Only useful next to a checkout of the previous revision, which is what you want when
-    a digest moves: run this on both sides and compare.
+    Run it on both sides of the revision that moved the digest and compare.
     """
     module = importlib.import_module(mod_name)
     func = getattr(module, func_name)
@@ -500,9 +480,8 @@ def first_divergence(corpus, mod_name, func_name):
 def _variants(result):
     """``(label, value)`` per boolean variant the driver produced, or one unlabelled pair.
 
-    Keyed off the tag rather than off "is it a dict": a parser returning ``{}`` is a
-    result, not a set of variants, and reading it as one drives the parser's own output
-    back into it and reports a meaningless failure.
+    Keyed off the tag, not off "is it a dict": a parser returning ``{}`` is a result, not
+    a set of variants, and reading it as one reports a meaningless failure.
     """
     if isinstance(result, dict) and set(result) == {_VARIANTS_KEY}:
         return sorted(result[_VARIANTS_KEY].items())
@@ -512,8 +491,8 @@ def _variants(result):
 def idempotence_failures(corpus) -> list:
     """``f(f(x)) != f(x)`` for the str -> str functions.
 
-    Stripping twice must not remove more than stripping once; a stripper that is not
-    idempotent produces different display text depending on how a stream is chunked.
+    A stripper that is not idempotent produces different display text depending on how a
+    stream is chunked.
     """
     failures = []
     for mod_name in BEHAVIOUR_MODULES:
@@ -525,14 +504,14 @@ def idempotence_failures(corpus) -> list:
             witnessed = set()
             labels = None
             for text in corpus:
-                # Driven at both values, so the result is one entry per variant; skipping
-                # non-strings here would skip the centralized strippers this check is for.
+                # One entry per variant; skipping non-strings here would skip the
+                # centralized strippers this check is for.
                 results = _variants(_drive(func, text))
                 if labels is None:
                     labels = {variant for variant, _ in results}
                 for variant, once in results:
-                    # One witness per (function, variant): a failure at ``final = True``
-                    # must not stand in for the streaming path.
+                    # One witness per (function, variant): a ``final = True`` failure must
+                    # not stand in for the streaming path.
                     if variant in witnessed:
                         continue
                     if not isinstance(once, str) or once.startswith("<raised "):
@@ -557,8 +536,8 @@ def idempotence_failures(corpus) -> list:
 
 # ─────────────────────────── 3. Patch-target routing ───────────────────────────
 
-# Every first-party top-level package. The earlier list stopped at core/routes/utils/state
-# and silently skipped 32 live targets under hub, storage and picker.
+# Every first-party top-level package: stopping at core/routes/utils/state silently
+# skipped 32 live targets under hub, storage and picker.
 _PATCH_TARGET_RE = re.compile(
     r"""(?:mock\.)?(?:patch|monkeypatch\.setattr)\(\s*"""
     r"""["']((?:core|routes|utils|state|hub|storage|picker)\.[\w.]+)["']"""
@@ -572,8 +551,8 @@ def patch_targets(tests_dir = None) -> dict:
     for path in sorted(tests_dir.rglob("test_*.py")):
         for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding = "utf-8", errors = "ignore")):
             dotted = match.group(1)
-            # ``as_posix``, not ``str``: the native form gives backslashes on Windows, so
-            # an identical checkout would read as a changed inventory.
+            # ``as_posix``: the native form gives backslashes on Windows, so an identical
+            # checkout would read as a changed inventory.
             targets.setdefault(dotted, []).append(path.relative_to(BACKEND_ROOT).as_posix())
     return targets
 
@@ -599,11 +578,10 @@ def unresolvable_patch_targets(targets = None) -> list:
             rest = parts[split:]
             break
         else:
-            # Nothing imported, and *why* decides what this is. A package whose
-            # ``__init__`` pulls in an optional dependency makes every prefix raise, and
-            # discarding the exception reported four live targets as dead in a slim
-            # environment. So: a ModuleNotFoundError naming a prefix of the target means
-            # the module is gone; naming anything else means a dependency is absent here.
+            # Nothing imported, and *why* decides what this is: a ModuleNotFoundError
+            # naming a prefix of the target means the module is gone, naming anything
+            # else means a dependency is absent here. A package whose ``__init__`` pulls
+            # in an optional dependency makes every prefix raise.
             environment = not (
                 isinstance(last_error, ModuleNotFoundError)
                 and last_error.name in {".".join(parts[:i]) for i in range(1, len(parts))}
@@ -624,12 +602,11 @@ def unresolvable_patch_targets(targets = None) -> list:
         for attr in rest:
             # ``core.inference`` resolves attributes through a PEP 562 ``__getattr__``, so
             # a missing optional dependency surfaces as ImportError, not AttributeError.
-            # Record that separately so a genuinely missing attribute is not hidden.
             try:
                 found = hasattr(obj, attr)
             except Exception as exc:  # noqa: BLE001
-                # AttributeError = the lazy loader says the name is not exported, a dead
-                # target. Only the ImportError case is an environment gap.
+                # AttributeError = not exported, a dead target. Only ImportError is an
+                # environment gap.
                 environment = not isinstance(exc, AttributeError)
                 entry = {
                     "target": dotted,
@@ -654,8 +631,7 @@ def unresolvable_patch_targets(targets = None) -> list:
                     try:
                         importlib.import_module(candidate)
                     except ModuleNotFoundError as exc:
-                        # Only a failure to import something *else* is environmental; a
-                        # missing candidate means the patch target is dead.
+                        # Only a failure to import something *else* is environmental.
                         if exc.name and exc.name != candidate:
                             reason = f"submodule {attr!r} needs {exc.name!r}, absent here"
                             environment = True
@@ -679,7 +655,7 @@ def unresolvable_patch_targets(targets = None) -> list:
 # ─────────────────────────── twins ───────────────────────────
 
 # Names defined in both modules. Unifying them is the point of the refactor; this reports
-# where they actually disagree on real input, so the choice is made against evidence.
+# where they disagree on real input.
 TWIN_NAMES = (
     "_balanced_brace_end",
     "_balanced_bracket_end",
@@ -704,8 +680,7 @@ def twin_divergence(corpus) -> dict:
         examples = []
         for text in corpus:
             h_out, p_out = _drive(h_func, text), _drive(p_func, text)
-            # -1 and None are both "no match"; equate them so the report shows real
-            # disagreement rather than the known convention split.
+            # -1 and None are both "no match"; equate them so only real disagreement shows.
             if (h_out in (-1, None)) and (p_out in (-1, None)):
                 continue
             if h_out != p_out:
@@ -744,14 +719,10 @@ def _diff(
 ):
     """Report the first differing JSON path, which is enough to locate the change.
 
-    ``additions_matter = False`` reports only what changed or disappeared. That is the
-    right rule for the surfaces this guard pins across a moving repo: the question asked
-    of them is "did this refactor drop or alter something", and a later, unrelated commit
-    adding a symbol or a test adding a patch is not a regression. Replicating this branch
-    onto a staging repo and running the org CI there is what surfaced it: an unrelated
-    ``_DRAFTER_DISPLAY_LABELS`` in ``llama_cpp.py`` and one new patch target failed the
-    guard, which merged as-is would have failed most later PRs and trained everyone to
-    re-snapshot without reading.
+    ``additions_matter = False`` reports only what changed or disappeared. The question
+    these surfaces are asked is "did this refactor drop or alter something", and a later
+    unrelated commit adding a symbol or a patch is not a regression; a guard that fails
+    on those trains everyone to re-snapshot without reading.
     """
     if old == new:
         return []
@@ -775,10 +746,9 @@ def _diff(
         and isinstance(new, list)
         and all(isinstance(v, str) for v in old + new)
     ):
-        # A name list (``dir()``) or an occurrence list: report what joined or left, not
-        # both full lists. Counted rather than set-compared, so dropping one of several
-        # identical entries is not read as "unchanged" -- that partial repoint is exactly
-        # what this check exists to catch.
+        # A name or occurrence list: report what joined or left, not both full lists.
+        # Counted, not set-compared, so dropping one of several identical entries (a
+        # partial repoint) is not read as "unchanged".
         old_counts, new_counts = Counter(old), Counter(new)
         for name in sorted(set(old) | set(new)):
             delta = new_counts[name] - old_counts[name]
@@ -833,8 +803,8 @@ def verify() -> int:
     problems += _diff("runtime", _read("runtime_inventory.json"), runtime_inventory())
     problems += _diff("golden", _read("golden_outputs.json"), golden_outputs(corpus))
 
-    # Keyed by variant too: a failure at ``final = True`` is no licence for a new one on
-    # the ``final = False`` streaming path.
+    # Keyed by variant: a ``final = True`` failure is no licence for a new one on the
+    # ``final = False`` streaming path.
     baseline_idempotence = {
         (f["module"], f["function"], f.get("variant", ""))
         for f in _read("idempotence_baseline.json")
@@ -848,15 +818,15 @@ def verify() -> int:
                 f"f(f(x)) != f(x) for {failure['input']!r}"
             )
 
-    # The recorded set matters as much as the live one: a patch repointed at a different
-    # but still resolvable namespace, or dropped, resolves fine and would otherwise pass.
+    # The recorded set matters too: a patch repointed at another resolvable namespace, or
+    # dropped, resolves fine and would otherwise pass.
     recorded = {target: sorted(tests) for target, tests in _read("patch_targets.json").items()}
     live = {target: sorted(tests) for target, tests in patch_targets().items()}
     problems += _diff("patch-targets", recorded, live, additions_matter = False)
 
     for broken in unresolvable_patch_targets(live):
         # An uninstalled optional backend is not a broken target: ``verify`` has to stay
-        # usable in a slim environment. The pytest check filters these the same way.
+        # usable in a slim environment.
         if not broken.get("environment"):
             problems.append(
                 f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"
