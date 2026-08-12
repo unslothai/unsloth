@@ -794,7 +794,7 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
-    """"D:cache" means the current directory on drive D, which join() cannot know
+    """ "D:cache" means the current directory on drive D, which join() cannot know
     and which the move changes, so Windows itself has to resolve it first."""
     environ_out: dict[str, str] = {}
     _, colour, chdir_calls = _guard_outcome(
