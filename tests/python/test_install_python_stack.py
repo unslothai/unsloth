@@ -299,7 +299,7 @@ class TestSdistOnlyBuildArgs:
     """
 
     def test_emits_no_binary_for_every_sdist_only_package(self):
-        args = ips._sdist_only_build_args()
+        args = ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)
         for name in ips.SDIST_ONLY_PACKAGES:
             assert ["--no-binary", name] == args[
                 args.index(name) - 1 : args.index(name) + 1
@@ -316,17 +316,71 @@ class TestSdistOnlyBuildArgs:
 
     def test_flags_survive_translation_to_uv(self):
         """uv is the primary path, so the flags must reach _build_uv_cmd intact."""
-        cmd = ips._build_uv_cmd(tuple(ips._sdist_only_build_args()))
+        cmd = ips._build_uv_cmd(tuple(ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)))
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in cmd
         assert cmd.count("--no-binary") == len(ips.SDIST_ONLY_PACKAGES)
 
     def test_flags_survive_translation_to_pip(self):
         """And the pip FALLBACK must carry them too, for the uv-less/uv-broken case."""
-        cmd = ips._build_pip_cmd(tuple(ips._sdist_only_build_args()))
+        cmd = ips._build_pip_cmd(tuple(ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)))
         for name in ips.SDIST_ONLY_PACKAGES:
             assert name in cmd
         assert cmd.count("--no-binary") == len(ips.SDIST_ONLY_PACKAGES)
+
+    @pytest.mark.parametrize(
+        "is_macos, version, expected",
+        [
+            (True, (3, 14, 0), True),
+            (True, (3, 13, 12), False),
+            (False, (3, 14, 0), False),
+            (False, (3, 13, 12), False),
+        ],
+    )
+    def test_mecab_is_exempted_only_where_it_has_no_wheel(self, is_macos, version, expected):
+        """extras.txt pins MeCab==0.996.5 on macOS cp314+, which ships only an sdist.
+
+        MeCab is a C extension, so an unconditional exemption would force a
+        compiler-dependent source build on every other host, which is a worse bug than
+        the one being fixed. Verified against uv 0.10: 0.996.5 is refused under
+        `no-build = true` for macOS cp314 and resolves with --no-binary MeCab, while
+        0.996.13 still comes from a wheel elsewhere.
+        """
+        with (
+            mock.patch.object(ips, "IS_MACOS", is_macos),
+            mock.patch.object(sys, "version_info", version),
+        ):
+            names = ips._extras_sdist_only_packages()
+        assert ("MeCab" in names) is expected
+        # The unconditional ones are always present.
+        assert set(ips.SDIST_ONLY_PACKAGES) <= set(names)
+
+    def test_the_diffusers_pin_is_exempted_on_the_archive_path(self):
+        """The pin is a source ARCHIVE, and uv's no-build refuses to build one, so the
+        install still died here after extras.txt was fixed.
+
+        Guarded on python >= 3.10 because diffusers-pin.txt resolves a released wheel
+        below that, which must not be forced through a source build.
+        """
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
+                continue
+            req = next((k for k in node.keywords if k.arg == "req"), None)
+            if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
+                continue
+            splat = " ".join(
+                ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)
+            )
+            assert "_sdist_only_build_args('diffusers')" in splat, (
+                f"the diffusers pin at line {node.lineno} must exempt the source archive"
+            )
+            assert "version_info >= (3, 10)" in splat, (
+                "the exemption must be guarded so the pre-3.10 wheel is not forced "
+                f"through a source build (line {node.lineno})"
+            )
+            return
+        pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
 
     def test_the_extras_step_actually_passes_them(self):
         """The helper existing is not the fix; the extras call site using it is.
@@ -342,9 +396,13 @@ class TestSdistOnlyBuildArgs:
             if req is None or "extras.txt" not in ast.unparse(req.value):
                 continue
             starred = [ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)]
-            assert "_sdist_only_build_args()" in starred, (
+            assert any("_sdist_only_build_args(" in s for s in starred), (
                 f"the extras.txt install at line {node.lineno} must splat "
                 "_sdist_only_build_args() or a hardened uv.toml fails it again"
+            )
+            assert any("_extras_sdist_only_packages()" in s for s in starred), (
+                "the extras install must use the platform-aware list so the macOS "
+                "cp314 MeCab sdist is exempted too"
             )
             return
         pytest.fail("no pip_install(req=.../extras.txt) call found")
@@ -454,7 +512,7 @@ class TestHardenedPipConfigRelaxation:
         ):
             sp.run.return_value = mock.Mock(returncode = 1, stdout = "")
             sp.PIPE, sp.STDOUT = -1, -2
-            ips.pip_install("deps", *ips._sdist_only_build_args())
+            ips.pip_install("deps", *ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES))
 
         assert seen["env"]["PIP_REQUIRE_HASHES"] == "0"
         for name in ips.SDIST_ONLY_PACKAGES:

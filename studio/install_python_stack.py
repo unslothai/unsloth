@@ -3651,16 +3651,29 @@ SDIST_ONLY_PACKAGES = (
 )
 
 
-def _sdist_only_build_args() -> list[str]:
-    """``--no-binary`` for each wheel-less requirement, for uv and pip alike.
+def _sdist_only_build_args(*names: str) -> list[str]:
+    """``--no-binary`` for each named wheel-less requirement, for uv and pip alike.
 
     Naming a package that the resolution never reaches is harmless (verified), so this
     is safe next to the NO_TORCH / Windows requirement filtering.
     """
     args: list[str] = []
-    for name in SDIST_ONLY_PACKAGES:
+    for name in names:
         args += ["--no-binary", name]
     return args
+
+
+def _extras_sdist_only_packages() -> tuple[str, ...]:
+    """SDIST_ONLY_PACKAGES plus any this interpreter alone resolves to an sdist."""
+    names = list(SDIST_ONLY_PACKAGES)
+    # extras.txt pins MeCab==0.996.5 on macOS cp314 and up, the last release carrying an
+    # sdist: 0.996.12 added cp314 wheels for Linux and win_amd64 only, so that host has no
+    # binary candidate. Everywhere else 0.996.13 resolves to a wheel, and MeCab is a C
+    # extension, so exempting it unconditionally would force a compiler-dependent build
+    # on hosts that never needed one.
+    if IS_MACOS and sys.version_info >= (3, 14):
+        names.append("MeCab")
+    return tuple(names)
 
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
@@ -4516,7 +4529,7 @@ def install_python_stack() -> int:
         "--no-cache-dir",
         # extras.txt is where the wheel-less requirements live, so a user-level
         # no-build/only-binary policy fails this step first (#8530).
-        *_sdist_only_build_args(),
+        *_sdist_only_build_args(*_extras_sdist_only_packages()),
         req = REQ_ROOT / "extras.txt",
     )
 
@@ -4653,6 +4666,12 @@ def install_python_stack() -> int:
     pip_install(
         "Installing the pinned Diffusers revision",
         "--no-cache-dir",
+        # The pin is a source ARCHIVE, and uv refuses to build one under a user-level
+        # no-build, so a hardened config failed here even once extras.txt succeeded
+        # (#8530). Only for the archive: python < 3.10 resolves a released wheel that
+        # must not be forced through a source build. (pip's only-binary does not reach a
+        # direct URL requirement, so this matters for the uv path.)
+        *(_sdist_only_build_args("diffusers") if sys.version_info >= (3, 10) else []),
         req = REQ_ROOT / "diffusers-pin.txt",
     )
 
