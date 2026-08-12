@@ -4795,50 +4795,62 @@ if ($LatestVer) {
                 try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
             }
         }
-        if (-not $_updateOk) {
+        if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
             # the announced release cannot install on this interpreter (Requires-Python
             # bump): accept only the newest release this interpreter CAN install, so a
-            # no-op pass below that bar still fails loudly. base64 keeps the multi-line
-            # probe clear of the -c double-quote wrapping in Invoke-BoundedPythonProbe.
-            $_bestCode = @"
-import json, sys, urllib.request
+            # no-op pass below that bar still fails loudly. Reuses the PyPI response
+            # already fetched above (flattened to version/yanked/requires_python lines --
+            # no second request that could fail under Python's own proxy/TLS setup);
+            # base64 keeps the multi-line probe clear of the -c double-quote wrapping.
+            $_relPath = [System.IO.Path]::GetTempFileName()
+            try {
+                $_relLines = foreach ($_rel in $pypiJson.releases.PSObject.Properties) {
+                    foreach ($_relFile in $_rel.Value) {
+                        "$($_rel.Name)`t$(if ($_relFile.yanked) { 1 } else { 0 })`t$($_relFile.requires_python)"
+                    }
+                }
+                Set-Content -Path $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
+                $_bestCode = @"
+import sys
 try:
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version, InvalidVersion
     post = Version('$PostVer')
     latest = Version('$LatestVer')
-    with urllib.request.urlopen('https://pypi.org/pypi/$_PkgName/json', timeout=5) as r:
-        releases = json.load(r).get('releases') or {}
+    with open(r'$_relPath', encoding='utf-8-sig') as fh:
+        lines = fh.read().splitlines()
 except Exception:
     sys.exit(1)
 cur = Version('.'.join(map(str, sys.version_info[:3])))
 best = None
-for ver, files in releases.items():
+for line in lines:
+    parts = line.split('\t')
+    if len(parts) != 3 or parts[1] == '1':
+        continue
     try:
-        v = Version(ver)
+        v = Version(parts[0])
     except InvalidVersion:
         continue
     if v.is_prerelease:
         continue
-    for f in files:
-        if f.get('yanked'):
+    rp = parts[2]
+    try:
+        if rp and cur not in SpecifierSet(rp):
             continue
-        rp = f.get('requires_python')
-        try:
-            if rp and cur not in SpecifierSet(rp):
-                continue
-        except Exception:
-            pass
-        if best is None or v > best:
-            best = v
-        break
+    except Exception:
+        pass
+    if best is None or v > best:
+        best = v
 print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= best else 'stale'))
 "@
-            $_b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_bestCode))
-            $_bestProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import base64; exec(base64.b64decode('$_b64').decode())"
-            if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
-                substep "$_PkgName $PostVer kept: $LatestVer needs Python $LatestReqPy"
-                $_updateOk = $true
+                $_b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_bestCode))
+                $_bestProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import base64; exec(base64.b64decode('$_b64').decode())"
+                if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
+                    substep "$_PkgName $PostVer kept: $LatestVer needs Python $LatestReqPy"
+                    $_updateOk = $true
+                }
+            } finally {
+                Remove-Item $_relPath -Force -ErrorAction SilentlyContinue
             }
         }
     }
