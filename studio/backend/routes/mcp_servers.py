@@ -132,8 +132,20 @@ def _row_to_response(row: dict) -> McpServerResponse:
 
 
 @router.get("/", response_model = list[McpServerResponse])
-async def list_mcp_servers(current_subject: str = Depends(get_current_subject)):
-    return [_row_to_response(row) for row in mcp_servers_db.list_servers()]
+async def list_mcp_servers(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    rows = mcp_servers_db.list_servers()
+    if via_api_key:
+        # Both fields of a stdio row are secrets: `url` is the argv, which
+        # carries credentials often enough that we never log it raw, and
+        # `headers` is the subprocess env. A key that may not define a local
+        # command does not get to read one back. Drop the whole row rather than
+        # blank the fields, so a redacted url cannot round-trip into update as a
+        # bogus command.
+        rows = [row for row in rows if not is_stdio(row["url"])]
+    return [_row_to_response(row) for row in rows]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
