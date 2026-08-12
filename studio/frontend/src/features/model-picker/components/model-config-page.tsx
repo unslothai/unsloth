@@ -24,8 +24,10 @@ import {
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type VramBudgetSettings,
+  flushVramBudgetSave,
   loadVramBudgetSettings,
-  updateVramBudgetSettings,
+  stageVramBudgetSave,
+  subscribeVramBudgetSettings,
 } from "@/features/settings/api/vram-budget";
 import {
   type GpuIndexKind,
@@ -358,10 +360,26 @@ function VramBudgetRow() {
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Fraction a debounced save has not sent yet, so unmount can flush it instead of
-  // dropping it. Cleared the moment the PUT is issued.
-  const pendingFraction = useRef<number | null>(null);
   const adviceId = useId();
+
+  // Adopt whatever the last save or read published. Without this the row is
+  // initialised from its own GET, which races the PUT that the previous unmount
+  // fired: close and reopen Advanced settings straight after a drag and the GET
+  // can win, leaving the control showing a value the server no longer holds. A
+  // queued edit wins over the publish, or a save landing mid-drag would drag the
+  // slider back out from under the pointer.
+  useEffect(() => {
+    if (isMac) {
+      return;
+    }
+    return subscribeVramBudgetSettings((next) => {
+      if (saveTimer.current) {
+        return;
+      }
+      setSettings(next);
+      setPercent(vramFractionToPercent(next.fraction));
+    });
+  }, [isMac]);
 
   useEffect(() => {
     let cancelled = false;
@@ -394,12 +412,7 @@ function VramBudgetRow() {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
       }
-      const fraction = pendingFraction.current;
-      pendingFraction.current = null;
-      if (fraction === null) {
-        return;
-      }
-      updateVramBudgetSettings(fraction).catch((error: unknown) => {
+      flushVramBudgetSave()?.catch((error: unknown) => {
         toast.error(
           error instanceof Error ? error.message : "Failed to save VRAM budget",
         );
@@ -422,16 +435,11 @@ function VramBudgetRow() {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
     }
-    pendingFraction.current = vramPercentToFraction(next);
+    stageVramBudgetSave(vramPercentToFraction(next));
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      const fraction = pendingFraction.current;
-      pendingFraction.current = null;
-      if (fraction === null) {
-        return;
-      }
-      updateVramBudgetSettings(fraction)
-        .then(setSettings)
+      flushVramBudgetSave()
+        ?.then(setSettings)
         .catch((error: unknown) => {
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
@@ -1533,6 +1541,19 @@ export function ModelConfigPage({
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
       : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
+    // Same reason as the numeric commits at the top of this handler, one layer
+    // out: the budget row debounces its PUT and flushes on unmount, which for
+    // this very click happens after onRun has staged the load, so the load would
+    // be sized against the old fraction. That is exactly the load the control
+    // promises the new value applies to. A failed save must not swallow the
+    // load, hence finally, and a click with nothing staged stays synchronous.
+    const stagedBudget = flushVramBudgetSave();
+    if (stagedBudget) {
+      void stagedBudget.finally(() => {
+        onRun(effectiveLoadConfig, classifiedIsDiffusion);
+      });
+      return;
+    }
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
 

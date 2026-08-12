@@ -34,6 +34,28 @@ type ApiVramBudgetSettings = {
 
 let inFlightVramBudget: Promise<VramBudgetSettings> | null = null;
 
+// Held here rather than in the row, because the row unmounts on Run and on the
+// Advanced toggle, and the load has to be able to flush the edit that unmount
+// would otherwise carry away with it.
+let stagedVramBudgetFraction: number | null = null;
+
+/** Record a fraction a debounced save has not sent yet. */
+export function stageVramBudgetSave(fraction: number | null) {
+  stagedVramBudgetFraction = fraction;
+}
+
+/**
+ * Send a staged fraction now, ahead of whatever the caller does next.
+ *
+ * Returns null when nothing is staged, so a caller that only has to wait in the
+ * rare case can keep its synchronous path in the common one.
+ */
+export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
+  const fraction = stagedVramBudgetFraction;
+  stagedVramBudgetFraction = null;
+  return fraction === null ? null : updateVramBudgetSettings(fraction);
+}
+
 export function subscribeVramBudgetSettings(
   listener: (settings: VramBudgetSettings) => void,
 ) {
@@ -59,7 +81,9 @@ function fromApi(settings: ApiVramBudgetSettings): VramBudgetSettings {
 // stale as soon as a model is loaded or swapped. This only fans the latest value
 // out to subscribers.
 function publishVramBudget(settings: VramBudgetSettings) {
-  window.dispatchEvent(new CustomEvent(VRAM_BUDGET_EVENT, { detail: settings }));
+  window.dispatchEvent(
+    new CustomEvent(VRAM_BUDGET_EVENT, { detail: settings }),
+  );
   return settings;
 }
 
@@ -101,7 +125,9 @@ export async function updateVramBudgetSettings(
     body: JSON.stringify({ fraction }),
   });
   if (!res.ok) {
-    throw new Error(await readFastApiError(res, "Failed to update VRAM budget"));
+    throw new Error(
+      await readFastApiError(res, "Failed to update VRAM budget"),
+    );
   }
   return publishVramBudget(fromApi(await res.json()));
 }

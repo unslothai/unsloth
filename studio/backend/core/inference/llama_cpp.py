@@ -10550,6 +10550,12 @@ class LlamaCppBackend:
                 # Discovery runs before the metadata read that says diffusion, so a
                 # transient sidecar failure can set this for a drafterless server.
                 self._dflash_retry_needed = False
+                # And the VRAM budget marker, for the reason given twice above: this
+                # path returns before the launch block that would overwrite it, the
+                # diffusion runner does not size itself from the budget, and the
+                # dedupe now compares it, so a previous llama-server's fraction would
+                # relaunch a healthy diffusion server on every Apply.
+                self._vram_fraction_launched = None
                 with self._lock:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")

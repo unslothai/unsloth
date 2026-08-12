@@ -30,7 +30,10 @@ test("percent and fraction round-trip exactly across the whole range", () => {
     percent <= VRAM_BUDGET_PERCENT_MAX;
     percent += 1
   ) {
-    assert.equal(vramFractionToPercent(vramPercentToFraction(percent)), percent);
+    assert.equal(
+      vramFractionToPercent(vramPercentToFraction(percent)),
+      percent,
+    );
   }
 });
 
@@ -89,34 +92,88 @@ test("unmount flushes the pending budget save instead of dropping it", () => {
   const row = vramBudgetRowSource();
   const cleanupStart = row.indexOf("useEffect(\n    () => () => {");
   assert.ok(cleanupStart >= 0, "the unmount-only effect is gone");
-  const cleanup = row.slice(cleanupStart, row.indexOf("\n    [],\n  );", cleanupStart));
+  const cleanup = row.slice(
+    cleanupStart,
+    row.indexOf("\n    [],\n  );", cleanupStart),
+  );
   // Still cancels the timer, so no callback fires against a torn-down view...
   assert.match(cleanup, /clearTimeout\(saveTimer\.current\)/);
   // ...but the value the user set is sent rather than discarded.
-  assert.match(cleanup, /updateVramBudgetSettings\(fraction\)/);
+  assert.match(cleanup, /flushVramBudgetSave\(\)/);
   // Fire-and-forget: the component is gone, so the response must not be routed
   // back into its state.
   assert.doesNotMatch(cleanup, /\.then\(setSettings\)/);
 });
 
-test("commit records the fraction the unmount flush would send", () => {
+test("commit stages the fraction before arming the debounce", () => {
   const row = vramBudgetRowSource();
   const commitStart = row.indexOf("const commit = (next: number) => {");
   assert.ok(commitStart >= 0, "commit is gone");
   const commit = row.slice(commitStart);
-  // Recorded before the timer is armed, so a drag that never reaches the timeout
-  // still has a value to flush.
+  // Staged before the timer is armed, so a drag that never reaches the timeout
+  // still has a value for unmount, or for Run, to flush.
   assert.ok(
-    commit.indexOf("pendingFraction.current = vramPercentToFraction(next)") <
+    commit.indexOf("stageVramBudgetSave(vramPercentToFraction(next))") <
       commit.indexOf("setTimeout("),
-    "the pending fraction must be recorded before the debounce is armed",
+    "the fraction must be staged before the debounce is armed",
   );
-  // ...and cleared once the debounced PUT goes out, so unmount cannot re-send a
-  // save that already happened.
+  // The debounced save goes through the same flush, which clears the staged
+  // value as it sends, so unmount cannot re-send a save that already happened.
   const timer = commit.slice(commit.indexOf("setTimeout("));
-  assert.ok(
-    timer.indexOf("pendingFraction.current = null") <
-      timer.indexOf("updateVramBudgetSettings(fraction)"),
-    "the debounced save must clear the pending fraction before sending",
+  assert.match(timer, /flushVramBudgetSave\(\)/);
+  assert.doesNotMatch(timer, /updateVramBudgetSettings\(/);
+});
+
+test("the staged fraction is held outside the component that unmounts", () => {
+  // The row unmounts on Run and on the Advanced toggle, so a ref inside it
+  // cannot be read by the load that is about to start.
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
   );
+  assert.match(client, /export function stageVramBudgetSave/);
+  assert.match(client, /export function flushVramBudgetSave/);
+  // Cleared as it sends, so two flushes cannot write the same edit twice.
+  const flush = client.slice(
+    client.indexOf("export function flushVramBudgetSave"),
+  );
+  assert.ok(
+    flush.indexOf("stagedVramBudgetFraction = null") <
+      flush.indexOf("updateVramBudgetSettings(fraction)"),
+    "the flush must clear the staged value before sending it",
+  );
+  // Nothing staged must stay cheap for the caller: null, not a resolved promise.
+  assert.match(flush, /fraction === null \? null :/);
+});
+
+test("Run waits for a staged budget save before starting the load", () => {
+  // The control promises the budget applies on the next load. If Run stages the
+  // load while the PUT is still in flight, that next load is sized against the
+  // old fraction and the save merely earns the user another reload.
+  const handlerStart = pageSource.indexOf("const handleRun = () => {");
+  assert.ok(handlerStart >= 0, "handleRun is gone");
+  const handler = pageSource.slice(
+    handlerStart,
+    pageSource.indexOf("\n  };", handlerStart),
+  );
+  const flushAt = handler.indexOf("flushVramBudgetSave()");
+  assert.ok(flushAt >= 0, "handleRun no longer flushes the staged budget");
+  assert.ok(
+    flushAt < handler.indexOf("onRun(effectiveLoadConfig"),
+    "the flush must come before the load is staged",
+  );
+  // A failed save must not swallow the load.
+  assert.match(handler, /\.finally\(\(\) => \{/);
+});
+
+test("the row adopts published settings instead of only its own read", () => {
+  const row = vramBudgetRowSource();
+  assert.match(row, /subscribeVramBudgetSettings\(/);
+  // A queued edit outranks the publish, or a save landing mid-drag would pull
+  // the slider back out from under the pointer.
+  const subscribeAt = row.indexOf("subscribeVramBudgetSettings(");
+  const guard = row.slice(subscribeAt, subscribeAt + 260);
+  assert.match(guard, /if \(saveTimer\.current\) \{\s*return;/);
 });

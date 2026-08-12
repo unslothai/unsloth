@@ -333,3 +333,22 @@ class TestRouteContract:
         monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: _Backend(), raising = False)
 
         assert not rs._vram_budget_reload_required(0.85)
+
+
+class TestDiffusionPath:
+    def test_the_diffusion_launch_clears_the_marker(self):
+        # The diffusion branch returns before the launch block that commits the
+        # marker, so a fraction left by a previous llama-server would survive into
+        # a running diffusion server. The dedupe compares the marker, so that
+        # stale value would tear down and relaunch a healthy diffusion runner on
+        # every Apply, which is the failure its neighbours in that same block
+        # (_mtp_draft_path, _spec_fallback_reason) already exist to prevent.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        diffusion = source[source.index("if self._is_diffusion:") :]
+        diffusion = diffusion[: diffusion.index("_start_diffusion_server")]
+        compact = "".join(diffusion.split())
+        assert "self._vram_fraction_launched=None" in compact
