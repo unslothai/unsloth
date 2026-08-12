@@ -298,7 +298,7 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
         {
             "image_generation_presets": {
                 "activePreset": "Broken",
-                "currentParams": {"steps": 999_999},
+                "currentParams": {"steps": 24},
                 "customPresets": [
                     {"name": "Broken", "params": {"steps": 999_999}},
                     {"name": "Readable", "params": {"steps": 24}},
@@ -312,7 +312,9 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
     # Still "saved", so the client does not mistake this for a fresh install and overwrite it.
     assert body["saved"] is True
     assert [preset["name"] for preset in body["customPresets"]] == ["Readable"]
-    assert body["activePreset"] == "Default"
+    # The state validated on its own, so one bad entry in the list does not reset it.
+    assert body["activePreset"] == "Broken"
+    assert body["currentParams"]["steps"] == 24
 
 
 def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):

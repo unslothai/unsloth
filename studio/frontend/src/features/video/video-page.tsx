@@ -1235,10 +1235,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     pageOwnsResident: canReapply,
     busy,
   });
+  // Only when status fully describes the resident load configuration. Saved settings of our own
+  // are not evidence of what is loaded: the native engine publishes no resolved record at all, and
+  // another client's load is not ours either, so Reapply would replace it with local defaults.
   const residentReapplyReady =
-    residentReapplyTarget &&
-    videoPresets.hydrated &&
-    (videoPresets.hasPersistedSettings || residentLoadConfig)
+    residentReapplyTarget && videoPresets.hydrated && residentLoadConfig
       ? residentReapplyTarget
       : null;
   const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;

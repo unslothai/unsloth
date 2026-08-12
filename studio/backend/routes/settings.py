@@ -247,9 +247,9 @@ def _get_generation_preset_settings(kind, schema):
     try:
         response = schema.model_validate(_readable(schema, stored))
     except ValidationError:
-        # A value this build cannot represent at all. Keep the named recipes that still read, so
-        # one unreadable entry does not cost the user the rest of the list.
-        logger.warning("Discarding unreadable %s generation preset settings", kind)
+        # A value this build cannot represent at all. Drop only what fails: one unreadable entry
+        # costs neither the rest of the list nor the state, which is validated on its own here.
+        logger.warning("Dropping unreadable %s generation preset entries", kind)
         presets = schema.model_fields["customPresets"].annotation
         item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
         readable = []
@@ -258,7 +258,15 @@ def _get_generation_preset_settings(kind, schema):
                 readable.append(item.model_validate(raw))
             except ValidationError:
                 continue
-        response = schema(customPresets = readable)
+        state = {
+            key: value
+            for key, value in _readable(schema, stored).items()
+            if key != "customPresets"
+        }
+        try:
+            response = schema.model_validate({**state, "customPresets": readable})
+        except ValidationError:
+            response = schema(customPresets = readable)
     response.saved = bool(stored)
     return response
 
