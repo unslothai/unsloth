@@ -5261,7 +5261,7 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
     """
 
     @staticmethod
-    def _loop_strip(text, names=None):
+    def _loop_strip(text, names = None):
         """The loop's display strip, reproduced exactly: Magistral reasoning removal,
         then the shared incremental stripper (see ``_strip_streaming_display``)."""
         stripper = tool_call_parser.StreamingMarkupStripper(names)
@@ -5270,7 +5270,7 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
     @pytest.mark.parametrize(
         "text",
         [
-            "before <tool_call>{\"name\": \"search\", \"arguments\": {}}</tool_call>",
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call>',
             "before <function=search><parameter=q>x</parameter></function> after",
             "plain prose with no markup at all",
             "<think>rehearsed <tool_call>{}</tool_call></think> visible",
@@ -5282,13 +5282,13 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
     def test_the_loop_path_agrees_with_the_helper(self, text):
         names = {"search"}
         assert self._loop_strip(text, names) == strip_tool_markup_streaming(
-            text, enabled_tool_names=names
+            text, enabled_tool_names = names
         )
 
     @pytest.mark.parametrize(
         "text",
         [
-            "before <tool_call>{\"name\": \"search\", \"arguments\": {}}</tool_call> after",
+            'before <tool_call>{"name": "search", "arguments": {}}</tool_call> after',
             "<function=search><parameter=q>a</parameter></function>tail",
         ],
     )
@@ -5301,5 +5301,5 @@ class TestStreamingDisplayStripStillMatchesTheExportedHelper:
             prefix = text[:i]
             incremental = stripper.strip(safetensors_agentic._strip_mistral_reasoning(prefix))
             assert incremental == strip_tool_markup_streaming(
-                prefix, enabled_tool_names=names
+                prefix, enabled_tool_names = names
             ), f"diverged at offset {i}"
