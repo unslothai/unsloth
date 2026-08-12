@@ -593,12 +593,8 @@ def test_embedding_guard_prices_the_slots_that_will_launch():
 
     embedding = dict(_QWEN3_8B, pooling_type = 2)
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**embedding)):
-        clamped = route._estimate_gguf_kv_gb(
-            "/x.gguf", 32768, n_parallel = 4, n_batch = 4, n_ubatch = 2
-        )
-        launched = route._estimate_gguf_kv_gb(
-            "/x.gguf", 32768, n_parallel = 2, n_batch = 4, n_ubatch = 2
-        )
+        clamped = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 4, n_batch = 4, n_ubatch = 2)
+        launched = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 2, n_batch = 4, n_ubatch = 2)
     assert clamped == pytest.approx(launched, abs = 0.01)
 
 

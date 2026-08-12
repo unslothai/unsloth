@@ -7304,9 +7304,7 @@ class LlamaCppBackend:
             # GGUF metadata has no key-order contract. Pooling can precede
             # general.architecture, so bind the buffered value after the sweep.
             if arch is not None:
-                self._pooling_type = pooling_by_arch.get(
-                    f"{arch}.pooling_type", self._pooling_type
-                )
+                self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
