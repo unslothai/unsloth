@@ -8904,7 +8904,17 @@ class LlamaCppBackend:
         if not binary:
             return True
         try:
-            from utils.llama_cpp_update import _llama_install_root
+            from utils.llama_cpp_update import (
+                _active_install_is_local_link,
+                _llama_install_root,
+            )
+
+            # A --with-llama-cpp-dir tree is the user's own checkout reached
+            # through a symlinked llama.cpp dir. The updater refuses to write
+            # through that link, so it cannot repair the binary either, and its
+            # entrypoint is theirs to keep.
+            if _active_install_is_local_link(binary):
+                return False
             return _llama_install_root(binary) is not None
         except Exception:
             return True

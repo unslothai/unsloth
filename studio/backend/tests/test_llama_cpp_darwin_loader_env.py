@@ -259,3 +259,41 @@ class TestBinaryRevisionPathSpace:
         target = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server-real"
         target.write_text("a different build entirely")
         assert backend._binary_changed_since_launch() is True
+
+
+class TestLocalLinkInstalls:
+    """--with-llama-cpp-dir points the canonical llama.cpp dir at the user's own
+    checkout. The updater refuses to write through that link, so the install is
+    theirs: no updater advice, and no resolving past their entrypoint."""
+
+    def _local_link_tree(self, tmp_path, monkeypatch):
+        external = tmp_path / "my-llama-checkout"
+        bin_dir = external / "build" / "bin"
+        bin_dir.mkdir(parents = True)
+        (bin_dir / "llama-server-real").write_text("")
+        wrapper = external / "llama-server"
+        wrapper.write_text(
+            '#!/bin/sh\nexport MY_BACKEND=1\nexec "$(dirname "$0")/build/bin/llama-server-real" "$@"\n'
+        )
+        studio_root = tmp_path / "studio"
+        studio_root.mkdir()
+        link = studio_root / "llama.cpp"
+        link.symlink_to(external)
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(link))
+        return link / "llama-server"
+
+    def test_a_local_link_is_not_reported_as_managed(self, monkeypatch, tmp_path):
+        binary = self._local_link_tree(tmp_path, monkeypatch)
+        assert LlamaCppBackend._is_unsloth_managed_binary(str(binary)) is False
+
+    def test_the_users_entrypoint_is_launched_as_given(self, monkeypatch, tmp_path):
+        binary = self._local_link_tree(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert LlamaCppBackend._exec_path_for_launch(str(binary)) == str(binary)
+
+    def test_the_remedy_does_not_send_them_to_the_updater(self, monkeypatch, tmp_path):
+        binary = self._local_link_tree(tmp_path, monkeypatch)
+        remedy = LlamaCppBackend._runtime_remedy(str(binary))
+        assert "unsloth studio update" not in remedy
+        assert "custom llama.cpp" in remedy
