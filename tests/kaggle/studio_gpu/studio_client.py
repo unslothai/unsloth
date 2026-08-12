@@ -362,7 +362,9 @@ def trained_steps(status: Any) -> int:
 
 def nonfinite_losses(status: Any) -> list:
     """The logged losses that are NaN, infinite, or not a number at all."""
-    return [value for value in _loss_values(status) if not _is_finite_loss(value) and value is not None]
+    return [
+        value for value in _loss_values(status) if not _is_finite_loss(value) and value is not None
+    ]
 
 
 def newest_gguf(root: str | Path) -> Path | None:

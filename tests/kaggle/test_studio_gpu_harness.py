@@ -1782,7 +1782,13 @@ class _ExportStudio:
         self.marker = marker
         self.polls = 0
 
-    def expect(self, method, path, body = None, **kw):
+    def expect(
+        self,
+        method,
+        path,
+        body = None,
+        **kw,
+    ):
         if path == "/api/export/export/gguf":
             raise TimeoutError("the read timed out")
         return {}
@@ -1821,7 +1827,9 @@ def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monk
         lambda self, path, *, variant, label: {"failures": [], "evidence": []},
     )
     monkeypatch.setattr(
-        module.Payload, "chat", lambda self, messages, **kw: (200, {"choices": [{"message": {"content": "hi"}}]})
+        module.Payload,
+        "chat",
+        lambda self, messages, **kw: (200, {"choices": [{"message": {"content": "hi"}}]}),
     )
     ok = session.assert_gguf_export(str(tmp_path / "adapter"))
     detail = session.assertions[-1]
@@ -1920,9 +1928,9 @@ def test_a_failing_install_under_test_reports_a_failure_rather_than_infra(tmp_pa
     filter selects for."""
     driver = _build(tmp_path)
     payload_source = _payload_source(driver)
-    fail_report_src = "def fail_report" + payload_source.split("def fail_report", 1)[1].split(
-        "\n\ndef ", 1
-    )[0]
+    fail_report_src = (
+        "def fail_report" + payload_source.split("def fail_report", 1)[1].split("\n\ndef ", 1)[0]
+    )
 
     emitted: list[str] = []
     namespace = {"json": json, "print": lambda *a, **kw: emitted.append("".join(map(str, a)))}
@@ -1952,9 +1960,9 @@ def test_a_failing_install_under_test_reports_a_failure_rather_than_infra(tmp_pa
 def test_an_install_that_leaves_no_interpreter_is_also_a_failure(tmp_path):
     driver = _build(tmp_path)
     payload_source = _payload_source(driver)
-    fail_report_src = "def fail_report" + payload_source.split("def fail_report", 1)[1].split(
-        "\n\ndef ", 1
-    )[0]
+    fail_report_src = (
+        "def fail_report" + payload_source.split("def fail_report", 1)[1].split("\n\ndef ", 1)[0]
+    )
     emitted: list[str] = []
     namespace = {"json": json, "print": lambda *a, **kw: emitted.append("".join(map(str, a)))}
     exec(compile(fail_report_src, "<fail_report>", "exec"), namespace)
@@ -2014,9 +2022,9 @@ def test_a_timeout_before_the_payload_started_is_still_infra(tmp_path):
     """A slow clone or install is Kaggle being slow, and must stay a no-report
     infra outcome rather than turning a pull request red."""
     driver = _build(tmp_path)
-    runner = [
-        "".join(c["source"]) for c in driver["cells"] if "papermill" in "".join(c["source"])
-    ][0]
+    runner = ["".join(c["source"]) for c in driver["cells"] if "papermill" in "".join(c["source"])][
+        0
+    ]
     emitted: list[str] = []
 
     class _FakeSubprocess:
@@ -2068,13 +2076,24 @@ class _LoadStudio:
     def __init__(self, status_body):
         self.status_body = status_body
 
-    def expect(self, method, path, body = None, **kw):
+    def expect(
+        self,
+        method,
+        path,
+        body = None,
+        **kw,
+    ):
         return {}
 
     def get(self, path, **kw):
         return 200, self.status_body
 
-    def post(self, path, body = None, **kw):
+    def post(
+        self,
+        path,
+        body = None,
+        **kw,
+    ):
         return 200, {}
 
 
@@ -2087,9 +2106,7 @@ def test_load_model_does_not_inherit_the_previous_loads_offload_line(tmp_path, m
     session.outdir.mkdir()
     session.server_log = session.outdir / "studio.log"
     session.studio_home.mkdir(parents = True, exist_ok = True)
-    session.server_log.write_text(
-        "load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8"
-    )
+    session.server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8")
     session.studio = _LoadStudio({})
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
     monkeypatch.setattr(module, "nvidia_compute_apps", lambda: {})

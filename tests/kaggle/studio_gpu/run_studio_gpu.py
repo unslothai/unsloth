@@ -1174,6 +1174,7 @@ class Payload:
         and the report always travel; screenshots only on failure, because on
         a pass they are megabytes nobody reads.
         """
+
         def _pack(*, with_screenshots: bool, log_tail_bytes: int | None = None) -> bytes:
             buf = io.BytesIO()
             with tarfile.open(fileobj = buf, mode = "w:gz") as tar:
@@ -1186,8 +1187,9 @@ class Payload:
                             and name != "studio_gpu_report.json"
                             and len(scrubbed) > log_tail_bytes
                         ):
-                            scrubbed = b"[earlier lines dropped to fit the evidence cap]\n" + (
-                                scrubbed[-log_tail_bytes:]
+                            scrubbed = (
+                                b"[earlier lines dropped to fit the evidence cap]\n"
+                                + (scrubbed[-log_tail_bytes:])
                             )
                         info = tarfile.TarInfo(name)
                         info.size = len(scrubbed)
