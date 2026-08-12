@@ -1419,8 +1419,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     parse: imageLoadConfigFromStatus,
     apply: applyImagePresetLoadConfig,
     hydrated: imagePresets.hydrated,
-    hasPersistedSettings: imagePresets.hasPersistedSettings,
-    pageOwnsResident: canReapply,
     busy,
   });
   // Only when status fully describes the resident load configuration. Saved settings of our own

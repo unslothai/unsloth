@@ -141,7 +141,6 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
   const hydrated = hydrationSource !== "pending";
   const presetsReady =
     hydrationSource === "fresh" || hydrationSource === "saved";
-  const hasPersistedSettings = hydrationSource === "saved";
   const initialParamsKey = useRef(configKey(currentParams));
   const initialLoadConfigKey = useRef(configKey(currentLoadConfig));
   const currentParamsRef = useRef(currentParams);
@@ -527,7 +526,6 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     presets,
     hydrated,
     presetsReady,
-    hasPersistedSettings,
     hasUnsavedChanges,
     selectPreset,
     savePreset,

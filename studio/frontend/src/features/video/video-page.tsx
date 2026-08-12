@@ -1231,8 +1231,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     parse: videoLoadConfigFromStatus,
     apply: applyVideoPresetLoadConfig,
     hydrated: videoPresets.hydrated,
-    hasPersistedSettings: videoPresets.hasPersistedSettings,
-    pageOwnsResident: canReapply,
     busy,
   });
   // Only when status fully describes the resident load configuration. Saved settings of our own

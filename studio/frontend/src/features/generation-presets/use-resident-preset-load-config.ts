@@ -17,8 +17,6 @@ export function useResidentPresetLoadConfig<Config>({
   parse,
   apply,
   hydrated,
-  hasPersistedSettings,
-  pageOwnsResident,
   busy,
 }: {
   residentKey: string | null;
@@ -26,13 +24,10 @@ export function useResidentPresetLoadConfig<Config>({
   parse: (status: ResolvedStatus) => Config | null;
   apply: (config?: Config) => void;
   hydrated: boolean;
-  hasPersistedSettings: boolean;
-  pageOwnsResident: boolean;
   busy: string | null;
 }): Config | null {
   const config = useMemo(() => parse({ resolved }), [parse, resolved]);
   const seedKey = residentKey ? resolvedSeedKey(resolved) : null;
-  const initialSeedHandled = useRef(false);
   const handledSeedKey = useRef<string | null>(null);
 
   useEffect(() => {
@@ -56,23 +51,12 @@ export function useResidentPresetLoadConfig<Config>({
       return;
     }
     handledSeedKey.current = key;
-    if (!initialSeedHandled.current) {
-      initialSeedHandled.current = true;
-      if (hasPersistedSettings && !pageOwnsResident) {
-        return;
-      }
-    }
+    // Always, including the first seed of a model this page did not load. Saved settings own the
+    // generation recipe, never the load options: those describe the build that is actually
+    // resident. Skipping this left the selects reading "auto" over a build running low_vram, and
+    // Reapply submits what the selects say, so it silently reloaded away the resident choice.
     apply(config);
-  }, [
-    apply,
-    busy,
-    config,
-    hasPersistedSettings,
-    hydrated,
-    pageOwnsResident,
-    residentKey,
-    seedKey,
-  ]);
+  }, [apply, busy, config, hydrated, residentKey, seedKey]);
 
   return config;
 }
