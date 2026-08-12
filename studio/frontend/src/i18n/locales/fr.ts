@@ -750,7 +750,6 @@ export const fr = {
         applying: "Installation...",
         applyHint: "Télécharge la nouvelle version et redémarre llama.cpp. Un modèle chargé sera déchargé.",
         applyHintWithSize: "Télécharge {size} et redémarre llama.cpp. Un modèle chargé sera déchargé.",
-        switched: "Backend llama.cpp modifié.",
         switchedTo: "llama.cpp fonctionne maintenant sur {backend}.",
         switchFailed: "Impossible de changer le backend llama.cpp.",
         switchInterrupted: "Le changement a été interrompu avant d’être terminé.",

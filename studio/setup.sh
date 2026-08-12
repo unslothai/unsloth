@@ -40,7 +40,7 @@ fi
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
-#                           Overrides Studio's Settings > Resources selection.
+#                           Overrides Studio's Settings > System selection.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -2148,28 +2148,25 @@ else
         # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
     fi
-    # The normalized override affects llama.cpp only, not the training backend.
-    _llama_backend="$_source_backend_choice"
-    _explicit_llama_backend="$_explicit_llama_source_backend"
-    case "$_llama_backend" in
+    # Reporting only: the installer reads UNSLOTH_LLAMA_CPP_BACKEND itself, and it
+    # is also the only side that can see a choice recorded in the install marker,
+    # so forwarding a second copy from here could only ever disagree with it. The
+    # override affects llama.cpp alone, not the training backend.
+    case "$_source_backend_choice" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
-            else
-                _PREBUILT_CMD+=(--force-cpu)
             fi
             ;;
         vulkan)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
                 step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
             else
-                _PREBUILT_CMD+=(--llama-backend vulkan)
                 step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
             fi
             ;;
-        # The installer reads these selections directly from the environment.
         ""|auto|cuda|hip|rocm) ;;
-        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_source_backend_choice' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
@@ -2213,9 +2210,9 @@ else
         # A preserved server may not satisfy an explicit backend request, and it
         # leaves _LLAMA_CPP_DEGRADED false. Never report success on an unverified
         # backend after the requested replacement ran out of space.
-        if [ -n "$_explicit_llama_backend" ]; then
-            step "llama.cpp" "$_explicit_llama_backend was explicitly requested, so the installer will not keep an unverified existing backend" "$C_ERR"
-            setup_fail 1 "$_explicit_llama_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
+        if [ -n "$_explicit_llama_source_backend" ]; then
+            step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing backend" "$C_ERR"
+            setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
         fi
     elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
         step "llama.cpp" "selected backend could not be installed" "$C_ERR"
@@ -2233,14 +2230,11 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        if [ -n "$_explicit_llama_backend" ]; then
-            step "llama.cpp" "$_explicit_llama_backend was explicitly requested, so the installer will not substitute an unverified source backend" "$C_ERR"
-            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
-            setup_fail 1 "$_explicit_llama_backend was explicitly requested, so the installer will not substitute an unverified source backend. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
-        else
-            substep "falling back to source build"
-            _NEED_LLAMA_SOURCE_BUILD=true
-        fi
+        # Exit 2 means no concrete backend was in play: a request the installer
+        # could not honour -- named here or recorded in the install marker, which
+        # this script cannot see -- exits 5 above instead.
+        substep "falling back to source build"
+        _NEED_LLAMA_SOURCE_BUILD=true
     else
         step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"

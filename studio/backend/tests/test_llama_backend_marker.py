@@ -98,11 +98,16 @@ def test_the_api_offers_exactly_the_requestable_backends():
     assert set(get_args(field.annotation)) == set(ilp.REQUESTABLE_BACKENDS)
 
 
-def test_the_api_can_report_an_unreadable_newer_backend_request():
-    from routes.llama import LlamaBackendStatusResponse
-    response = LlamaBackendStatusResponse(backend_request = None)
+def test_the_api_reports_an_unreadable_newer_backend_request_verbatim():
+    """A choice written by a newer Studio survives the response model.
 
-    assert response.backend_request is None
+    Coercing it to "auto" would tell the picker this install is detecting when it
+    is not, and the picker would then happily overwrite the newer choice.
+    """
+    from routes.llama import LlamaBackendStatusResponse
+    response = LlamaBackendStatusResponse(backend_request = "sycl")
+
+    assert response.backend_request == "sycl"
 
 
 @pytest.mark.parametrize(
@@ -128,35 +133,3 @@ def test_the_api_can_report_an_unreadable_newer_backend_request():
 )
 def test_was_chosen_separates_a_pinned_install_from_a_detected_one(marker, chosen):
     assert backend_marker.marker_backend_was_chosen(marker) is chosen
-
-
-def test_install_identity_prefers_the_recorded_fingerprint():
-    marker = {"asset": "llama.tar.gz", "install_fingerprint": "abc123"}
-
-    assert backend_marker.marker_install_identity(marker) == "fingerprint:abc123"
-
-
-def test_legacy_install_identity_changes_with_the_runtime_asset():
-    first = backend_marker.marker_install_identity(
-        {"release_tag": "b1", "asset": "cuda-old.tar.gz", "backend": "cuda"}
-    )
-    second = backend_marker.marker_install_identity(
-        {"release_tag": "b1", "asset": "cuda-new.tar.gz", "backend": "cuda"}
-    )
-
-    assert first is not None
-    assert first != second
-
-
-@pytest.mark.parametrize(
-    "marker",
-    [
-        {},
-        {"asset": "cuda.tar.gz", "backend": "cuda"},
-        {"asset": "cuda.tar.gz", "install_fingerprint": "abc123"},
-    ],
-)
-def test_installer_and_backend_read_the_same_install_identity(tmp_path, marker):
-    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(marker))
-
-    assert ilp.installed_llama_identity(tmp_path) == backend_marker.marker_install_identity(marker)

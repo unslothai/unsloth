@@ -55,7 +55,6 @@ from utils.prebuilt.llama_backend import (
     environment_backend_override,
     marker_backend,
     marker_backend_request,
-    marker_satisfies_backend_option,
     normalize_backend,
 )
 
@@ -480,73 +479,11 @@ def _env_backend_override() -> Optional[str]:
     )
 
 
-def _resolved_selection_applied(
-    marker: Optional[dict], backend_request: Optional[str], option: Optional[dict]
-) -> bool:
-    """Whether the installed bundle satisfies this resolved option."""
-    return marker_satisfies_backend_option(marker, backend_request, option)
-
-
-def _whisper_pairing_applied(
-    backend_request: Optional[str], installed_backend: Optional[str]
-) -> bool:
-    """Whether a managed slim whisper install already matches llama.cpp."""
-    if backend_request is None or installed_backend is None:
-        return True
-    try:
-        from utils import whisper_cpp_update
-        plan = whisper_cpp_update.repair_pairing_plan(
-            backend_request, resolved_backend = installed_backend
-        )
-    except Exception as exc:  # pragma: no cover - status must remain available
-        logger.debug("llama backend: whisper pairing probe failed", error = str(exc))
-        return True
-    return plan.get("phase") is None
-
-
-def get_backend_status(*, force_refresh: bool = False) -> dict:
-    """Return the installed backend and host-compatible alternatives."""
-    binary = _find_binary()
-    marker = read_install_marker(binary)
-    unsupported = _switch_support(binary, marker)
-    with _job_lock:
-        job = dict(_job)
-    status: dict = {
-        "supported": unsupported is None,
-        "reason": unsupported,
-        "env_backend": _env_backend_override(),
-        "backend": marker_backend(marker),
-        "backend_request": marker_backend_request(marker),
-        # Becomes false only after the resolver proves that the recorded request
-        # needs another bundle or sidecar repair. Unknown status must not invite an apply.
-        "selection_applied": True,
-        "installed_tag": (marker or {}).get("release_tag") or (marker or {}).get("tag"),
-        "options": [],
-        "job": job,
-    }
-    if unsupported is not None:
-        return status
-    # Do not resolve options while the shared job is replacing the install.
-    if job["state"] == _JOB_RUNNING:
-        return status
-    resolved = _resolve_backends_for_host(
-        _install_dir_for(binary),
-        force_refresh = force_refresh,
-        published_repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO,
-    )
-    if not resolved:
-        # Keep showing the installed backend without guessing alternatives.
-        status["reason"] = "unresolved"
-        status["supported"] = False
-        return status
-    repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
-    assets = None
-    try:
-        assets = latest_release_assets(repo, force_refresh = force_refresh)
-    except Exception as exc:  # pragma: no cover - network defensive
-        logger.debug("llama backend: asset size lookup failed", error = str(exc))
+def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) -> list[dict]:
+    """Normalize a resolver payload into the options the picker and the switch
+    planner both read, so both judge a request against the same list."""
     options = []
-    for entry in resolved.get("backends") or []:
+    for entry in (resolved or {}).get("backends") or []:
         backend = normalize_backend(entry.get("backend"))
         if backend is None:
             continue
@@ -562,19 +499,73 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
                 "download_size_bytes": (assets or {}).get(asset) if asset else None,
             }
         )
-    status["options"] = options
-    current = next(
-        (
-            entry
-            for entry in resolved.get("backends") or []
-            if normalize_backend(entry.get("backend")) == status["backend_request"]
-        ),
-        None,
+    return options
+
+
+def _selection_applied(
+    backend_request: str, installed_backend: Optional[str], options: list[dict]
+) -> bool:
+    """Whether the recorded choice still describes the installed backend.
+
+    A concrete choice is applied by definition: the installer records it only on
+    an install that honoured it, so it can never disagree with what is on disk.
+    ``auto`` is the one that drifts -- a GPU or driver that appears after an
+    automatic CPU install makes detection resolve somewhere else -- and applying
+    it again is offered exactly then.
+    """
+    if backend_request != "auto":
+        return True
+    auto = next((option for option in options if option["backend"] == "auto"), None)
+    if not auto or not auto.get("available"):
+        return True
+    resolved = auto.get("resolved_backend")
+    return resolved is None or installed_backend is None or resolved == installed_backend
+
+
+def get_backend_status(*, force_refresh: bool = False) -> dict:
+    """Return the installed backend and host-compatible alternatives."""
+    binary = _find_binary()
+    marker = read_install_marker(binary)
+    unsupported = _switch_support(binary, marker)
+    with _job_lock:
+        job = dict(_job)
+    status: dict = {
+        "supported": unsupported is None,
+        "reason": unsupported,
+        "env_backend": _env_backend_override(),
+        "backend": marker_backend(marker),
+        "backend_request": marker_backend_request(marker),
+        # Only the resolver can tell that an automatic choice has drifted, so an
+        # unresolved status must not invite an apply.
+        "selection_applied": True,
+        "installed_tag": (marker or {}).get("release_tag") or (marker or {}).get("tag"),
+        "options": [],
+        "job": job,
+    }
+    if unsupported is not None:
+        return status
+    # Do not resolve options while the shared job is replacing the install.
+    if job["state"] == _JOB_RUNNING:
+        return status
+    repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
+    resolved = _resolve_backends_for_host(
+        _install_dir_for(binary), force_refresh = force_refresh, published_repo = repo
     )
-    if current and current.get("available"):
-        status["selection_applied"] = _resolved_selection_applied(
-            marker, status["backend_request"], current
-        ) and _whisper_pairing_applied(status["backend_request"], status["backend"])
+    if not resolved:
+        # Keep showing the installed backend without guessing alternatives.
+        status["reason"] = "unresolved"
+        status["supported"] = False
+        return status
+    assets = None
+    try:
+        assets = latest_release_assets(repo, force_refresh = force_refresh)
+    except Exception as exc:  # pragma: no cover - network defensive
+        logger.debug("llama backend: asset size lookup failed", error = str(exc))
+    options = _backend_options(resolved, assets)
+    status["options"] = options
+    status["selection_applied"] = _selection_applied(
+        status["backend_request"], status["backend"], options
+    )
     return status
 
 
@@ -973,22 +964,20 @@ def start_backend_switch(backend: str) -> dict:
 
 def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or
-    re-pair with the new backend for a switch. Probe failures skip the phase, but
-    a repair that starts and fails remains visible and retryable."""
+    re-pair with the new backend for a switch.
+
+    A switch that installs nothing leaves llama's ggml where it was, so there is
+    nothing to re-pair either: whisper never runs alone here, and a refused switch
+    stays refused instead of turning into a whisper-only job."""
     if backend_request is None:
         return (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
     if not llama_will_run:
-        try:
-            from utils import whisper_cpp_update
-            return whisper_cpp_update.repair_pairing_plan(backend_request)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("llama switch: whisper retry probe failed", error = str(exc))
-            return {}
+        return {}
     try:
         from utils import whisper_cpp_update
-        return whisper_cpp_update.repair_pairing_plan(backend_request, llama_will_run = True)
+        return whisper_cpp_update.repair_pairing_plan()
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama switch: whisper repair probe failed", error = str(exc))
         return {}
@@ -1079,26 +1068,21 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                     "unresolved",
                     "Could not verify the available llama.cpp backends. Try again online.",
                 )
-            option = next(
-                (
-                    entry
-                    for entry in resolved.get("backends") or []
-                    if normalize_backend(entry.get("backend")) == backend_request
-                ),
-                None,
-            )
-            resolved_backend = normalize_backend((option or {}).get("resolved_backend"))
+            options = _backend_options(resolved)
+            option = next((o for o in options if o["backend"] == backend_request), None)
             if (
-                not option
-                or not option.get("available")
-                or (backend_request != "auto" and resolved_backend != backend_request)
+                option is None
+                or not option["available"]
+                or (backend_request != "auto" and option["resolved_backend"] != backend_request)
             ):
                 return _finish_planning_refusal(
                     "backend_unavailable",
                     f"No {backend_request} llama.cpp build is available for this machine.",
                 )
             marker = read_install_marker(_find_binary())
-            if _resolved_selection_applied(marker, backend_request, option):
+            if marker_backend_request(marker) == backend_request and _selection_applied(
+                backend_request, marker_backend(marker), options
+            ):
                 llama_plan = {
                     "skip_reason": "already_selected",
                     "refusal": {

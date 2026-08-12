@@ -707,7 +707,6 @@ export const zhCN = {
         applying: "正在安装…",
         applyHint: "下载新的构建并重启 llama.cpp。已加载的模型会被卸载。",
         applyHintWithSize: "下载 {size} 并重启 llama.cpp。已加载的模型会被卸载。",
-        switched: "llama.cpp 后端已更改。",
         switchedTo: "llama.cpp 现在运行在 {backend} 上。",
         switchFailed: "无法更改 llama.cpp 后端。",
         switchInterrupted: "切换在完成前中断。",

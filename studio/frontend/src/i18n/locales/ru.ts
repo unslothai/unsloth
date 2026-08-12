@@ -731,7 +731,6 @@ export const ru = {
         applying: "Установка...",
         applyHint: "Скачает новую сборку и перезапустит llama.cpp. Загруженная модель будет выгружена.",
         applyHintWithSize: "Скачает {size} и перезапустит llama.cpp. Загруженная модель будет выгружена.",
-        switched: "Бэкенд llama.cpp изменён.",
         switchedTo: "Теперь llama.cpp работает на {backend}.",
         switchFailed: "Не удалось изменить бэкенд llama.cpp.",
         switchInterrupted: "Переключение было прервано до завершения.",

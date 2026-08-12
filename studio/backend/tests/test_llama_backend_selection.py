@@ -3,7 +3,7 @@
 
 """install_llama_prebuilt.py: naming a llama.cpp backend, and keeping that choice.
 
-The picker in Settings > Resources, `UNSLOTH_LLAMA_CPP_BACKEND`, and
+The picker in Settings > System, `UNSLOTH_LLAMA_CPP_BACKEND`, and
 `--llama-backend` are three spellings of one thing: a backend request, resolved
 here and recorded in the install marker so every later entry point -- setup.sh,
 `unsloth studio update`, the desktop updater -- installs the same backend without
@@ -131,11 +131,13 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
         # Written by this build.
         ({"backend": "rocm", "backend_request": "rocm"}, "rocm"),
         ({"backend": "cuda", "backend_request": "auto"}, "auto"),
-        # An unknown explicit choice must not become "auto".
-        ({"backend": "sycl", "backend_request": "sycl"}, None),
-        ({"backend": "cuda", "backend_request": 7}, None),
-        ({"asset": "x.tar.gz", "llama_backend": "sycl"}, None),
-        ({"asset": "x.tar.gz", "llama_backend": 7}, None),
+        # A choice from a newer Studio is returned verbatim, never as "auto":
+        # "auto" would license this build to re-detect over it.
+        ({"backend": "sycl", "backend_request": "sycl"}, "sycl"),
+        ({"asset": "x.tar.gz", "llama_backend": "sycl"}, "sycl"),
+        # A non-string records no readable choice at all, so detection applies.
+        ({"backend": "cuda", "backend_request": 7}, "auto"),
+        ({"asset": "x.tar.gz", "llama_backend": 7}, "auto"),
     ],
 )
 def test_persisted_backend_request_reads_old_and_new_markers(tmp_path, marker, expected):
@@ -143,8 +145,9 @@ def test_persisted_backend_request_reads_old_and_new_markers(tmp_path, marker, e
 
 
 def test_persisted_backend_request_without_an_install(tmp_path):
-    assert ilp.persisted_backend_request(None) is None
-    assert ilp.persisted_backend_request(tmp_path) is None
+    # No marker records no choice, which is detection, not an unreadable one.
+    assert ilp.persisted_backend_request(None) == "auto"
+    assert ilp.persisted_backend_request(tmp_path) == "auto"
 
 
 # ── Precedence ──
@@ -235,7 +238,7 @@ def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
     )
     seen = []
     monkeypatch.setattr(ilp, "detect_host", lambda: host)
-    monkeypatch.setattr(ilp, "describe_installed_backend", lambda install_dir: None)
+    monkeypatch.setattr(ilp, "load_prebuilt_metadata", lambda install_dir: None)
 
     def _select(**kwargs):
         seen.append(kwargs["backend"])
@@ -256,7 +259,6 @@ def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
             ],
             persist_llama_backend = None,
             persist_rocm_gfx = None,
-            force_cpu = False,
         )
 
     monkeypatch.setattr(ilp, "select_backend_install", _select)
@@ -274,7 +276,7 @@ def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
     assert payload["backends"][0]["resolved_backend"] == "metal"
 
 
-def test_selection_payload_reports_every_acceptable_candidate():
+def test_selection_payload_reports_the_backend_a_plan_would_install():
     primary = _choice("linux-cuda", "cuda13.tar.gz")
     fallback = _choice("linux-cuda", "cuda12.tar.gz")
     selection = SimpleNamespace(
@@ -292,7 +294,7 @@ def test_selection_payload_reports_every_acceptable_candidate():
     payload = ilp._selection_payload(selection)
 
     assert payload["asset"] == "cuda13.tar.gz"
-    assert payload["acceptable_assets"] == ["cuda13.tar.gz", "cuda12.tar.gz"]
+    assert payload["backend"] == "cuda"
 
 
 def test_explicit_rocm_reprobes_and_suppresses_cuda_on_a_mixed_host(monkeypatch):
@@ -346,9 +348,7 @@ def test_backend_resolver_does_not_turn_a_switch_into_a_version_update(monkeypat
         lambda: SimpleNamespace(is_macos = False, system = "Linux", machine = "x86_64"),
     )
     monkeypatch.setattr(
-        ilp,
-        "describe_installed_backend",
-        lambda install_dir: {"release_tag": "b9900-mix-old"},
+        ilp, "load_prebuilt_metadata", lambda install_dir: {"release_tag": "b9900-mix-old"}
     )
     seen_pins = []
 
@@ -376,8 +376,8 @@ def test_backend_resolver_rejects_cross_repository_switches(monkeypatch):
     monkeypatch.setattr(ilp, "detect_host", lambda: host)
     monkeypatch.setattr(
         ilp,
-        "describe_installed_backend",
-        lambda install_dir: {"release_tag": "b9900-mix-old", "repo": FORK},
+        "load_prebuilt_metadata",
+        lambda install_dir: {"release_tag": "b9900-mix-old", "published_repo": FORK},
     )
 
     def _upstream_selection(**kwargs):
@@ -399,7 +399,6 @@ def test_backend_resolver_rejects_cross_repository_switches(monkeypatch):
             release_plans = [plan],
             persist_llama_backend = "vulkan",
             persist_rocm_gfx = None,
-            force_cpu = False,
         )
 
     monkeypatch.setattr(ilp, "select_backend_install", _upstream_selection)
@@ -422,7 +421,7 @@ def test_backend_resolver_fails_when_every_option_hits_an_unexpected_error(monke
         "detect_host",
         lambda: SimpleNamespace(is_macos = False, system = "Linux", machine = "x86_64"),
     )
-    monkeypatch.setattr(ilp, "describe_installed_backend", lambda install_dir: None)
+    monkeypatch.setattr(ilp, "load_prebuilt_metadata", lambda install_dir: None)
 
     def _offline(**kwargs):
         raise ConnectionError("offline")
@@ -530,7 +529,6 @@ def _stub_selection(
                 release_plans = [plan],
                 persist_llama_backend = None,
                 persist_rocm_gfx = None,
-                force_cpu = backend == "cpu",
             )
         raise ilp.BackendUnavailable(f"no {backend} prebuilt bundle attempts were available")
 
@@ -552,9 +550,12 @@ def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tm
     seen = _stub_selection(monkeypatch, available = {"auto"})
     marker_path = _marker(tmp_path, backend = "sycl", backend_request = "sycl")
 
-    with pytest.raises(ilp.UnknownBackendRequest):
+    with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "")
 
+    # EXIT_ERROR, not the source fallback: a source build would pick its own
+    # backend, which is the outcome refusing this update exists to prevent.
+    assert raised.value.code == ilp.EXIT_ERROR
     assert seen == []
     marker = json.loads((marker_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["backend_request"] == "sycl"

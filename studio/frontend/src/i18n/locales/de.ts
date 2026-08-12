@@ -751,7 +751,6 @@ export const de = {
         applying: "Wird installiert ...",
         applyHint: "Lädt den neuen Build herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
         applyHintWithSize: "Lädt {size} herunter und startet llama.cpp neu. Ein geladenes Modell wird entladen.",
-        switched: "llama.cpp-Backend geändert.",
         switchedTo: "llama.cpp läuft jetzt mit {backend}.",
         switchFailed: "Das llama.cpp-Backend konnte nicht geändert werden.",
         switchInterrupted: "Der Wechsel wurde vor dem Abschluss unterbrochen.",

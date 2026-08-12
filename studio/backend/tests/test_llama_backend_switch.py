@@ -3,7 +3,7 @@
 
 """Switching the llama.cpp backend from the app.
 
-The picker in Settings > Resources reads utils.llama_cpp_update.get_backend_status
+The picker in Settings > System reads utils.llama_cpp_update.get_backend_status
 and applies with start_backend_switch. Both run on the update job, so a switch and
 an update can never write to the same install at once.
 
@@ -29,6 +29,9 @@ import utils.llama_cpp_update as upd  # noqa: E402
 import utils.whisper_cpp_update as whisper_upd  # noqa: E402
 
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
+
+# Captured before the autouse fixture stubs it out on the module.
+_whisper_phase_plan = upd._whisper_phase_plan
 
 
 class _FakeInstallerPopen:
@@ -289,8 +292,14 @@ def test_switching_to_the_recorded_choice_is_refused(monkeypatch, tmp_path):
     assert action["reason"] == "already_selected"
 
 
-def test_same_backend_with_a_new_resolved_asset_is_reinstalled(monkeypatch, tmp_path):
-    install_dir = _install(
+def test_re_selecting_a_backend_is_refused_even_when_its_asset_moved(monkeypatch, tmp_path):
+    """The picker chooses a backend, not a bundle.
+
+    A newer per-architecture asset for the backend already selected is an update,
+    which the update flow offers on its own schedule. Making Apply mean "reinstall
+    too" would hand the same install to two jobs with two different triggers.
+    """
+    _install(
         monkeypatch,
         tmp_path,
         asset = "app-b9596-mix-abc-linux-x64-cuda12-old.tar.gz",
@@ -311,18 +320,11 @@ def test_same_backend_with_a_new_resolved_asset_is_reinstalled(monkeypatch, tmp_
             ]
         },
     )
-    _patch_installer(
-        monkeypatch,
-        on_start = lambda cmd, kwargs: _write_install(
-            install_dir,
-            asset = "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
-            backend = "cuda",
-            backend_request = "cuda",
-        ),
-    )
 
-    assert upd.start_backend_switch("cuda")["started"] is True
-    assert _await_job()["state"] == "success"
+    action = upd.start_backend_switch("cuda")
+
+    assert action["started"] is False
+    assert action["reason"] == "already_selected"
 
 
 def test_auto_reapplies_when_hardware_detection_changes(monkeypatch, tmp_path):
@@ -537,7 +539,9 @@ def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, t
     assert status["selection_applied"] is False
 
 
-def test_status_reports_when_the_resolved_asset_has_changed(monkeypatch, tmp_path):
+def test_status_keeps_a_concrete_choice_applied_when_its_asset_moves(monkeypatch, tmp_path):
+    # The recorded name and the installed backend agree, which is all a concrete
+    # choice claims. A newer asset for it is an update, not an unapplied selection.
     _install(
         monkeypatch,
         tmp_path,
@@ -550,178 +554,112 @@ def test_status_reports_when_the_resolved_asset_has_changed(monkeypatch, tmp_pat
 
     assert status["backend"] == "cuda"
     assert status["backend_request"] == "cuda"
-    assert status["selection_applied"] is False
+    assert status["selection_applied"] is True
 
 
-def test_status_accepts_a_successfully_installed_fallback_candidate(monkeypatch, tmp_path):
-    fallback = "app-b9596-mix-abc-linux-x64-cuda12-fallback.tar.gz"
-    marker = {"asset": fallback, "backend": "cuda", "backend_request": "cuda"}
-    option = {
-        "available": True,
-        "resolved_backend": "cuda",
-        "asset": "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
-        "acceptable_assets": [
-            "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
-            fallback,
-        ],
-    }
-
-    assert upd._resolved_selection_applied(marker, "cuda", option) is True
-
-
-def test_status_reports_a_pending_slim_whisper_repair(monkeypatch, tmp_path):
-    _install(monkeypatch, tmp_path)
+def test_a_switch_that_installs_nothing_plans_no_whisper_phase(monkeypatch):
+    # Whisper only re-pairs because llama's ggml is being replaced. Without a llama
+    # phase there is nothing to re-pair, so a refusal stays a refusal instead of
+    # turning into a whisper-only job that reports a switch nobody performed.
+    planned = []
     monkeypatch.setattr(
-        whisper_upd,
-        "repair_pairing_plan",
-        lambda backend, **kwargs: {"phase": {"repair": True}},
+        whisper_upd, "repair_pairing_plan", lambda: planned.append(1) or {"phase": {"repair": True}}
     )
 
-    status = upd.get_backend_status()
-
-    assert status["selection_applied"] is False
-
-
-def test_a_failed_whisper_repair_can_retry_without_reinstalling_llama(monkeypatch, tmp_path):
-    _install(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        upd,
-        "_whisper_phase_plan",
-        lambda backend, *, llama_will_run: (
-            {"phase": {"repair": True}} if not llama_will_run else {}
-        ),
-    )
-    calls = 0
-
-    def _repair(phase, set_progress):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            raise RuntimeError("temporary whisper download failure")
-        return {"message": "Re-paired whisper.cpp with the cuda backend."}
-
-    monkeypatch.setattr(whisper_upd, "run_repair_phase", _repair)
-
-    assert upd.start_backend_switch("auto")["started"] is True
-    first = _await_job()
-    assert first["state"] == "error"
-    assert first["phases"]["llama"]["state"] == "skipped"
-
-    assert upd.start_backend_switch("auto")["started"] is True
-    second = _await_job()
-    assert second["state"] == "success"
-    assert second["phases"]["llama"]["state"] == "skipped"
-    assert calls == 2
+    assert _whisper_phase_plan("cuda", llama_will_run = False) == {}
+    assert planned == []
+    assert _whisper_phase_plan("cuda", llama_will_run = True)["phase"]["repair"] is True
 
 
-def test_whisper_repair_runs_when_the_llama_asset_changes_on_the_same_backend(
-    monkeypatch, tmp_path
-):
-    whisper_dir = tmp_path / "whisper.cpp"
-    whisper_binary = _write_install(
-        whisper_dir,
-        install_kind = "slim",
-        paired_llama_identity = "fingerprint:old",
-    )
+def _slim_whisper(monkeypatch, tmp_path, install_kind = "slim") -> str:
+    whisper_dir = tmp_path / f"whisper.cpp-{install_kind}"
+    binary = _write_install(whisper_dir, install_kind = install_kind)
     (whisper_dir / MARKER).rename(whisper_dir / whisper_upd._INSTALL_MARKER_NAME)
-    monkeypatch.setattr(whisper_upd, "_find_binary", lambda: whisper_binary)
-    monkeypatch.setattr(
-        whisper_upd,
-        "_installed_llama_pairing",
-        lambda: ("cuda", "fingerprint:new"),
-    )
+    monkeypatch.setattr(whisper_upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(
         whisper_upd, "_installer_script", lambda: tmp_path / "install_whisper_prebuilt.py"
     )
-
-    plan = whisper_upd.repair_pairing_plan("cuda", resolved_backend = "cuda")
-
-    assert plan["phase"]["installed_backend"] == "cuda"
-    assert plan["phase"]["installed_llama_identity"] == "fingerprint:old"
+    return binary
 
 
-def test_whisper_repair_is_planned_before_a_same_backend_llama_swap(monkeypatch, tmp_path):
-    whisper_dir = tmp_path / "whisper.cpp"
-    whisper_binary = _write_install(
-        whisper_dir,
-        install_kind = "slim",
-        paired_llama_identity = "fingerprint:old",
-    )
-    (whisper_dir / MARKER).rename(whisper_dir / whisper_upd._INSTALL_MARKER_NAME)
-    monkeypatch.setattr(whisper_upd, "_find_binary", lambda: whisper_binary)
+def test_only_a_slim_whisper_install_is_re_paired(monkeypatch, tmp_path):
+    _slim_whisper(monkeypatch, tmp_path)
+    assert whisper_upd.repair_pairing_plan()["phase"]["repair"] is True
+
+    _slim_whisper(monkeypatch, tmp_path, install_kind = "fat")
+    # A fat bundle ships its own ggml, so llama's backend is not its backend.
+    assert whisper_upd.repair_pairing_plan()["skip_reason"] == "self_contained"
+
+
+def test_whisper_repair_installs_the_backend_llama_landed_on(monkeypatch, tmp_path):
+    _slim_whisper(monkeypatch, tmp_path)  # marker backend "cuda"
     monkeypatch.setattr(
         whisper_upd,
-        "_installed_llama_pairing",
-        lambda: ("cuda", "fingerprint:old"),
-    )
-    monkeypatch.setattr(
-        whisper_upd, "_installer_script", lambda: tmp_path / "install_whisper_prebuilt.py"
-    )
-
-    current = whisper_upd.repair_pairing_plan("cuda", resolved_backend = "cuda")
-    pending_swap = whisper_upd.repair_pairing_plan("cuda", llama_will_run = True)
-
-    assert current["skip_reason"] == "already_paired"
-    assert pending_swap["phase"]["repair"] is True
-
-
-def test_whisper_repair_skips_only_an_exact_runtime_pair(monkeypatch):
-    monkeypatch.setattr(
-        whisper_upd,
-        "_installed_llama_pairing",
-        lambda: ("cuda", "fingerprint:new"),
+        "_installed_llama_bundle",
+        lambda: ("rocm", "app-b9596-linux-x64-rocm-gfx1100.tar.gz"),
     )
     calls = []
     monkeypatch.setattr(
         whisper_upd,
-        "_install_latest_while_blocked_with_maintenance",
-        lambda phase, set_progress: calls.append(phase) or {},
+        "_install_latest",
+        lambda *args, **kwargs: calls.append(args) or {},
     )
 
-    whisper_upd.run_repair_phase(
-        {"installed_backend": "cuda", "installed_llama_identity": "fingerprint:old"},
-        lambda progress: None,
-    )
-    whisper_upd.run_repair_phase(
-        {"installed_backend": "cuda", "installed_llama_identity": "fingerprint:new"},
+    result = whisper_upd.run_repair_phase(
+        {"install_dir": tmp_path, "repo": "unslothai/whisper.cpp", "script": tmp_path / "i.py"},
         lambda progress: None,
     )
 
-    assert len(calls) == 1
+    # The llama asset carries the AMD arch the new bundle was built for.
+    assert calls[0][2] == "app-b9596-linux-x64-rocm-gfx1100.tar.gz"
+    assert calls[0][3] == "rocm"
+    assert "rocm backend" in result["message"]
 
 
-def test_whisper_repair_treats_only_incompatibility_as_unavailable(monkeypatch):
+def test_whisper_repair_skips_a_backend_it_is_already_built_against(monkeypatch, tmp_path):
+    # Detection can land back where it was; the release is preserved either way,
+    # so the hardlinks still point at the same build.
+    _slim_whisper(monkeypatch, tmp_path)  # marker backend "cuda"
+    monkeypatch.setattr(whisper_upd, "_installed_llama_bundle", lambda: ("cuda", "asset.tar.gz"))
     monkeypatch.setattr(
-        whisper_upd, "_installed_llama_pairing", lambda: ("vulkan", "fingerprint:new")
+        whisper_upd, "_install_latest", lambda *a, **k: pytest.fail("reinstalled needlessly")
     )
+
+    assert whisper_upd.run_repair_phase({}, lambda progress: None) == {}
+
+
+def test_whisper_repair_treats_only_incompatibility_as_unavailable(monkeypatch, tmp_path):
+    _slim_whisper(monkeypatch, tmp_path)  # marker backend "cuda"
+    monkeypatch.setattr(whisper_upd, "_installed_llama_bundle", lambda: ("vulkan", "asset.tar.gz"))
     monkeypatch.setattr(
         whisper_upd,
-        "_install_latest_while_blocked_with_maintenance",
-        lambda phase, set_progress: (_ for _ in ()).throw(
-            whisper_upd._flow.InstallerExit(2, "incompatible")
-        ),
+        "_install_latest",
+        lambda *a, **k: (_ for _ in ()).throw(whisper_upd._flow.InstallerExit(2, "incompatible")),
     )
 
-    result = whisper_upd.run_repair_phase({"installed_backend": "cuda"}, lambda progress: None)
+    result = whisper_upd.run_repair_phase(
+        {"install_dir": tmp_path, "repo": "r", "script": tmp_path / "i.py"}, lambda p: None
+    )
 
     assert "no whisper.cpp build is published" in result["message"]
 
 
 @pytest.mark.parametrize("returncode", [1, 3])
-def test_whisper_repair_surfaces_retryable_installer_failures(monkeypatch, returncode):
-    monkeypatch.setattr(
-        whisper_upd, "_installed_llama_pairing", lambda: ("vulkan", "fingerprint:new")
-    )
+def test_whisper_repair_surfaces_retryable_installer_failures(monkeypatch, tmp_path, returncode):
+    _slim_whisper(monkeypatch, tmp_path)  # marker backend "cuda"
+    monkeypatch.setattr(whisper_upd, "_installed_llama_bundle", lambda: ("vulkan", "asset.tar.gz"))
     monkeypatch.setattr(
         whisper_upd,
-        "_install_latest_while_blocked_with_maintenance",
-        lambda phase, set_progress: (_ for _ in ()).throw(
+        "_install_latest",
+        lambda *a, **k: (_ for _ in ()).throw(
             whisper_upd._flow.InstallerExit(returncode, "retryable")
         ),
     )
 
     with pytest.raises(whisper_upd._flow.InstallerExit) as raised:
-        whisper_upd.run_repair_phase({"installed_backend": "cuda"}, lambda progress: None)
+        whisper_upd.run_repair_phase(
+            {"install_dir": tmp_path, "repo": "r", "script": tmp_path / "i.py"}, lambda p: None
+        )
 
     assert raised.value.returncode == returncode
 

@@ -201,14 +201,18 @@ class LlamaBackendStatusResponse(BaseModel):
         ),
     )
     backend: Optional[str] = Field(None, description = "What the install runs on now.")
-    backend_request: Optional[str] = Field(
-        "auto", description = "The recorded choice; 'auto' means hardware detection."
+    backend_request: str = Field(
+        "auto",
+        description = (
+            "The recorded choice; 'auto' means hardware detection. A name this "
+            "build does not know was written by a newer Studio and is read-only."
+        ),
     )
     selection_applied: bool = Field(
         True,
         description = (
-            "False when the recorded choice now resolves to a different bundle or "
-            "its managed whisper.cpp pairing still needs repair."
+            "False when the recorded choice is 'auto' and detection would now "
+            "resolve to a different backend than the installed one."
         ),
     )
     installed_tag: Optional[str] = None

@@ -730,7 +730,6 @@ export const hi = {
         applying: "इंस्टॉल हो रहा है...",
         applyHint: "नया बिल्ड डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
         applyHintWithSize: "{size} डाउनलोड करके llama.cpp को फिर से शुरू करता है। लोड किया गया मॉडल अनलोड हो जाएगा।",
-        switched: "llama.cpp बैकएंड बदल दिया गया।",
         switchedTo: "अब llama.cpp {backend} पर चल रहा है।",
         switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
         switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",

@@ -148,10 +148,12 @@ export function llamaBackendSelectionNeedsApply(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
 ): boolean {
-  if (!status || status.backendRequest === null) {
+  // A null backendRequest is a choice written by a newer Studio. Untouched it is
+  // not dirty, but picking a backend over it is an explicit replacement.
+  const requested = selected ?? status?.backendRequest ?? null;
+  if (!status || requested === null) {
     return false;
   }
-  const requested = selected ?? status.backendRequest;
   return requested !== status.backendRequest || !status.selectionApplied;
 }
 
@@ -170,7 +172,7 @@ export function parseLlamaBackendSwitchStarted(
 /** Show installable options and preserve the selected value if it became unavailable. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
-  selected: LlamaBackend,
+  selected: LlamaBackend | null,
 ): LlamaBackendOption[] {
   if (!status) {
     return [];

@@ -710,7 +710,6 @@ export const ja = {
         applying: "インストール中...",
         applyHint: "新しいビルドをダウンロードして llama.cpp を再起動します。ロード中のモデルはアンロードされます。",
         applyHintWithSize: "{size} をダウンロードして llama.cpp を再起動します。ロード中のモデルはアンロードされます。",
-        switched: "llama.cpp のバックエンドを変更しました。",
         switchedTo: "llama.cpp は {backend} で動作するようになりました。",
         switchFailed: "llama.cpp のバックエンドを変更できませんでした。",
         switchInterrupted: "切り替えは完了する前に中断されました。",

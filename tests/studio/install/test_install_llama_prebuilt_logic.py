@@ -3924,7 +3924,7 @@ def _run_setup_sh_routing(
             f'LLAMA_CPP_DIR="{llama_dir}"',
             f'_PREBUILT_LOG="{log_path}"',
             f"_PREBUILT_STATUS={status}",
-            f'_explicit_llama_backend="{explicit_backend}"',
+            f'_explicit_llama_source_backend="{explicit_backend}"',
             _setup_sh_routing_block(),
             _SETUP_SH_HARNESS_TAIL,
         ]
@@ -3948,10 +3948,15 @@ def _run_setup_sh_routing(
         (0, "", False, 0),  # installed and validated
         (1, "", False, 1),  # helper error -> fail, never compile
         (2, "", True, 0),  # automatic selection may fall back to a source build
-        (2, "cuda", False, 1),  # concrete selections cannot change backend silently
+        # Exit 2 means the installer had no concrete request to honour; a request
+        # it could not serve arrives as exit 5 instead, so this branch does not
+        # second-guess it from the environment.
+        (2, "cuda", True, 0),
         (3, "", False, 3),  # busy: a source build cannot replace locked binaries
         (4, "", False, 0),  # out of disk: compiling needs more, not less
         (4, "rocm", False, 1),  # an old install cannot satisfy an unchecked request
+        (5, "", False, 1),  # a concrete selection failed; never substitute another
+        (5, "cuda", False, 1),
         (137, "", False, 1),  # SIGKILL/OOM and anything else -> fail, never compile
     ],
 )
@@ -3997,7 +4002,6 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
     assert 'elif [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
     assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block
-    assert 'if [ -n "$_explicit_llama_backend" ]; then' in sh_block
 
     ps_block = _extract_block(setup_ps1, _SETUP_PS1_ROUTING_START, 'retry setup."\n        }')
     ps_else = ps_block[ps_block.rindex("} else {") :]
@@ -4007,7 +4011,6 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert ps_block.count("$NeedLlamaSourceBuild = $true") == 1
     assert "} elseif ($prebuiltExit -eq 5) {" in ps_block
     assert "} elseif ($prebuiltExit -eq 2) {" in ps_block
-    assert "if ($explicitLlamaBackend)" in ps_block
 
     # Statuses 3 and 4 keep their dedicated branches ahead of the catch-all.
     for needle in ('elif [ "$_PREBUILT_STATUS" -eq 3 ]', 'elif [ "$_PREBUILT_STATUS" -eq 4 ]'):

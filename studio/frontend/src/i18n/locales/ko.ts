@@ -724,7 +724,6 @@ export const ko = {
         applying: "설치 중...",
         applyHint: "새 빌드를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
         applyHintWithSize: "{size}를 내려받고 llama.cpp를 다시 시작합니다. 로드된 모델은 언로드됩니다.",
-        switched: "llama.cpp 백엔드를 변경했습니다.",
         switchedTo: "이제 llama.cpp가 {backend}에서 실행됩니다.",
         switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
         switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",

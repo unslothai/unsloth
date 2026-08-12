@@ -51,12 +51,14 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
+  // Null means the marker holds a choice a newer Studio wrote. Show it as
+  // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
-  const current = status ? status.backendRequest : "auto";
-  const value = selected ?? current ?? "unknown";
-  const options = current
-    ? visibleLlamaBackendOptions(status, selected ?? current)
-    : (status?.options.filter((option) => option.available) ?? []);
+  const value = selected ?? status?.backendRequest ?? "unknown";
+  const options = visibleLlamaBackendOptions(
+    status,
+    selected ?? status?.backendRequest ?? null,
+  );
   const pending = options.find((option) => option.backend === value);
   const dirty = !running && llamaBackendSelectionNeedsApply(status, selected);
   const unsupportedKey =
@@ -81,9 +83,7 @@ export function LlamaBackendSection() {
         <div className="flex items-center gap-2">
           <Select
             value={value}
-            disabled={
-              !status?.supported || envLocked || unknownRecorded || running
-            }
+            disabled={!status?.supported || envLocked || running}
             onValueChange={(next) => {
               if (isLlamaBackend(next)) {
                 setSelected(next);

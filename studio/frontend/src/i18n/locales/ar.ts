@@ -727,7 +727,6 @@ export const ar = {
         applying: "جارٍ التثبيت...",
         applyHint: "ينزّل الإصدار الجديد ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
         applyHintWithSize: "ينزّل {size} ويعيد تشغيل llama.cpp. سيتم تفريغ النموذج المحمّل.",
-        switched: "تم تغيير خلفية llama.cpp.",
         switchedTo: "يعمل llama.cpp الآن على {backend}.",
         switchFailed: "تعذّر تغيير خلفية llama.cpp.",
         switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",

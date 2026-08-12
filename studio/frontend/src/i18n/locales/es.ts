@@ -746,7 +746,6 @@ export const es = {
         applying: "Instalando...",
         applyHint: "Descarga la nueva compilación y reinicia llama.cpp. Se descargará el modelo que esté cargado.",
         applyHintWithSize: "Descarga {size} y reinicia llama.cpp. Se descargará el modelo que esté cargado.",
-        switched: "Backend de llama.cpp cambiado.",
         switchedTo: "llama.cpp ahora se ejecuta en {backend}.",
         switchFailed: "No se pudo cambiar el backend de llama.cpp.",
         switchInterrupted: "El cambio se interrumpió antes de completarse.",

@@ -96,7 +96,6 @@ ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
 installed_llama_ggml_tree = llama.installed_llama_ggml_tree
-installed_llama_identity = llama.installed_llama_identity
 
 # Late-binding seam for prebuilt_core: name lookups hit this module's globals
 # first (so monkeypatches apply), then the core defaults.
@@ -952,7 +951,6 @@ def selection_from_artifact(
         selection,
         install_kind = "slim",
         paired_llama_tag = llama_tag,
-        paired_llama_identity = installed_llama_identity(),
         linked_from = str(llama_bin_dir),
     )
 
@@ -975,9 +973,8 @@ def existing_install_matches(
     """Core fingerprint match, hardened for repairability: a marker-matching
     install is only "current" when the server is executable (the sidecar refuses
     non-executable binaries, so setup must repair not skip) and, for slim
-    installs, the exact paired llama runtime still matches and every wired ggml
-    library is present (else runtime replacement or deletion leaves dictation
-    broken while update reports up to date)."""
+    installs, every wired ggml library is still present (else a deleted/moved
+    llama dir leaves dictation broken while update reports up to date)."""
     if not core.existing_install_matches(_OPS, install_dir, host, selection):
         return False
     server = installed_server_path(install_dir, host)
@@ -986,9 +983,6 @@ def existing_install_matches(
         return False
     marker = load_prebuilt_metadata(install_dir) or {}
     if marker.get("install_kind") == "slim":
-        if marker.get("paired_llama_identity") != getattr(selection, "paired_llama_identity", None):
-            log(f"existing slim install at {install_dir} has stale llama pairing; reinstalling")
-            return False
         bin_dir = server.parent
         if marker.get("runtime_wiring_version") != SLIM_RUNTIME_WIRING_VERSION:
             log(f"existing slim install at {install_dir} has stale runtime wiring; reinstalling")

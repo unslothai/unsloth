@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Mapping, Optional
 
 # The standalone installer imports this map, so planning and marker reads share
@@ -61,6 +59,11 @@ def normalize_backend_request(value: Any) -> Optional[str]:
     return backend if backend in REQUESTABLE_BACKENDS else None
 
 
+def is_requestable_backend(value: Any) -> bool:
+    """Whether this build knows how to install ``value``."""
+    return normalize_backend_request(value) is not None
+
+
 def backend_for_install_kind(install_kind: Any) -> Optional[str]:
     if not isinstance(install_kind, str):
         return None
@@ -96,29 +99,6 @@ def environment_backend_override(primary: Any, legacy_vulkan: Any) -> Optional[s
     return None
 
 
-def marker_satisfies_backend_option(
-    marker: Optional[Mapping[str, Any]], backend_request: Any, option: Optional[Mapping[str, Any]]
-) -> bool:
-    """Whether a marker is one of the installable outcomes for an option."""
-    request = normalize_backend_request(backend_request)
-    if not marker or request is None or not option or not option.get("available"):
-        return False
-    resolved_backend = normalize_backend(option.get("resolved_backend"))
-    if resolved_backend is None:
-        return False
-    if marker_backend_request(marker) != request or marker_backend(marker) != resolved_backend:
-        return False
-
-    option_assets = option.get("acceptable_assets")
-    if not isinstance(option_assets, list):
-        option_assets = []
-    acceptable_assets = {asset for asset in option_assets if isinstance(asset, str) and asset}
-    asset = option.get("asset")
-    if isinstance(asset, str) and asset:
-        acceptable_assets.add(asset)
-    return marker.get("asset") in acceptable_assets
-
-
 def backend_from_asset_name(asset: Any) -> Optional[str]:
     """Infer the backend for a marker that predates the backend field."""
     if not isinstance(asset, str) or not asset:
@@ -141,76 +121,49 @@ def marker_backend(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
     return from_kind if from_kind is not None else backend_from_asset_name(marker.get("asset"))
 
 
-def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """Return the recorded choice, with legacy marker compatibility.
+def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
+    """Return the recorded choice; ``auto`` means hardware detection.
 
-    None means the marker contains an unknown choice, not automatic detection.
+    Always a name, never None, so "detect" and "chosen" can never be confused.
+    A value this build does not recognize is returned verbatim: it was written by
+    a newer Studio, and every reader here treats it as a choice to leave alone
+    rather than as an absent one to overwrite.
     """
     if not marker:
         return "auto"
-    recorded = normalize_backend_request(marker.get("backend_request"))
-    if recorded is not None:
-        return recorded
-    if marker.get("backend_request") is not None:
-        return None
+    recorded = marker.get("backend_request")
+    if isinstance(recorded, str) and recorded.strip():
+        return normalize_backend_request(recorded) or recorded.strip().lower()
     if bool(marker.get("force_cpu")):
         return "cpu"
     if "llama_backend" not in marker and "vulkan" in str(marker.get("asset") or "").lower():
         # Old markers cannot distinguish chosen Vulkan from automatic Vulkan.
         return "vulkan"
     legacy = marker.get("llama_backend")
-    if legacy in (None, "", "auto"):
+    if not isinstance(legacy, str) or legacy in ("", "auto"):
         return "auto"
-    if legacy == "vulkan":
-        return "vulkan"
-    return None
+    return normalize_backend_request(legacy) or legacy.strip().lower()
 
 
 def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
-    """Return whether the backend was chosen instead of detected.
+    """Whether the backend was chosen rather than detected.
 
-    Legacy Vulkan markers count as detected. Unknown explicit choices count as
-    chosen so this build does not undo them.
+    Deliberately not ``marker_backend_request(marker) != "auto"``. The only caller
+    is crash recovery, asking whether it may quietly replace a Vulkan install with
+    CPU placement, so it answers "chosen" for anything but a plainly automatic
+    marker. The two readers part ways on the pre-#7188 Vulkan marker with no
+    ``llama_backend`` key, which cannot tell a chosen Vulkan install from the
+    automatic Windows-AMD/Intel route: recovery treats it as detected so a startup
+    crash stays repairable, while an update keeps the bundle rather than swapping
+    backends behind the user. They part ways on a corrupt value too -- recovery
+    keeps its hands off it, an update re-detects.
     """
     if not marker:
         return False
-    if marker.get("backend_request") is not None:
-        return normalize_backend_request(marker.get("backend_request")) not in ("auto",)
+    recorded = marker.get("backend_request")
+    if isinstance(recorded, str) and recorded.strip():
+        return recorded.strip().lower() != "auto"
     if bool(marker.get("force_cpu")):
         return True
     legacy = marker.get("llama_backend")
-    if legacy in (None, "", "auto"):
-        return False
-    return True
-
-
-def marker_install_identity(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """Stable identity for the exact installed llama.cpp runtime bundle."""
-    if not marker:
-        return None
-    fingerprint = marker.get("install_fingerprint")
-    if isinstance(fingerprint, str) and fingerprint:
-        return f"fingerprint:{fingerprint}"
-    asset = marker.get("asset")
-    if not isinstance(asset, str) or not asset:
-        return None
-    fields = (
-        "published_repo",
-        "release_tag",
-        "asset",
-        "asset_sha256",
-        "binary_repo",
-        "binary_release_tag",
-        "source_asset",
-        "source_sha256",
-        "runtime_line",
-        "bundle_profile",
-        "coverage_class",
-        "ggml_tree",
-        "backend",
-    )
-    payload = {field: marker.get(field) for field in fields}
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"legacy:{digest}"
+    return legacy is not None and legacy not in ("", "auto")

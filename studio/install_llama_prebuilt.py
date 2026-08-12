@@ -59,9 +59,9 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     backend_for_install_kind,
     environment_backend_override,
     install_kinds_for_backend,
+    is_requestable_backend,
     marker_backend,
     marker_backend_request,
-    marker_install_identity,
     normalize_backend_request,
 )
 
@@ -6343,12 +6343,6 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
-def installed_llama_identity(install_dir: Path | None = None) -> str | None:
-    """Exact runtime identity used by slim whisper.cpp pairing markers."""
-    root = install_dir if install_dir is not None else default_managed_llama_dir()
-    return marker_install_identity(load_prebuilt_metadata(root))
-
-
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind in {"linux-cpu", "linux-arm64"}:
         return [
@@ -6804,34 +6798,20 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
     return normalize_backend_request(llama_backend) or llama_backend_from_env()
 
 
-def persisted_backend_request(
-    install_dir: Path | None, *, reject_unknown: bool = False
-) -> str | None:
+def persisted_backend_request(install_dir: Path | None) -> str:
     """Return the recorded backend choice, with legacy marker compatibility."""
     if install_dir is None:
-        return None
-    marker = load_prebuilt_metadata(install_dir)
-    if not marker:
-        return None
-    request = marker_backend_request(marker)
-    if request is not None:
-        return request
-    if reject_unknown:
-        field = "backend_request" if marker.get("backend_request") is not None else "llama_backend"
-        raise UnknownBackendRequest(
-            "this install records an unsupported llama.cpp backend choice "
-            f"({marker.get(field)!r}); update Studio before replacing it"
-        )
-    return None
+        return "auto"
+    return marker_backend_request(load_prebuilt_metadata(install_dir))
 
 
 def effective_backend_request(
     llama_backend: str | None = None, *, install_dir: Path | None = None
-) -> tuple[str | None, bool]:
-    """Return (backend, mandatory) using CLI, env, marker, then detection precedence.
+) -> tuple[str, bool]:
+    """Return (backend, mandatory) using CLI, env, then marker precedence.
 
-    Explicit requests are mandatory. Stored choices are advisory if hardware or
-    published bundles changed.
+    Explicit requests are mandatory. A stored choice is advisory: it is dropped
+    for detection when the hardware or the published bundles no longer offer it.
     """
     explicit = normalize_backend_request(llama_backend)
     if explicit is None:
@@ -6841,7 +6821,15 @@ def effective_backend_request(
         )
     if explicit is not None:
         return explicit, True
-    return persisted_backend_request(install_dir, reject_unknown = True), False
+    stored = persisted_backend_request(install_dir)
+    if not is_requestable_backend(stored):
+        # Written by a newer Studio. Detection would quietly rewrite the choice
+        # to "auto", so refuse instead and leave the install exactly as it is.
+        raise UnknownBackendRequest(
+            f"this install records an unsupported llama.cpp backend choice ({stored!r}); "
+            "update Studio before replacing it"
+        )
+    return stored, False
 
 
 def force_vulkan_requested(llama_backend: str | None = None) -> bool:
@@ -7273,21 +7261,12 @@ class BackendSelection:
     release_plans: list[InstallReleasePlan]
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
-    force_cpu: bool
 
     @property
     def choice(self) -> AssetChoice | None:
+        """The bundle this plan installs first, or None when it found none."""
         plans = self.release_plans
         return plans[0].attempts[0] if plans and plans[0].attempts else None
-
-    @property
-    def install_kind(self) -> str | None:
-        choice = self.choice
-        return choice.install_kind if choice is not None else None
-
-    @property
-    def effective_backend(self) -> str | None:
-        return backend_for_install_kind(self.install_kind)
 
 
 @dataclass
@@ -7300,7 +7279,6 @@ class BackendRoute:
     published_release_tag: str
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
-    force_cpu: bool
 
 
 def route_backend_request(
@@ -7356,7 +7334,6 @@ def route_backend_request(
         published_release_tag = release_tag,
         persist_llama_backend = persist_llama_backend,
         persist_rocm_gfx = persist_rocm_gfx,
-        force_cpu = force_cpu,
     )
 
 
@@ -7399,7 +7376,6 @@ def select_backend_install(
         release_plans = release_plans,
         persist_llama_backend = route.persist_llama_backend,
         persist_rocm_gfx = route.persist_rocm_gfx,
-        force_cpu = route.force_cpu,
     )
 
 
@@ -7419,6 +7395,7 @@ def install_prebuilt(
     choice: AssetChoice | None = None
     # The failure handler can run before selection assigns these.
     host: HostInfo | None = None
+    backend = "auto"
     backend_mandatory = False
     cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
     try:
@@ -7428,7 +7405,7 @@ def install_prebuilt(
             backend, backend_mandatory = effective_backend_request(
                 llama_backend, install_dir = install_dir
             )
-            if backend not in (None, "auto") and not backend_mandatory:
+            if backend != "auto" and not backend_mandatory:
                 log(f"honouring the backend recorded by this install: {backend}")
             # Preserve caller flags in case a stale stored choice must be discarded.
             caller_force_cpu, caller_persist_force_cpu = force_cpu, persist_force_cpu
@@ -7668,15 +7645,20 @@ def install_prebuilt(
         log("prebuilt install path is blocked by an in-use llama.cpp install")
         log(f"prebuilt busy reason: {exc}")
         raise SystemExit(EXIT_BUSY) from exc
+    except UnknownBackendRequest as exc:
+        # EXIT_ERROR, never the source fallback: detection would replace a choice
+        # this build cannot read, which is the one outcome refusing must prevent.
+        log(f"prebuilt install refused: {exc}")
+        raise SystemExit(EXIT_ERROR) from exc
     except PrebuiltFallback as exc:
         fatal = _environment_fatal_reason(exc)
         if fatal:
             log(f"prebuilt install failed: {fatal}")
             _log_disk_space_help()
             raise SystemExit(EXIT_NO_SPACE) from exc
-        preserve_backend = (isinstance(exc, BackendUnavailable) and backend_mandatory) or (
-            backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
-        )
+        # A stored choice that could not be served was already replaced by "auto"
+        # above, so a concrete name here is one this run must not walk away from.
+        preserve_backend = backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
         log(
             "prebuilt install failed; preserving the selected backend"
             if preserve_backend
@@ -7894,7 +7876,6 @@ def _selection_payload(selection: BackendSelection) -> dict[str, Any]:
         "asset": choice.name,
         "install_kind": choice.install_kind,
         "backend": backend_for_install_kind(choice.install_kind),
-        "acceptable_assets": [attempt.name for attempt in plan.attempts],
     }
 
 
@@ -7930,21 +7911,29 @@ def resolve_backends_payload(
     args: argparse.Namespace,
     install_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Resolve each backend against the installed release using one metadata snapshot."""
-    host = detect_host()
-    installed = describe_installed_backend(install_dir)
+    """Resolve every requestable backend against the installed release.
 
-    def _enumerate(release_tag: str) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
-        requestable = ("auto",) if host.is_macos else REQUESTABLE_BACKENDS
-        for backend in requestable:
+    One metadata snapshot answers all of them: the picker asks about five backends
+    at once, and re-listing the same release five times is both slow and a way for
+    the five answers to disagree with each other.
+    """
+    host = detect_host()
+    marker = load_prebuilt_metadata(install_dir) if install_dir is not None else None
+    installed_repo = (marker or {}).get("published_repo")
+    installed_release = (marker or {}).get("release_tag") or (marker or {}).get("tag")
+    pinned_to = args.published_release_tag or installed_release or ""
+
+    entries: list[dict[str, Any]] = []
+    with _cached_metadata_fetches():
+        # macOS publishes one universal Metal bundle, so there is nothing to pick.
+        for backend in ("auto",) if host.is_macos else REQUESTABLE_BACKENDS:
             entry: dict[str, Any] = {"backend": backend}
             try:
                 selection = select_backend_install(
                     backend = backend,
                     llama_tag = requested_tag,
                     published_repo = args.published_repo,
-                    published_release_tag = release_tag,
+                    published_release_tag = pinned_to,
                     override_has_rocm = args.has_rocm,
                     override_rocm_gfx = args.rocm_gfx,
                     host = host,
@@ -7957,70 +7946,34 @@ def resolve_backends_payload(
                 entry.update(available = False, reason = "error", detail = str(exc))
             else:
                 payload = _selection_payload(selection)
-                installed_repo = (installed or {}).get("repo")
-                installed_release = (installed or {}).get("release_tag")
-                preserves_install = (
-                    not installed_repo or selection.published_repo == installed_repo
-                ) and (not installed_release or payload.get("release_tag") == installed_release)
-                if not preserves_install:
-                    entry.update(
-                        available = False,
-                        reason = "no_prebuilt",
-                        detail = "switching this backend would leave the installed release",
-                    )
-                else:
-                    entry.update(available = bool(payload.get("prebuilt_available")))
-                    entry.update(
-                        {
-                            key: payload.get(key)
-                            for key in (
-                                "repo",
-                                "release_tag",
-                                "llama_tag",
-                                "asset",
-                                "install_kind",
-                            )
-                        }
-                    )
-                    # What "auto" resolves to today, so the picker can label it.
-                    entry["resolved_backend"] = payload.get("backend")
-                    if not entry["available"]:
-                        entry["reason"] = "no_prebuilt"
+                entry.update(
+                    {
+                        key: payload.get(key)
+                        for key in ("repo", "release_tag", "llama_tag", "asset", "install_kind")
+                    }
+                )
+                # What this option installs today, so "auto" can be labelled with it.
+                entry["resolved_backend"] = payload.get("backend")
+                entry["available"] = bool(payload.get("prebuilt_available"))
+                if entry["available"] and (
+                    (installed_repo and entry["repo"] != installed_repo)
+                    or (installed_release and entry["release_tag"] != installed_release)
+                ):
+                    # Slim whisper.cpp bundles are paired to the installed release,
+                    # so a switch that moves llama.cpp is an update in disguise.
+                    entry["available"] = False
+                    entry["detail"] = "switching this backend would leave the installed release"
+                if not entry["available"]:
+                    entry["reason"] = "no_prebuilt"
             entries.append(entry)
-        if entries and all(entry.get("reason") == "error" for entry in entries):
-            raise RuntimeError("could not resolve any llama.cpp backend")
-        return entries
-
-    pinned_to = args.published_release_tag or (installed or {}).get("release_tag") or ""
-    with _cached_metadata_fetches():
-        entries = _enumerate(pinned_to)
+    if entries and all(entry.get("reason") == "error" for entry in entries):
+        # Never cache a transient outage as "nothing is installable here".
+        raise RuntimeError("could not resolve any llama.cpp backend")
     return {
         "requested_tag": normalized_requested_llama_tag(requested_tag),
         "pinned_release_tag": pinned_to or None,
-        "platform": {
-            "system": host.system,
-            "machine": host.machine,
-            "is_macos": host.is_macos,
-        },
-        "installed": installed,
+        "platform": {"system": host.system, "machine": host.machine, "is_macos": host.is_macos},
         "backends": entries,
-    }
-
-
-def describe_installed_backend(install_dir: Path | None) -> dict[str, Any] | None:
-    """Describe the installed backend, including legacy markers."""
-    if install_dir is None:
-        return None
-    marker = load_prebuilt_metadata(install_dir)
-    if not marker:
-        return None
-    return {
-        "backend": marker_backend(marker),
-        "backend_request": persisted_backend_request(install_dir),
-        "asset": marker.get("asset"),
-        "release_tag": marker.get("release_tag") or marker.get("tag"),
-        "repo": marker.get("published_repo"),
-        "installed_at_utc": marker.get("installed_at_utc"),
     }
 
 

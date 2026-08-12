@@ -401,27 +401,28 @@ def _install_latest_while_blocked(
     }
 
 
-def _installed_llama_pairing() -> tuple[Optional[str], Optional[str]]:
-    """Backend and exact identity of the managed llama.cpp runtime."""
+def _installed_llama_bundle() -> tuple[Optional[str], Optional[str]]:
+    """Backend and asset name of the managed llama.cpp runtime a slim install rides."""
     try:
         from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
         from utils.llama_cpp_update import _find_binary as find_llama_binary
-        from utils.prebuilt.llama_backend import marker_backend, marker_install_identity
+        from utils.prebuilt.llama_backend import marker_backend
 
-        marker = read_llama_marker(find_llama_binary())
-        return marker_backend(marker), marker_install_identity(marker)
+        marker = read_llama_marker(find_llama_binary()) or {}
+        return marker_backend(marker), marker.get("asset")
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("whisper repair: llama pairing lookup failed", error = str(exc))
         return None, None
 
 
-def repair_pairing_plan(
-    backend: str,
-    *,
-    resolved_backend: Optional[str] = None,
-    llama_will_run: bool = False,
-) -> dict:
-    """Plan re-pairing for a slim whisper install that borrows llama's ggml."""
+def repair_pairing_plan() -> dict:
+    """Whisper's half of a llama.cpp backend switch.
+
+    A slim install has no ggml of its own -- it hardlinks llama's -- so replacing
+    the llama bundle leaves dictation on the very backend the switch was meant to
+    leave behind. Only whether such an install exists is decided here: which
+    backend to install is whatever the llama phase actually lands on, which the
+    runner reads from the marker once that phase has finished."""
     plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
     binary = _find_binary()
     if _active_install_is_local_link(binary):
@@ -435,17 +436,6 @@ def repair_pairing_plan(
         # Carries its own ggml, so llama's backend is not its backend.
         plan["skip_reason"] = "self_contained"
         return plan
-    llama_backend, llama_identity = _installed_llama_pairing()
-    target_backend = resolved_backend or llama_backend or (backend if backend != "auto" else None)
-    pairing_matches = (
-        target_backend is not None
-        and marker.get("backend") == target_backend
-        and isinstance(marker.get("paired_llama_identity"), str)
-        and marker.get("paired_llama_identity") == llama_identity
-    )
-    if pairing_matches and not llama_will_run:
-        plan["skip_reason"] = "already_paired"
-        return plan
     script = _installer_script()
     if script is None:
         plan["skip_reason"] = "installer_missing"
@@ -458,13 +448,9 @@ def repair_pairing_plan(
     plan["phase"] = {
         "install_dir": install_dir,
         "repo": marker.get("published_repo") or DEFAULT_PUBLISHED_REPO,
-        "asset": marker.get("asset"),
-        # The runner reads the backend that the llama phase actually installed.
-        "requested_backend": backend,
-        "installed_backend": marker.get("backend"),
-        "installed_llama_identity": marker.get("paired_llama_identity"),
         "script": script,
-        # Resolve the whisper release paired with the installed llama release.
+        # Unpinned: the installer resolves the whisper release that pairs with
+        # whichever llama.cpp release is installed when this phase runs.
         "pin_release_tag": None,
         "repair": True,
     }
@@ -472,72 +458,43 @@ def repair_pairing_plan(
 
 
 def run_repair_phase(phase: dict, set_progress) -> dict:
-    """Re-pair whisper after a successful llama backend switch."""
-    backend, llama_identity = _installed_llama_pairing()
+    """Reinstall the slim whisper bundle for the backend llama.cpp now runs."""
+    backend, llama_asset = _installed_llama_bundle()
     if backend is None:
         logger.info("whisper repair: skipped, llama backend unknown")
         return {}
-    if (
-        backend == phase.get("installed_backend")
-        and isinstance(phase.get("installed_llama_identity"), str)
-        and phase.get("installed_llama_identity") == llama_identity
-    ):
-        # Automatic selection may land on the backend already paired with whisper.
+    if (read_install_marker(_find_binary()) or {}).get("backend") == backend:
+        # Detection can land back on the backend whisper is already built against,
+        # and the switch preserves the release, so the hardlinks still point at the
+        # same build. Nothing to repair, and nothing to claim was repaired.
         return {}
-    phase = {**phase, "backend": backend}
     try:
-        result = _install_latest_while_blocked_with_maintenance(phase, set_progress)
-    except _flow.InstallerExit as exc:
-        # 2 is the installer's "no compatible release", the ordinary case here.
-        if exc.returncode != 2:
-            logger.warning(
-                "whisper repair: failed",
-                backend = backend,
-                returncode = exc.returncode,
-                error = str(exc),
-            )
-            raise
-        logger.info(
-            "whisper repair: skipped",
-            backend = backend,
-            returncode = exc.returncode,
-            detail = str(exc)[-500:],
+        result = _install_latest(
+            phase["install_dir"],
+            phase["repo"],
+            # The llama asset names the AMD arch the new bundle was built for.
+            llama_asset,
+            backend,
+            phase["script"],
+            set_progress,
+            pin_release_tag = phase.get("pin_release_tag"),
         )
+    except _flow.InstallerExit as exc:
+        if exc.returncode != 2:
+            raise
+        # 2 is "no compatible release": this llama.cpp release publishes no
+        # whisper bundle for the new backend. The old hardlinked runtime still
+        # works, so dictation degrades rather than failing the switch.
+        logger.info("whisper repair: skipped", backend = backend, detail = str(exc)[-500:])
         return {
             "message": (
-                f"Dictation still uses the previous backend; no whisper.cpp build is "
+                "Dictation still uses the previous backend; no whisper.cpp build is "
                 f"published for this llama.cpp release on {backend} yet."
             ),
         }
-    except Exception as exc:  # noqa: BLE001 - the shared job reports partial success
-        logger.warning("whisper repair: failed", backend = backend, error = str(exc))
-        raise
     # Describe the backend change instead of an incidental version change.
     result["message"] = f"Re-paired whisper.cpp with the {backend} backend."
     return result
-
-
-def _install_latest_while_blocked_with_maintenance(phase: dict, set_progress) -> dict:
-    """Install a phase, reading the new ROCm arch after llama switches."""
-    asset = phase.get("asset")
-    if phase.get("backend") == "rocm":
-        try:
-            from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
-            from utils.llama_cpp_update import _find_binary as find_llama_binary
-
-            llama_marker = read_llama_marker(find_llama_binary()) or {}
-            asset = llama_marker.get("asset") or asset
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("whisper repair: llama asset lookup failed", error = str(exc))
-    return _install_latest(
-        phase["install_dir"],
-        phase["repo"],
-        asset,
-        phase["backend"],
-        phase["script"],
-        set_progress,
-        pin_release_tag = phase.get("pin_release_tag"),
-    )
 
 
 def chained_phase_plan(

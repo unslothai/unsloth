@@ -716,7 +716,6 @@ export const it = {
         applying: "Installazione...",
         applyHint: "Scarica la nuova build e riavvia llama.cpp. Il modello caricato verrà scaricato.",
         applyHintWithSize: "Scarica {size} e riavvia llama.cpp. Il modello caricato verrà scaricato.",
-        switched: "Backend di llama.cpp cambiato.",
         switchedTo: "Ora llama.cpp è in esecuzione su {backend}.",
         switchFailed: "Impossibile cambiare il backend di llama.cpp.",
         switchInterrupted: "Il cambio è stato interrotto prima del completamento.",

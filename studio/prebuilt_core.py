@@ -1996,7 +1996,6 @@ class InstallSelection:
     # all None for fat installs, never part of the fingerprint.
     install_kind: str | None = None
     paired_llama_tag: str | None = None
-    paired_llama_identity: str | None = None
     linked_from: str | None = None
     # Filenames the slim wiring hardlinked beside the server; the sidecar launch
     # guard verifies exactly these instead of hardcoded per-OS names.
@@ -2072,7 +2071,6 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         # Additive slim fields; fat markers keep the legacy payload exactly.
         payload["install_kind"] = "slim"
         payload["paired_llama_tag"] = selection.paired_llama_tag
-        payload["paired_llama_identity"] = selection.paired_llama_identity
         payload["linked_from"] = selection.linked_from
         if selection.linked_libraries is not None:
             payload["linked_libraries"] = list(selection.linked_libraries)

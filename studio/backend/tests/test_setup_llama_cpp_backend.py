@@ -3,10 +3,11 @@
 
 """Backend selector coverage for setup.sh and setup.ps1.
 
-cpu maps to install_llama_prebuilt.py's persisted --force-cpu option. vulkan is
-accepted and passed through in the environment for the installer to consume.
-The match is case-insensitive and whitespace-trimmed, unknown values warn, and
-macOS warns for the CPU-only choice.
+The scripts do not act on UNSLOTH_LLAMA_CPP_BACKEND: install_llama_prebuilt.py
+reads it directly, and it is also the only side that can see a choice recorded in
+the install marker. What is left here is reporting -- the match is
+case-insensitive and whitespace-trimmed, unknown values warn, and macOS says so
+for the two choices its universal Metal build cannot honour.
 """
 
 import os
@@ -26,7 +27,7 @@ _SKIP_NO_PWSH = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh 
 
 def _backend_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
-    m = re.search(r"_llama_backend=.*?esac", text, re.DOTALL)
+    m = re.search(r"# Reporting only:.*?esac", text, re.DOTALL)
     assert m, "UNSLOTH_LLAMA_CPP_BACKEND block not found in setup.sh"
     return m.group(0)
 
@@ -59,62 +60,68 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
     return out.stdout.split(), out.stderr
 
 
+def test_backend_block_forwards_nothing_to_the_installer():
+    # One owner for the selection. install_llama_prebuilt.py reads the variable
+    # itself and is the only side that can also read the marker's recorded choice,
+    # so a second copy assembled here could only ever contradict it.
+    assert "_PREBUILT_CMD" not in _backend_block()
+
+
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["cpu", "CPU", "Cpu", " cpu ", "CPU\t"])
-def test_backend_cpu_appends_flag(value):
-    # A deliberate CPU choice persists, so it uses --force-cpu (not the transient
-    # --cpu-fallback the arm64 GPU-build recovery uses).
+def test_backend_cpu_is_accepted(value):
     args, stderr = _run(value)
-    assert "--force-cpu" in args
-    assert "--cpu-fallback" not in args
+    assert args == []
     assert "Ignoring" not in stderr
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["cpu", "CPU", " cpu "])
-def test_backend_cpu_macos_warns_no_flag(value):
-    # macOS has no CPU-only bundle (the universal build already runs on CPU), so the
-    # override warns instead of writing a misleading forced-CPU marker.
+def test_backend_cpu_macos_warns(value):
+    # macOS has no CPU-only bundle: the universal build already runs on CPU.
     args, stderr = _run(value, system = "Darwin")
-    assert "--force-cpu" not in args
-    assert "--cpu-fallback" not in args
+    assert args == []
     assert "macOS" in stderr
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", [None, "", "auto", "AUTO", "  "])
-def test_backend_auto_no_flag_no_warn(value):
+def test_backend_auto_is_silent(value):
     args, stderr = _run(value)
-    assert "--force-cpu" not in args
-    assert "Ignoring" not in stderr
+    assert args == []
+    assert stderr == ""
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["vulkan", "VULKAN", " vulkan "])
-def test_backend_vulkan_is_accepted(value):
+def test_backend_vulkan_is_reported(value):
     args, stderr = _run(value)
-    assert "--force-cpu" not in args
-    assert args[-2:] == ["--llama-backend", "vulkan"]
+    assert args == []
+    assert "Vulkan selected for GGUF inference" in stderr
     assert "Ignoring" not in stderr
+
+
+@_SKIP_NO_BASH
+@pytest.mark.parametrize("value", ["vulkan", "VULKAN"])
+def test_backend_vulkan_macos_warns(value):
+    args, stderr = _run(value, system = "Darwin")
+    assert args == []
+    assert "Metal" in stderr
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["hip", "HIP", "rocm", " ROCM ", "cuda", " CUDA "])
 def test_backend_gpu_opt_out_is_accepted(value):
-    # These name the backend detection already picks here, so setup.sh adds no flag;
-    # install_llama_prebuilt.py reads the variable itself to hold the selection to
-    # that backend and record it.
     args, stderr = _run(value)
-    assert "--force-cpu" not in args
-    assert "--llama-backend" not in args
+    assert args == []
     assert "Ignoring" not in stderr
 
 
 @_SKIP_NO_BASH
 @pytest.mark.parametrize("value", ["gpu", "sycl"])
-def test_backend_unknown_warns_and_no_flag(value):
+def test_backend_unknown_warns(value):
     args, stderr = _run(value)
-    assert "--force-cpu" not in args
+    assert args == []
     assert "Ignoring" in stderr
 
 
@@ -130,25 +137,21 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
     assert "--force-cpu" not in block
 
 
-def test_explicit_backend_prebuilt_failure_does_not_change_backend():
+def test_ordinary_prebuilt_failure_does_not_re_derive_the_backend():
+    # Exit 2 is reached only when no concrete backend was in play: a request the
+    # installer could not honour -- named in the environment or recorded in the
+    # marker the scripts cannot read -- arrives as exit 5 and fails closed there.
+    # Re-deriving it here from the environment alone would miss the marker case
+    # and disagree with the installer on the rest.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     failure = sh.index('step "llama.cpp" "prebuilt install failed"')
-    source_build = sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)
-    guard = sh.index('if [ -n "$_explicit_llama_backend" ]', failure)
-    assert guard < source_build
-    guarded = sh[guard:source_build]
-    assert "will not substitute an unverified source backend" in guarded
-    # Aborts through the helper, which exits AND emits [TAURI:ERROR] in desktop mode.
-    assert "setup_fail 1" in guarded
+    branch = sh[failure : sh.index("_NEED_LLAMA_SOURCE_BUILD=true", failure)]
+    assert "_explicit_llama" not in branch
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     failure = ps1.index('step "llama.cpp" "prebuilt install failed"')
-    source_build = ps1.index("$NeedLlamaSourceBuild = $true", failure)
-    guard = ps1.index("if ($explicitLlamaBackend)", failure)
-    assert guard < source_build
-    guarded = ps1[guard:source_build]
-    assert "will not substitute an unverified source backend" in guarded
-    assert "Exit-SetupFailure" in guarded
+    branch = ps1[failure : ps1.index("$NeedLlamaSourceBuild = $true", failure)]
+    assert "explicitLlama" not in branch
 
 
 def test_unavailable_named_backend_never_falls_through_to_source():
@@ -214,11 +217,10 @@ def test_force_compile_sets_need_source_build_before_backend_guard():
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     assert '1|true|yes|on) _explicit_llama_source_backend="vulkan"' in sh
-    assert '_explicit_llama_backend="$_explicit_llama_source_backend"' in sh
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     assert '$sourceLegacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
-    assert "$explicitLlamaBackend = $explicitLlamaSourceBackend" in ps1
+    assert '$explicitLlamaSourceBackend = "vulkan"' in ps1
 
 
 def _source_backend_choice_block() -> str:
@@ -325,15 +327,12 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
 
 
 def _run_ps1(value: str | None) -> str:
-    # One snippet, not two: NORMALIZE already spans the whole if/elseif chain up to
-    # and including the "Ignoring UNSLOTH_LLAMA_CPP_BACKEND" warn, so the --force-cpu
-    # append is inside it. Composing the apply snippet on top of it made the harness
-    # emit the flag twice while setup.ps1 appends it once.
     normalize = _ps1_search(
         r"\$llamaBackend = \$sourceLlamaBackend.*?Ignoring UNSLOTH_LLAMA_CPP_BACKEND.*?\n\s*\}",
         re.DOTALL,
     )
-    assert normalize.count('$prebuiltArgs += "--force-cpu"') == 1, normalize
+    # The mirror of test_backend_block_forwards_nothing_to_the_installer.
+    assert "$prebuiltArgs" not in normalize, normalize
     env = {
         k: v
         for k, v in os.environ.items()
@@ -365,29 +364,19 @@ def _run_ps1(value: str | None) -> str:
 
 
 @_SKIP_NO_PWSH
-@pytest.mark.parametrize("value", ["cpu", "CPU", "Cpu", " cpu ", "CPU\t"])
-def test_ps1_backend_cpu_appends_flag(value):
+@pytest.mark.parametrize(
+    "value", ["cpu", "CPU", "Cpu", " cpu ", "CPU\t", None, "", "auto", "AUTO", "  "]
+)
+def test_ps1_backend_forwards_no_arguments(value):
     out = _run_ps1(value)
-    # The whole argv, not a substring: an `in` check passed while the harness was
-    # emitting --force-cpu twice. setup.ps1 appends it exactly once, and nothing
-    # else, for a cpu override.
-    assert out.strip() == "ARGS:--force-cpu"
-
-
-@_SKIP_NO_PWSH
-@pytest.mark.parametrize("value", [None, "", "auto", "AUTO", "  "])
-def test_ps1_backend_auto_no_flag_no_warn(value):
-    out = _run_ps1(value)
-    assert "--force-cpu" not in out
-    assert "Ignoring" not in out
+    assert out.strip() == "ARGS:"
 
 
 @_SKIP_NO_PWSH
 @pytest.mark.parametrize("value", ["vulkan", "VULKAN", " vulkan "])
-def test_ps1_backend_vulkan_is_accepted(value):
+def test_ps1_backend_vulkan_is_reported(value):
     out = _run_ps1(value)
-    assert "--force-cpu" not in out
-    assert "--llama-backend,vulkan" in out
+    assert "Vulkan selected for GGUF inference" in out
     assert "Ignoring" not in out
 
 
@@ -395,26 +384,20 @@ def test_ps1_backend_vulkan_is_accepted(value):
 @pytest.mark.parametrize("value", ["cuda", " CUDA ", "hip", "HIP", "rocm", " ROCM "])
 def test_ps1_backend_gpu_opt_out_is_accepted(value):
     out = _run_ps1(value)
-    assert "--force-cpu" not in out
-    assert "--llama-backend" not in out
-    assert "Ignoring" not in out
+    assert out.strip() == "ARGS:"
 
 
 def test_ps1_forced_vulkan_fails_closed_on_windows_arm64():
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
-    arm64_guard = ps1.index("elseif ($windowsArm64)")
-    vulkan_flag = ps1.index(
-        '$prebuiltArgs += @("--llama-backend", "vulkan")',
-        arm64_guard,
-    )
-    assert arm64_guard < vulkan_flag
-    assert "no Windows ARM64 Vulkan bundle is published" in ps1
-    assert "Unset UNSLOTH_FORCE_VULKAN" in ps1
+    branch = ps1.index('if ($llamaBackend -eq "vulkan" -or $explicitLlamaSourceBackend -eq "vulkan")')
+    guarded = ps1[branch : ps1.index("Vulkan selected for GGUF inference", branch)]
+    assert "elseif ($windowsArm64)" in guarded
+    assert "no Windows ARM64 Vulkan bundle is published" in guarded
+    assert "UNSLOTH_FORCE_VULKAN" in guarded
 
 
 @_SKIP_NO_PWSH
 @pytest.mark.parametrize("value", ["gpu", "sycl"])
-def test_ps1_backend_unknown_warns_and_no_flag(value):
+def test_ps1_backend_unknown_warns(value):
     out = _run_ps1(value)
-    assert "--force-cpu" not in out
     assert "Ignoring" in out

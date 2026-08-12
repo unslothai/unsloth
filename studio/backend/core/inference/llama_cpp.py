@@ -9547,7 +9547,7 @@ class LlamaCppBackend:
         """Whether this managed Vulkan bundle was detected rather than chosen.
 
         Only an automatic Vulkan install may be quietly replaced with CPU placement
-        on a crash: someone who picked Vulkan in Settings > Resources (or exported
+        on a crash: someone who picked Vulkan in Settings > System (or exported
         the variable) picked it over a GPU backend that presumably crashed too, and
         silently undoing that would be the same bug in the other direction. The
         managed marker also excludes custom and PATH binaries.

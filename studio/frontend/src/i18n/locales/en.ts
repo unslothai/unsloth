@@ -721,7 +721,6 @@ export const en = {
         applying: "Installing...",
         applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
         applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
-        switched: "llama.cpp backend changed.",
         switchedTo: "llama.cpp now runs on {backend}.",
         switchFailed: "Could not change the llama.cpp backend.",
         switchInterrupted: "The switch was interrupted before completion.",

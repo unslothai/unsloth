@@ -55,7 +55,9 @@ test("a backend this build does not know about is dropped, not offered", () => {
 });
 
 test("a backend older than this client's list stays unknown", () => {
-  // An unknown recorded choice must not become automatic.
+  // An unknown recorded choice must not become automatic: the picker would then
+  // show detection for an install that is pinned, and overwrite it on the next
+  // apply. Untouched it is not dirty, but picking over it deliberately is.
   const status = parseLlamaBackendStatus({
     ...FULL_PAYLOAD,
     backend_request: "sycl",
@@ -63,6 +65,7 @@ test("a backend older than this client's list stays unknown", () => {
 
   assert.equal(status.backendRequest, null);
   assert.equal(llamaBackendSelectionNeedsApply(status, null), false);
+  assert.equal(llamaBackendSelectionNeedsApply(status, "cuda"), true);
 });
 
 test("a missing or malformed payload degrades instead of throwing", () => {
