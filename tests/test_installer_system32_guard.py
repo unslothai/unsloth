@@ -647,9 +647,7 @@ def test_cli_guard_rejects_a_home_that_is_not_rooted(home: str):
 
 def test_cli_guard_sees_through_an_extended_length_path():
     r"""\\?\C:\Windows\System32 is the same folder spelled the long way."""
-    _, colour, _ = _guard_outcome(
-        r"\\?\C:\Windows\System32", argv = ["unsloth", "train"]
-    )
+    _, colour, _ = _guard_outcome(r"\\?\C:\Windows\System32", argv = ["unsloth", "train"])
     assert colour == "red"
 
 

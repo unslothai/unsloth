@@ -37,8 +37,9 @@ from unsloth_cli._system_dir_guard import check_working_directory as _check_work
 # otherwise be pinned to the folder we are about to leave. The message is held
 # until typer exists to render it. A library import reaches the same check from
 # the callback instead, where argv is still the only thing to go on.
-_startup_guard = _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) \
-    if _is_entry_point else None
+_startup_guard = (
+    _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
+)
 
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError

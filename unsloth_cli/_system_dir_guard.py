@@ -73,13 +73,15 @@ def _normalize(path, pathmod):
 def system_dirs(windir, pathmod = _os.path):
     """The Windows folders Unsloth refuses to run from."""
     # SysWOW64 too: a 32-bit elevated shell opens there, same unwritable folder.
-    return [
-        _normalize(pathmod.join(windir, name), pathmod)
-        for name in ("System32", "SysWOW64")
-    ]
+    return [_normalize(pathmod.join(windir, name), pathmod) for name in ("System32", "SysWOW64")]
 
 
-def is_system_dir(cwd, windir, pathmod = _os.path, sep = _os.sep):
+def is_system_dir(
+    cwd,
+    windir,
+    pathmod = _os.path,
+    sep = _os.sep,
+):
     """True for a system folder itself or anything under it.
 
     `windir` may be a single directory or several candidates. The separator keeps
@@ -242,7 +244,15 @@ def relocation_target(
     return work_dir
 
 
-def blocked_message(cwd, argv, environ, windir, pathmod = _os.path, sep = _os.sep, expanduser = None):
+def blocked_message(
+    cwd,
+    argv,
+    environ,
+    windir,
+    pathmod = _os.path,
+    sep = _os.sep,
+    expanduser = None,
+):
     """The error shown to someone who ran Unsloth from a system folder by hand."""
     # allow_public here only: a person can sensibly `cd C:\Users\Public`, but
     # relocating there automatically would share one account's state with every
@@ -255,8 +265,7 @@ def blocked_message(cwd, argv, environ, windir, pathmod = _os.path, sep = _os.se
         home_ps = "'" + home.replace("'", "''") + "'"
         home_cmd = '"' + home + '"'
         cd_lines = (
-            f"    cd {home_ps}          (PowerShell)\n"
-            f"    cd /d {home_cmd}       (cmd.exe)\n"
+            f"    cd {home_ps}          (PowerShell)\n" f"    cd /d {home_cmd}       (cmd.exe)\n"
         )
     else:
         cd_lines = f"    (any folder outside {windir if isinstance(windir, str) else windir[0]})\n"
@@ -304,10 +313,14 @@ def check_working_directory(
         # nothing to compare and nothing to go back to, so say that plainly
         # rather than naming a Windows folder the user was never in.
         return (
-            "Unsloth cannot determine its current folder. It may have been deleted,\n"
-            "or it may be on a drive that is no longer available.\n"
-            "Change to a folder that exists and run the command again."
-        ), "red", True
+            (
+                "Unsloth cannot determine its current folder. It may have been deleted,\n"
+                "or it may be on a drive that is no longer available.\n"
+                "Change to a folder that exists and run the command again."
+            ),
+            "red",
+            True,
+        )
 
     if not is_system_dir(cwd, windirs, pathmod, sep):
         return None, None, False
@@ -334,13 +347,21 @@ def check_working_directory(
         # would break later and less clearly than stopping here does. This text
         # reaches the desktop's own logs, so it describes that case, not a shell.
         return (
-            f"Unsloth cannot run from {cwd}, and no folder outside {windir} was\n"
-            "available to run from instead. Check that the user profile for this\n"
-            "account exists and is writable."
-        ), "red", True
+            (
+                f"Unsloth cannot run from {cwd}, and no folder outside {windir} was\n"
+                "available to run from instead. Check that the user profile for this\n"
+                "account exists and is writable."
+            ),
+            "red",
+            True,
+        )
 
     return (
-        f"Unsloth was started from {cwd}, which is a Windows system folder,\n"
-        f"so it switched to {target} instead.\n"
-        "This happens when Unsloth Desktop is started by 'Run Unsloth at login'."
-    ), "yellow", False
+        (
+            f"Unsloth was started from {cwd}, which is a Windows system folder,\n"
+            f"so it switched to {target} instead.\n"
+            "This happens when Unsloth Desktop is started by 'Run Unsloth at login'."
+        ),
+        "yellow",
+        False,
+    )
