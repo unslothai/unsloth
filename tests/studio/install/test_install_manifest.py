@@ -136,9 +136,7 @@ def test_nameless_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
     _write_dist_metadata(site, "demo", "1.0")
     nameless = site / "demo-2.0.dist-info"
     nameless.mkdir()
-    (nameless / "METADATA").write_text(
-        "Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8"
-    )
+    (nameless / "METADATA").write_text("Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8")
     monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
 
     versions = im.installed_versions("demo")
