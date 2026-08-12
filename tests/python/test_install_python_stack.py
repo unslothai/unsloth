@@ -658,9 +658,7 @@ class TestDuplicateCoreMetadataRepair:
         source = inspect.getsource(ips.install_python_stack)
         assert "local_repo=local_repo" in source.replace(" ", "")
 
-    def test_local_repair_reinstalls_a_custom_package_from_its_normal_source(
-        self, monkeypatch
-    ):
+    def test_local_repair_reinstalls_a_custom_package_from_its_normal_source(self, monkeypatch):
         probes = iter((["old", "new"], ["new"], [], ["new"]))
         installs = []
 
@@ -678,9 +676,7 @@ class TestDuplicateCoreMetadataRepair:
             lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
         )
 
-        assert ips._repair_duplicate_core_metadata(
-            ("custom-package",), local_repo = "/src/unsloth"
-        )
+        assert ips._repair_duplicate_core_metadata(("custom-package",), local_repo = "/src/unsloth")
         assert len(installs) == 1
         assert installs[0][1] == (
             "--no-cache-dir",

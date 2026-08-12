@@ -422,8 +422,7 @@ def verify_install(
         )
         recorded = manifest.get("package_version")
         if core_conflict or (
-            installed is None
-            and (metadata_conflict(versions) or metadata_conflict(zoo_versions))
+            installed is None and (metadata_conflict(versions) or metadata_conflict(zoo_versions))
         ):
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
