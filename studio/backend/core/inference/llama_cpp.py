@@ -7254,7 +7254,9 @@ class LlamaCppBackend:
     # once by the load it belongs to, so a verdict can never outlive its load; the age bound
     # is only there for a route ask no load ever came for.
     _HANDOFF_TTL_S = 120.0
-    _route_verdict_handoff: Optional[tuple[tuple[Optional[str], Optional[str]], Optional[str], float]] = None
+    _route_verdict_handoff: Optional[
+        tuple[tuple[Optional[str], Optional[str]], Optional[str], float]
+    ] = None
 
     @classmethod
     def _take_route_verdict(cls, hf_repo, hf_variant):

@@ -616,9 +616,7 @@ def test_a_handoff_for_another_model_is_not_taken(monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_remote_non_chat_gguf_verdict", _verdict)
     monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
     LlamaCppBackend.non_chat_gguf_refusal_for_intent(
-        GgufLoadIntent(
-            model_identifier = "owner/a", hf_repo = "owner/a", hf_variant = "Q4_K_M"
-        )
+        GgufLoadIntent(model_identifier = "owner/a", hf_repo = "owner/a", hf_variant = "Q4_K_M")
     )
     LlamaCppBackend._remote_non_chat_gguf_refusal(
         hf_repo = "owner/b", hf_variant = "Q4_K_M", hf_token = None, model_identifier = "owner/b"
