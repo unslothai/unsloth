@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-name: Context size focused-input A-B repro
+name: Context size Auto-fit repro
 
 on:
   push:
@@ -13,20 +13,9 @@ permissions:
 
 jobs:
   focused-context-input:
-    name: ${{ matrix.case }}
+    name: Current UI and deterministic VRAM fit
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - case: before-fix-reproduces
-            ref: 95f42bcceed7bbecb244adfbc16484cd23a9f13f
-            expect: reproduce
-          - case: fixed-preserves-context
-            ref: dffea2af27b9ee5a10479fb6566184394d6921cd
-            expect: pass
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -41,19 +30,10 @@ jobs:
           persist-credentials: false
 
       # Keep the branch-scoped workflow and modern CI helpers in the root while
-      # installing the historical application from an isolated worktree.
-      - name: Check out application under test
+      # installing the current upstream application from an isolated worktree.
+      - name: Check out current upstream application
         shell: bash
-        run: git worktree add --detach tested "${{ matrix.ref }}"
-
-      # Run exactly the probe added by the fix against both implementations.
-      # The parent did not yet contain the focused-input assertion, so copy only
-      # the test from the fixed commit; application code remains untouched.
-      - name: Install identical focused-input probe
-        shell: bash
-        run: |
-          git show dffea2af27b9ee5a10479fb6566184394d6921cd:tests/studio/playwright_model_config.py \
-            > tested/tests/studio/playwright_model_config.py
+        run: git worktree add --detach tested f20d465c752c1b39d86928ffd716c9fc14713ebe
 
       - name: Linux dependencies
         shell: bash
@@ -115,7 +95,7 @@ jobs:
           echo "::add-mask::$NEW"
           echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Assert expected A-B result
+      - name: Verify the current UI preserves an explicit context
         id: repro
         shell: bash
         env:
@@ -125,23 +105,48 @@ jobs:
           STUDIO_UI_STRICT: '1'
           STUDIO_DISTINCT_CTX: '4096'
           STUDIO_MODEL_HINT: gemma-3-270m
-          EXPECT: ${{ matrix.expect }}
         run: |
-          set +e
           python tested/tests/studio/playwright_model_config.py 2>&1 | tee logs/modelcfg-probe.log
-          status=${PIPESTATUS[0]}
-          set -e
+          grep -F "OK persist(request): /api/inference/load max_seq_length=4096" \
+            logs/modelcfg-probe.log
+          echo "PASS current UI: explicit Context Length reached /api/inference/load"
 
-          if [[ "$EXPECT" == "reproduce" ]]; then
-            test "$status" -ne 0
-            grep -F "context not stored in unsloth_model_configs" logs/modelcfg-probe.log
-            echo "PASS reproduced: focused Context Length draft was discarded before dffea2af2"
-          else
-            test "$status" -eq 0
-            grep -F "OK persist(request): /api/inference/load max_seq_length=4096" \
-              logs/modelcfg-probe.log
-            echo "PASS fixed: focused Context Length draft reached /api/inference/load"
-          fi
+      - name: Reproduce exact 5,120-token Auto-fit estimate
+        shell: bash
+        run: |
+          python -m pip install --quiet 'pytest>=8'
+          python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path("tested/studio/backend/tests/test_llama_cpp_context_fit.py").resolve()
+          spec = importlib.util.spec_from_file_location("ctxfit", path)
+          ctxfit = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(ctxfit)
+
+          hardware = dict(
+              model_gib = 4,
+              gpus = [(0, 6750)],
+              native_ctx = 131072,
+              kv_per_token_bytes = 500_000,
+          )
+          auto = ctxfit._drive(n_ctx = 0, **hardware)
+          explicit = ctxfit._drive(n_ctx = 32768, **hardware)
+
+          assert auto["c_arg"] == 5120, auto
+          assert auto["max_available_ctx"] == 5120, auto
+          assert explicit["c_arg"] == 32768, explicit
+
+          source = Path("tested/studio/backend/core/inference/llama_cpp.py").read_text(
+              encoding = "utf-8"
+          )
+          assert 'elif gpu_memory_mode == "manual":' in source
+          assert 'if gpu_memory_mode == "manual" and gpu_layers >= 0:' in source
+
+          print(f"PASS reproduced Auto estimate: {auto}")
+          print(f"PASS explicit context is not shrunk: {explicit}")
+          print("PASS Manual + fixed GPU Layers bypasses the automatic placement planner")
+          PY
 
       - name: Stop Studio
         if: always()
@@ -155,7 +160,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: context-size-${{ matrix.case }}
+          name: context-size-auto-fit-repro
           path: |
             logs/modelcfg-probe.log
             logs/studio_modelcfg.log
