@@ -2155,13 +2155,23 @@ def disable_torchaudio_if_cuda_mismatched():
                 tf_import_utils._torchaudio_available = False
             except AttributeError:
                 pass
-            is_avail = getattr(tf_import_utils, "is_torchaudio_available", None)
-            if is_avail is not None:
+            # `speech` is transformers' composite backend and it is nothing but
+            # torchaudio (`is_speech_available` returns `is_torchaudio_available()`).
+            # On 4.x both read one module global, so setting the flag above covers
+            # them. On 5.x each is separately `@lru_cache`d, so a `speech` answer
+            # computed before this repair stays True and `requires_backends(...,
+            # "speech")` waves callers on into a torchaudio that is now a None
+            # sentinel -- a raw crash instead of the unavailable-backend path this
+            # whole function exists to restore. Clear both caches.
+            for _name in ("is_torchaudio_available", "is_speech_available"):
+                is_avail = getattr(tf_import_utils, _name, None)
+                if is_avail is None:
+                    continue
                 try:
                     is_avail.cache_clear()
                 except AttributeError:
                     pass
-                tf_import_utils.is_torchaudio_available = lambda: False
+                setattr(tf_import_utils, _name, lambda: False)
         except ImportError:
             pass
 

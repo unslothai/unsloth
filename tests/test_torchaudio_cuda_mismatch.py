@@ -31,6 +31,20 @@ import sys
 import pytest
 
 
+# The repair flips availability state on the REAL transformers and datasets
+# modules, not on copies. Restoring only sys.modules would leave
+# `is_torchaudio_available` bound to `lambda: False` for every later test in
+# the process, so the fixture snapshots these too.
+_PATCH_SITES = (
+    ("transformers.utils.import_utils", "_torchaudio_available"),
+    ("transformers.utils.import_utils", "is_torchaudio_available"),
+    ("transformers.utils.import_utils", "is_speech_available"),
+    ("datasets.config", "TORCHAUDIO_AVAILABLE"),
+)
+
+_MISSING = object()
+
+
 @pytest.fixture
 def fresh(monkeypatch):
     """Import the repair without importing unsloth's whole init."""
@@ -38,10 +52,26 @@ def fresh(monkeypatch):
 
     module = importlib.import_module("unsloth.import_fixes")
     saved = {k: v for k, v in sys.modules.items() if k.startswith("torchaudio")}
+
+    flags = []
+    for mod_name, attr in _PATCH_SITES:
+        try:
+            owner = importlib.import_module(mod_name)
+        except ImportError:
+            continue
+        flags.append((owner, attr, getattr(owner, attr, _MISSING)))
+
     yield module
+
     for key in [k for k in sys.modules if k.startswith("torchaudio")]:
         sys.modules.pop(key, None)
     sys.modules.update(saved)
+    for owner, attr, value in flags:
+        if value is _MISSING:
+            if hasattr(owner, attr):
+                delattr(owner, attr)
+        else:
+            setattr(owner, attr, value)
 
 
 def _stage(monkeypatch, fresh, error):
@@ -84,6 +114,35 @@ def test_a_mismatched_torchaudio_is_made_absent(monkeypatch, fresh):
     with pytest.warns(UserWarning, match = "torchaudio cannot initialise"):
         fresh.disable_torchaudio_if_cuda_mismatched()
     assert sys.modules.get("torchaudio", "missing") is None
+
+
+def test_the_speech_backend_goes_down_with_torchaudio(monkeypatch, fresh):
+    """`speech` is torchaudio wearing a different name, so it has to follow.
+
+    On transformers 5 `is_speech_available` is separately `@lru_cache`d, so a
+    `speech` answer computed before the repair survives it. Callers gated on
+    `requires_backends(..., "speech")` are then waved into a torchaudio that is
+    now a None sentinel, which is the crash this whole file exists to prevent.
+    """
+    from functools import lru_cache
+
+    tf_iu = pytest.importorskip("transformers.utils.import_utils")
+
+    # Stand up the 5.x shape explicitly rather than asking whichever
+    # transformers happens to be installed: on 4.x both readers share one
+    # module global, so the 4.x version of this test cannot fail.
+    monkeypatch.delattr(tf_iu, "_torchaudio_available", raising = False)
+    monkeypatch.setattr(tf_iu, "is_torchaudio_available", lru_cache(lambda: True))
+    monkeypatch.setattr(
+        tf_iu, "is_speech_available", lru_cache(lambda: tf_iu.is_torchaudio_available())
+    )
+
+    _stage(monkeypatch, fresh, MISMATCH)
+    assert tf_iu.is_speech_available() is True  # warmed, as a live process would be
+    with pytest.warns(UserWarning, match = "torchaudio cannot initialise"):
+        fresh.disable_torchaudio_if_cuda_mismatched()
+    assert tf_iu.is_torchaudio_available() is False
+    assert tf_iu.is_speech_available() is False
 
 
 def test_a_healthy_torchaudio_is_left_alone(monkeypatch, fresh):
