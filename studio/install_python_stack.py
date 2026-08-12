@@ -36,7 +36,6 @@ import install_manifest  # noqa: E402
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -3649,28 +3648,56 @@ def _flash_attn_install_disabled() -> bool:
     return os.getenv("UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL") == "1"
 
 
+# Matches worker._is_importable_isolated: the same untrusted import, bounded the same way.
+_FLASH_ATTN_IMPORT_PROBE_TIMEOUT = 300
+
+
+def _flash_attn_importable() -> bool:
+    """Whether flash_attn imports, checked out of process.
+
+    A wrong-arch/ABI wheel installs fine and raises on import, so a zero pip exit code is
+    not proof the install is usable. In a child, so a half-loaded native extension cannot
+    poison the installer, and bounded, since initialisation can hang rather than fail.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import flash_attn"],
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
+            timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _remove_rejected_flash_attn() -> bool:
+    """Uninstall a flash-attn that installed but will not import. True iff it is gone.
+
+    Targets the interpreter install_wheel installed into, always ``sys.executable``: its uv
+    command passes --python as well as --system, and its pip fallback runs that interpreter.
+    --system ALONE would remove from the system Python, leaving the rejected wheel in the
+    venv while setup reported it gone.
+    """
+    if USE_UV and shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall"]
+        if UV_NEEDS_SYSTEM:
+            cmd.append("--system")
+        cmd.extend(["--python", sys.executable, "flash-attn"])
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    return removed.returncode == 0
+
+
 def _ensure_flash_attn() -> None:
     if _flash_attn_install_disabled():
         return
     if NO_TORCH:
         return
-    if has_blackwell_gpu():
-        _step(
-            "warning",
-            "Skipping flash-attn: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-            _cyan,
-        )
-        return
     if IS_WINDOWS or IS_MACOS:
         return
-    if (
-        subprocess.run(
-            [sys.executable, "-c", "import flash_attn"],
-            stdout = subprocess.DEVNULL,
-            stderr = subprocess.DEVNULL,
-        ).returncode
-        == 0
-    ):
+    if _flash_attn_importable():
         return
 
     env = probe_torch_wheel_env()
@@ -3683,7 +3710,28 @@ def _ensure_flash_attn() -> None:
             uv_needs_system = UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
-                return
+                # Verify rather than trust the exit code, so setup reports what happened.
+                if _flash_attn_importable():
+                    return
+                # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
+                # it by metadata (_package_available) and then imports the native module
+                # in process, so a wheel that killed the probe would kill training too.
+                if _remove_rejected_flash_attn():
+                    _step(
+                        "warning",
+                        "flash-attn wheel installed but is not importable on this GPU; removed it",
+                        _cyan,
+                    )
+                else:
+                    # Say so plainly: it is still importable in process, so this is not the
+                    # same state as never having installed it.
+                    _step(
+                        "warning",
+                        "flash-attn wheel is not importable on this GPU and could not be "
+                        "removed; uninstall flash-attn manually before training",
+                        _cyan,
+                    )
+                break
             _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
                 wheel_result,

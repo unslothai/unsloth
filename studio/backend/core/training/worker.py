@@ -12,6 +12,8 @@ version-switching. Pattern follows core/data_recipe/jobs/worker.py.
 from __future__ import annotations
 
 from loggers import get_logger
+import importlib
+import importlib.metadata
 import math
 import os
 import shutil
@@ -56,7 +58,6 @@ from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
-    has_blackwell_gpu,
     install_wheel,
     probe_torch_wheel_env,
     url_exists,
@@ -966,7 +967,144 @@ def _hipcc_gcc_install_dir() -> str | None:
     return None
 
 
+def _is_importable(import_name: str) -> bool:
+    # Invalidate finder caches so a package installed earlier in this process is seen.
+    importlib.invalidate_caches()
+    try:
+        __import__(import_name)
+        return True
+    except Exception as exc:
+        # A wrong-arch/ABI wheel raises OSError/RuntimeError ("undefined symbol"), not
+        # ImportError, so catch everything and let the caller fall back.
+        logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
+        return False
+
+
+# Kept in step with install_python_stack._FLASH_ATTN_IMPORT_PROBE_TIMEOUT.
+_IMPORT_PROBE_TIMEOUT = 300
+
+
+def _is_importable_isolated(import_name: str) -> bool:
+    """Probe the import in a child process.
+
+    A wrong-arch wheel can abort or segfault in its initialiser instead of raising, which
+    would kill this worker rather than fall back. A child turns that into a return code
+    (negative = fatal signal).
+    """
+    try:
+        result = _sp.run(
+            [
+                sys.executable,
+                "-c",
+                "import importlib, sys; importlib.import_module(sys.argv[1])",
+                import_name,
+            ],
+            stdout = _sp.DEVNULL,
+            stderr = _sp.DEVNULL,
+            timeout = _IMPORT_PROBE_TIMEOUT,
+            # No env override: the probe must see what the real in-process import will.
+        )
+    except (OSError, _sp.TimeoutExpired) as exc:
+        logger.debug("%s import probe did not complete (%s)", import_name, exc)
+        return False
+    if result.returncode != 0:
+        logger.debug("%s import probe exited %s", import_name, result.returncode)
+    return result.returncode == 0
+
+
+def _uninstall_package(pypi_name: str, display_name: str) -> bool:
+    """Remove a distribution. True iff it is gone afterwards."""
+    if shutil.which("uv"):
+        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", pypi_name]
+    result = _sp.run(
+        cmd,
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        env = utf8_child_env(),
+    )
+    if result.returncode != 0:
+        logger.warning("Could not remove the rejected %s install:\n%s", display_name, result.stdout)
+        return False
+    return True
+
+
+def _distribution_present(pypi_name: str) -> bool:
+    """Whether the distribution's METADATA is installed, without importing it.
+
+    Metadata is what matters: unsloth/models/_utils.py gates on ``_package_available`` and
+    only then imports the native module, so metadata left behind is what turns a rejected
+    wheel into an in-process crash. Reading it never loads the extension, so this is safe
+    even for a wheel that would abort.
+    """
+    importlib.invalidate_caches()
+    try:
+        importlib.metadata.distribution(pypi_name)
+        return True
+    except Exception:
+        return False
+
+
+def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
+    """Discard an install that will not import, and say which state we ended in.
+
+    Idempotent, so it is safe on EVERY exit rather than only the ones somebody remembered:
+    it no-ops when the distribution is already gone. Leaving it in place is not the same as
+    never having installed it, since the metadata gate above imports it anyway.
+    """
+    if not _distribution_present(pypi_name):
+        return
+    logger.warning("%s %s", display_name, reason)
+    if _uninstall_package(pypi_name, display_name):
+        _send_status(event_queue, f"{display_name} is not usable on this GPU; removed it")
+    else:
+        _send_status(
+            event_queue,
+            f"{display_name} is not usable on this GPU and could not be removed; "
+            f"uninstall {pypi_name} manually before training",
+        )
+
+
 def _install_package_wheel_first(
+    *, event_queue: Any, import_name: str, display_name: str, pypi_name: str, **kwargs: Any
+) -> bool:
+    """Install a fast-path package, wheel first, and never leave an unusable one behind.
+
+    The two "touch nothing" guards run here, outside the cleanup: an already-working
+    package returns before any subprocess, and offline changes nothing. Everything after
+    them is an install attempt, so ANY unsuccessful exit -- timeout, failed install, bad
+    import -- discards what is left rather than leaving metadata the in-process import
+    would pick up. Enforced here rather than at each return because four separate exits
+    have now been found that forgot to clean up.
+    """
+    if _is_importable(import_name):
+        logger.info("%s already installed", display_name)
+        return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
+
+    installed = False
+    try:
+        installed = _attempt_package_install(
+            event_queue = event_queue,
+            import_name = import_name,
+            display_name = display_name,
+            pypi_name = pypi_name,
+            **kwargs,
+        )
+        return installed
+    finally:
+        if not installed:
+            _reject_install(event_queue, pypi_name, display_name, "will not import")
+
+
+def _attempt_package_install(
     *,
     event_queue: Any,
     import_name: str,
@@ -980,16 +1118,9 @@ def _install_package_wheel_first(
     pypi_spec: str | None = None,
     pypi_status_message: str | None = None,
 ) -> bool:
-    try:
-        __import__(import_name)
-        logger.info("%s already installed", display_name)
-        return True
-    except ImportError:
-        pass
-
-    if _model_offline_mode_enabled():
-        logger.info("Skipping %s installation while offline", display_name)
-        return False
+    """The install itself. Call it through _install_package_wheel_first, never directly."""
+    # Set when a wheel installed but would not import; see the uninstall before the fallback.
+    wheel_rejected = False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -1014,8 +1145,18 @@ def _install_package_wheel_first(
             run = _sp.run,
         ):
             if result.returncode == 0:
-                logger.info("Installed prebuilt %s wheel successfully", display_name)
-                return True
+                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
+                # verify rather than trust the exit code, and do it out of process: a bad
+                # one can take the worker down with it.
+                if _is_importable_isolated(import_name):
+                    logger.info("Installed prebuilt %s wheel successfully", display_name)
+                    return True
+                logger.warning(
+                    "%s wheel installed but is not importable; falling back to PyPI",
+                    display_name,
+                )
+                wheel_rejected = True
+                break
             logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
@@ -1048,6 +1189,16 @@ def _install_package_wheel_first(
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
+
+    if wheel_rejected:
+        # Remove it rather than install over it: pip/uv would report the broken
+        # distribution as already satisfying the spec and do nothing. --force-reinstall is
+        # not the answer either, since both scope it to the whole resolved transaction,
+        # which for flash-attn means torch and the running CUDA stack.
+        #
+        # A failure here is caught by the _reject_install in the finally below, which is
+        # reached from every exit rather than only the ones that remember to clean up.
+        _uninstall_package(pypi_name, display_name)
 
     _send_status(event_queue, pypi_status_message)
 
@@ -1167,6 +1318,12 @@ def _install_package_wheel_first(
                     display_name,
                     result.stdout,
                 )
+        return False
+
+    # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
+    # installing anything. Returning False is enough; the caller's finally discards it.
+    if not _is_importable_isolated(import_name):
+        logger.warning("%s installed from PyPI but will not import", display_name)
         return False
 
     if is_hip:
@@ -1963,12 +2120,6 @@ def _should_try_runtime_flash_attn_install(max_seq_length: int) -> bool:
 
 def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -> None:
     if not _should_try_runtime_flash_attn_install(max_seq_length):
-        return
-    if has_blackwell_gpu():
-        _send_status(
-            event_queue,
-            "Skipping flash-attn install: Blackwell GPU detected (sm_100+); no compatible prebuilt wheel",
-        )
         return
 
     installed = _install_package_wheel_first(
