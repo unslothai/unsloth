@@ -180,6 +180,28 @@ def test_the_preset_list_is_capped_and_says_why(monkeypatch):
     )
 
 
+def test_a_store_larger_than_the_write_cap_still_reads(monkeypatch):
+    # The cap belongs to the write path, which answers 409. Refusing to report a store that
+    # somehow holds more would turn the GET into a 500 and take the whole preset UI with it.
+    client = _client(
+        monkeypatch,
+        {
+            "image_generation_presets": {
+                "activePreset": "Default",
+                "currentParams": {"steps": 24},
+                "customPresets": [
+                    {"name": f"P{index}", "params": {"steps": 20}} for index in range(101)
+                ],
+            }
+        },
+    )
+
+    body = client.get("/api/settings/generation-presets/image").json()
+
+    assert len(body["customPresets"]) == 101
+    assert body["currentParams"]["steps"] == 24
+
+
 def test_a_blob_written_by_another_build_still_reads(monkeypatch):
     # extra = "forbid" is right for a submitted payload and wrong for reading storage back: a single
     # field from a newer build must not cost the user every recipe this build can still render.

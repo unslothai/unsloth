@@ -2250,19 +2250,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
   // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
+  const residentSeeded = useRef(false);
   useEffect(() => {
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
+    // A stored recipe is the user's own choice, so it outranks the resident model's defaults on
+    // the first seed. Later resident changes still seed, as picking a model always has.
+    if (!residentSeeded.current) {
+      residentSeeded.current = true;
+      if (imagePresets.storedRecipe) return;
+    }
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
     // Status is the authority for a resident model, so this is not a pick's optimistic claim.
     const d = defaultsFor(status?.base_repo ?? repoId);
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
-  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+  }, [imagePresets.storedRecipe, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,

@@ -1267,12 +1267,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     ? `${status.repo_id ?? ""}|${defaultSteps ?? ""}|${defaultGuidance ?? ""}|${defaultFlowShift ?? ""}|${defaultAudioFlowShift ?? ""}`
     : null;
   const prevLoadedModelRef = useRef<string | null>(null);
+  const modelSeeded = useRef(false);
   useEffect(() => {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
     prevLoadedModelRef.current = loadedModelKey;
     if (modelChanged && loadedModelKey && defaultSteps != null && defaultGuidance != null) {
       // Status is the authority now, so the recipe a pick claimed has served its purpose.
       setPendingModelDefaults(null);
+      // A stored recipe is the user's own choice, so it outranks the model's defaults on the first
+      // seed. Every later model change still seeds, as picking a model always has.
+      if (!modelSeeded.current) {
+        modelSeeded.current = true;
+        if (videoPresets.storedRecipe) return;
+      }
       setSteps(defaultSteps);
       setGuidance(defaultGuidance);
       setFlowShift(defaultFlowShift);
@@ -1284,6 +1291,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     defaultGuidance,
     defaultSteps,
     loadedModelKey,
+    videoPresets.storedRecipe,
   ]);
 
   const canPickAudioFlowShift = status?.defaults?.supports_audio_flow_shift === true;
@@ -3457,11 +3465,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               onChange={setFlowShift}
             />
           )}
-          {canPickAudioFlowShift && audioFlowShift != null && (
+          {canPickAudioFlowShift && defaultAudioFlowShift != null && (
             <SliderField
               label="Audio shift"
               hint="Sigma shift of the audio schedule, which MiniMax-H3 runs alongside the video one. Ships at 3."
-              value={audioFlowShift}
+              value={audioFlowShift ?? defaultAudioFlowShift}
               min={1}
               max={30}
               step={0.5}

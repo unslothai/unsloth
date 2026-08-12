@@ -68,9 +68,11 @@ export function useMediaGenerationPresets<Params extends object>({
   // Settled, not readable: an unreadable store still answers "stored settings do not own the form",
   // which is what the load-state controls wait for. Only the preset UI itself needs a readable store.
   const hydrated = hydrationSource !== "pending";
+  // Whether the store supplied the recipe. Model defaults must not seed over it. This is the
+  // opposite of the rule for load options, which the resident build owns (features/resident-load).
+  const storedRecipe = hydrationSource === "saved";
   const presetsReady =
     hydrationSource === "fresh" || hydrationSource === "saved";
-  const initialParamsKey = useRef(configKey(currentParams));
   const currentParamsRef = useRef(currentParams);
   const latestSettingsRef = useRef<MediaGenerationPresetState<Params> | null>(
     null,
@@ -107,11 +109,7 @@ export function useMediaGenerationPresets<Params extends object>({
   );
 
   const hydrateLocalSettings = useCallback((source: "fresh" | "unreadable") => {
-    const paramsUntouched =
-      configKey(currentParamsRef.current) === initialParamsKey.current;
-    baselineParamsRef.current = paramsUntouched
-      ? currentParamsRef.current
-      : defaultParamsRef.current;
+    baselineParamsRef.current = defaultParamsRef.current;
     setCustomPresets([]);
     setActivePreset(DEFAULT_PRESET_NAME);
     setHydrationSource(source);
@@ -136,9 +134,11 @@ export function useMediaGenerationPresets<Params extends object>({
       };
       baselineParamsRef.current = definition.params;
       setActivePreset(definition.name);
-      if (configKey(currentParamsRef.current) === initialParamsKey.current) {
-        applyParamsRef.current(settings.currentParams);
-      }
+      // Unconditional. Comparing against the mount-time value cannot tell a user edit from a
+      // model-driven one, and guessing wrong let a resident model's defaults be autosaved over
+      // the stored recipe. Ordering settles it instead: the store answers, then model defaults
+      // only fill a form the store did not.
+      applyParamsRef.current(settings.currentParams);
       setHydrationSource("saved");
     },
     [],
@@ -339,6 +339,7 @@ export function useMediaGenerationPresets<Params extends object>({
     activePreset,
     presets,
     hydrated,
+    storedRecipe,
     presetsReady,
     hasUnsavedChanges,
     selectPreset,

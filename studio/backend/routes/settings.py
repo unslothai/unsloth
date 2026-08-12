@@ -181,12 +181,16 @@ class VideoGenerationPresetState(MediaGenerationPresetState):
 
 
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
-    customPresets: list[ImageGenerationPreset] = Field(default_factory = list, max_length = 100)
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
     saved: bool = False
 
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
-    customPresets: list[VideoGenerationPreset] = Field(default_factory = list, max_length = 100)
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
+    # report a store that somehow exceeds it would only turn a GET into a 500.
+    customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
     saved: bool = False
 
 
