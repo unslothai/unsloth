@@ -717,6 +717,7 @@ _commit_studio_venv_replacement() {
 
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
 }
 
@@ -740,8 +741,10 @@ _on_install_signal() {
     exit "$_signal_status"
 }
 # Empty so an inherited value never reaches the trap's rm; only temp paths this
-# script creates below (spaced-path dir, torch-trio overrides) are removed.
+# script creates below (spaced-path dir, uv install_name_tool guard, torch-trio
+# overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
+_UV_INSTALL_NAME_TOOL_SHIM_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
@@ -1834,10 +1837,16 @@ fi
 # ── Architecture detection & Python version ──
 _ARCH=$(uname -m)
 MAC_INTEL=false
+# Rosetta is a property of the shell, not of the machine, so it is tracked apart from
+# MAC_INTEL: torch and the Python version rightly follow the x86_64 shell, but anything
+# that reasons about the HARDWARE (the /usr/bin CLT shims in _has_working_git) must see
+# an Apple Silicon Mac here, not an Intel one.
+_MAC_ROSETTA=false
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
     # Guard against Apple Silicon running under Rosetta (reports x86_64).
     # sysctl hw.optional.arm64 returns "1" on Apple Silicon even in Rosetta.
     if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        _MAC_ROSETTA=true
         echo ""
         echo "  WARNING: Apple Silicon detected, but this shell is running under Rosetta (x86_64)."
         echo "  Re-run install.sh from a native arm64 terminal for full PyTorch support."
@@ -2104,6 +2113,29 @@ tauri_log "STEP" "Checking system dependencies"
 # a GUI dialog, so `command -v git` is not enough -- only running it tells the truth.
 _has_working_git() {
     command -v git >/dev/null 2>&1 || return 1
+    # Executing the probe is the problem on macOS: /usr/bin/git is a Command Line Tools
+    # shim, so `git --version` against it raises the "install the command line developer
+    # tools" GUI dialog -- the probe firing the dialog it exists to detect. Answer from the
+    # resolved path instead when it is that exact shim and no toolchain is selected.
+    #
+    # Narrow on purpose. Only /usr/bin/git is a shim: a Homebrew, MacPorts or Xcode.app git
+    # earlier on PATH is a real binary and is still probed by executing it. Intel macOS can
+    # also ship a working /usr/bin/git after CLT masking, so MAC_INTEL must probe that path;
+    # only Apple Silicon treats it as the known dialog shim without execution. xcode-select
+    # -p only asks which toolchain is selected and never prompts.
+    # The hardware decides, not the shell: MAC_INTEL is also true for an x86_64 shell under
+    # Rosetta, where /usr/bin/git is still the arm64 machine's dialog shim, so _MAC_ROSETTA
+    # puts that host back on the non-executing branch.
+    # $OS is the platform detected above, not a fresh `uname` call: this can run with a
+    # scrubbed PATH where uname is not resolvable, and a failed probe there would silently
+    # fall through to executing the shim. _CLT_GIT_SHIM is the shim path, overridable so
+    # the branch is testable without a /usr/bin write.
+    if [ "${OS:-}" = "macos" ] &&
+       { [ "${MAC_INTEL:-false}" != true ] || [ "${_MAC_ROSETTA:-false}" = true ]; } &&
+       [ "$(command -v git)" = "${_CLT_GIT_SHIM:-/usr/bin/git}" ] &&
+       ! xcode-select -p >/dev/null 2>&1; then
+        return 1
+    fi
     git --version >/dev/null 2>&1
 }
 
@@ -2507,6 +2539,72 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
+# uv unconditionally invokes install_name_tool after downloading managed CPython on
+# macOS. On a consumer Mac without developer tools, Apple's /usr/bin shim opens the
+# Command Line Tools installer even though uv treats patch failure as a warning. There
+# is no supported uv opt-out yet (https://github.com/astral-sh/uv/issues/14893).
+#
+# Do not execute install_name_tool or xcrun to probe it: either probe can launch the
+# same dialog. A selected standalone CLT and full Xcode have stable on-disk locations.
+_macos_has_selected_install_name_tool() {
+    _uvv_developer_dir=$(xcode-select -p 2>/dev/null) || return 1
+    [ -n "$_uvv_developer_dir" ] && [ -d "$_uvv_developer_dir" ] || return 1
+
+    # DEVELOPER_DIR may select a custom path or symlink, so do not require Apple's
+    # standard directory names. Reject only candidates that are the base-system
+    # /usr/bin dialog shim itself; comparing file identity does not execute the tool.
+    for _uvv_tool in \
+        "$_uvv_developer_dir/usr/bin/install_name_tool" \
+        "$_uvv_developer_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin/install_name_tool"; do
+        [ -x "$_uvv_tool" ] || continue
+        if [ -e /usr/bin/install_name_tool ] \
+           && [ "$_uvv_tool" -ef /usr/bin/install_name_tool ] 2>/dev/null; then
+            continue
+        fi
+        return 0
+    done
+    return 1
+}
+
+# Run one uv venv command with its argv unchanged. If no real selected macOS tool is
+# present, put a non-success shim ahead of /usr/bin only for uv's process. Returning
+# nonzero is intentional: uv must retain its warning path rather than being told that
+# an unpatched dylib was successfully modified.
+_run_uv_venv() {  # label, uv-venv args...
+    _uvv_label="$1"
+    shift
+    if [ "$OS" != "macos" ] || _macos_has_selected_install_name_tool; then
+        run_install_cmd "$_uvv_label" uv venv "$@"
+        return $?
+    fi
+
+    _UV_INSTALL_NAME_TOOL_SHIM_DIR=$(mktemp -d \
+        "${TMPDIR:-/tmp}/unsloth-uv-install-name-tool.XXXXXX") || {
+        echo "ERROR: could not create the temporary macOS uv guard." >&2
+        tauri_stream_log stderr "ERROR_OUTPUT" "$_uvv_label failed (temporary guard)"
+        return 1
+    }
+    if ! printf '%s\n' '#!/bin/sh' 'exit 1' \
+            > "$_UV_INSTALL_NAME_TOOL_SHIM_DIR/install_name_tool" \
+       || ! chmod +x "$_UV_INSTALL_NAME_TOOL_SHIM_DIR/install_name_tool"; then
+        echo "ERROR: could not prepare the temporary macOS uv guard." >&2
+        rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+        _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+        tauri_stream_log stderr "ERROR_OUTPUT" "$_uvv_label failed (temporary guard)"
+        return 1
+    fi
+
+    if run_install_cmd "$_uvv_label" env \
+        PATH="$_UV_INSTALL_NAME_TOOL_SHIM_DIR:$PATH" uv venv "$@"; then
+        _uvv_status=0
+    else
+        _uvv_status=$?
+    fi
+    rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+    _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+    return "$_uvv_status"
+}
+
 # Apple Silicon venv. The arch-explicit arm64 CPython stops uv reusing a cached
 # x86_64 (Rosetta) build: torch ships no macOS x86_64 wheels since 2.2.2, so an
 # x86_64 venv cannot resolve torch. The arm64 guard below backstops older venvs.
@@ -2521,10 +2619,10 @@ fi
 # UV_PYTHON_DOWNLOADS=never is left with nothing to resolve. Retry unflagged for
 # them: the dialog is worth removing, a failed install is not.
 _uv_venv_arm64() {  # label
-    run_install_cmd "$1" uv venv "$VENV_DIR" \
+    _run_uv_venv "$1" "$VENV_DIR" \
         --python-preference only-managed \
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none" \
-    || run_install_cmd "$1 (system Python)" uv venv "$VENV_DIR" \
+    || _run_uv_venv "$1 (system Python)" "$VENV_DIR" \
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
 }
 
@@ -2534,7 +2632,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
         _uv_venv_arm64 "create venv"
     else
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+        _run_uv_venv "create venv" "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
     fi
 fi
@@ -2576,8 +2674,16 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         # uv symlinks bin/python to the base interpreter, so dereference with
         # file -L (lipo already follows the link). Trailing || true keeps the
         # installer alive under set -e when neither tool is present.
-        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
-            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+        #
+        # file -L FIRST, lipo only as the fallback: lipo is a Command Line Tools shim, so
+        # on a Mac without CLT merely running it raises the "install the command line
+        # developer tools" dialog -- 2>/dev/null hides its stderr but not a GUI dialog.
+        # file is base-system and always answers. Both spellings feed the same case below
+        # ("Mach-O 64-bit executable arm64", or "universal binary ... [x86_64] [arm64]",
+        # against lipo's "arm64" / "x86_64 arm64"), so the branch taken is unchanged.
+        # clean-machine-assert.sh:152 already made exactly this swap for its own use.
+        _archs=$(file -L "$VENV_DIR/bin/python" 2>/dev/null \
+            || lipo -archs "$VENV_DIR/bin/python" 2>/dev/null || true)
         case "$_archs" in
             *arm64*)  _VENV_ARCH=arm64 ;;
             *x86_64*) _VENV_ARCH=x86_64 ;;
@@ -2620,7 +2726,7 @@ if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
         echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv..."
         _discard_venv_for_recreate "$VENV_DIR"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+        _run_uv_venv "recreate venv" "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
@@ -4289,7 +4395,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -4304,7 +4410,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4538,7 +4644,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10"
+            "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4557,7 +4663,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10"
+            --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4586,7 +4692,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.14" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.15" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

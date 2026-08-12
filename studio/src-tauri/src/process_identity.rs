@@ -222,23 +222,24 @@ fn is_zombie_impl(pid: u32) -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_zombie_impl(pid: u32) -> bool {
-    // SZOMB from sys/proc.h, which libc does not re-export.
-    const SZOMB: u32 = 5;
     if pid > i32::MAX as u32 {
         return false;
     }
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // The short flavor, not PROC_PIDTBSDINFO: that one refuses a zombie and
+    // returns nothing, so asking it whether a process is a zombie can only ever
+    // answer no. Verified on macos-14, where the full flavor failed this.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
     let written = unsafe {
         libc::proc_pidinfo(
             pid as i32,
-            libc::PROC_PIDTBSDINFO,
+            libc::PROC_PIDT_SHORTBSDINFO,
             0,
             &mut info as *mut _ as *mut libc::c_void,
             size,
         )
     };
-    written == size && info.pbi_status == SZOMB
+    written == size && info.pbsi_status == libc::SZOMB
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
