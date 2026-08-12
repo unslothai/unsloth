@@ -7,6 +7,7 @@
     "_first_foreign_tool_signal": "9c097a395b83ce19b9433c4a043986a50c4c2b310dc8018c52bb79e29a8ae816",
     "_gemma_balanced_brace_end": "9c9a8cd028e69b56a15f17d2a7ce65ea04f75f09b618f6e91baa758cebc701fb",
     "_gemma_body_brace_end": "ddae97cf5311cb80b9b8e8ace5c1e9dbd4a6cccd2fe49c1c790968a527e344c0",
+    "_gemma_call_is_anchored": "7b3e7bd82e97757f6369bfb0420a4c6c72570b1ed950b7e07480f05109a7f354",
     "_gemma_coerce_scalar": "329027adb79b31dd020281ca77b202941aa513a1709a35a01cdb74f6b70ea4be",
     "_gemma_parse_array": "f80a03b4b5c86108d656cb4e661fe3d8badc80e0b7b574c5e843d4d184a8a0b5",
     "_gemma_parse_mapping": "c49a6bbe71d20ff0baf6fbeb077878eda618cd916db0c8114e0a16335bb11527",
@@ -35,7 +36,7 @@
     "_signal_inside_leading_wrapperless_gemma": "b0c119aa9207f580333210185d4abbe6fd84d936fbacb181f8cf9e4bc7271916",
     "_skip_mistral_call_id": "00bd559e1139e3a728f3deed4fdc6da5ada6307a1a5661fbc74cd5cf1fd9850c",
     "_strip_function_xml_calls": "a7aaa09ef7a2e5baa5213c0e188d62eae99d5959fc64c862adad6b8fb1c08a98",
-    "_strip_gemma_wrapperless_calls": "5f2b5275466882e1ebaae00ccc74fad2dcaa8dff9ead37f4a6afaaebfcb18c00",
+    "_strip_gemma_wrapperless_calls": "44c1ac243fc0bb4b20b2cf57eb3ee4b844bc306992244068d96d2b089e433e9d",
     "_strip_glm_calls": "794021ec8b5665ac8594ac750b50098849e117d1ffabc146be602753b5cf7caa",
     "_strip_mistral_closed_calls": "7ebf4866dba733c640847d5c9229b97e37537114cd89dfbd7b05b14c810e1aba",
     "_strip_mistral_reasoning": "d887d6a2447d5ffc1bd33ee864f8d7b659dce4d7d19748bb3efec882d38c3f36",
@@ -51,8 +52,8 @@
     "reprompt_to_act_message": "53b231a1489544f480ae21ab5e3b461e0eff072564f582dae0df55938779b445",
     "strip_leading_bare_json_call": "4dfe14fa258e30d340cfa8400eec6dde4cbbcdbaba20ac5ace312d54176c83d3",
     "strip_llama3_leading_sentinels": "7ba3f83eee7f9c5aed00d24c8cc26e5cdd82cdca7e8aca747f02566c417eef9d",
-    "strip_segment": "6e07d976714facdf1b705ad8d118a07dba020b774ab893432b12730522dd0132",
-    "strip_tool_markup": "561049416c74d2aa7dd4143007cb185e1d13b21f582e3fea1c45c69496ac5a5b"
+    "strip_segment": "6feb0ddeab2929915953a9a806766a07fba35be1e96bff66563128364daded17",
+    "strip_tool_markup": "fb2df4ad97d8e280dec296b615ab454b8990e1bcb3ad1caad1bfc7b4a73fd573"
   },
   "core.tool_healing": {
     "_balanced_brace_end": "0b82a90811adc2196cb441d8bc569ab360aafa2552bb4093ab5b2777d9cf3a18",

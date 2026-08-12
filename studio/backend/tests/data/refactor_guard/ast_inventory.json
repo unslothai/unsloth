@@ -104,6 +104,9 @@
       "_DRAFTER_DIR_KINDS": {
         "kind": "assign"
       },
+      "_DRAFTER_DISPLAY_LABELS": {
+        "kind": "assign"
+      },
       "_DRAFTER_KINDS": {
         "kind": "assign"
       },
@@ -117,6 +120,9 @@
         "kind": "assign"
       },
       "_GGML_GPU_BACKEND_RE": {
+        "kind": "assign"
+      },
+      "_GGUF_AUDIO_READ_TIMEOUT": {
         "kind": "assign"
       },
       "_GGUF_KNOWN_QUANT_RE": {
@@ -185,6 +191,9 @@
       "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
         "kind": "assign"
       },
+      "_PERMANENT_HUB_ERRORS": {
+        "kind": "assign"
+      },
       "_PROVISIONAL_ARGS_MIN_CHARS": {
         "kind": "assign"
       },
@@ -201,6 +210,9 @@
         "kind": "assign"
       },
       "_SPEC_ENV_VARS": {
+        "kind": "assign"
+      },
+      "_SPEC_KIND_CAPABILITY": {
         "kind": "assign"
       },
       "_SWA_CACHE": {
@@ -225,6 +237,9 @@
         "kind": "assign"
       },
       "_TOOL_TEMPLATE_MARKERS": {
+        "kind": "assign"
+      },
+      "_UNRECOVERABLE_LOCAL_ERRNOS": {
         "kind": "assign"
       },
       "_VULKAN_DIFFUSION_GPU_IDS_ERROR": {
@@ -296,6 +311,9 @@
       "_drafter_path_kind": {
         "kind": "def"
       },
+      "_drafter_set_bytes": {
+        "kind": "def"
+      },
       "_effective_main_cache_types": {
         "kind": "def"
       },
@@ -336,6 +354,9 @@
         "kind": "def"
       },
       "_extra_args_n_ubatch": {
+        "kind": "def"
+      },
+      "_extra_args_requests_dflash": {
         "kind": "def"
       },
       "_extra_args_requests_dspark": {
@@ -425,6 +446,9 @@
       "_is_companion_gguf_path": {
         "kind": "def"
       },
+      "_is_dflash_drafter_path": {
+        "kind": "def"
+      },
       "_is_dspark_drafter_path": {
         "kind": "def"
       },
@@ -447,6 +471,9 @@
         "kind": "def"
       },
       "_is_rehearsal_prefix": {
+        "kind": "def"
+      },
+      "_is_root_dflash_drafter_path": {
         "kind": "def"
       },
       "_kv_bytes_per_elem": {
@@ -885,6 +912,9 @@
       "_FUNC_CLOSE_TAG_RE": {
         "kind": "assign"
       },
+      "_GEMMA_ANCHOR_CLOSERS": {
+        "kind": "assign"
+      },
       "_GEMMA_BARE_TC_PREFIX_RE": {
         "kind": "assign"
       },
@@ -1074,6 +1104,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "text: str, brace_pos: int"
+      },
+      "_gemma_call_is_anchored": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, floor: int"
       },
       "_gemma_coerce_scalar": {
         "decorators": [],

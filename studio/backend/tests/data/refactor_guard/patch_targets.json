@@ -23,6 +23,8 @@
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
   ],
   "core.inference.chat_template_helpers.detect_think_prefill": [
@@ -31,6 +33,7 @@
     "tests/test_mlx_inference_backend.py"
   ],
   "core.inference.chat_template_helpers.render_with_native_template_fallback": [
+    "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py",
     "tests/test_mlx_inference_backend.py"
@@ -57,6 +60,7 @@
     "tests/test_cached_gguf_routes.py"
   ],
   "core.inference.diffusion._resolve_base_repo": [
+    "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
@@ -233,6 +237,7 @@
     "tests/test_gguf_load_cache_reuse.py"
   ],
   "core.inference.llama_cpp.child_env_without_native_path_secret": [
+    "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_llama_cpp_mtp_detection.py"
   ],
   "core.inference.llama_cpp.hf_hub_download_with_xet_fallback": [
@@ -280,6 +285,11 @@
     "tests/test_amd_apu_unified_memory.py",
     "tests/test_amd_apu_unified_memory.py",
     "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
     "tests/test_metal_paravirtual_guard.py",
     "tests/test_metal_paravirtual_guard.py",
     "tests/test_metal_paravirtual_guard.py",
@@ -288,6 +298,15 @@
     "tests/test_metal_paravirtual_guard.py",
     "tests/test_metal_paravirtual_guard.py",
     "tests/test_metal_paravirtual_guard.py"
+  ],
+  "core.inference.llama_cpp.sys.platform": [
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py"
+  ],
+  "core.inference.llama_cpp.time.monotonic": [
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py",
+    "tests/test_llama_cpp_mtp_detection.py"
   ],
   "core.inference.llama_cpp.wait_tool_decision": [
     "tests/test_llama_cpp_tool_loop.py",
@@ -299,6 +318,7 @@
     "tests/test_diffusion_training.py"
   ],
   "core.inference.local_model_resolver.resolve_local_gguf": [
+    "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
@@ -326,21 +346,21 @@
   "core.inference.stt_download_worker.spawn_download": [
     "tests/test_stt_http_downloads.py",
     "tests/test_stt_http_downloads.py",
-    "tests/test_stt_review_fixes_2.py",
+    "tests/test_stt_install_and_snapshot_validation.py",
     "tests/test_stt_sidecar.py"
   ],
   "core.inference.stt_ggml_sidecar.get_ggml_stt_sidecar": [
-    "tests/test_stt_review_fixes.py"
+    "tests/test_stt_ggml_sidecar.py"
   ],
   "core.inference.stt_mtmd_sidecar.get_mtmd_stt_sidecar": [
-    "tests/test_stt_review_fixes_3.py",
-    "tests/test_stt_review_fixes_3.py"
+    "tests/test_stt_mtmd_sidecar.py",
+    "tests/test_stt_mtmd_sidecar.py"
   ],
   "core.inference.stt_sidecar._active_hf_hub_cache": [
-    "tests/test_stt_review_fixes_3.py"
+    "tests/test_stt_mtmd_sidecar.py"
   ],
   "core.inference.stt_sidecar.get_stt_sidecar": [
-    "tests/test_stt_review_fixes.py"
+    "tests/test_stt_ggml_sidecar.py"
   ],
   "core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S": [
     "tests/test_tool_output_streaming.py",
@@ -1091,6 +1111,8 @@
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
     "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
+    "tests/test_hf_cache_dangling_refs.py",
     "tests/test_model_update_robustness.py",
     "tests/test_model_update_robustness.py",
     "tests/test_offline_embedding_minimal.py",
@@ -1169,6 +1191,14 @@
   "utils.models.model_config._iter_hf_cache_snapshots": [
     "tests/test_mtp_drafter_companion.py",
     "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_mtp_drafter_companion.py",
     "tests/test_mtp_drafter_companion.py"
   ],
   "utils.models.model_config._raw_config_has_vision_config": [
@@ -1235,6 +1265,9 @@
   "utils.native_tls.activate_native_tls": [
     "tests/test_diffusion_training.py"
   ],
+  "utils.openai_auto_switch_settings.get_openai_auto_download_enabled": [
+    "tests/test_openai_auto_switch.py"
+  ],
   "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled": [
     "tests/test_openai_auto_download.py",
     "tests/test_openai_auto_download.py",
@@ -1300,7 +1333,7 @@
     "tests/test_stt_http_downloads.py"
   ],
   "utils.process_lifetime.forget_pid": [
-    "tests/test_stt_review_fixes_3.py"
+    "tests/test_stt_mtmd_sidecar.py"
   ],
   "utils.security.consent._config_has_auto_map": [
     "tests/test_openai_auto_download.py",

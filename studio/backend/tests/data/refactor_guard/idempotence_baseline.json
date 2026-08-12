@@ -33,9 +33,9 @@
   },
   {
     "function": "strip_segment",
-    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "input": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}",
     "module": "core.inference.tool_call_parser",
-    "once": "get_weather[ARGS]",
+    "once": "call:get_weather{city:<|\"|>Paris<|\"|>}",
     "twice": "",
     "variant": "{\"seg_final\": true}"
   },
@@ -49,9 +49,9 @@
   },
   {
     "function": "strip_tool_markup",
-    "input": "get_weather[ARGS]get_weather[ARGS]{",
+    "input": "<tool_call>{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}</tool_call>call:get_weather{city:<|\"|>Paris<|\"|>}",
     "module": "core.inference.tool_call_parser",
-    "once": "get_weather[ARGS]",
+    "once": "call:get_weather{city:<|\"|>Paris<|\"|>}",
     "twice": "",
     "variant": "{\"final\": true}"
   },

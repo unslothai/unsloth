@@ -292,6 +292,8 @@ _ARG_FIXTURES = {
     "hard_stop": lambda text: len(text),
     "i": lambda text: 0,
     "idx": lambda text: 0,
+    # Scan origin of a strip pass, which starts at 0 exactly as the Gemma strip does.
+    "floor": lambda text: 0,
     "p": lambda text: 0,
     "n": lambda text: len(text),
     "vs": lambda text: 0,
