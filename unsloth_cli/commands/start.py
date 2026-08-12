@@ -1029,14 +1029,11 @@ def _start_studio_server(
 ) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
-    # Windows goes through this interpreter rather than the launcher on PATH.
-    # shutil.which resolves `unsloth` to unsloth.exe (PATHEXT puts .EXE ahead of
-    # the .cmd shim), and that generated, unsigned executable is what an
-    # Application Control policy denies at CreateProcess (issue #8490) -- so on a
-    # locked-down machine a user who reached this CLI through unsloth.cmd or
-    # `python -m unsloth_cli` would still fail here. sys.executable is the
-    # interpreter already running this command, so the child gets the same
-    # environment the launcher would have given it.
+    # Windows goes through this interpreter, not the launcher on PATH: shutil.which
+    # resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of
+    # the .cmd shim (issue #8490). Without this, a user who reached the CLI through
+    # unsloth.cmd would still fail here. sys.executable is the interpreter already
+    # running this command, so the child inherits the same environment.
     if sys.platform == "win32":
         # Local import: unsloth_cli.commands.studio imports at package init after
         # this module, so a top-level import would be circular.

@@ -25,13 +25,11 @@ pub fn new_update_state() -> UpdateState {
 // ── Spawn ──
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
     let mut cmd = crate::process::build_managed_cli_command(bin, &["studio", "update"])?;
-    // The updater keeps the scrubbing it has always had, and is the only managed
-    // invocation that does. Everywhere else inheriting these is the point: the console
-    // script being replaced honours them, so scrubbing would make the swap observable.
-    // Here the shipped behaviour was already to drop them, and the failure they cause
-    // is the one an update cannot recover from -- a foreign PYTHONHOME stops the
-    // managed interpreter finding its own site-packages, and a PYTHONPATH pointing at
-    // another checkout makes `from unsloth_cli import app` update the wrong install.
+    // The only managed invocation that scrubs, and the only one that shipped doing it.
+    // Elsewhere inheriting is the point, since the console script honours these. Here
+    // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
+    // finding its own site-packages, and a PYTHONPATH pointing at another checkout
+    // makes `from unsloth_cli import app` update the wrong install.
     #[cfg(windows)]
     {
         cmd.env_remove("PYTHONHOME");
@@ -544,11 +542,8 @@ mod tests {
     }
 
     // The Windows trampoline moved into process.rs; nothing about the POSIX
-    // The one managed invocation that still scrubs. A foreign PYTHONHOME stops the
-    // managed interpreter finding its own site-packages and a foreign PYTHONPATH can
-    // point `from unsloth_cli import app` at another checkout, so an update would fail
-    // or update the wrong install. Dropping -I made this load bearing rather than
-    // belt and braces, since without -E the child would now read both.
+    // Dropping -I made this load bearing rather than belt and braces: without -E the
+    // child now reads both. See build_update_command for what each one breaks.
     #[cfg(windows)]
     #[test]
     fn windows_update_command_still_scrubs_the_python_search_path() {

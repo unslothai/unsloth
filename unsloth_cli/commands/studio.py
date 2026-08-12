@@ -171,32 +171,13 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
-# The Windows `unsloth` entry point is a generated, unsigned executable, and
-# Application Control (AppLocker / WDAC / Smart App Control) denies it while the
-# signed interpreter beside it still runs. Reaching the CLI through that
-# interpreter therefore survives a policy no direct unsloth.exe launch can
-# (issue https://github.com/unslothai/unsloth/issues/8490).
+# Windows materialises the `unsloth` entry point as a generated, unsigned .exe that
+# Application Control denies while the signed interpreter beside it still runs, so
+# every managed invocation goes through the interpreter (issue #8490).
 #
-# Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs and
-# to $script:UnslothCliTrampoline in install.ps1. Three things earn their place:
-#
-#   * The sys.path[:1] filter. `-c` puts the working directory on sys.path as ""
-#     and a console script never does, so without it a stray unsloth_cli/ beside
-#     the caller shadows the managed package (measured: it does). It removes only
-#     that entry, so it is a no-op under -P or PYTHONSAFEPATH where sys.path[0]
-#     is already something else.
-#   * argv[0] is assigned BEFORE the import, so unsloth_cli/__init__ sees the
-#     console-script name and applies its entry-point behaviour.
-#   * That name is also what typer prints in usage strings. Note it is `unsloth`,
-#     while the real Windows stub prints `unsloth.exe`, since click takes the
-#     basename of argv[0]. That one cosmetic difference is deliberate: matching it
-#     would mean baking a platform-specific name into a string three languages
-#     share.
-#
-# Deliberately no -I. It would imply -E and discard every PYTHON* variable, which
-# the console script honours: with PYTHONPROFILEIMPORTTIME=1 the stub emitted
-# 24,815 bytes of stderr and an -I trampoline emitted none. Stripping the one
-# extra path entry buys the same protection without that divergence.
+# Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs and to
+# $script:UnslothCliTrampoline in install.ps1, which carries the full rationale for
+# both halves and for the deliberate absence of -I.
 _WINDOWS_CLI_ENTRYPOINT = (
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
