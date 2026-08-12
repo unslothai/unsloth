@@ -1986,6 +1986,67 @@ def test_an_install_that_leaves_no_interpreter_is_also_a_failure(tmp_path):
     assert json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])["passed"] is False
 
 
+def _run_verify_cell(driver: dict, tmp_path, *, probe: dict, host_gpus: list[str]):
+    """Execute the generated dependency-probe cell against a fake venv + nvidia-smi.
+
+    Returns every ``T4_SMOKE_REPORT`` the cell published.
+    """
+    payload_source = _payload_source(driver)
+    fail_report_src = (
+        "def fail_report" + payload_source.split("def fail_report", 1)[1].split("\n\ndef ", 1)[0]
+    )
+    emitted: list[str] = []
+    namespace = {"json": json, "print": lambda *a, **kw: emitted.append("".join(map(str, a)))}
+    exec(compile(fail_report_src, "<fail_report>", "exec"), namespace)
+
+    class _FakeSubprocess:
+        @staticmethod
+        def run(cmd, **kw):
+            if "nvidia-smi" in cmd[0]:
+                return subprocess.CompletedProcess(cmd, 0, "\n".join(host_gpus) + "\n", "")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(probe) + "\n", "")
+
+    namespace.update(
+        {
+            "subprocess": _FakeSubprocess,
+            "os": os,
+            "VENV_PY": tmp_path / "python",
+            "STUDIO_HOME": tmp_path,
+        }
+    )
+    with pytest.raises(SystemExit):
+        exec(compile(_cell_source(driver, 'probe["missing"]'), "<verify>", "exec"), namespace)
+    return [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
+
+
+def test_a_venv_that_cannot_use_cuda_on_a_gpu_box_is_a_failure_not_infra(tmp_path):
+    """`install.sh --local` resolving a CPU-only torch is the CUDA install
+    regression this leg exists to catch, and it left no T4_SMOKE_REPORT at all,
+    so the launcher filed it as `infra` and the reporter exited 0."""
+    reports = _run_verify_cell(
+        _build(tmp_path),
+        tmp_path,
+        probe = {"versions": {"torch": "2.9.0+cpu"}, "missing": [], "cuda": {"available": False}},
+        host_gpus = ["Tesla T4"],
+    )
+    assert len(reports) == 1, reports
+    report = json.loads(reports[0][len(build_kernel.RESULT_PREFIX) :])
+    assert report["passed"] is False
+    assert "cannot use CUDA" in report["failures"][0]
+
+
+def test_a_session_kaggle_gave_no_gpu_at_all_stays_infra(tmp_path):
+    """Nothing was learned about the code, so this one keeps the no-report path
+    and must NOT turn a pull request red."""
+    reports = _run_verify_cell(
+        _build(tmp_path),
+        tmp_path,
+        probe = {"versions": {"torch": "2.9.0"}, "missing": [], "cuda": {"available": False}},
+        host_gpus = [],
+    )
+    assert reports == []
+
+
 def test_a_payload_that_hangs_past_the_driver_deadline_is_a_failure(tmp_path):
     """papermill killed mid-assertion emitted no report at all, so a hang in
     the code under test was filed as unavailable infrastructure."""
@@ -2078,6 +2139,17 @@ def test_the_opt_in_label_can_actually_start_the_workflow():
     assert "labeled" in triggers["pull_request"]["types"]
     for default in ("opened", "synchronize", "reopened"):
         assert default in triggers["pull_request"]["types"]
+
+
+def test_an_unrelated_label_cannot_start_a_seventy_minute_kaggle_run():
+    """GitHub has no per-label event filter, so `labeled` fires for every label
+    added -- and the gate reads the whole label list, so once the opt-in label
+    sits on the pull request it would call every one of those events forced."""
+    condition = " ".join(_workflow()["jobs"]["gate"]["if"].split())
+    assert "github.event.action != 'labeled'" in condition
+    assert "github.event.label.name == 'kaggle-studio-gpu-ci'" in condition
+    # The fork guard still has to survive the added clause.
+    assert "fork != true" in condition
 
 
 class _LoadStudio:

@@ -251,7 +251,21 @@ jobs:
     # Fork pull requests never receive KAGGLE_ACCESS_TOKEN_GH, so this job
     # could only reach "the token is not available to this context" -- a
     # runner spent to learn nothing.
-    if: github.event.pull_request.head.repo.fork != true
+    #
+    # The `labeled` clause is what keeps the opt-in label from turning into a
+    # standing trigger. GitHub has no per-label event filter, so `labeled`
+    # starts this workflow for EVERY label added, and once
+    # kaggle-studio-gpu-ci is on the pull request the gate reads the whole
+    # label list and calls every one of those events forced -- so adding any
+    # unrelated label would launch another 70-minute Kaggle session. Checking
+    # the label that fired the event is the documented way to narrow it.
+    # `github.event.label` exists only on labeled/unlabeled, and
+    # `github.event.action` is null on push, so both other events fall
+    # through.
+    if: >-
+      github.event.pull_request.head.repo.fork != true
+      && (github.event.action != 'labeled'
+      || github.event.label.name == 'kaggle-studio-gpu-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

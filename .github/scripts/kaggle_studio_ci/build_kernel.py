@@ -274,6 +274,26 @@ if probe["missing"]:
     raise SystemExit("payload dependencies incomplete")
 if not probe.get("cuda", {{}}).get("available"):
     print("{PAYLOAD_SENTINEL} NO CUDA " + json.dumps(probe.get("cuda")), flush=True)
+    # Two different outcomes wear the same face here, and only one of them is
+    # infra. No GPU assigned at all is Kaggle's doing and keeps the no-report
+    # path, which the launcher files as `infra` and the reporter exits 0 for. A
+    # GPU that nvidia-smi can see while the venv install.sh --local just built
+    # cannot use it is a failure of the INSTALLATION UNDER TEST -- a CPU-only
+    # torch resolved by the installer is how it happens -- and taking the
+    # infra path there passes the exact CUDA install regression this workflow's
+    # path filter selects for.
+    try:
+        _smi = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                              capture_output=True, text=True, timeout=60)
+        _visible = ([l for l in _smi.stdout.splitlines() if l.strip()]
+                    if _smi.returncode == 0 else [])
+    except Exception:
+        _visible = []
+    print("{PAYLOAD_SENTINEL} NO CUDA host_gpus " + json.dumps(_visible), flush=True)
+    if _visible:
+        fail_report("install.sh --local succeeded but the Studio venv cannot use CUDA "
+                    "(torch.cuda.is_available() is False) on a box where nvidia-smi "
+                    "reports " + str(len(_visible)) + " GPU(s): " + json.dumps(probe.get("cuda")))
     raise SystemExit("no CUDA device in the Studio venv, so there is nothing to test")
 
 marker = STUDIO_HOME / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json"
