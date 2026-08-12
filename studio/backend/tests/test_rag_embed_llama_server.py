@@ -169,6 +169,38 @@ def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch):
     assert "LD_LIBRARY_PATH" not in env
 
 
+def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch):
+    # EMBED_DEVICE=cpu, and the CPU retry after a failed GPU start, load the
+    # same sibling dylibs; the loader path cannot be gated on use_gpu.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    b = LlamaServerBackend()
+    env = b._build_env("/opt/llama/bin/llama-server", use_gpu = False)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == "/opt/llama/bin"
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_build_env_resolves_a_wrapper_entrypoint(monkeypatch, tmp_path):
+    # The managed install puts an entrypoint in front of the real server; the
+    # dylibs sit next to the target, not next to the wrapper.
+    import os
+    import sys as _sys
+
+    real_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    real_dir.mkdir(parents = True)
+    (real_dir / "llama-server").write_text("")
+    wrapper = tmp_path / "llama.cpp" / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    b = LlamaServerBackend()
+    env = b._build_env(str(wrapper), use_gpu = True)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(real_dir)
+
+
 def test_use_gpu_explicit_modes(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")

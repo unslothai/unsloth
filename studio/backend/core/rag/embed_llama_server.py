@@ -20,6 +20,7 @@ import atexit
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from functools import lru_cache
@@ -43,6 +44,22 @@ _TRANSPORT_ERRORS = (
     httpx.RemoteProtocolError,
     httpx.WriteError,
 )
+
+
+def _binary_lib_dir(binary: str) -> str:
+    """Directory holding ``binary``'s sibling libraries, through an entrypoint."""
+    try:
+        from core.inference.llama_cpp import _llama_lib_dir
+
+        return str(_llama_lib_dir(binary))
+    except Exception:  # noqa: BLE001 - fall back to the plain parent
+        return str(Path(binary).parent)
+
+
+def _add_dyld_path(env: dict[str, str], lib_dir: str) -> None:
+    """Prepend ``lib_dir`` to the macOS loader search path."""
+    existing = [p for p in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
+    env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([lib_dir, *existing]))
 
 
 class LlamaServerBackend:
@@ -97,7 +114,19 @@ class LlamaServerBackend:
     @lru_cache(maxsize = 8)
     def _help_text(binary: str) -> str:
         """`llama-server --help`, cached. Ignore exit code (some builds exit
-        non-zero on --help)."""
+        non-zero on --help).
+
+        Runs under the same loader environment as the real launch. Without it,
+        a bundle that needs the search path dies in the loader here, and its
+        error text reads as help output with no ``--embedding`` in it, so the
+        caller reports a build that lacks embeddings instead of a load failure.
+        """
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
+        except Exception:  # noqa: BLE001 - probe with the inherited env
+            probe_env = None
         try:
             proc = subprocess.run(
                 [binary, "--help"],
@@ -106,6 +135,7 @@ class LlamaServerBackend:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 30,
+                env = probe_env,
                 **windows_hidden_subprocess_kwargs(),
             )
             return (proc.stdout or "") + (proc.stderr or "")
@@ -253,9 +283,18 @@ class LlamaServerBackend:
     def _build_env(self, binary: str, *, use_gpu: bool) -> dict[str, str]:
         env = child_env_without_native_path_secret()
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
-        if use_gpu:
-            self._add_linux_cuda_libs(env, str(Path(binary).parent))
-        else:
+        # _llama_lib_dir, not Path(binary).parent: the managed install puts an
+        # entrypoint in front of the real server (~/.unsloth/llama.cpp/llama-server
+        # -> build/bin/llama-server), and the dylibs sit next to the target.
+        lib_dir = _binary_lib_dir(binary)
+        if sys.platform == "darwin":
+            # Unconditional, unlike the CUDA branch: a CPU start (EMBED_DEVICE=cpu,
+            # or the retry after a failed GPU start) loads the same sibling
+            # dylibs, and dyld ignores LD_LIBRARY_PATH either way (#8566).
+            _add_dyld_path(env, lib_dir)
+        elif use_gpu:
+            self._add_linux_cuda_libs(env, lib_dir)
+        if not use_gpu:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
         return env
@@ -265,18 +304,9 @@ class LlamaServerBackend:
         """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs."""
         import glob
         import platform
-        import sys
 
         if sys.platform == "win32":
             return  # Windows resolves CUDA via PATH in the inherited env.
-        if sys.platform == "darwin":
-            # dyld ignores LD_LIBRARY_PATH, and there is no CUDA to find. Give
-            # the embedding server the same dyld search path the chat server
-            # gets (#8566); Apple Silicon is routed here with use_gpu set, so
-            # this branch is the normal macOS path, not an edge case.
-            existing = [p for p in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
-            env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([binary_dir, *existing]))
-            return
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (

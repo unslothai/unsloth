@@ -9350,19 +9350,18 @@ class LlamaCppBackend:
     # chatty server cannot push an unreadable wall of text into an API error.
     _STARTUP_TAIL_CHARS = 2000
 
-    # Name markers for env values that must never reach an API error. Kept in
-    # step with tools._BYPASS_ENV_SECRET_MARKERS, but deliberately local: this
-    # runs on a failure path and must not drag tools' MCP/DB imports in.
-    _SECRET_ENV_MARKERS = (
-        "TOKEN",
-        "API_KEY",
-        "APIKEY",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "CREDENTIAL",
-        "PRIVATE_KEY",
-        "AUTH",
+    # Token shapes worth redacting on sight: a name-based list cannot cover a
+    # credential the child obtained elsewhere, or one held in a variable whose
+    # name says nothing (GITHUB_PAT, MY_THING).
+    _SECRET_VALUE_RES = (
+        re.compile(r"hf_[A-Za-z0-9]{20,}"),
+        re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+        re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+        re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
+        re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+"),
+        # scheme://user:secret@host, which is what DATABASE_URL / REDIS_URL and
+        # a proxy variable carry. Keep the scheme, drop the userinfo.
+        re.compile(r"(?<=://)[^/@\s]+(?=@)"),
     )
 
     @staticmethod
@@ -9377,17 +9376,26 @@ class LlamaCppBackend:
         if not text:
             return text
         cleaned = text
-        for name, value in os.environ.items():
-            # Short values match innocuous substrings ("1", "true", a port).
-            if len(value or "") >= 8 and any(
-                marker in name.upper() for marker in LlamaCppBackend._SECRET_ENV_MARKERS
-            ):
-                cleaned = cleaned.replace(value, "***")
-        # Credentials the child obtained elsewhere (a HF token read from a
-        # config file, an Authorization header echoed by a proxy) are not in
-        # our environment to match on, so catch the two well-known shapes.
-        cleaned = re.sub(r"hf_[A-Za-z0-9]{20,}", "hf_***", cleaned)
-        return re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]+", "Bearer ***", cleaned)
+        # By name, using the same predicate that decides what to strip from a
+        # managed server's own environment, so the two cannot drift: anything
+        # we refuse to hand the child must not come back out of it either.
+        # Values carrying URL userinfo count whatever they are named.
+        try:
+            from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
+
+            for name, value in os.environ.items():
+                # Short values match innocuous substrings ("1", "true", a port).
+                if len(value or "") < 8:
+                    continue
+                if is_secret_env_name(name) or URL_USERINFO_RE.search(value):
+                    cleaned = cleaned.replace(value, "***")
+        except Exception:  # noqa: BLE001 - redaction must never break a load error
+            pass
+        # By shape, for credentials that are not in our environment to match on
+        # (a token the child read from its own config, a proxy's header echo).
+        for pattern in LlamaCppBackend._SECRET_VALUE_RES:
+            cleaned = pattern.sub("***", cleaned)
+        return cleaned
 
     @staticmethod
     def _with_startup_diagnostics(
@@ -10455,6 +10463,16 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+            # macOS: launch the resolved server, never a shell entrypoint. SIP
+            # purges DYLD_* while starting the protected /bin/sh a wrapper
+            # entrypoint runs under, so the loader path built for the child
+            # would not survive the wrapper's own exec (#8566). The installer
+            # writes a wrapper only when it cannot symlink, and that wrapper
+            # does nothing but exec the target with "$@", so this is the same
+            # launch minus the shell hop. The resolved path stays inside the
+            # managed install, so provenance-aware advice is unaffected.
+            if binary and sys.platform == "darwin":
+                binary = str(_resolve_llama_binary(binary))
             # Kept so a stand-down blamed on the binary can later tell a real update
             # from the same file still being installed.
             self._launch_binary_revision = self._binary_revision(binary)

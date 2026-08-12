@@ -757,6 +757,20 @@ class TestDiagnosticsDoNotLeak:
         msg = _classify("loading from /models/mymodels failed", "/models/x.gguf", "local/x", 1)
         assert "/models/mymodels" in msg
 
+    def test_a_credential_url_is_redacted_whatever_it_is_named(self, monkeypatch):
+        # DATABASE_URL / REDIS_URL match no name marker, so the value has to
+        # carry the verdict: scheme://user:secret@host is a credential.
+        monkeypatch.setenv("DATABASE_URL", "postgres://admin:hunter2secret@db:5432/prod")
+        out = "dump: DATABASE_URL=postgres://admin:hunter2secret@db:5432/prod"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "hunter2secret" not in msg
+
+    def test_a_token_shape_is_redacted_under_an_unremarkable_name(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_PAT", "github_pat_11ABCDEFG0123456789abcdefghij")
+        out = "dump: GITHUB_PAT=github_pat_11ABCDEFG0123456789abcdefghij"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "github_pat_11ABCDEFG0123456789abcdefghij" not in msg
+
     def test_a_bare_hf_token_shape_is_redacted(self):
         out = "curl -H 'Authorization: Bearer hf_" + "a" * 34 + "' failed"
         msg = _classify(out, "/models/x.gguf", "local/x", 1)

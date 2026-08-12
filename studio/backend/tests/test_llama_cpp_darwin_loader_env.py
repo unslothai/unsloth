@@ -96,13 +96,10 @@ class TestDarwin:
     def test_a_wrapper_entrypoint_resolves_to_the_real_bin_dir(self, monkeypatch, tmp_path):
         # The managed install can put a shell entrypoint in front of the real
         # binary; the dylibs sit next to the target, not next to the wrapper.
-        # This pins the env dict only. macOS SIP purges DYLD_* when exec'ing a
-        # protected binary, and a #!/bin/sh wrapper is exactly that, so on a
-        # real Mac the variable would not survive into llama-server through
-        # this path. The installer only writes a wrapper when it cannot make
-        # the symlink (install_llama_prebuilt.create_exec_entrypoint), so the
-        # mainline is unaffected; do not read this test as covering the
-        # wrapper case end to end.
+        # The env dict alone is not enough on a Mac: SIP purges DYLD_* while
+        # starting the protected /bin/sh a wrapper runs under, so load_model
+        # launches the resolved target instead (see
+        # TestDarwinSpawnsTheResolvedBinary).
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
         real_dir.mkdir(parents = True)
         (real_dir / "llama-server-real").write_text("")
@@ -163,3 +160,21 @@ class TestWindowsUnchanged:
         assert env["PATH"].endswith("C:\\existing")
         assert "LD_LIBRARY_PATH" not in env
         assert "DYLD_LIBRARY_PATH" not in env
+
+
+class TestDarwinSpawnsTheResolvedBinary:
+    """macOS SIP purges DYLD_* while starting the protected /bin/sh that a
+    wrapper entrypoint runs under, so the loader path we build would not
+    survive the wrapper's own exec. load_model resolves the entrypoint first."""
+
+    def test_resolve_llama_binary_follows_the_wrapper(self, tmp_path):
+        real_dir = tmp_path / "build" / "bin"
+        real_dir.mkdir(parents = True)
+        target = real_dir / "llama-server-real"
+        target.write_text("")
+        wrapper = real_dir / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
+        assert llama_module._resolve_llama_binary(str(wrapper)) == target
+
+    def test_a_plain_binary_is_returned_unchanged(self, binary):
+        assert llama_module._resolve_llama_binary(str(binary)) == binary.resolve()
