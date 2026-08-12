@@ -147,6 +147,16 @@ class TestPatchApplication:
         IF.patch_psutil_cpu_freq()
         assert psutil.cpu_freq is before
 
+    def test_no_op_when_psutil_has_no_cpu_freq(self, monkeypatch, fake_m4):
+        # GitHub's Apple Silicon runners ship exactly this psutil: no cpu_freq
+        # attribute at all. There is nothing to wrap, and adding one would
+        # advertise support psutil deliberately does not claim.
+        import psutil
+
+        monkeypatch.delattr(psutil, "cpu_freq", raising = False)
+        IF.patch_psutil_cpu_freq()
+        assert not hasattr(psutil, "cpu_freq")
+
     def test_patch_is_idempotent(self, monkeypatch, fake_m4):
         psutil = _install_fake_psutil(monkeypatch, _scpufreq(4.0, 1.0, 4.0))
         IF.patch_psutil_cpu_freq()
