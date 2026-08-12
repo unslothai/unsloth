@@ -1571,10 +1571,11 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with a request's own "
-        "enable_tools: false (what the per-chat UI toggle sends) honored. "
-        "/v1/messages takes the on direction per request (enable_tools) because it has "
-        "no confirmation channel; the off direction still applies everywhere.",
+        "every request. Default: no server-wide policy, so the per-chat UI toggle "
+        "(the request's own enable_tools) decides; `unsloth studio run` is the "
+        "launcher that defaults them on. /v1/messages takes the on direction per "
+        "request (enable_tools) because it has no confirmation channel; the off "
+        "direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,

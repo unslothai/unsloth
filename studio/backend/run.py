@@ -2808,8 +2808,9 @@ def _build_arg_parser():
         action = "store_true",
         default = None,
         help = "Force server-side tools (web search, code execution) on for "
-        "every request. Default: on for every bind, with a request's own "
-        "enable_tools: false honored. "
+        "every request. Default: no server-wide policy, so each request's own "
+        "enable_tools decides (`unsloth studio run` is the launcher that defaults "
+        "them on). "
         "/v1/messages takes the on direction per request (enable_tools) because it has "
         "no confirmation channel; the off direction still applies everywhere.",
     )

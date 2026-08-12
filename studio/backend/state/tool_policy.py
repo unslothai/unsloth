@@ -15,10 +15,15 @@ The OVERRIDE (`set_tool_policy`) comes from an explicit `--enable-tools`/
   False -> CLI forced tools off for every request, /v1/messages included.
 
 The DEFAULT (`set_tool_policy_default`) is what an omitted `enable_tools` falls
-back to. Launchers install True: tools are on for every bind, so a plain request
-to a tool-capable model can use them. It is only a default -- a request that says
-`enable_tools: false` (what the Studio UI sends with its tool pills off) turns
-them off, which the override deliberately would not.
+back to. `unsloth studio run` installs True for every bind, `--secure` included,
+so a plain request to a tool-capable model can use tools. It is only a default:
+a request that says `enable_tools: false` (what the Studio UI sends with its tool
+pills off) turns them off, which the override deliberately would not.
+
+No other launcher installs it. `unsloth studio`, the desktop app and Colab leave
+it unset, so an omitted `enable_tools` still means no tools there, which is what
+paths like `n > 1`, `max_tool_calls_per_message: 0` and the pre-switch
+passthrough guard are built around.
 """
 
 import contextvars
@@ -41,8 +46,9 @@ def get_tool_policy() -> Optional[bool]:
 
 
 def get_tool_policy_default() -> Optional[bool]:
-    """Fallback for a request that omits `enable_tools`; None until a launcher
-    installs one (embedders and library callers keep the omitted-is-off read)."""
+    """Fallback for a request that omits `enable_tools`; None unless `unsloth
+    studio run` installed one (every other launcher, embedder and library caller
+    keeps the omitted-is-off read)."""
     if _force_disabled.get():
         return False
     return _tool_policy_default
