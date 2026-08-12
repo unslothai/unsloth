@@ -73,8 +73,8 @@ def _probe(
     monkeypatch.setattr(
         llama_cpp_module, "_resolve_variant_gguf_files", lambda *_a, **_k: (filename, [])
     )
-    # The verified cache lookup is the only way a local copy enters the probe now. A test
-    # that installs its own stub for it passes patch_cache = False and keeps that stub.
+    # The verified cache lookup is the only way a local copy enters the probe; a test with
+    # its own stub for it passes patch_cache = False.
     if patch_cache:
         monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: local)
     monkeypatch.setattr(diffusion_compat, "_read_gguf_header", _fake_remote)
@@ -357,10 +357,9 @@ def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_
 
 def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_path):
     # _download_gguf resolves its local copy through cached_gguf_for_load, which walks the
-    # cached variant candidates rather than trusting the current listing's filename. The
-    # probe follows it: a repo that renamed the file for a quant while a complete older
-    # snapshot is cached would otherwise let the probe judge one GGUF and the load open
-    # another. The listing name here is deliberately not the cached one.
+    # cached variant candidates rather than the current listing's filename. The probe follows
+    # it, or a repo that renamed the file for a quant would let the probe judge one GGUF and
+    # the load open another. The listing name here is deliberately not the cached one.
     cached = tmp_path / "renamed-ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached))
@@ -375,9 +374,8 @@ def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_p
 
 
 def test_nothing_cached_means_the_hub_is_asked(monkeypatch, tmp_path):
-    # With no verified cache hit the probe range-reads the Hub rather than reaching for an
-    # unverified path: a candidate the verified lookup rejected is one _download_gguf is
-    # about to skip, so judging it would judge a file the load will not open.
+    # With no verified cache hit the probe range-reads the Hub rather than an unverified
+    # path: a candidate the verified lookup rejected is one _download_gguf will skip anyway.
     message, requests = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = "ltxv"),
@@ -470,11 +468,10 @@ def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch,
 
 
 def test_the_probe_runs_under_the_same_offline_guard_as_the_download(monkeypatch):
-    # With the Hub unreachable and the model already cached, the probe's two Hub calls (the
-    # file listing, then the cached candidate's revision sizes) would each wait out their own
-    # retry backoff before any local header is read. The download below has always run under
-    # the guard; the probe has to as well, or a cached load that needs no network pays two
-    # timeouts for a verdict that is free off disk.
+    # With the Hub unreachable and the model cached, the probe's two Hub calls (the file
+    # listing, then the cached candidate's revision sizes) would each wait out their retry
+    # backoff before any local header is read. The download has always run under the guard;
+    # the probe has to as well, or a cached load pays two timeouts for a free verdict.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -518,8 +515,7 @@ def test_the_probe_guard_sits_above_the_teardown_in_source():
 
 def test_the_route_entry_point_judges_an_intent_before_the_arbiter(monkeypatch, tmp_path):
     # What the route calls. load_model's own copy runs before ITS teardown but after
-    # acquire_for has evicted a resident Images/Video pipeline and the reload confirmation
-    # has cancelled the running chats, so the route needs a verdict of its own.
+    # acquire_for has evicted a resident pipeline and cancelled the running chats.
     media = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     media.write_bytes(_gguf_bytes(arch = "ltxv"))
     intent = GgufLoadIntent(
@@ -540,8 +536,7 @@ def test_the_route_entry_point_judges_an_intent_before_the_arbiter(monkeypatch, 
 
 
 def test_the_route_entry_point_fails_open(monkeypatch, tmp_path):
-    # A probe that raises is not a verdict: the load proceeds and the checks inside it stay
-    # as the backstop.
+    # A probe that raises is not a verdict: the load proceeds, its own checks back it up.
     def _boom(*_a, **_k):
         raise RuntimeError("hub down")
 
@@ -568,8 +563,7 @@ def test_the_route_asks_before_it_takes_the_gpu():
 
 def test_the_route_hands_its_verdict_to_the_load(monkeypatch, tmp_path):
     # The route and the loader ask for the same intent seconds apart, and each ask is a
-    # listing, a cache verification and a range request, all bounded at 15s. The second one
-    # takes the first one's answer instead of paying again.
+    # listing, a cache verification and a range request. The second takes the first's answer.
     calls: list[str] = []
 
     def _verdict(**kwargs):

@@ -699,11 +699,11 @@ def _hf_unreachable() -> bool:
     return hf_unreachable()
 
 
-# Distinguishes "no verdict remembered" from a remembered verdict of None (not a media GGUF).
+# Separates "nothing remembered" from a remembered verdict of None (not a media GGUF).
 _MISS = object()
 
 
-# GGUF value-type ids for the unsigned ints, and their widths: uint8, uint16, uint32, uint64.
+# GGUF unsigned value-type id -> byte width (uint8, uint16, uint32, uint64).
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
 
 
@@ -7216,13 +7216,10 @@ class LlamaCppBackend:
     def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
         """The header verdict for a resolved load intent, or None.
 
-        The copy inside ``load_model`` runs before the teardown, but not before everything
-        the ROUTE destroys on the way in: ``acquire_for(CHAT)`` evicts a resident Images or
-        Video pipeline, and the reload confirmation cancels the running generations, both
-        ahead of the call. A media GGUF picked from chat would therefore still cost the
-        resident pipeline and the in-flight chats before being refused. The route asks here
-        first; the checks inside the load stay as the backstop for every path that does not
-        come through it. Fails open exactly as they do."""
+        ``load_model``'s copy runs before its own teardown, but by then the ROUTE has already
+        evicted a resident Images/Video pipeline via ``acquire_for(CHAT)`` and cancelled the
+        running generations. Asking here first spares both; the in-load checks stay as the
+        backstop for paths that skip the route. Fails open exactly as they do."""
         try:
             gguf_path = getattr(intent, "gguf_path", None)
             hf_repo = getattr(intent, "hf_repo", None)
@@ -7231,9 +7228,9 @@ class LlamaCppBackend:
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
                 hf_variant = getattr(intent, "hf_variant", None)
-                # Same offline window the download runs in: the repo probe asks the Hub
-                # before it reads any local header, and those calls would otherwise wait out
-                # their retry backoff on an unreachable Hub.
+                # Same offline window as the download: the probe asks the Hub before reading
+                # any local header, and those calls would otherwise wait out their retry
+                # backoff on an unreachable Hub.
                 with _hf_offline_if_unreachable():
                     verdict = cls._remote_non_chat_gguf_verdict(
                         hf_repo = hf_repo,
@@ -7247,12 +7244,11 @@ class LlamaCppBackend:
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
         return None
 
-    # The route takes this verdict, then load_model asks for the same intent moments later,
-    # and each ask is a repo listing, a cache verification and a range request, every one
-    # bounded at 15s. So the route HANDS OVER what it learned instead of making a slow Hub
-    # pay twice before a byte is downloaded. Written only by the route entry point and taken
-    # once by the load it belongs to, so a verdict can never outlive its load; the age bound
-    # is only there for a route ask no load ever came for.
+    # Each ask is a repo listing, a cache verification and a range request, every one bounded
+    # at 15s, so the route HANDS OVER what it learned rather than making a slow Hub pay twice.
+    # Written only by the route entry point and taken once by the load it belongs to, so a
+    # verdict can never outlive its load; the age bound only covers a route ask no load
+    # ever came for.
     _HANDOFF_TTL_S = 120.0
     _route_verdict_handoff: Optional[
         tuple[tuple[Optional[str], Optional[str]], Optional[str], float]
@@ -7302,7 +7298,7 @@ class LlamaCppBackend:
         refusal cheaper, never refuse a load the full-file check would have allowed.
 
         Takes the route's verdict for this intent when there is one, rather than repeating
-        a listing, a cache verification and a range request the route just paid for."""
+        the listing, cache verification and range request it just paid for."""
         handed_over = cls._take_route_verdict(hf_repo, hf_variant)
         if handed_over is not _MISS:
             logger.debug("Reusing the header verdict the route already took for %s", hf_repo)
@@ -7346,12 +7342,11 @@ class LlamaCppBackend:
             # metadata, so the probe still answers offline.
             local = cached_gguf_for_load(hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token)
             if local is None and not hf_variant:
-                # No variant means cached_gguf_for_load declines outright, so mirror the
-                # other half of _download_gguf: the complete candidate for this filename,
-                # size-checked against its own revision. Never the bare local path -- a
-                # candidate the verified lookup just REJECTED would come straight back
-                # through it, and the probe would judge a truncated snapshot the load is
-                # about to skip in favour of a fresh download.
+                # No variant means cached_gguf_for_load declines outright, so mirror the other
+                # half of _download_gguf: the complete candidate for this filename, size-checked
+                # against its own revision. Never the bare local path -- a candidate the verified
+                # lookup just REJECTED would come straight back through it, and the probe would
+                # judge a truncated snapshot the load is about to redownload.
                 candidate = _cached_complete_candidate(hf_repo, gguf_filename, list(shards))
                 if candidate is not None and _cached_candidate_matches_revision_size(
                     hf_repo, candidate, hf_token
@@ -7481,8 +7476,8 @@ class LlamaCppBackend:
                         # later shard only split.no / split.count / split.tensors.count
                         # (measured on unsloth/DeepSeek-R1-GGUF: shard 1 has 48 KV pairs from
                         # general.architecture = "deepseek2", shard 2 has those 3). Read the
-                        # INDEX, not just the presence: shard 1 carries these keys too, so
-                        # presence alone would cover a whole set rather than its tail.
+                        # INDEX, not the presence: shard 1 carries these keys too, so presence
+                        # alone would cover a whole set rather than its tail.
                         if key == "split.no":
                             width = _GGUF_UINT_WIDTHS.get(vtype)
                             if width is not None:
@@ -9261,22 +9256,21 @@ class LlamaCppBackend:
 
         # A shard past the first of a gguf-split set declares no architecture (shard 1 holds
         # it) but is no media GGUF, and llama.cpp's own "model must be loaded with the first
-        # split" is more use than "carries no metadata". Keyed on split.no > 0 and on nothing
-        # having been declared: shard 1 carries the split keys too, and a placeholder arch is
-        # blanked above, so a looser test would wave through the very files the placeholder
-        # handling exists to catch. Only reachable with a hand-written variant anyway: every
-        # producer here strips the shard suffix and sorts, landing on shard 1.
+        # split" is more use than "carries no metadata". Needs split.no > 0 AND nothing
+        # declared: shard 1 carries the split keys too, and a placeholder arch is blanked
+        # above, so a looser test would wave through the very files the placeholder handling
+        # exists to catch. Only reachable with a hand-written variant anyway: every producer
+        # here strips the shard suffix and sorts, landing on shard 1.
         if self._architecture is None and (self._gguf_split_index or 0) > 0:
             return None
 
         # No architecture declared: not loadable by llama-server whatever it is. Say which
         # page runs it when the identifiers make that clear.
         needles = [n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n]
-        # Naming a page here answers to the same predicates as the arch branches above: a
-        # family that resolves is not enough, the picker also drops an MoE it cannot
-        # assemble and a family no installed engine can build. Detect first, then ask
-        # whether the page would list it, so a resolved-but-unbuildable family gets the
-        # honest message rather than a page it is missing from.
+        # Naming a page answers to the same predicates as the arch branches above: a family
+        # that resolves is not enough, the picker also drops an MoE it cannot assemble and a
+        # family no installed engine can build. So detect first, then ask whether the page
+        # would list it, rather than pointing at a page the model is missing from.
         try:
             from core.inference.video_families import detect_video_family
             if any(detect_video_family(n) is not None for n in needles):
@@ -10828,13 +10822,11 @@ class LlamaCppBackend:
             # file, judge that instead -- same verdict, no request. Fails open into the
             # post-download check below, which stays as the backstop.
             if hf_repo:
-                # Under the same offline guard the download below uses. The probe asks the
-                # Hub twice before it reads any local header (the file listing, then the
-                # cached candidate's revision sizes), and with the Hub unreachable each of
-                # those waits out its own retry backoff. That would have put two timeouts in
-                # front of a cached load that needs no network at all. The guard forces
-                # offline only when the Hub really is unreachable, and its verdict is
-                # memoised, so a reachable Hub pays nothing for this.
+                # Same offline guard the download below uses: the probe asks the Hub twice
+                # before reading any local header (the file listing, then the cached
+                # candidate's revision sizes), and each would wait out its retry backoff,
+                # putting two timeouts in front of a cached load that needs no network. The
+                # guard is memoised and only bites when the Hub really is unreachable.
                 with _hf_offline_if_unreachable():
                     _early_non_chat = (
                         self._non_chat_gguf_refusal_for_path(

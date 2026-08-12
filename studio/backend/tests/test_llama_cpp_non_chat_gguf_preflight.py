@@ -359,10 +359,10 @@ def test_the_first_shard_is_the_one_a_variant_resolves_to():
 
 
 def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
-    # The split exemption keys on split.no > 0 AND nothing declared. A placeholder arch is
-    # blanked before the name-based branch, so keying on the split keys alone would have
-    # waved through the very files the placeholder handling exists to catch, and shard 1 of
-    # any set carries those keys too.
+    # The split exemption needs split.no > 0 AND nothing declared. A placeholder arch is
+    # blanked before the name-based branch, so keying on the split keys alone would wave
+    # through the very files the placeholder handling exists to catch -- shard 1 carries
+    # those keys too.
     body = b""
     key, val = b"general.architecture", b"pig"
     body += struct.pack("<Q", len(key)) + key + struct.pack("<I", 8)
@@ -381,9 +381,9 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
-    # A family that resolves is not enough for the arch branches, and it is not enough here
-    # either: routes.models drops an MoE the loader cannot assemble, so the Video page would
-    # not list Wan 2.2 A14B however its GGUF is packaged.
+    # A family that resolves is not enough for the arch branches, nor here: routes.models
+    # drops an MoE the loader cannot assemble, so the Video page would not list Wan 2.2 A14B
+    # however its GGUF is packaged.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
