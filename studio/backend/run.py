@@ -537,11 +537,15 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
     network-reachable launch is never silent about code execution."""
     if enable_tools is False:
         return "Server-side tools are DISABLED (--disable-tools)."
-    state = (
-        "ENABLED (--enable-tools)"
-        if enable_tools
-        else "ENABLED by default (per-request setting honored)"
-    )
+    if enable_tools is None:
+        # This launcher installs no tools-on default (that is `unsloth studio
+        # run`), so the request decides and the Studio UI sends its pills.
+        return (
+            "Server-side tools follow each request's enable_tools; the Studio UI's "
+            "tool toggles decide. Pass --enable-tools to force them on for every "
+            "request."
+        )
+    state = "ENABLED (--enable-tools)"
     if secure:
         return (
             f"Server-side tools are {state}, reachable via the authenticated "
@@ -2119,8 +2123,15 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
-    unset (tools default on, per-request enable_tools honored). Host is never
-    inspected here."""
+    unset, so each request's own enable_tools decides. Host is never inspected
+    here.
+
+    The tools-on default for an omitted `enable_tools` belongs to `unsloth studio
+    run`, which installs it itself (that is the launcher that has always forced
+    tools on). Installing it here too would extend it to `unsloth studio`, the
+    desktop app and Colab, where paths built around "omitted means off" -- n > 1,
+    max_tool_calls_per_message: 0, the pre-switch passthrough guard -- would
+    start seeing it."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -2201,7 +2212,7 @@ def run_server(
             bind. Tri-state: None (unset) and False both mean off; True enables it.
             --secure implies it (True) and rejects an explicit False.
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
-            the default (tools on, per-request enable_tools honored)
+            the default (tools on, a request's own enable_tools: false honored)
         emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
             app parses from stdout; the headless `run --api-only` path turns it
             off so it does not pollute the documented URL/API-key banner
@@ -2788,7 +2799,8 @@ def _build_arg_parser():
         default = argparse.SUPPRESS,
         help = argparse.SUPPRESS,
     )
-    # Tri-state tool policy: no flag -> None (tools on, per-request honored);
+    # Tri-state tool policy: no flag -> None (tools default on, a request's own
+    # enable_tools: false honored);
     # --enable-tools/--disable-tools force on/off.
     parser.add_argument(
         "--enable-tools",
@@ -2796,7 +2808,9 @@ def _build_arg_parser():
         action = "store_true",
         default = None,
         help = "Force server-side tools (web search, code execution) on for "
-        "every request. Default: on for every bind, per-request setting honored. "
+        "every request. Default: no server-wide policy, so each request's own "
+        "enable_tools decides (`unsloth studio run` is the launcher that defaults "
+        "them on). "
         "/v1/messages takes the on direction per request (enable_tools) because it has "
         "no confirmation channel; the off direction still applies everywhere.",
     )
