@@ -146,13 +146,28 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     # against the lines that PRINT, never the whole file: every phrase below also
     # appears in the comments that explain the branch, so a file-wide search stays
     # green after the message itself has been gutted.
+    # Single quotes count too: the Vulkan setter is emitted as a literal so
+    # PowerShell prints $env:... instead of expanding it, and a double-quote-only
+    # filter would drop exactly the line under test and pass on an empty set.
     $emitted = @(($src -split "`n") | Where-Object {
-        $_ -match 'substep\s+"' -and $_.TrimStart() -notmatch '^#'
+        $_ -match 'substep\s+["'']' -and $_.TrimStart() -notmatch '^#'
     })
     Check "the emitted advice offers Vulkan" `
         (($emitted -join "`n").Contains("through Vulkan"))
+    # In PowerShell syntax, and verified by PARSING it rather than by matching text:
+    # a bare UNSLOTH_LLAMA_CPP_BACKEND=vulkan parses as a command name, so a user who
+    # pastes it sets nothing, re-runs the installer and gets the same CPU bundle --
+    # the #8458 failure mode reintroduced by the fix for it.
+    $setter = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
     Check "the emitted advice teaches the current spelling" `
-        (($emitted -join "`n").Contains("UNSLOTH_LLAMA_CPP_BACKEND=vulkan"))
+        (($emitted -join "`n").Contains($setter))
+    $posix = @($emitted | Where-Object { $_ -match 'UNSLOTH_LLAMA_CPP_BACKEND=vulkan' })
+    Check "no emitted line gives a POSIX assignment" ($posix.Count -eq 0)
+    $setterAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $setter, [ref]$null, [ref]$null)
+    Check "the taught setter parses as an assignment, not a command" `
+        (@($setterAst.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)).Count -eq 1)
 
     # UNSLOTH_FORCE_VULKAN still works, but force_vulkan_requested() resolves
     # UNSLOTH_LLAMA_CPP_BACKEND first and only falls back to the legacy name when
@@ -166,13 +181,50 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     # file-level "install time" search is satisfied by whichever site still has it
     # and gutting the other one passes.
     $mentions = @(0..($emitted.Count - 1) | Where-Object {
-        $emitted[$_] -match 'UNSLOTH_LLAMA_CPP_BACKEND=vulkan'
+        $emitted[$_].Contains($setter)
     })
     Check "at least one site names the Vulkan variable" ($mentions.Count -ge 1)
     foreach ($i in $mentions) {
         $window = ($emitted[$i..([Math]::Min($i + 3, $emitted.Count - 1))]) -join "`n"
         Check "the advice at emitted line $($i + 1) says it applies at install time" `
             ($window.Contains("install time"))
+    }
+
+    # --- which arm actually WINS, evaluated rather than read ------------------
+    # The ordering checks above compare source offsets, which cannot see a branch
+    # that is unreachable because an earlier condition already matched. This runs
+    # the real if/elseif chain: parse it, then evaluate every clause condition in
+    # order against the #8529 host and assert the FIRST true one is the unsupported
+    # arm. The host is the one that reported the bug and then followed the old
+    # advice: an RX 5700 XT, no ROCm runtime, and the HIP SDK now installed.
+    $chainAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        $path, [ref]$null, [ref]$null)
+    $chains = @($chainAst.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.IfStatementAst] -and
+        ($n.Clauses | Where-Object { $_.Item1.Extent.Text -match 'ROCmUnsupportedGfxArch' }) -and
+        ($n.Clauses | Where-Object { $_.Item2.Extent.Text -match 'step "gpu"' })
+    }, $true))
+    Check "the gpu report chain was found" ($chains.Count -eq 1)
+    if ($chains.Count -eq 1) {
+        $HasNvidiaSmi = $false
+        $script:IsIntelXpu = $false
+        $HasROCm = $false
+        $HipSdkInstalled = $true            # they installed it because we told them to
+        $ROCmGpuLabel = "AMD Radeon RX 5700 XT"
+        $ROCmGfxArch = $null
+        $script:ROCmGfxArch = $null
+        $ROCmUnsupportedGfxArch = "gfx1010"
+        $script:ROCmUnsupportedGfxArch = "gfx1010"
+        $winner = -1
+        $unsupIdx = -1
+        for ($c = 0; $c -lt $chains[0].Clauses.Count; $c++) {
+            $cond = $chains[0].Clauses[$c].Item1.Extent.Text
+            if ($cond -match 'ROCmUnsupportedGfxArch' -and $cond -notmatch '-not') { $unsupIdx = $c }
+            if ($winner -lt 0 -and [bool](& ([scriptblock]::Create($cond)))) { $winner = $c }
+        }
+        Check "the unsupported arm exists in the chain" ($unsupIdx -ge 0)
+        Check "an RDNA 1 host with the HIP SDK installed reaches the unsupported arm" `
+            ($winner -eq $unsupIdx)
     }
 
     # The scope guard, in source: the unsupported lookup must never assign the

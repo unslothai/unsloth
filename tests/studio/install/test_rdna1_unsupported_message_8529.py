@@ -43,6 +43,22 @@ _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
+# The setter each source has to teach, in the syntax of the shell that reads it.
+# PowerShell cannot parse a bare VAR=value: it resolves it as a command name and
+# answers "The term 'UNSLOTH_LLAMA_CPP_BACKEND=vulkan' is not recognized as a name
+# of a cmdlet ..." (verified with pwsh). A Windows user who pastes it sets nothing,
+# re-runs the installer, gets the same CPU bundle, and concludes the advice was
+# wrong -- the #8458 failure mode, reintroduced by the fix for it.
+_POSIX_SETTER = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
+_PWSH_SETTER = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
+_SETTER = {
+    "install.sh": _POSIX_SETTER,
+    "setup.sh": _POSIX_SETTER,
+    "install.ps1": _PWSH_SETTER,
+    "setup.ps1": _PWSH_SETTER,
+    "install_python_stack.py": _PWSH_SETTER,  # _detect_windows_gfx_arch is Windows-only
+}
+
 
 def _load_stack_module():
     spec = importlib.util.spec_from_file_location("studio_install_python_stack_rdna1", _STACK_PY)
@@ -391,6 +407,96 @@ class TestAdviceIsNotEmittedForRdna1:
         src = _normalised(_INSTALL_SH)
         assert src.count("_infer_linux_unsupported_amd_gfx_arch 2>/dev/null") == 2
 
+    # Every arm that would otherwise outrank the unsupported one, with the guard it
+    # must carry. An installed HIP SDK is the SYMPTOM on these cards -- the #8529
+    # reporters installed it because the old advice told them to -- so without the
+    # guard the fix never prints for the exact users it was written for, and they
+    # are sent back to a ROCm compute driver that cannot enumerate a gfx1010 either.
+    _HIPSDK_ARMS = [
+        (_INSTALL_PS1, "$HipSdkInstalled -and $ROCmGpuLabel", " -and -not $ROCmUnsupportedGfxArch"),
+        (_INSTALL_PS1, "$HipSdkInstalled -and -not $HasROCm", " -and -not $ROCmUnsupportedGfxArch"),
+        (
+            _SETUP_PS1,
+            "$HipSdkInstalled -and $ROCmGpuLabel",
+            " -and -not $script:ROCmUnsupportedGfxArch",
+        ),
+    ]
+
+    @pytest.mark.parametrize(
+        "path,condition,guard",
+        _HIPSDK_ARMS,
+        ids = [f"{p.name}:{c[:34]}" for p, c, _g in _HIPSDK_ARMS],
+    )
+    def test_the_hip_sdk_arm_does_not_outrank_the_unsupported_arm(self, path, condition, guard):
+        """Stated as a ban on the UNGUARDED condition, not as a search for the guarded
+        one: asserting only that the guarded text exists stays green if someone adds a
+        second, unguarded copy of the arm, and both spellings would then be present."""
+        src = _normalised(path)
+        assert condition + guard in src, (
+            f"{path.name}: the {condition!r} arm has lost its unsupported-arch guard, so an "
+            f"RDNA 1 user who already installed the HIP SDK never sees the new message"
+        )
+        assert condition + ")" not in src, (
+            f"{path.name}: an unguarded {condition!r} arm is present and precedes the "
+            f"unsupported arm"
+        )
+
+    # The claim the arms must NOT make, and the one they must. CPU torch is not a
+    # slow training path on these cards: with neither CUDA nor XPU visible, unsloth
+    # raises NotImplementedError at import (unsloth/device_type.py, reproduced with
+    # CUDA_VISIBLE_DEVICES=""), so "training runs on CPU" sends the user at an
+    # ImportError. studio/setup.sh already tells its other CPU-torch hosts
+    # "training and GPU inference are unavailable"; these arms now agree.
+    # Scoped per ARM, not per file: install.ps1 makes the same claim in the
+    # pre-existing $ROCmGfxArch CPU-hint arm, which predates this change and is a
+    # different card (supported generation, unmapped arch). Widening the ban to the
+    # file would fail on untouched code and would have to be deleted, taking the
+    # real assertion with it.
+    _TRAINING_ARMS = [
+        (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
+        (
+            _INSTALL_PS1,
+            "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for "
+            "$ROCmUnsupportedGfxArch.",
+        ),
+        (_SETUP_PS1, "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch"),
+        (_SETUP_SH, "not covered by ROCm PyTorch"),
+    ]
+
+    @pytest.mark.parametrize(
+        "path,anchor", _TRAINING_ARMS, ids = [f"{p.name}:{a[:34]}" for p, a in _TRAINING_ARMS]
+    )
+    def test_no_unsupported_arm_promises_cpu_training(self, path, anchor):
+        lines = _normalised(path).splitlines()
+        hits = [i for i, line in enumerate(lines) if anchor in line and not line.lstrip().startswith("#")]
+        assert len(hits) == 1, f"{path.name}: expected one arm anchored on {anchor!r}, got {hits}"
+        window = "\n".join(
+            line for line in lines[hits[0] : hits[0] + 8] if not line.lstrip().startswith(("#", "//"))
+        )
+        assert "runs on CPU on this GPU" not in window, (
+            f"{path.name}:{hits[0] + 1}: promises CPU training, which raises "
+            f"NotImplementedError at `import unsloth` on a host with no CUDA/XPU "
+            f"accelerator:\n{window}"
+        )
+        assert "training and GPU inference are unavailable" in window, (
+            f"{path.name}:{hits[0] + 1}: never says training is unavailable on this "
+            f"GPU:\n{window}"
+        )
+
+    def test_readme_does_not_sweep_in_every_pre_rdna2_amd_gpu(self):
+        """Vega 20 (Radeon VII / MI50, gfx906) is older than RDNA 2 and DOES have a
+        ROCm PyTorch path -- install.sh routes it to the rocm6.3 index. A blanket
+        "AMD GPUs older than RDNA 2" would send those users to Vulkan and CPU torch
+        for nothing."""
+        src = _normalised(PACKAGE_ROOT / "README.md")
+        assert "AMD GPUs older than RDNA 2" not in src, (
+            "README: claims ROCm PyTorch covers nothing older than RDNA 2, which is "
+            "wrong for gfx906"
+        )
+        assert "gfx906" in src, "README: never carves Vega 20 out of the unsupported group"
+        # The carve-out has to be true of the installer, not just of the README.
+        assert "rocm6.3" in _normalised(_INSTALL_SH), "install.sh: no gfx906 ROCm index left"
+
     def test_setup_sh_names_the_arch_instead_of_claiming_rocm(self):
         src = _normalised(_SETUP_SH)
         needle = 'step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"'
@@ -502,12 +608,14 @@ class TestVulkanAdvice:
     # search passes even after the message itself has been gutted. That is not
     # hypothetical -- three mutants that deleted or truncated the real advice
     # survived a file-level version of this test.
+    #
+    # The setter itself is NOT in this list because its spelling is per-file (see
+    # _SETTER); it gets its own per-path tests below.
     _REQUIRED = [
         # The offer must survive, not just the variable name: a message that says
         # "no GPU acceleration is available" and then names a GPU backend is worse
         # than either half alone.
         ("through Vulkan", "the affirmative Vulkan offer"),
-        ("UNSLOTH_LLAMA_CPP_BACKEND=vulkan", "the current variable spelling"),
     ]
 
     @staticmethod
@@ -527,6 +635,33 @@ class TestVulkanAdvice:
         assert needle in self._emitted_text(
             path
         ), f"{path.name}: the message a user actually sees is missing {what} ({needle!r})"
+
+    @pytest.mark.parametrize("path", _SHELL_SOURCES, ids = lambda p: p.name)
+    def test_the_emitted_advice_uses_the_right_shell_syntax(self, path):
+        """The setter has to be pasteable into the shell that reads this file."""
+        emitted = self._emitted_text(path)
+        assert _SETTER[path.name] in emitted, (
+            f"{path.name}: the printed advice never gives the setter in this shell's "
+            f"syntax ({_SETTER[path.name]!r})"
+        )
+
+    @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1, _STACK_PY], ids = lambda p: p.name)
+    def test_no_windows_source_teaches_the_posix_setter(self, path):
+        """The regression guard for the syntax above, stated as a ban.
+
+        Asserted on emitters only: a comment may legitimately quote the POSIX form
+        while explaining why the emitted line does not use it.
+        """
+        offenders = [
+            line.strip()
+            for line in _normalised(path).splitlines()
+            if _POSIX_SETTER in line
+            and any(e in line for e in ("substep", "_safe_print", "step ", "Write-StudioLine"))
+            and not line.lstrip().startswith("#")
+        ]
+        assert not offenders, (
+            f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
+        )
 
     # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with how
     # many times each anchor is expected to appear. The count is the point: the
@@ -598,9 +733,9 @@ class TestVulkanAdvice:
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"
             )
-            assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in window, (
+            assert _SETTER[path.name] in window, (
                 f"{path.name}:{i + 1}: this arm offers Vulkan without naming the variable "
-                f"that selects it:\n{window}"
+                f"that selects it, in this shell's syntax:\n{window}"
             )
             assert "install time" in window or "at launch" in window, (
                 f"{path.name}:{i + 1}: this arm names the variable but never says the bundle "
@@ -617,9 +752,7 @@ class TestVulkanAdvice:
         mutant survived. Require the timing near each mention instead.
         """
         emitted = self._emitted_text(path).splitlines()
-        mentions = [
-            i for i, line in enumerate(emitted) if "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in line
-        ]
+        mentions = [i for i, line in enumerate(emitted) if _SETTER[path.name] in line]
         assert mentions, f"{path.name}: no site names the Vulkan variable"
         for i in mentions:
             window = "\n".join(emitted[i : i + 4])
@@ -655,6 +788,16 @@ class TestVulkanAdvice:
         arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert arch is None, "routing must be unchanged; this is a wording fix"
         assert needle in out, f"the printed advice is missing {what} ({needle!r})"
+
+    def test_the_printed_advice_uses_powershell_syntax(self):
+        """This branch is Windows-only, so its setter has to be pasteable into
+        PowerShell. Read the live output, not the source: the message is built from
+        implicitly-joined fragments and no single source line carries it."""
+        _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert _PWSH_SETTER in out, f"the printed advice is not pasteable into PowerShell:\n{out}"
+        assert _POSIX_SETTER not in out, (
+            f"the printed advice gives a POSIX assignment PowerShell cannot parse:\n{out}"
+        )
 
     def test_the_printed_advice_says_when_to_set_it(self):
         """The anti-#8458 clause for the Python copy.

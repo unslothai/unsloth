@@ -1889,7 +1889,10 @@ elif [ "$_setup_amd_detected" = true ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_from_name "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
-        substep "PyTorch (training and Transformers inference) runs on CPU on this GPU."
+        # Not "training runs on CPU": with neither CUDA nor XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU
+        # and no-GPU arms further down already use for their CPU-torch hosts.
+        substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
         substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value changes that."
         substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"

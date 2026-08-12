@@ -979,10 +979,13 @@ def _detect_windows_gfx_arch() -> str | None:
                     # it). Say WHEN to set it -- the variable picks the llama.cpp bundle
                     # during install, so a user who exports it afterwards sees no change
                     # and concludes the advice was wrong, which is what happened in #8458.
+                    # PowerShell syntax: this branch is Windows-only, and a pasted
+                    # VAR=value is parsed there as a command name, so the shell answers
+                    # "is not recognized" and the next install picks the same CPU bundle.
                     _safe_print(
                         "   [INFO] GGUF chat can still run on this GPU through Vulkan: set "
-                        "UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run the installer. It "
-                        "selects the llama.cpp bundle at install time, so setting it "
+                        '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. '
+                        "It selects the llama.cpp bundle at install time, so setting it "
                         "afterwards has no effect until you install or update again."
                     )
                 else:

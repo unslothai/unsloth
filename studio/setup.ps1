@@ -2645,8 +2645,11 @@ if ($HasNvidiaSmi) {
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
     if ($script:ROCmVersionFull) { substep "hipconfig: $script:ROCmVersionFull" }
-} elseif ($HipSdkInstalled -and $ROCmGpuLabel) {
-    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue)
+} elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $script:ROCmUnsupportedGfxArch) {
+    # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue).
+    # Excludes a card already identified as out of ROCm PyTorch's scope: the #8529
+    # reporters installed the HIP SDK BECAUSE this arm told them to, so without the
+    # guard the arm below never prints for the users it was written for.
     $sdkVer = if ($script:ROCmVersionFull) { " (HIP $script:ROCmVersionFull)" } else { "" }
     Write-StudioLine ""
     step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
@@ -2670,12 +2673,22 @@ if ($HasNvidiaSmi) {
     Write-StudioLine ""
     step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- not covered by ROCm PyTorch" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
-    substep "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so PyTorch" "Yellow"
-    substep "(training and Transformers inference) runs on CPU on this GPU. Installing the" "Yellow"
+    # Not "training runs on CPU": with neither CUDA nor XPU visible, unsloth raises
+    # NotImplementedError at import (unsloth/device_type.py), so CPU torch is not a
+    # slower training path here, it is no training path at all. Matches what the
+    # other CPU-torch arms in setup.sh already say.
+    #
+    # The Vulkan setter below is single-quoted and in PowerShell syntax: the shell
+    # must print $env:... rather than expand it, and a pasted VAR=value resolves as
+    # a command name here, so the user sets nothing and the next install picks the
+    # same CPU bundle. Kept out of the arm itself so the per-site window the tests
+    # read stays all-emitter.
+    substep "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+    substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
     substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
     substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
-    substep "UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run the installer. It selects the" "Yellow"
-    substep "llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+    substep '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan" and re-run the installer. It selects' "Yellow"
+    substep "the llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
     substep "until you install or update again." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {

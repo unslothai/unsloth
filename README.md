@@ -167,7 +167,7 @@ export UNSLOTH_LLAMA_CPP_BACKEND=vulkan
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 
-This is the path for AMD GPUs older than RDNA 2 (Polaris, RDNA 1), which ROCm PyTorch does not cover: torch stays on CPU there, but GGUF chat runs on the GPU through Vulkan. The older `UNSLOTH_FORCE_VULKAN=1` still works and is read when `UNSLOTH_LLAMA_CPP_BACKEND` is unset.
+This is the path for the AMD GPUs ROCm PyTorch does not cover: Polaris (RX 470/480/570/580/590) and RDNA 1 (RX 5500/5600/5700). torch stays on CPU there, so training and GPU inference are unavailable, but GGUF chat runs on the GPU through Vulkan. Not every pre-RDNA 2 card is in this group: Vega 20 (Radeon VII, MI50, `gfx906`) keeps a ROCm PyTorch path and the installer routes it there. The older `UNSLOTH_FORCE_VULKAN=1` still works and is read when `UNSLOTH_LLAMA_CPP_BACKEND` is unset.
 
 #### Windows:
 ```powershell
