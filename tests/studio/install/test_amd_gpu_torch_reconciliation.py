@@ -287,100 +287,130 @@ def test_explicit_rocm_family_mismatch_forces_the_pass(monkeypatch):
 
 
 def test_matching_explicit_rocm_family_keeps_the_fast_path(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.10.0+rocm6.4",
-        rocm_pin = "https://download.pytorch.org/whl/rocm6.4",
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.10.0+rocm6.4",
+            rocm_pin = "https://download.pytorch.org/whl/rocm6.4",
+        )
+        is None
+    )
 
 
 def test_explicit_gfx_sibling_family_forces_the_pass(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.13.0",
-        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
-        installed_rocm_family = "gfx1150",
-    ) is not None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.13.0",
+            rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+            installed_rocm_family = "gfx1150",
+        )
+        is not None
+    )
 
 
 def test_matching_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.13.0",
-        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
-        installed_rocm_family = "gfx1151",
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.13.0",
+            rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+            installed_rocm_family = "gfx1151",
+        )
+        is None
+    )
 
 
 def test_unknown_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.13.0",
-        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
-        installed_rocm_family = None,
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.13.0",
+            rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+            installed_rocm_family = None,
+        )
+        is None
+    )
 
 
 def test_strix_generic_rocm_wheel_forces_the_pass(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.2",
-        gfx_devices = ["gfx1151"],
-    ) is not None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.2",
+            gfx_devices = ["gfx1151"],
+        )
+        is not None
+    )
 
 
 def test_strix_matching_arch_wheel_keeps_the_fast_path(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.13.0",
-        gfx_devices = ["gfx1151"],
-        installed_rocm_family = "gfx1151",
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.13.0",
+            gfx_devices = ["gfx1151"],
+            installed_rocm_family = "gfx1151",
+        )
+        is None
+    )
 
 
 def test_strix_sibling_arch_wheel_forces_the_pass(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.13.0",
-        gfx_devices = ["gfx1151"],
-        installed_rocm_family = "gfx1150",
-    ) is not None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.13.0",
+            gfx_devices = ["gfx1151"],
+            installed_rocm_family = "gfx1150",
+        )
+        is not None
+    )
 
 
 def test_visible_non_strix_gpu_does_not_trigger_present_strix_repair(monkeypatch):
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.2",
-        gfx_devices = ["gfx1100", "gfx1151"],
-        gfx_probe = "amd-smi",
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.2",
+            gfx_devices = ["gfx1100", "gfx1151"],
+            gfx_probe = "amd-smi",
+        )
+        is None
+    )
 
 
 def test_gfx906_newer_rocm_wheel_forces_the_pass(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.11.0+rocm7.2",
-        gfx_devices = ["gfx906"],
-    ) is not None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.11.0+rocm7.2",
+            gfx_devices = ["gfx906"],
+        )
+        is not None
+    )
 
 
 def test_gfx906_legacy_rocm_wheel_keeps_the_fast_path(monkeypatch):
-    assert _plan(
-        monkeypatch,
-        imports_as_rocm = True,
-        version = "2.7.0+rocm6.3",
-        gfx_devices = ["gfx906"],
-    ) is None
+    assert (
+        _plan(
+            monkeypatch,
+            imports_as_rocm = True,
+            version = "2.7.0+rocm6.3",
+            gfx_devices = ["gfx906"],
+        )
+        is None
+    )
 
 
 def test_display_probe_does_not_duplicate_the_fast_path_decision():

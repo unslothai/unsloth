@@ -235,9 +235,7 @@ def test_legacy_manifest_without_torch_preserves_no_torch_mode(install_root, req
 
 
 @pytest.mark.parametrize("artifact", ("package", "metadata"))
-def test_legacy_manifest_with_a_torch_artifact_remains_repairable(
-    install_root, req_root, artifact
-):
+def test_legacy_manifest_with_a_torch_artifact_remains_repairable(install_root, req_root, artifact):
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     site_packages = install_root / "lib" / "python3.12" / "site-packages"
     name = "torch" if artifact == "package" else "torch-2.11.0.dist-info"
