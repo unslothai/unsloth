@@ -43,7 +43,8 @@ pub(super) enum BackendProbe {
     ExternalConflict { port: u16, reason: String },
     /// A backend answered here, but it is not adoptable and not provably ours:
     /// it reports no install id, so it may be a remote Studio behind a tunnel or
-    /// an install that predates the id. Launching skips the port; mutating flows
-    /// still refuse, since they cannot rule out our own venv underneath it.
+    /// an install that predates the id. Launching skips the port; a mutation
+    /// refuses only when a live local process is attributable to this install,
+    /// which is the one thing a health probe cannot tell us.
     Unrelated { port: u16, reason: String },
 }

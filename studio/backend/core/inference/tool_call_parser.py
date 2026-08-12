@@ -495,11 +495,31 @@ def _strip_mistral_closed_calls(text: str) -> str:
     return "".join(out)
 
 
+# A real call may follow a reasoning close directly: the strips run per segment after
+# ``strip_outside_think``, so ``</think>call:NAME{..}`` starts its segment.
+_GEMMA_ANCHOR_CLOSERS = ("</think>", "[/THINK]", "</thinking>")
+
+
+def _gemma_call_is_anchored(text: str, start: int, floor: int) -> bool:
+    """Whether a markerless ``call:NAME{...}`` at ``start`` OWNS its position: only
+    horizontal whitespace between it and ``floor`` (the scan origin), the start of its
+    line, or a reasoning close. Anywhere else it reads as a sentence documenting the
+    syntax, so the DISPLAY strip keeps it. The parser is deliberately NOT gated this
+    way, so a call it promotes mid-prose stays visible instead of the answer being
+    deleted around it."""
+    i = start - 1
+    while i >= floor and text[i] in " \t\r":
+        i -= 1
+    if i < floor or text[i] == "\n":
+        return True
+    return any(text.endswith(closer, floor, i + 1) for closer in _GEMMA_ANCHOR_CLOSERS)
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning (nested arguments are removed whole). ``enabled_tool_names`` gates the
     strip like the parser gate: a disabled/example name stays visible; ``None``
-    strips every closed call."""
+    strips every closed call. An unanchored (mid-sentence) call is prose too."""
     if _whole_content_is_json_value(text):
         return text
     n = len(text)
@@ -508,26 +528,32 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     cursor = _leading_json_value_end(text) or 0
     if cursor:
         out.append(text[:cursor])
+    # Anchor origin, advanced only past calls this strip removed, so ``call:a{} call:b{}``
+    # stays a pair while prose after a call does not inherit its anchor.
+    floor = cursor
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
             out.append(text[cursor:])
             break
-        disabled = enabled_tool_names is not None and m.group(1) not in enabled_tool_names
+        keep = (enabled_tool_names is not None and m.group(1) not in enabled_tool_names) or (
+            not _gemma_call_is_anchored(text, m.start(), floor)
+        )
         brace = m.end() - 1  # _GEMMA_BARE_TC_RE consumes through the opening ``{``
         # Same boundary scanner as the parser: strip exactly what it consumed.
         end = _gemma_body_brace_end(text, brace)
         closed = end is not None
         next_index = (end + 1) if closed else len(text)
         if not closed:
-            # Unclosed call: drop an enabled call to EOS; keep a disabled/example name as prose.
-            out.append(text[cursor:] if disabled else text[cursor : m.start()])
+            # Unclosed: drop an anchored enabled call to EOS, keep prose as written.
+            out.append(text[cursor:] if keep else text[cursor : m.start()])
             break
-        if disabled:
-            # Disabled/example name is prose: keep it whole.
+        if keep:
+            # Prose, not a call.
             out.append(text[cursor:next_index])
         else:
             out.append(text[cursor : m.start()])
+            floor = next_index
         cursor = next_index  # already past the matching ``}``
     return "".join(out)
 
