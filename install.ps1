@@ -3332,13 +3332,17 @@ exit 0
         # read only to WORD a message, never to select a wheel index, and an entry
         # here must never make an arch installable.
         #
-        # RDNA 1 only, with the product names taken from LLVM's AMDGPU GFX10.1
-        # processor table rather than guessed. AMD publishes Windows torch indexes
-        # for gfx103X, gfx110X, gfx1150, gfx1151 and gfx120X; no gfx101X index exists.
+        # RDNA 1 and Polaris 10/20/30, with the product names taken from LLVM's
+        # AMDGPU processor tables rather than guessed. AMD publishes Windows torch
+        # indexes for gfx103X, gfx110X, gfx1150, gfx1151 and gfx120X; there is no
+        # gfx101X or gfx80X index. The (?!0) guards stop "RX 570" swallowing an
+        # "RX 5700". Polaris 11/12 (RX 460/550/560) is left out on purpose: a
+        # different die, and this table's value is that it never guesses.
         $unsupportedNameArchTable = @(
             @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
             @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT";      A = "gfx1010" }  # RDNA 1
             @{ P = "RX 5500";                                 A = "gfx1012" }  # RDNA 1
+            @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)";          A = "gfx803"  }  # Polaris 10/20/30
         )
         $ROCmUnsupportedGfxArch = $null
         # ── Arch resolution: env-var override → name inference ──────────────
@@ -3704,7 +3708,10 @@ exit 0
         substep "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so PyTorch" "Yellow"
         substep "(training and Transformers inference) runs on CPU on this GPU. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
-        substep "GGUF chat through llama.cpp does not use ROCm PyTorch and is unaffected." "Yellow"
+        substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
+        substep "UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer. It selects the" "Yellow"
+        substep "llama.cpp bundle at install time, so setting it afterwards has no effect" "Yellow"
+        substep "until you install or update again." "Yellow"
     } elseif ($ROCmGpuLabel) {
         step "gpu" "AMD GPU detected -- arch unknown" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -4191,6 +4198,8 @@ exit 0
                 substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmUnsupportedGfxArch." "Yellow"
                 substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
                 substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can enable ROCm here." "Yellow"
+                substep "For GPU GGUF chat through Vulkan, set UNSLOTH_LLAMA_CPP_BACKEND=vulkan" "Yellow"
+                substep "and re-run this installer; the bundle is chosen at install time, not at launch." "Yellow"
             } elseif ($ROCmGpuLabel) {
                 substep "Installing CPU-only PyTorch (AMD GPU arch unknown -- install the HIP SDK" "Yellow"
                 substep "or set UNSLOTH_ROCM_GFX_ARCH to enable GPU ROCm)." "Yellow"

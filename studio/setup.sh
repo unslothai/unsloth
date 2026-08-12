@@ -1872,13 +1872,16 @@ elif [ "$_setup_amd_detected" = true ]; then
     # GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover
     # (unslothai#8529). Kept apart from the inference table above on purpose: it is
     # read only to WORD the report below, never to select a wheel index or a
-    # prebuilt, and an entry here must never make an arch installable. RDNA 1 only,
-    # product names from LLVM's AMDGPU GFX10.1 processor table.
+    # prebuilt, and an entry here must never make an arch installable. RDNA 1 and
+    # Polaris 10/20/30, product names from LLVM's AMDGPU processor tables.
+    # Order is load-bearing: `case` has no negative lookahead, so the RDNA 1 arms
+    # must precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
     _setup_unsupported_gfx_from_name() {
         case "$1" in
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
             *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*) echo gfx1010 ;;  # RDNA 1
             *"RX 5500"*) echo gfx1012 ;;  # RDNA 1
+            *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*) echo gfx803 ;;  # Polaris 10/20/30
             *) return 1 ;;
         esac
     }
@@ -1888,6 +1891,9 @@ elif [ "$_setup_amd_detected" = true ]; then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
         substep "PyTorch (training and Transformers inference) runs on CPU on this GPU."
         substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value changes that."
+        substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
+        substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
+        substep "it afterwards has no effect until you install or update again."
     else
         step "gpu" "AMD ROCm"
     fi

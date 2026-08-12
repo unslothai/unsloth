@@ -64,6 +64,31 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "Radeon Pro 5600M -> gfx1011"    ((Resolve-Unsupported "AMD Radeon Pro 5600M") -eq 'gfx1011')
     Check "RX 5500 XT -> gfx1012"          ((Resolve-Unsupported "AMD Radeon RX 5500 XT") -eq 'gfx1012')
 
+    # --- Polaris, the second card in the cluster (#8458) ----------------------
+    # #8458 is an RX 580: Polaris 20, gfx803, also pre-RDNA 2 and also with no
+    # ROCm PyTorch wheels. It reaches this table for the message only.
+    Check "RX 580 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 580") -eq 'gfx803')
+    Check "RX 580 Series -> gfx803"        ((Resolve-Unsupported "AMD Radeon RX 580 Series") -eq 'gfx803')
+    Check "RX 570 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 570") -eq 'gfx803')
+    Check "RX 590 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 590") -eq 'gfx803')
+    Check "RX 480 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 480") -eq 'gfx803')
+    Check "RX 470 -> gfx803"               ((Resolve-Unsupported "AMD Radeon RX 470") -eq 'gfx803')
+
+    # Polaris 11/12 is a different die and is deliberately absent: this table is
+    # only worth having while it never guesses an arch.
+    Check "RX 560 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 560"))
+    Check "RX 550 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 550"))
+    Check "RX 460 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 460"))
+
+    # The collision this row is one keystroke away from: "RX 570" is a prefix of
+    # "RX 5700" and "RX 550" of "RX 5500". Matched ALONE, because table order
+    # already stops the RDNA 1 rows from ever reaching the Polaris pattern, so a
+    # dropped (?!0) guard changes nothing observable until someone reorders.
+    $polarisPattern = @($unsupportedNameArchTable | Where-Object { $_.A -eq 'gfx803' })[0].P
+    foreach ($rdna1 in @("AMD Radeon RX 5700 XT", "AMD Radeon RX 5700", "AMD Radeon RX 5500 XT")) {
+        Check "Polaris pattern alone does not claim '$rdna1'" (-not ($rdna1 -match $polarisPattern))
+    }
+
     # --- and nothing else -----------------------------------------------------
     # A hit here would print "ROCm does not cover this" at a card that has wheels.
     Check "RX 9070 XT unclaimed"           ($null -eq (Resolve-Unsupported "AMD Radeon RX 9070 XT"))
@@ -115,6 +140,40 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "HIP SDK advice comes after the unsupported arm" `
         ($src.IndexOf($sdkAdvice) -ge 0 -and $src.IndexOf($unsupArm) -ge 0 -and
          $src.IndexOf($unsupArm) -lt $src.IndexOf($sdkAdvice))
+
+    # --- the Vulkan pointer (#8458) -------------------------------------------
+    # Torch is the end of the road on these cards; llama.cpp is not. Asserted
+    # against the lines that PRINT, never the whole file: every phrase below also
+    # appears in the comments that explain the branch, so a file-wide search stays
+    # green after the message itself has been gutted.
+    $emitted = @(($src -split "`n") | Where-Object {
+        $_ -match 'substep\s+"' -and $_.TrimStart() -notmatch '^#'
+    })
+    Check "the emitted advice offers Vulkan" `
+        (($emitted -join "`n").Contains("through Vulkan"))
+    Check "the emitted advice teaches the current spelling" `
+        (($emitted -join "`n").Contains("UNSLOTH_LLAMA_CPP_BACKEND=vulkan"))
+
+    # UNSLOTH_FORCE_VULKAN still works, but force_vulkan_requested() resolves
+    # UNSLOTH_LLAMA_CPP_BACKEND first and only falls back to the legacy name when
+    # the new one is absent or unparseable, so =hip stays a real opt-out. New text
+    # must not spread the legacy spelling. Scoped to emitters: setup.ps1 legitimately
+    # READS the legacy variable for back-compat and that is untouched here.
+    $teachesLegacy = @($emitted | Where-Object { $_ -match 'UNSLOTH_FORCE_VULKAN' })
+    Check "the legacy spelling is not taught" ($teachesLegacy.Count -eq 0)
+
+    # WHEN to set it, per SITE. install.ps1 prints this advice at two places, so a
+    # file-level "install time" search is satisfied by whichever site still has it
+    # and gutting the other one passes.
+    $mentions = @(0..($emitted.Count - 1) | Where-Object {
+        $emitted[$_] -match 'UNSLOTH_LLAMA_CPP_BACKEND=vulkan'
+    })
+    Check "at least one site names the Vulkan variable" ($mentions.Count -ge 1)
+    foreach ($i in $mentions) {
+        $window = ($emitted[$i..([Math]::Min($i + 3, $emitted.Count - 1))]) -join "`n"
+        Check "the advice at emitted line $($i + 1) says it applies at install time" `
+            ($window.Contains("install time"))
+    }
 
     # The scope guard, in source: the unsupported lookup must never assign the
     # arch the installers route on.

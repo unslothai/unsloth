@@ -440,3 +440,394 @@ class TestShellLookupsRun:
     )
     def test_rx_9070_xt_is_not_claimed(self, path, fn):
         assert _run_sh_lookup(path, fn, "AMD Radeon RX 9070 XT") == ""
+
+    @pytest.mark.parametrize(
+        "path,fn",
+        [
+            (_INSTALL_SH, "_infer_unsupported_amd_gfx_arch_from_gpu_name"),
+            (_SETUP_SH, "_setup_unsupported_gfx_from_name"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("AMD Radeon RX 580", "gfx803"),
+            ("AMD Radeon RX 5700 XT", "gfx1010"),
+            ("AMD Radeon RX 5500 XT", "gfx1012"),
+        ],
+    )
+    def test_polaris_does_not_shadow_rdna1_in_the_real_shell(self, path, fn, name, expected):
+        """`case` has no negative lookahead, so the *"RX 570"* arm is only safe
+        because it comes last. Evaluate it in a real shell rather than trusting
+        the ordering by inspection."""
+        assert _run_sh_lookup(path, fn, name) == expected
+
+
+# ── The Vulkan pointer (#8458) ───────────────────────────────────────────────
+
+
+class TestVulkanAdvice:
+    """#8458 is the same shape as #8529 -- a pre-RDNA 2 AMD card (RX 580, Polaris,
+    gfx803) told it had no usable GPU -- but its reporter got the card working
+    through Vulkan, as LM Studio does with the same hardware. So the unsupported
+    arm must not dead-end at "ROCm does not cover this"; it has somewhere to send
+    the user.
+
+    Two things are load-bearing in that advice and both are asserted here:
+
+    * the CURRENT variable name. ``UNSLOTH_FORCE_VULKAN`` (what #8458's reporter
+      used) is still honoured, but only as a legacy fallback consulted when
+      ``UNSLOTH_LLAMA_CPP_BACKEND`` is unset or unrecognised
+      (``install_llama_prebuilt.py::force_vulkan_requested``). New text must
+      teach the current spelling.
+    * WHEN to set it. Every consumer of the selector lives in
+      ``install_llama_prebuilt.py`` (``_route_to_vulkan_prebuilt``,
+      ``install_prebuilt``, ``main``): it chooses which llama.cpp bundle gets
+      downloaded, at install time. A user who exports it and merely relaunches
+      Studio sees no change and concludes the advice was wrong -- which is
+      exactly what happened in #8458. Advice that omits the timing is worse than
+      no advice, so a message naming the variable must also name the moment.
+    """
+
+    # The four sources whose advice is a literal in an emitting statement. The
+    # Python copy builds its message across implicitly-joined string fragments, so
+    # line-scoped source reading cannot see it; it is covered by the live-output
+    # tests below instead, which are stronger anyway.
+    _SHELL_SOURCES = [_INSTALL_PS1, _SETUP_PS1, _INSTALL_SH, _SETUP_SH]
+
+    # Everything the advice has to carry. Asserted against EMITTED text only.
+    #
+    # Scoping to emitter lines is the whole point: every one of these phrases also
+    # appears in the comments that explain the branch, so a whole-file substring
+    # search passes even after the message itself has been gutted. That is not
+    # hypothetical -- three mutants that deleted or truncated the real advice
+    # survived a file-level version of this test.
+    _REQUIRED = [
+        # The offer must survive, not just the variable name: a message that says
+        # "no GPU acceleration is available" and then names a GPU backend is worse
+        # than either half alone.
+        ("through Vulkan", "the affirmative Vulkan offer"),
+        ("UNSLOTH_LLAMA_CPP_BACKEND=vulkan", "the current variable spelling"),
+    ]
+
+    @staticmethod
+    def _emitted_text(path: Path) -> str:
+        """Only the lines that PRINT, so comments explaining the branch cannot
+        satisfy an assertion about what the user is told."""
+        emitters = ("substep", "echo ", "_safe_print", "step ", "Write-StudioLine")
+        return "\n".join(
+            line
+            for line in _normalised(path).splitlines()
+            if any(e in line for e in emitters) and not line.lstrip().startswith(("#", "//"))
+        )
+
+    @pytest.mark.parametrize("path", _SHELL_SOURCES, ids = lambda p: p.name)
+    @pytest.mark.parametrize("needle,what", _REQUIRED, ids = lambda v: v if " " not in v else None)
+    def test_the_emitted_advice_carries_every_part(self, path, needle, what):
+        assert needle in self._emitted_text(
+            path
+        ), f"{path.name}: the message a user actually sees is missing {what} ({needle!r})"
+
+    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with how
+    # many times each anchor is expected to appear. The count is the point: the
+    # tests either side of this one ask whether the advice exists somewhere in the
+    # file and whether it is complete wherever it appears, and neither notices a
+    # site deleted outright, because the surviving one answers for the file.
+    # Observed: deleting either install.sh site whole left both of them green.
+    #
+    # Anchors are the announcement line of each arm, so a deleted arm fails on the
+    # count and a gutted one fails on the window below. install.ps1's second anchor
+    # carries $ROCmUnsupportedGfxArch deliberately: the same sentence is printed
+    # four lines earlier for $ROCmGfxArch, which is a supported card on the CPU
+    # path and must NOT be sent to Vulkan.
+    _ADVICE_SITES = [
+        (_INSTALL_SH, "no ROCm PyTorch wheels exist for that arch", 2),
+        (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
+        (
+            _INSTALL_PS1,
+            "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for "
+            "$ROCmUnsupportedGfxArch.",
+            1,
+        ),
+        (_SETUP_PS1, "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch", 1),
+        (_SETUP_SH, "not covered by ROCm PyTorch", 1),
+    ]
+
+    @pytest.mark.parametrize(
+        "path,anchor,count",
+        _ADVICE_SITES,
+        ids = [f"{p.name}:{a[:34]}" for p, a, _c in _ADVICE_SITES],
+    )
+    def test_each_advisory_arm_offers_vulkan(self, path, anchor, count):
+        """Per SITE, by real line number, so a whole arm cannot be deleted quietly.
+
+        Windowed on the source lines rather than on the emitter-only projection the
+        other tests use: that projection concatenates print statements from branches
+        hundreds of lines apart, so a window over it can be satisfied by an unrelated
+        arm that happens to be the next thing that prints.
+        """
+        lines = _normalised(path).splitlines()
+        hits = [
+            i
+            for i, line in enumerate(lines)
+            if anchor in line and not line.lstrip().startswith("#")
+        ]
+        assert len(hits) == count, (
+            f"{path.name}: expected {count} advisory arm(s) anchored on {anchor!r}, found "
+            f"{len(hits)} at lines {[i + 1 for i in hits]}. An arm was removed, renamed, or "
+            f"duplicated; the advice must follow it either way."
+        )
+        for i in hits:
+            # Comments stripped from the WINDOW, not just from the anchor. Every
+            # phrase asserted below also appears in the comment that explains the
+            # branch, so a window over raw lines stays green after the message has
+            # been demoted to a comment. Observed: exactly that mutant survived.
+            window = "\n".join(
+                line for line in lines[i : i + 8] if not line.lstrip().startswith(("#", "//"))
+            )
+            # The offer, not one phrasing of it: these arms are hard-wrapped to
+            # different widths and one says "For GPU GGUF chat through Vulkan"
+            # rather than "GGUF chat can still use this GPU through Vulkan". Both
+            # halves are required, since naming a backend without saying what it
+            # buys, or promising GGUF chat without naming the backend, is half an
+            # answer. "Vulkan" is matched in PROSE and case-sensitively: the
+            # lowercase spelling inside the variable's value is already covered by
+            # the assertion below, so accepting it here would let an arm keep the
+            # variable while dropping the sentence that explains it.
+            assert "GGUF chat" in window and "Vulkan" in window, (
+                f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
+                f"through Vulkan:\n{window}"
+            )
+            assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in window, (
+                f"{path.name}:{i + 1}: this arm offers Vulkan without naming the variable "
+                f"that selects it:\n{window}"
+            )
+            assert "install time" in window or "at launch" in window, (
+                f"{path.name}:{i + 1}: this arm names the variable but never says the bundle "
+                f"is chosen at install time, which is the mistake #8458 made:\n{window}"
+            )
+
+    @pytest.mark.parametrize("path", _SHELL_SOURCES, ids = lambda p: p.name)
+    def test_every_site_that_names_the_variable_also_says_when(self, path):
+        """The anti-#8458 clause, checked per SITE rather than per file.
+
+        install.sh prints this advice at two places (index selection and the CPU
+        note). A file-level "install time" search is satisfied by whichever site
+        still has it, so gutting the other one passes -- observed: that exact
+        mutant survived. Require the timing near each mention instead.
+        """
+        emitted = self._emitted_text(path).splitlines()
+        mentions = [
+            i for i, line in enumerate(emitted) if "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in line
+        ]
+        assert mentions, f"{path.name}: no site names the Vulkan variable"
+        for i in mentions:
+            window = "\n".join(emitted[i : i + 4])
+            assert "install time" in window, (
+                f"{path.name}: the advice at emitted line {i + 1} names the variable but "
+                f"never says the bundle is chosen at install time:\n{window}"
+            )
+
+    @pytest.mark.parametrize("path", _SHELL_SOURCES + [_STACK_PY], ids = lambda p: p.name)
+    def test_the_legacy_spelling_is_not_taught(self, path):
+        """UNSLOTH_FORCE_VULKAN still works, but it is the legacy name and loses to
+        UNSLOTH_LLAMA_CPP_BACKEND whenever that parses, so new text must not spread
+        it.
+
+        Scoped to lines that PRINT. setup.sh and setup.ps1 legitimately *read* the
+        legacy variable for back-compat, and this fix does not touch that; a
+        whole-file ban would fail on working code and would have to be deleted,
+        taking the real assertion with it.
+        """
+        emitters = ("substep", "echo", "_safe_print", "step ", "Write-StudioLine")
+        offenders = [
+            line.strip()
+            for line in _normalised(path).splitlines()
+            if "UNSLOTH_FORCE_VULKAN" in line and any(e in line for e in emitters)
+        ]
+        assert not offenders, f"{path.name}: teaches the legacy variable: {offenders}"
+
+    @pytest.mark.parametrize("needle,what", _REQUIRED, ids = lambda v: v if " " not in v else None)
+    def test_the_vulkan_advice_is_reached_by_the_rdna1_wmi_path(self, needle, what):
+        """Source-text assertions cannot tell a live branch from a dead one, and the
+        Python copy's message is not readable line by line. Drive the real Windows
+        path and read what it actually printed."""
+        arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert arch is None, "routing must be unchanged; this is a wording fix"
+        assert needle in out, f"the printed advice is missing {what} ({needle!r})"
+
+    def test_the_printed_advice_says_when_to_set_it(self):
+        """The anti-#8458 clause for the Python copy.
+
+        The shell/PS sources get this per-site from source text; Python builds its
+        message from implicitly-joined fragments, so only the live output can show
+        it. Kept as its own test rather than folded into the shared list above,
+        because that list is also used for the per-line source scan where a timing
+        phrase legitimately lives on a different line than the variable.
+        """
+        _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
+        assert "install time" in out, (
+            f"the printed advice names the Vulkan variable but never says when to "
+            f"set it:\n{out}"
+        )
+
+    def test_an_unknown_amd_card_gets_no_vulkan_advice(self):
+        """Scope. A card we simply failed to recognise may well have ROCm wheels,
+        so it keeps the override advice and must not be pushed onto Vulkan."""
+        _arch, out = _wmi_detect(["AMD Radeon Graphics"])
+        assert "UNSLOTH_LLAMA_CPP_BACKEND" not in out
+
+    def test_a_supported_card_gets_no_vulkan_advice(self):
+        _arch, out = _wmi_detect(["AMD Radeon RX 9070 XT"])
+        assert "UNSLOTH_LLAMA_CPP_BACKEND" not in out
+
+    def test_readme_copy_paste_blocks_use_the_current_spelling(self):
+        """The installer now tells users a variable name and the README is where
+        they check it, but it documented only the legacy spelling.
+
+        Asserted against the fenced COMMANDS, not the prose: a reader copies the
+        block. An earlier version of this test compared first-occurrence indexes,
+        which the surrounding prose satisfied on its own and which therefore passed
+        with both code blocks still reverted to UNSLOTH_FORCE_VULKAN.
+        """
+        src = _normalised(PACKAGE_ROOT / "README.md")
+        blocks = re.findall(r"```(?:bash|powershell)\n(.*?)```", src, re.DOTALL)
+        setters = [
+            line.strip()
+            for block in blocks
+            for line in block.splitlines()
+            if "VULKAN" in line.upper() or "LLAMA_CPP_BACKEND" in line
+        ]
+        assert setters, "README: no Vulkan setup command found at all"
+        for line in setters:
+            assert (
+                "UNSLOTH_LLAMA_CPP_BACKEND" in line
+            ), f"README teaches the legacy spelling in a copy-paste block: {line!r}"
+
+
+# ── Polaris, the second card in the cluster (#8458) ──────────────────────────
+
+
+_POLARIS_NAMES = [
+    ("AMD Radeon RX 580", "gfx803"),
+    ("AMD Radeon RX 580 Series", "gfx803"),
+    ("AMD Radeon RX 570", "gfx803"),
+    ("AMD Radeon RX 590", "gfx803"),
+    ("AMD Radeon RX 480", "gfx803"),
+    ("AMD Radeon RX 470", "gfx803"),
+    ("Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]", "gfx803"),
+]
+
+# Polaris 11/12. Deliberately NOT in the table: a different die, and this table
+# is only worth having while it never guesses an arch.
+_POLARIS_11_12_NAMES = [
+    "AMD Radeon RX 560",
+    "AMD Radeon RX 550",
+    "AMD Radeon RX 460",
+]
+
+
+class TestPolarisRow:
+    @pytest.mark.parametrize("name,expected", _POLARIS_NAMES)
+    def test_polaris_names_resolve_to_gfx803(self, name, expected):
+        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) == expected
+
+    @pytest.mark.parametrize("name,_expected", _POLARIS_NAMES)
+    def test_polaris_still_gets_no_supported_arch(self, name, _expected):
+        """The behavioural half again: CPU torch must remain the outcome."""
+        assert stack_mod._gfx_arch_from_gpu_name(name) is None
+
+    @pytest.mark.parametrize("name", _POLARIS_11_12_NAMES)
+    def test_polaris_11_12_is_not_claimed(self, name):
+        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) is None
+
+    @pytest.mark.parametrize("name,expected", _RDNA1_NAMES)
+    def test_polaris_patterns_do_not_swallow_rdna1(self, name, expected):
+        """The collision this row is one keystroke away from: "RX 570" is a prefix
+        of "RX 5700" and "RX 550" of "RX 5500". Re-assert every RDNA 1 name still
+        resolves to its own arch now that a Polaris row exists."""
+        assert stack_mod._unsupported_gfx_arch_from_gpu_name(name) == expected
+
+    @pytest.mark.parametrize("name,_expected", _RDNA1_NAMES)
+    def test_the_polaris_pattern_is_correct_on_its_own(self, name, _expected):
+        """The test above passes for the wrong reason and cannot replace this one.
+
+        Table order already saves it: the RDNA 1 rows are matched first, so the
+        Polaris pattern is never even reached for an RDNA 1 name and deleting its
+        (?!0) guards changes nothing observable. That is precisely how a guard rots
+        -- it stays correct only until someone reorders the table. Match the
+        Polaris pattern ALONE, where the guard is the only thing standing between
+        "RX 5700 XT" and gfx803.
+        """
+        pattern = next(
+            p for p, arch in stack_mod._UNSUPPORTED_GPU_NAME_ARCH_TABLE if arch == "gfx803"
+        )
+        assert (
+            re.search(pattern, name, re.IGNORECASE) is None
+        ), f"the Polaris pattern claims the RDNA 1 name {name!r} when matched on its own"
+
+    @pytest.mark.parametrize("name,expected", _POLARIS_NAMES)
+    def test_all_copies_agree_on_polaris(self, name, expected):
+        answers = {where: fn(name) for where, fn in _all_copies().items()}
+        assert set(answers.values()) == {expected}, f"{name!r} resolves inconsistently: {answers}"
+
+    @pytest.mark.parametrize("name", _POLARIS_11_12_NAMES)
+    def test_no_copy_claims_polaris_11_12(self, name):
+        answers = {where: fn(name) for where, fn in _all_copies().items()}
+        assert set(answers.values()) == {None}, f"{name!r} was claimed: {answers}"
+
+    @pytest.mark.parametrize("name,_expected", _RDNA1_NAMES)
+    def test_the_polaris_row_is_correct_alone_in_every_regex_copy(self, name, _expected):
+        """The same standalone check as above, for the two PowerShell copies.
+
+        Row order masks a missing guard identically there, and the .ps1 tables are
+        maintained by hand alongside the Python one, so a guard dropped from just
+        those two is invisible to every other test in this file. PowerShell's
+        -match and Python's re agree on (?!0), which is what makes checking the
+        extracted pattern here meaningful.
+        """
+        for where, rows in (
+            (
+                "install.ps1",
+                _ps_rows(_ps_block(_normalised(_INSTALL_PS1), "$unsupportedNameArchTable = @(")),
+            ),
+            (
+                "studio/setup.ps1",
+                _ps_rows(_ps_block(_normalised(_SETUP_PS1), "$unsupportedNameArchTable = @(")),
+            ),
+        ):
+            pattern = next(p for p, arch in rows if arch == "gfx803")
+            assert (
+                re.search(pattern, name, re.IGNORECASE) is None
+            ), f"{where}: the Polaris pattern claims the RDNA 1 name {name!r} when matched alone"
+
+    @pytest.mark.parametrize(
+        "path,fn",
+        [
+            (_INSTALL_SH, "_infer_unsupported_amd_gfx_arch_from_gpu_name"),
+            (_SETUP_SH, "_setup_unsupported_gfx_from_name"),
+        ],
+        ids = ["install.sh", "studio/setup.sh"],
+    )
+    def test_the_shell_case_arms_keep_polaris_last(self, path, fn):
+        """In the shell copies, ORDER is the correctness mechanism, so pin it.
+
+        `case` globs have no negative lookahead, so the *"RX 570"* arm cannot be
+        made safe on its own the way the Python and PowerShell (?!0) rows can. The
+        only thing stopping it from swallowing an "RX 5700 XT" is that every RDNA 1
+        arm is matched first. That makes arm order load-bearing rather than
+        cosmetic, and a reorder is otherwise a silent regression, so assert it
+        directly instead of leaving it to the behavioural test alone.
+        """
+        rows = _sh_rows(_sh_function_body(path.read_text(encoding = "utf-8"), fn))
+        arches = [arch for _patterns, arch in rows]
+        assert "gfx803" in arches, f"{path.name}: no Polaris arm"
+        assert arches[-1] == "gfx803", (
+            f"{path.name}: the Polaris arm must stay last, after every RDNA 1 arm; "
+            f"arm order is {arches}"
+        )
+
+    def test_gfx803_is_not_routable(self):
+        """The scope guard, restated for the new arch: gfx803 must stay absent from
+        the wheel-index map, or a messaging row becomes an install change."""
+        assert "gfx803" not in stack_mod._GFX_TO_AMD_INDEX_ARCH

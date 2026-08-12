@@ -2050,25 +2050,83 @@ class TestInstallShStructure:
         """An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY CPU pin is a request, not
         a detection failure: the */cpu wheel note must report the pin instead of
         claiming ROCm/HIP is unusable, the WSL setup guidance must be skipped,
-        and the gpu summary must not label a pinned AMD host "no usable ROCm"."""
+        and the gpu summary must not label a pinned AMD host "no usable ROCm".
+
+        The property is ORDER: the pin arm opens the chain the message sits in, so
+        a pinned host never reaches the message. This used to be approximated by a
+        character window before the message, which is a different claim -- it is a
+        budget on how much source may sit between the two, and every arm added to
+        the chain eats into it. #8529 added an unsupported-arch arm and pushed the
+        real distance to ~1121, so the window had to grow 400 -> 1400 for reasons
+        that had nothing to do with what the test is for. Walk the enclosing
+        if/elif chains instead: no distance, nothing to re-tune.
+        """
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
-        assert note != -1
-        # The window is a proximity heuristic for "the pin arm comes first", not a
-        # budget on the arms between them. #8529 added an unsupported-arch arm to the
-        # same chain, which pushed the pin check past the old 400.
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[note - 1400 : note]
-        ), "the */cpu note must check the explicit pin before diagnosing ROCm"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'substep "AMD GPU detected, but no usable ROCm/HIP install',
+            "the */cpu note must check the explicit pin before diagnosing ROCm",
+        )
         assert (
             '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source
         ), "ROCm-on-WSL guidance is detection advice; skip it for pinned installs"
-        summary = source.find('step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"')
-        assert summary != -1
-        assert (
-            '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
-        ), "the gpu summary must not claim no usable ROCm for a pinned index"
+        self._assert_guarded_by_pin_arm(
+            source,
+            'step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)"',
+            "the gpu summary must not claim no usable ROCm for a pinned index",
+        )
+
+    _PIN_ARM = 'if [ "$_torch_index_pinned" = true ]'
+
+    @staticmethod
+    def _indent(line):
+        return len(line) - len(line.lstrip())
+
+    @classmethod
+    def _assert_guarded_by_pin_arm(cls, source, needle, message):
+        """Assert ``needle`` sits in a LATER arm of a still-open chain whose first
+        arm is the pin check.
+
+        Deliberately local rather than a whole-file walk of if/elif/fi. install.sh
+        embeds awk programs and PowerShell in quoted blocks, all of which contain
+        their own `if (...)`, and it closes some chains with a trailing `; fi`; a
+        global keyword walk mis-nests on both and can end up satisfying this guard
+        from an unrelated chain. Indentation is the structure install.sh is written
+        in and needs no parse: find the pin arm above the message, then require the
+        chain it opens to still be open (no `fi` back at its indent) and to have
+        moved on to another arm (an `elif`/`else` at its indent).
+        """
+        lines = source.splitlines()
+        hits = [i for i, line in enumerate(lines) if needle in line]
+        assert len(hits) == 1, f"expected exactly one {needle!r} in install.sh, found {len(hits)}"
+        message_line = hits[0]
+
+        opens = [i for i in range(message_line) if lines[i].strip().startswith(cls._PIN_ARM)]
+        assert opens, f"{message}\nno pin check appears anywhere above the message"
+        pin_line = opens[-1]
+        indent = cls._indent(lines[pin_line])
+        between = range(pin_line + 1, message_line)
+
+        closed = [
+            i + 1
+            for i in between
+            if lines[i].strip().startswith("fi") and cls._indent(lines[i]) == indent
+        ]
+        assert not closed, (
+            f"{message}\ninstall.sh:{pin_line + 1} opens on the pin check but the chain "
+            f"closes at install.sh:{closed[0]}, before the message at "
+            f"install.sh:{message_line + 1}, so the two are unrelated"
+        )
+        later_arm = [
+            i + 1
+            for i in between
+            if re.match(r"^(elif|else)\b", lines[i].strip()) and cls._indent(lines[i]) == indent
+        ]
+        assert later_arm, (
+            f"{message}\nthe message at install.sh:{message_line + 1} is inside the pin "
+            f"arm opened at install.sh:{pin_line + 1}, so a pinned host still reaches it"
+        )
 
     _ROCM_VERSION_SOURCES = (
         "_rocm_tag_from_amd_smi",

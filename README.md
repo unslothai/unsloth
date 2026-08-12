@@ -160,12 +160,14 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 Use the same command to update.
 
-To force the Vulkan llama.cpp backend, set `UNSLOTH_FORCE_VULKAN=1` **before installing or updating**. The setting selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing CPU bundle:
+To force the Vulkan llama.cpp backend, set `UNSLOTH_LLAMA_CPP_BACKEND=vulkan` **before installing or updating**. The setting selects the llama.cpp binary bundle, so setting it only when launching Studio cannot replace an existing CPU bundle:
 
 ```bash
-export UNSLOTH_FORCE_VULKAN=1
+export UNSLOTH_LLAMA_CPP_BACKEND=vulkan
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+
+This is the path for AMD GPUs older than RDNA 2 (Polaris, RDNA 1), which ROCm PyTorch does not cover: torch stays on CPU there, but GGUF chat runs on the GPU through Vulkan. The older `UNSLOTH_FORCE_VULKAN=1` still works and is read when `UNSLOTH_LLAMA_CPP_BACKEND` is unset.
 
 #### Windows:
 ```powershell
@@ -176,7 +178,7 @@ Use the same command to update.
 To force the Vulkan llama.cpp backend, set the environment variable before running the installer or updater:
 
 ```powershell
-$env:UNSLOTH_FORCE_VULKAN=1
+$env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"
 irm https://unsloth.ai/install.ps1 | iex
 ```
 

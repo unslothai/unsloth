@@ -2888,14 +2888,21 @@ _infer_amd_gfx_arch_from_gpu_name() {
 # to CPU. It exists so the installer can name the arch it found and say ROCm does
 # not reach it, instead of advising a ROCm/HIP SDK install that cannot succeed.
 #
-# RDNA 1 only, with the product names taken from LLVM's AMDGPU GFX10.1 processor
-# table rather than guessed. PyTorch's ROCm wheels are built for gfx90X/gfx94X/
-# gfx103X/gfx110X/gfx120X; no build targets gfx101X.
+# RDNA 1 and Polaris 10/20/30, with the product names taken from LLVM's AMDGPU
+# processor tables rather than guessed. PyTorch's ROCm wheels are built for
+# gfx90X/gfx94X/gfx103X/gfx110X/gfx120X; no build targets gfx101X or gfx80X.
+#
+# ORDER IS LOAD-BEARING here in a way the Python copy's regexes are not: `case`
+# has no negative lookahead, so a *"RX 570"* arm would happily swallow an
+# "RX 5700 XT". The RDNA 1 arms therefore come FIRST and Polaris last.
+# Polaris 11/12 (RX 460/550/560) is deliberately absent: a different die, and
+# the value of this table is that it never guesses an arch.
 _infer_unsupported_amd_gfx_arch_from_gpu_name() {
     case "$1" in
         *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
         *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*) echo gfx1010 ;;  # RDNA 1
         *"RX 5500"*) echo gfx1012 ;;  # RDNA 1
+        *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*) echo gfx803 ;;  # Polaris 10/20/30
         *) return 1 ;;
     esac
 }
@@ -3373,6 +3380,11 @@ get_torch_index_url() {
             if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not enable ROCm PyTorch." >&2
+                # Torch is the end of the road on this card, llama.cpp is not. Naming
+                # WHEN to set the variable is the whole point: it picks the llama.cpp
+                # bundle during install, so a user who exports it afterwards sees no
+                # change and concludes it does not work (unslothai#8458).
+                echo "[INFO] GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
@@ -4493,7 +4505,9 @@ case "$TORCH_INDEX_URL" in
                 # A generation ROCm never covered is not a missing SDK (unslothai#8529).
                 if _unsup_disp_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                     substep "AMD GPU detected ($_unsup_disp_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." "$C_WARN"
-                    substep "Installing the ROCm/HIP SDK will not change this. GGUF chat via llama.cpp does not use ROCm PyTorch and is unaffected." "$C_WARN"
+                    substep "Installing the ROCm/HIP SDK will not change this." "$C_WARN"
+                    substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
+                    substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"
                 else
                     substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
                     substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
