@@ -235,15 +235,21 @@ fn lease_secret_path_for_home(home: &Path) -> PathBuf {
 /// in the same 0700 dir at 0600 -- a strictly stronger credential, since it
 /// buys a desktop-login. An unreadable or too-short file is replaced: the old
 /// secret is unrecoverable either way, so minting is all that is left.
-pub(crate) fn ensure_native_path_lease_secret() -> Result<Vec<u8>, String> {
+///
+/// Reports whether the key was LOADED rather than minted. Only a loaded key can
+/// be one a surviving backend already holds: on the first launch after an
+/// upgrade from a release that kept the key in memory, the file is absent, so
+/// the key written here is new to everyone and a survivor still verifies with
+/// the one it was spawned with.
+pub(crate) fn ensure_native_path_lease_secret() -> Result<(Vec<u8>, bool), String> {
     ensure_native_path_lease_secret_at(&lease_secret_path_for_home(&home_dir_or_error()?))
 }
 
-fn ensure_native_path_lease_secret_at(path: &Path) -> Result<Vec<u8>, String> {
+fn ensure_native_path_lease_secret_at(path: &Path) -> Result<(Vec<u8>, bool), String> {
     if let Ok(raw) = std::fs::read_to_string(path) {
         if let Some(secret) = crate::native_backend_lease::decode_secret_env(raw.trim()) {
             if secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES {
-                return Ok(secret);
+                return Ok((secret, true));
             }
         }
     }
@@ -258,7 +264,7 @@ fn ensure_native_path_lease_secret_at(path: &Path) -> Result<Vec<u8>, String> {
         crate::native_backend_lease::encode_secret_env(&secret).as_bytes(),
     )?;
     set_private_file_permissions(path);
-    Ok(secret)
+    Ok((secret, false))
 }
 
 fn ensure_studio_root_id_at(
@@ -1390,11 +1396,14 @@ mod tests {
         // with the key the survivor it adopted was spawned with, or the picker
         // is live and every grant fails the signature check.
         let path = temp_lease_secret_path("lease-shared");
-        let first = ensure_native_path_lease_secret_at(&path).unwrap();
-        let second = ensure_native_path_lease_secret_at(&path).unwrap();
+        let (first, first_loaded) = ensure_native_path_lease_secret_at(&path).unwrap();
+        let (second, second_loaded) = ensure_native_path_lease_secret_at(&path).unwrap();
 
         assert_eq!(first, second);
         assert!(first.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
+        // Minted here, loaded there: only the second process may trust a survivor.
+        assert!(!first_loaded);
+        assert!(second_loaded);
     }
 
     #[test]
@@ -1408,10 +1417,12 @@ mod tests {
         )
         .unwrap();
 
-        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+        let (secret, loaded) = ensure_native_path_lease_secret_at(&path).unwrap();
 
         assert!(secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
-        assert_eq!(secret, ensure_native_path_lease_secret_at(&path).unwrap());
+        // Replacing counts as minting: whoever held the short key cannot verify this one.
+        assert!(!loaded);
+        assert_eq!(secret, ensure_native_path_lease_secret_at(&path).unwrap().0);
     }
 
     #[test]
@@ -1419,9 +1430,10 @@ mod tests {
         let path = temp_lease_secret_path("lease-garbage");
         std::fs::write(&path, "not base64url!!!").unwrap();
 
-        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+        let (secret, loaded) = ensure_native_path_lease_secret_at(&path).unwrap();
 
         assert!(secret.len() >= crate::native_backend_lease::MIN_LEASE_SECRET_BYTES);
+        assert!(!loaded);
     }
 
     #[test]
@@ -1429,7 +1441,7 @@ mod tests {
         // What process.rs hands the backend is the encoded form, and the backend
         // decodes it with the same alphabet.
         let path = temp_lease_secret_path("lease-roundtrip");
-        let secret = ensure_native_path_lease_secret_at(&path).unwrap();
+        let (secret, _) = ensure_native_path_lease_secret_at(&path).unwrap();
         let encoded = crate::native_backend_lease::encode_secret_env(&secret);
 
         assert_eq!(

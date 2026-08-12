@@ -214,7 +214,7 @@ pub async fn desktop_preflight_result() -> DesktopPreflightResult {
 
 pub async fn desktop_preflight_result_with_state(
     state: &crate::process::BackendState,
-    lease_secret_persisted: bool,
+    lease_secret_predates_this_process: bool,
 ) -> Result<(DesktopPreflightResult, Option<(u64, bool)>), String> {
     let (managed, backend, owned) = tokio::join!(
         probe_managed_install(),
@@ -244,9 +244,9 @@ pub async fn desktop_preflight_result_with_state(
         .await
         {
             OwnedBackendProbe::Verified(mut verified) => {
-                if snapshot.is_adopted && !lease_secret_persisted {
+                if snapshot.is_adopted && !lease_secret_predates_this_process {
                     verified.readiness = OwnedBackendReadiness::Stale {
-                        reason: "native_path_lease_secret_not_persisted".to_string(),
+                        reason: "native_path_lease_secret_not_shared".to_string(),
                     };
                 }
                 if snapshot.port.is_none() {
@@ -305,9 +305,9 @@ pub async fn desktop_preflight_result_with_state(
 
     match owned {
         OwnedBackendProbe::Verified(mut verified) => {
-            if !lease_secret_persisted {
+            if !lease_secret_predates_this_process {
                 verified.readiness = OwnedBackendReadiness::Stale {
-                    reason: "native_path_lease_secret_not_persisted".to_string(),
+                    reason: "native_path_lease_secret_not_shared".to_string(),
                 };
             }
             let result = choose_owned_preflight(&managed, &verified);

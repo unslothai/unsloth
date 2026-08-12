@@ -99,14 +99,14 @@ pub async fn desktop_preflight(
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
     let started = Instant::now();
-    let lease_secret_persisted = app
+    let lease_secret_predates_this_process = app
         .try_state::<crate::native_intents::NativeIntakeState>()
-        .map(|state| state.lease_secret_persisted())
+        .map(|state| state.lease_secret_predates_this_process())
         .unwrap_or(false);
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(
             state.inner(),
-            lease_secret_persisted,
+            lease_secret_predates_this_process,
         )
         .await?;
     diagnostics::record_preflight(&diagnostics, &result);
