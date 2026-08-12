@@ -4246,6 +4246,36 @@ exit 0
     #   are still pulled in because they are new, not upgrades.
     #
     # ── Helper: find no-torch-runtime.txt ──
+    # Kept identical to NO_DATASETS_SKIP_PACKAGES in studio/install_python_stack.py
+    # (tests/python/test_cross_platform_parity.py compares the two): every one of
+    # these is a compiled package with no win_arm64 wheel at any version, and every
+    # one already degrades at runtime rather than being load-bearing.
+    $script:ArmInferenceSkipPackages = @(
+        "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"
+    )
+
+    # The requirements file with the ARM64-impossible entries removed, or the original
+    # path when the tier is off. install_python_stack.py does the same filtering for the
+    # steps it owns, but this branch hands a requirements file straight to uv, so an
+    # unfiltered sqlite-vec/datasets line here fails the whole install on ARM64.
+    function Get-ArmFilteredRequirements {
+        param([string]$Path)
+        if (-not $script:ArmInferenceOnly -or -not $Path -or -not (Test-Path -LiteralPath $Path)) { return $Path }
+        $kept = foreach ($line in Get-Content -LiteralPath $Path) {
+            $bare = ($line -split "#")[0].Trim()
+            if (-not $bare) { $line; continue }
+            # Distribution name = up to the first specifier, marker, extra or space.
+            # Normalised PEP 503 style so hf_transfer and hf-transfer are one package.
+            $name = (($bare -split "[=<>!~;\[ ]")[0]).Trim().ToLowerInvariant().Replace("_", "-")
+            if ($script:ArmInferenceSkipPackages -contains $name) { continue }
+            $line
+        }
+        $filtered = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-arm64-reqs-{0}.txt" -f $PID)
+        Set-Content -LiteralPath $filtered -Value $kept -Encoding UTF8
+        substep "windows on arm: dropped $($script:ArmInferenceSkipPackages -join ', ') (no win_arm64 wheels)"
+        return $filtered
+    }
+
     function Find-NoTorchRuntimeFile {
         if ($StudioLocalInstall -and (Test-Path (Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"))) {
             return Join-Path $RepoRoot "studio\backend\requirements\no-torch-runtime.txt"
@@ -4272,7 +4302,7 @@ exit 0
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
-                $NoTorchReq = Find-NoTorchRuntimeFile
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
@@ -4411,7 +4441,7 @@ exit 0
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
-                $NoTorchReq = Find-NoTorchRuntimeFile
+                $NoTorchReq = Get-ArmFilteredRequirements (Find-NoTorchRuntimeFile)
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }

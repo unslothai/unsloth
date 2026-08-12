@@ -1065,3 +1065,43 @@ class TestWindowsArm64WheelGapParity:
         stack = STACK_PY.read_text(encoding = "utf-8")
         gap = stack.index("IS_WINDOWS_ARM64_PYTHON = ")
         assert "IS_WINDOWS and" in stack[gap : gap + 200]
+
+
+class TestArm64SkipListParity:
+    """install.ps1 hands a requirements file straight to uv in the no-torch branch,
+    so it has to drop the ARM64-impossible entries itself; install_python_stack.py
+    filters the steps it owns. Two lists, one rule -- and a package missing from
+    either fails the whole install on a Snapdragon (issue #8495)."""
+
+    @staticmethod
+    def _powershell_list() -> set[str]:
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("$script:ArmInferenceSkipPackages = @(")
+        block = source[index : source.index(")", index)]
+        return {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+
+    @staticmethod
+    def _python_set() -> set[str]:
+        source = STACK_PY.read_text(encoding = "utf-8")
+        index = source.index("NO_DATASETS_SKIP_PACKAGES = {")
+        block = source[index : source.index("}", index)]
+        return {name.strip().strip('"').lower() for name in re.findall(r'"[^"]+"', block)}
+
+    def test_lists_match(self):
+        assert self._powershell_list() == self._python_set()
+
+    def test_list_covers_the_known_gaps(self):
+        """Pinned by name: each has been checked against PyPI and publishes no
+        win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
+        expected = {"datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"}
+        assert self._python_set() == expected
+
+    def test_powershell_filter_normalises_names(self):
+        """no-torch-runtime.txt spells it hf_transfer and the list spells it
+        hf-transfer; PEP 503 says they are the same distribution."""
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        index = source.index("function Get-ArmFilteredRequirements")
+        body = source[index : index + 1600]
+        assert '.Replace("_", "-")' in body
+        # Off unless the tier is on, so an ordinary install still installs everything.
+        assert "if (-not $script:ArmInferenceOnly" in body
