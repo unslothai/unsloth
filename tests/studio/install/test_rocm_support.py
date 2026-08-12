@@ -3707,6 +3707,10 @@ class TestGfxArchNameFallback:
             ("AMD Ryzen AI 9 HX 370 w/ Radeon 890M", "gfx1150"),
             ("AMD Radeon RX 9070 XT", "gfx1201"),
             ("AMD Radeon RX 9070", "gfx1201"),  # Navi 48 like the XT, not Navi 44
+            # Navi 48 workstation card, gfx1201 per #7624 / #7307. The name holds neither
+            # "9070" nor "9080", so it matched nothing and the install fell back to CPU.
+            ("AMD Radeon AI PRO R9700", "gfx1201"),
+            ("ATI Radeon 9700 PRO", None),  # a bare "9700" arm would claim this 2002 card
             ("AMD Radeon RX 9060 XT", "gfx1200"),  # Navi 44
             ("AMD Radeon RX 7700S", "gfx1102"),  # (?!S) lookahead must not hit gfx1101
             ("AMD Radeon RX 7700 XT", "gfx1101"),  # Navi 32
