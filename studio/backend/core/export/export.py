@@ -166,6 +166,27 @@ def _supports_kwarg(fn, name):
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+def _imatrix_export_supported(save_fn):
+    """True when this build can apply an imatrix, not merely swallow the keyword: the MLX binding
+    takes `**kwargs` and filters them, so only unsloth_zoo itself settles it."""
+    import inspect
+
+    try:
+        params = inspect.signature(save_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if "imatrix_file" in params:
+        return True
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return False
+    try:
+        from unsloth_zoo.llama_cpp import resolve_imatrix_file  # noqa: F401
+    except Exception:
+        # Runs before export_gguf's exception boundary, which must return a tuple, not raise.
+        return False
+    return True
+
+
 def _reported_gguf_files(result):
     """Absolute GGUF paths unsloth reported writing, or None if it reported nothing.
 
@@ -1030,16 +1051,25 @@ class ExportBackend:
 
         # Only forward imatrix_file to an unsloth build that accepts it, else older builds raise
         # an unexpected-keyword error even for a plain no-imatrix export.
-        if imatrix_file is not None and not _supports_kwarg(
-            self.current_model.save_pretrained_gguf, "imatrix_file"
-        ):
+        if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
             return (
                 False,
                 "This Unsloth build does not support GGUF imatrix export. "
                 "Upgrade unsloth and unsloth_zoo, or disable the imatrix option.",
                 None,
             )
-        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
+        # Truthiness, as in the guard above: a disabled imatrix must not reach an exporter that
+        # takes no such keyword.
+        imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # Resolution reads a Hub repo, so the local save needs the token too -- kept out of
+        # imatrix_kw, which the push below shares and already names token= itself.
+        local_token_kw = (
+            {"token": hf_token}
+            if imatrix_file
+            and hf_token
+            and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
+            else {}
+        )
 
         output_path: Optional[str] = None
         try:
@@ -1095,6 +1125,7 @@ class ExportBackend:
                         self.current_tokenizer,
                         quantization_method = quant_method,
                         **imatrix_kw,
+                        **local_token_kw,
                     )
 
                     # Scan only the owned root; exact reported paths cover external outputs.

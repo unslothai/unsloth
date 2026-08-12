@@ -57,15 +57,17 @@ def test_export_gguf_threads_imatrix_to_save_and_push():
     # imatrix_file must reach both save paths, but only via the conditional **imatrix_kw.
     g = _func_src("core/export/export.py", "export_gguf")
     assert g.count("**imatrix_kw") >= 2
-    assert 'imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}' in g
+    # Truthiness, not `is not None`: a disabled imatrix must not reach an exporter without the kwarg.
+    assert 'imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}' in g
     # Unconditional pass-through (the old wiring) must be gone.
     assert "imatrix_file = imatrix_file" not in g
 
 
 def test_export_gguf_guards_unsupported_imatrix_build():
-    # An older unsloth without imatrix_file support gets a clean error, not a TypeError.
+    # A build that cannot apply an imatrix gets a clean error, not a TypeError or a silent drop.
+    # The kwarg probe is not enough here: the MLX binding takes **kwargs and filters them.
     g = _func_src("core/export/export.py", "export_gguf")
-    assert "_supports_kwarg(" in g and '"imatrix_file"' in g
+    assert "_imatrix_export_supported(" in g
 
 
 def test_export_merged_guards_unsupported_compressed_build():
@@ -161,6 +163,37 @@ def test_unsloth_save_has_torchao_registry_and_path():
     # torchao aliases must map to (scheme, suffix) so the backend routes to the torchao path.
     assert '"torchao_fp8": ("fp8", "torchao-fp8")' in save_py
     assert '"torchao_int8": ("int8", "torchao-int8")' in save_py
+
+
+@pytest.mark.parametrize("wrapper_name", ["_save_pretrained_gguf", "_push_to_hub_gguf"])
+def test_sentence_transformer_gguf_wrappers_forward_imatrix(wrapper_name):
+    # Both wrappers take **kwargs, so the capability probe treats them as supported once
+    # unsloth_zoo can resolve an imatrix; they therefore have to forward the argument rather than
+    # swallow it. The push wrapper runs a second conversion of its own.
+    st = (_BACKEND.parent.parent / "unsloth" / "models" / "sentence_transformer.py").read_text(
+        encoding = "utf-8"
+    )
+    wrapper = st[st.index(f"def {wrapper_name}(") :]
+    wrapper = wrapper[: wrapper.index("\n# ")]
+    assert "imatrix_file = None," in wrapper
+    assert "imatrix_file = imatrix_file," in wrapper
+
+
+def test_gguf_export_request_falls_back_to_the_load_token():
+    # A local imatrix export resolves from a Hub repo, but the UI only sets `token` for a hub push,
+    # so the GGUF payload has to fall back the way the LoRA payload already does.
+    store = (
+        _BACKEND.parent
+        / "frontend"
+        / "src"
+        / "features"
+        / "export"
+        / "stores"
+        / "export-runtime-store.ts"
+    ).read_text(encoding = "utf-8")
+    gguf = store[store.index("exportGGUF({") :]
+    gguf = gguf[: gguf.index("}),")]
+    assert "hf_token: params.token ?? params.loadToken ?? null," in gguf
 
 
 # -- GGUF multi-quant list ----------------------------------------------------------------------
