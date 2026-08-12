@@ -55,8 +55,8 @@ def test_guard_can_still_force_the_dependency_pass(script: pathlib.Path):
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
 def test_duplicate_core_metadata_cannot_take_the_version_fast_path(script: pathlib.Path):
     text = script.read_text(encoding = "utf-8")
-    probe = text.find("install_manifest.installed_versions")
-    zoo_probe = text.find("installed_versions('unsloth-zoo')", probe)
+    probe = text.find("install_manifest.installed_version_probe")
+    zoo_probe = text.find("'unsloth-zoo'", probe)
     repair = text.find("duplicate metadata found", probe)
     if script.name.endswith(".ps1"):
         skip = text.find("$SkipPythonDeps = $true", repair)

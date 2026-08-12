@@ -1531,15 +1531,9 @@ if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && 
 import sys
 sys.path.insert(0, sys.argv[2])
 import install_manifest
-versions = install_manifest.installed_versions(sys.argv[1])
-zoo_versions = install_manifest.installed_versions('unsloth-zoo')
-print(versions[0] if len(versions) == 1 and versions[0] else '')
-sys.exit(
-    2
-    if install_manifest.metadata_conflict(versions)
-    or install_manifest.metadata_conflict(zoo_versions)
-    else (0 if versions else 1)
-)
+version, conflict = install_manifest.installed_version_probe(sys.argv[1], ('unsloth-zoo',))
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
 " "$_PKG_NAME" "$SCRIPT_DIR" 2>/dev/null); then
         :
     else

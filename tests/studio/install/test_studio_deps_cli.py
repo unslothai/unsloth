@@ -191,13 +191,9 @@ def cross_venv(tmp_path, monkeypatch):
             executable.write_text("probe placeholder", encoding = "utf-8")
 
             def active_paths(*_args, **_kwargs):
-                return deps.subprocess.CompletedProcess(
-                    args = [],
-                    returncode = 0,
-                    stdout = json.dumps([str(managed_site), str(managed_site)]),
-                )
+                return json.dumps([str(managed_site), str(managed_site)])
 
-            monkeypatch.setattr(deps.subprocess, "run", active_paths)
+            monkeypatch.setattr(deps.subprocess, "check_output", active_paths)
         return deps.install_state(extra_roots = (managed,))
 
     return build

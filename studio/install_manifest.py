@@ -148,11 +148,22 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
     return len(versions) > 1 or any(not version for version in versions)
 
 
+def installed_version_probe(
+    dist_name: str, companion_names: Sequence[str] = ()
+) -> Tuple[str, bool]:
+    """One unambiguous version and whether any requested metadata conflicts."""
+    versions = installed_versions(dist_name)
+    conflict = metadata_conflict(versions) or any(
+        metadata_conflict(installed_versions(name)) for name in companion_names
+    )
+    version = versions[0] if len(versions) == 1 and versions[0] else ""
+    return version, conflict
+
+
 def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = None) -> Optional[str]:
     if installed is not None:
         return installed.get(_canonical(dist_name))
-    versions = installed_versions(dist_name)
-    return versions[0] if len(versions) == 1 and versions[0] else None
+    return installed_version_probe(dist_name)[0] or None
 
 
 def remove_manifest(root: Optional[Path] = None) -> bool:
@@ -406,24 +417,18 @@ def verify_install(
         # `update --package X` records X, so comparing against unsloth would
         # report a permanent version change.
         manifest_package = manifest.get("package") or package_name
-        versions = installed_versions(manifest_package) if installed is None else []
-        zoo_versions = (
-            installed_versions("unsloth-zoo")
-            if installed is None and _canonical(manifest_package) != "unsloth-zoo"
-            else []
-        )
         if installed is None:
-            current = versions[0] if len(versions) == 1 and versions[0] else None
+            companions = () if _canonical(manifest_package) == "unsloth-zoo" else ("unsloth-zoo",)
+            current, local_conflict = installed_version_probe(manifest_package, companions)
         else:
             current = _installed_version(manifest_package, installed)
+            local_conflict = False
         foreign_conflicts = {_canonical(name) for name in (installed_conflicts or ())}
         core_conflict = _canonical(manifest_package) in foreign_conflicts or (
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
-        if core_conflict or (
-            installed is None and (metadata_conflict(versions) or metadata_conflict(zoo_versions))
-        ):
+        if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
             reason = "studio_install_version_changed"

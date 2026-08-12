@@ -124,11 +124,7 @@ def _venv_site_packages(root: Path) -> List[Path]:
             if not value:
                 continue
             path = Path(value)
-            if not path.is_dir():
-                continue
-            try:
-                _resolved(path).relative_to(resolved_root)
-            except ValueError:
+            if not path.is_dir() or not _resolved(path).is_relative_to(resolved_root):
                 continue
             if path not in out:
                 out.append(path)
@@ -159,14 +155,13 @@ def _venv_site_packages(root: Path) -> List[Path]:
         if not executable.is_file():
             continue
         try:
-            result = subprocess.run(
+            output = subprocess.check_output(
                 [str(executable), "-I", "-c", probe],
-                stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
                 timeout = 5,
             )
-            values = json.loads(result.stdout) if result.returncode == 0 else []
+            values = json.loads(output)
         except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
             continue
         active = existing_inside_root(values if isinstance(values, list) else [])
@@ -253,17 +248,9 @@ def _requirements_root_in(root: Path) -> Optional[Path]:
     return None
 
 
-def _supports_foreign_root(module) -> bool:
-    """A manifest helper predating the installed= parameter cannot describe another venv."""
+def _verify_install_supports(module, parameter: str) -> bool:
     try:
-        return "installed" in inspect.signature(module.verify_install).parameters
-    except (TypeError, ValueError):
-        return False
-
-
-def _supports_foreign_conflicts(module) -> bool:
-    try:
-        return "installed_conflicts" in inspect.signature(module.verify_install).parameters
+        return parameter in inspect.signature(module.verify_install).parameters
     except (TypeError, ValueError):
         return False
 
@@ -306,10 +293,12 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
             "reason": "studio_install_incomplete",
         }
     try:
-        if installed is not None and req_root is not None and _supports_foreign_root(module):
+        if installed is not None and req_root is not None and _verify_install_supports(
+            module, "installed"
+        ):
             # That venv's own metadata: unreadable through this interpreter.
             kwargs = {"root": root, "req_root": req_root, "installed": installed}
-            if _supports_foreign_conflicts(module):
+            if _verify_install_supports(module, "installed_conflicts"):
                 kwargs["installed_conflicts"] = installed_conflicts
             return module.verify_install(**kwargs)
         state = module.verify_install(root = root)

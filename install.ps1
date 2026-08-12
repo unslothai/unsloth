@@ -4427,22 +4427,11 @@ exit 0
     }
 
     $installedPackageVersion = (& $VenvPython -c "
-import os, re, sys, sysconfig
-from importlib.metadata import distributions
-wanted = re.sub(r'[-_.]+', '-', sys.argv[1]).lower()
-configured = sysconfig.get_paths()
-paths = list(dict.fromkeys(
-    p for k in ('purelib', 'platlib') if (p := configured.get(k)) and os.path.isdir(p)
-))
-versions = [
-    d.version or ''
-    for d in distributions(path=paths)
-    if re.sub(
-        r'[-_.]+', '-', (getattr(d, 'name', None) or d.metadata['Name'] or '')
-    ).lower() == wanted
-]
-print(versions[0] if len(versions) == 1 else '')
-sys.exit(2 if len(versions) > 1 else (0 if versions else 1))
+import sys
+from studio.install_manifest import installed_version_probe
+version, conflict = installed_version_probe(sys.argv[1])
+print(version)
+sys.exit(2 if conflict else (0 if version else 1))
 " $PackageName 2>$null | Out-String).Trim()
     $_installedPackageVersionExit = $LASTEXITCODE
     if ($_installedPackageVersionExit -eq 2) {

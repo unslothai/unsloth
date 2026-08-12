@@ -3535,33 +3535,27 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
-def _overlay_local_core_packages(local_repo: str, package_names = None) -> None:
-    """Apply the requested source provenance for selected core packages."""
-    selected = (
-        None
-        if package_names is None
-        else {re.sub(r"[-_.]+", "-", name).lower() for name in package_names}
-    )
-    if selected is None or "unsloth" in selected:
-        _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
-        pip_install(
-            "Overlaying local repo (editable)",
-            "--no-cache-dir",
-            "--no-deps",
-            "-e",
-            local_repo,
-            constrain = False,
-        )
-    if selected is None or "unsloth-zoo" in selected:
-        _step(_LABEL, "overlaying unsloth-zoo from git main")
-        pip_install(
-            "Overlaying unsloth-zoo from git main",
-            "--no-cache-dir",
-            "--no-deps",
-            "--force-reinstall",
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo",
-            constrain = False,
-        )
+def _overlay_local_core_package(name: str, local_repo: str) -> bool:
+    """Install one core package from the source selected by --local."""
+    canonical = re.sub(r"[-_.]+", "-", name).lower()
+    if canonical == "unsloth":
+        step_label = f"overlaying local repo (editable): {local_repo}"
+        install_label = "Overlaying local repo (editable)"
+        args = ("-e", local_repo)
+    elif canonical == "unsloth-zoo":
+        step_label = "overlaying unsloth-zoo from git main"
+        install_label = "Overlaying unsloth-zoo from git main"
+        args = ("--force-reinstall", "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo")
+    else:
+        return False
+    _step(_LABEL, step_label)
+    pip_install(install_label, "--no-cache-dir", "--no-deps", *args, constrain = False)
+    return True
+
+
+def _overlay_local_core_packages(local_repo: str) -> None:
+    for name in ("unsloth", "unsloth-zoo"):
+        _overlay_local_core_package(name, local_repo)
 
 
 def _repair_duplicate_core_metadata(
@@ -3609,17 +3603,11 @@ def _repair_duplicate_core_metadata(
             record_count = remaining
 
         canonical = re.sub(r"[-_.]+", "-", name).lower()
-        if local_repo and canonical in {"unsloth", "unsloth-zoo"}:
-            # install.sh/install.ps1 may already have applied these sources
-            # before handing off with SKIP_STUDIO_BASE=1. Install that same
-            # provenance directly now that no ambiguous record remains.
-            _overlay_local_core_packages(local_repo, (name,))
-        elif ci_source_overlay and canonical == "unsloth":
-            # Clean-machine CI overlays only the candidate unsloth checkout.
-            # Preserve that exact editable source without introducing the
-            # unsloth-zoo git overlay used by a full --local install.
-            _overlay_local_core_packages(ci_source_overlay, (name,))
-        else:
+        source_repo = local_repo or (ci_source_overlay if canonical == "unsloth" else "")
+        # Installer handoffs may already have applied a local or CI source.
+        # Restore that provenance now that no ambiguous record remains.
+        restored = source_repo and _overlay_local_core_package(name, source_repo)
+        if not restored:
             pip_install(
                 f"Repairing duplicate metadata for {name}",
                 "--no-cache-dir",
@@ -3630,7 +3618,7 @@ def _repair_duplicate_core_metadata(
         repaired.append(name)
 
     importlib.invalidate_caches()
-    remaining = [name for name in repaired if len(install_manifest.installed_versions(name)) != 1]
+    remaining = [name for name in repaired if not install_manifest.installed_version_probe(name)[0]]
     if remaining:
         _safe_print(
             _red("   package metadata is inconsistent after reinstall: " + ", ".join(remaining)),
