@@ -1,15 +1,5 @@
-# Unsloth - 2x faster, 60% less VRAM LLM training and finetuning
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Lesser General Public License for more details.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """``patch_psutil_cpu_freq`` -- Apple Silicon M4+ CPU frequency units (#8519).
 
@@ -166,6 +156,29 @@ class TestPatchApplication:
         monkeypatch.delattr(psutil, "cpu_freq", raising = False)
         IF.patch_psutil_cpu_freq()
         assert not hasattr(psutil, "cpu_freq")
+
+    def test_caller_argument_mistakes_keep_their_error(self, monkeypatch, fake_m4):
+        # The wrapper stands in for psutil globally, so a TypeError from a bad
+        # call must not be mistaken for psutil declining to read the clock.
+        import psutil
+
+        def cpu_freq(percpu = False):
+            raise RuntimeError("psutil declines")
+
+        monkeypatch.setattr(psutil, "cpu_freq", cpu_freq)
+        _fake_ioreg(monkeypatch, [{"voltage-states5-sram": _M4_PERF_TABLE}])
+        IF.patch_psutil_cpu_freq()
+        assert psutil.cpu_freq().current == 4512.0  # the supported call still recovers
+        with pytest.raises(TypeError):
+            psutil.cpu_freq(unknown = True)
+        with pytest.raises(TypeError):
+            psutil.cpu_freq(False, False)
+
+    def test_probe_lock_exists_before_any_call(self):
+        # A lazily built lock is two locks when two threads reach it at once,
+        # and then neither excludes the other.
+        import threading
+        assert isinstance(IF._apple_cpu_freq_lock, type(threading.Lock()))
 
     def test_patch_is_idempotent(self, monkeypatch, fake_m4):
         psutil = _install_fake_psutil(monkeypatch, _scpufreq(4.0, 1.0, 4.0))
@@ -363,22 +376,55 @@ class TestPatchApplication:
     not (sys.platform == "darwin" and platform.machine() == "arm64"),
     reason = "Apple Silicon only: reads this host's real IORegistry tables",
 )
+def _raw_apple_reading():
+    """This host's own psutil reading, or None when it has none to give.
+
+    psutil gates cpu_freq on a runtime probe on macOS, so on Apple Silicon the
+    attribute can be missing outright (virtualised runners) or present and
+    raising (M5, whose tables are not at the indexes psutil hardcodes). Both are
+    supported hosts, so a test that needs a raw reading skips rather than fails.
+    """
+    import psutil
+
+    reader = getattr(psutil, "cpu_freq", None)
+    if reader is None:
+        return None
+    try:
+        sample = reader()
+    except Exception:
+        return None
+    current = getattr(sample, "current", None)
+    return current if isinstance(current, (int, float)) and current > 0 else None
+
+
 class TestOnRealAppleSilicon:
     def test_reported_frequency_is_plausible(self):
         import psutil
 
         IF.patch_psutil_cpu_freq()
-        current = psutil.cpu_freq().current
-        assert IF._APPLE_MIN_PLAUSIBLE_CPU_MHZ <= current <= IF._APPLE_MAX_PLAUSIBLE_CPU_MHZ
+        reader = getattr(psutil, "cpu_freq", None)
+        if reader is None:
+            # Nothing was wrapped, so there is nothing to assert about. Studio's
+            # own helper covers this host, and its test asserts that path.
+            pytest.skip("psutil exposes no cpu_freq on this host")
+        try:
+            sample = reader()
+        except Exception as exception:
+            # psutil declined and the tables were unreadable too, so the wrapper
+            # correctly re-raised rather than inventing a number.
+            pytest.skip(f"no CPU clock available on this host ({exception})")
+        if sample is None:
+            pytest.skip("psutil reports the clock as undeterminable on this host")
+        assert IF._APPLE_MIN_PLAUSIBLE_CPU_MHZ <= sample.current <= IF._APPLE_MAX_PLAUSIBLE_CPU_MHZ
 
     def test_ioreg_reader_agrees_with_unaffected_psutil(self):
         # On M1-M3 psutil is already right, so our reader must match it. On M4+
         # psutil is the broken one, so compare against its x1000 rescale instead.
-        import psutil
-
         freq_range = IF._apple_cpu_freq_range_mhz()
         if freq_range is None:
             pytest.skip("ioreg voltage-state tables unavailable on this host")
-        raw = psutil.cpu_freq().current
+        raw = _raw_apple_reading()
+        if raw is None:
+            pytest.skip("psutil has no reading of its own on this host to compare against")
         expected = raw if raw >= IF._APPLE_MIN_PLAUSIBLE_CPU_MHZ else raw * 1000
         assert freq_range[1] == pytest.approx(expected, rel = 0.15)

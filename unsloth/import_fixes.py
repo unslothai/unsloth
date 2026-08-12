@@ -27,6 +27,7 @@ import logging
 import textwrap
 import warnings
 import sys
+import threading
 import functools
 import inspect
 
@@ -830,7 +831,10 @@ _APPLE_VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
 # Peak/idle clocks are fixed for the life of the host, so probe ioreg once.
 # The sentinel separates "not probed yet" from "probed, unavailable".
 _apple_cpu_freq_range = "unprobed"
-_apple_cpu_freq_lock = None  # created on first use; see _apple_cpu_freq_range_mhz
+# Built at import, not on first use: two threads reaching a lazy initialiser both
+# see None, build a lock each, and then neither excludes the other, which is the
+# race the lock is here to prevent.
+_apple_cpu_freq_lock = threading.Lock()
 
 
 def _apple_voltage_state_freqs_mhz(blob):
@@ -873,17 +877,9 @@ def _apple_cpu_freq_range_from_ioreg_entries(entries):
 
 def _apple_cpu_freq_range_mhz():
     """Read (min, max) CPU MHz from the pmgr IORegistry node, cached."""
-    global _apple_cpu_freq_range, _apple_cpu_freq_lock
+    global _apple_cpu_freq_range
     if _apple_cpu_freq_range != "unprobed":
         return _apple_cpu_freq_range
-
-    import threading
-
-    if _apple_cpu_freq_lock is None:
-        # Racing here at worst makes two locks on the first call, and the
-        # double-check below still keeps the result consistent. Created lazily
-        # so importing this module allocates nothing on other platforms.
-        _apple_cpu_freq_lock = threading.Lock()
 
     # Without the lock a threaded caller spawns one ioreg per thread, and a slow
     # failing probe landing last would overwrite a good reading with None.
@@ -988,6 +984,11 @@ def patch_psutil_cpu_freq():
     def cpu_freq(*args, **kwargs):
         try:
             result = original_cpu_freq(*args, **kwargs)
+        except TypeError:
+            # Arguments psutil does not take are the caller's mistake, not psutil
+            # declining to answer. This function replaces psutil's globally, so
+            # swallowing that would hide the error everywhere, not just here.
+            raise
         except Exception:
             # psutil raises on M5, whose renumbered tables it cannot find at the
             # indexes it hardcodes. Stand in with the IORegistry reading rather

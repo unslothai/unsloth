@@ -277,6 +277,18 @@ class TestOnRealAppleSilicon:
         peak = hardware._read_apple_cpu_peak_mhz()
         if peak is None:
             pytest.skip("no voltage-state tables exposed on this host")
-        raw = psutil.cpu_freq().current
+        # There is nothing to compare against where psutil has no reading of its
+        # own: an M5 raises, and a virtualised host has no cpu_freq at all. The
+        # tables still work there, which is the whole point of the fallback.
+        reader = getattr(psutil, "cpu_freq", None)
+        if reader is None:
+            pytest.skip("psutil exposes no cpu_freq on this host")
+        try:
+            sample = reader()
+        except Exception as exception:
+            pytest.skip(f"psutil cannot read the clock on this host ({exception})")
+        if sample is None or not getattr(sample, "current", 0):
+            pytest.skip("psutil reports no clock on this host")
+        raw = sample.current
         expected = raw if raw >= hardware._MIN_PLAUSIBLE_CPU_MHZ else raw * 1000
         assert peak == pytest.approx(expected, rel = 0.15)
