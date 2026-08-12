@@ -590,19 +590,21 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         everything,
         archs = frozenset({"gfx1030"}),
     ):
-        """Stub the gate marker + both probes. Returns the per-call kwargs seen,
-        so a test can COUNT calls -- raising inside a spy here would be
-        swallowed by the caller's ``except Exception``."""
+        """Stub a ROCm host, the gate marker, and both probes. Returns the
+        per-call kwargs seen, so a test can COUNT calls -- raising inside a spy
+        here would be swallowed by the caller's ``except Exception``."""
         seen: list[dict] = []
 
         def _probe(binary = None, *, for_llama_server = False):
             seen.append({"binary": binary, "for_llama_server": for_llama_server})
-            return list(gated if for_llama_server else everything)
+            rows = gated if for_llama_server else everything
+            return [(idx, free, 0) for idx, free in rows]
 
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
         monkeypatch.setattr(
             LlamaCppBackend, "_installed_llama_gfx_archs", staticmethod(lambda _b = None: archs)
         )
-        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
         return seen
 
     def test_a_narrowing_gate_yields_the_surviving_ids(self, monkeypatch):
@@ -628,7 +630,16 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
         assert seen == [], f"the GPU probe ran despite unknown arch coverage: {seen}"
 
+    def test_a_non_rocm_host_never_probes(self, monkeypatch):
+        seen = self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 1), (1, 24000)])
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: False))
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
+        assert seen == [], f"a non-ROCm host paid for the gate probes: {seen}"
+
     def test_a_probe_failure_never_blocks_the_spawn(self, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
         monkeypatch.setattr(
             LlamaCppBackend,
             "_installed_llama_gfx_archs",

@@ -794,6 +794,8 @@ def _run_auto_load(
     returncode = 1,
     output = "",
     env_extra = None,
+    model_bytes = 1024,
+    capture = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the
     real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -816,9 +818,15 @@ def _run_auto_load(
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
+    # ``capture`` hands the post-launch backend back for state the argv and env
+    # cannot show (e.g. _gpu_offload_active).
+    if capture is not None:
+        capture["backend"] = backend
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
-    backend._get_gguf_size_bytes = lambda _path: 1024
+    # model_bytes drives the placement decision: a model no GPU can hold makes
+    # _select_gpus return (None, True), so `--fit on` owns placement.
+    backend._get_gguf_size_bytes = lambda _path: model_bytes
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **_kwargs: None
     backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
@@ -951,6 +959,39 @@ class TestEveryDeviceUncoveredDownstream:
         # "-1" keeps the HIP spelling: the sentinel has no portable ROCR form.
         assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
 
+    def test_the_forced_cpu_server_reports_zero_vram(self, tmp_path, monkeypatch, probe_env):
+        """A masked-off child holds no VRAM, so the flag the training coordinator
+        reads must be exactly False. None is not good enough: routes/
+        training_vram.py spares a server only on ``is not False``, so the
+        counted classifier's None (the gated probe left the detected list empty)
+        would unload a server whose death frees nothing."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch, tmp_path, torch, GFX120X, returncode = None, capture = capture
+        )
+        _cmd, env = launches[0]
+        assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
+        assert capture["backend"]._gpu_offload_active is False
+
+    def test_a_covered_host_still_classifies_normally(self, tmp_path, monkeypatch, probe_env):
+        """The zero-VRAM verdict is the gate's doing, not a blanket False: a host
+        the build covers keeps the counted classifier's answer."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
+            vendor = "amd",
+        )
+        capture: dict = {}
+        _run_auto_load(
+            monkeypatch, tmp_path, torch, GFX103X, returncode = None, capture = capture
+        )
+        assert capture["backend"]._gpu_offload_active is not False
+
     def test_all_uncovered_names_the_devices_in_the_warning(self, tmp_path, monkeypatch, probe_env):
         """The CPU fallback is a large, silent-looking performance cliff, so the
         log has to say why: which devices are present, and that the installed
@@ -997,6 +1038,60 @@ class TestEveryDeviceUncoveredDownstream:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
         assert _ungated == [], "a covered device was found; the ungated re-probe is dead weight"
+
+    def test_a_model_too_large_to_pin_still_masks_the_uncovered_card(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """One card short of the forced-CPU case. The gate drops the uncovered
+        iGPU but keeps the dGPU, so the pool is not empty -- and if the model is
+        then too large for the planner, `_select_gpus` answers (None, True) and
+        `gpu_indices` stays None. Nothing else writes a mask on that arm, so the
+        child would enumerate the very card the gate dropped and die on it, with
+        the reactive retry unable to help (its guard needs `gpu_indices`)."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,
+            returncode = None,
+            model_bytes = 400 * 1024**3,
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        # --fit on is the arm under test: placement was handed to llama.cpp.
+        assert cmd[cmd.index("--fit") + 1] == "on"
+        # gfx1036 is index 1 and has no kernels in a gfx103X build, so only 0
+        # may reach the child. ROCr, not HIP: a HIP mask still enumerates first.
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+
+    def test_full_coverage_leaves_a_fit_owned_launch_unmasked(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The same unpinned arm on a host the build fully covers writes no mask
+        at all, so the pin is the gate's doing and not a blanket change to every
+        `--fit on` launch."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,
+            returncode = None,
+            model_bytes = 400 * 1024**3,
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert cmd[cmd.index("--fit") + 1] == "on"
+        assert _visibility(env) == {}
 
     def test_cuda_host_with_no_gpu_does_not_reprobe(self, tmp_path, monkeypatch, probe_env):
         """The GPU-less path is the common case, so the ROCm guard has to come

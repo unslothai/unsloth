@@ -243,20 +243,11 @@ class LlamaServerBackend:
         Pin the survivors instead. Empty (no mask, byte-identical behaviour)
         unless the arch gate is both known and actually narrowing: NVIDIA, CPU,
         Vulkan and macOS have no mapped_targets marker, and a build covering
-        every installed card needs no pin."""
+        every installed card needs no pin. Same helper the chat launch uses when
+        the fit leaves it unpinned, so both llama-server children agree."""
         from core.inference.llama_cpp import LlamaCppBackend
-        try:
-            if LlamaCppBackend._installed_llama_gfx_archs(binary) is None:
-                return []  # unknown coverage: fail open, same as the probe
-            gated = [
-                i
-                for i, _free in LlamaCppBackend._get_gpu_free_memory(binary, for_llama_server = True)
-            ]
-            everything = [i for i, _free in LlamaCppBackend._get_gpu_free_memory(binary)]
-            return gated if gated and gated != everything else []
-        except Exception as e:  # noqa: BLE001 - a probe failure must not block the spawn
-            logger.debug("arch-gated GPU pin unavailable: %s", e)
-            return []
+
+        return LlamaCppBackend._arch_gate_survivors(binary)
 
     def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match

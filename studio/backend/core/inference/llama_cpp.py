@@ -5465,6 +5465,33 @@ class LlamaCppBackend:
             logger.debug(f"install marker arch read failed: {e}")
             return None
 
+    @classmethod
+    def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
+        """Physical ids the ROCm arch gate leaves, or [] when there is nothing to
+        mask: unknown coverage, a non-ROCm host, or a build covering every card.
+
+        For callers that must PIN the gate's answer rather than only rank by it.
+        Knowing a supported device exists is not enough -- the child enumerates
+        every ROCm agent, and that HSA enumeration is what dies on an uncovered
+        arch, so a mixed host (unsupported iGPU + supported dGPU) passes the gate
+        and still crashes unless the survivors are masked in.
+
+        Lazy by design: both probes run only where nothing else pins the child,
+        so the ordinary pinned launch pays for neither. Never raises."""
+        try:
+            if not cls._host_torch_is_rocm():
+                return []
+            if cls._installed_llama_gfx_archs(binary) is None:
+                return []  # unknown coverage: fail open, same as the probe
+            gated = [idx for idx, _free, _total in cls._get_gpu_memory(
+                binary, for_llama_server = True
+            )]
+            everything = [idx for idx, _free, _total in cls._get_gpu_memory(binary)]
+            return gated if gated and len(gated) < len(everything) else []
+        except Exception as e:
+            logger.debug(f"arch gate survivor probe failed: {e}")
+            return []
+
     @staticmethod
     def _get_gpu_free_memory(
         binary: Optional[str] = None, *, for_llama_server: bool = False
@@ -12947,6 +12974,28 @@ class LlamaCppBackend:
                     # so pin the child's enumeration to that order too. The whole
                     # visible set stays in use; only its ordering is fixed.
                     self._pin_visible_gpu_order_for_split(env)
+                elif not is_vulkan_backend and not gpu_ids:
+                    # Nothing above pinned the child, which on auto placement means
+                    # `--fit on` owns it (the model was too large for the planner,
+                    # so _select_gpus returned (None, True) and gpu_indices stayed
+                    # None). One card short of the forced-CPU case above: the gate
+                    # dropped the uncovered iGPU but kept the dGPU, so the child
+                    # would enumerate the dropped card and die on it, and the
+                    # reactive retry cannot help (its guard needs gpu_indices).
+                    # Mask the survivors in. Deliberately last: a manual
+                    # --tensor-split was sized against the FULL visible count, and
+                    # masking under it would re-index the devices (the positional
+                    # mismatch _without_tensor_split exists for).
+                    _survivors = self._arch_gate_survivors(binary)
+                    if _survivors:
+                        logger.info(
+                            "The installed llama.cpp build has no kernels for GPU(s) "
+                            "the fit left visible; pinning the child to %s.",
+                            _survivors,
+                        )
+                        self._emit_child_gpu_visibility(
+                            env, ",".join(str(i) for i in _survivors), prefer_rocr = True
+                        )
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -13784,8 +13833,19 @@ class LlamaCppBackend:
                 # classifies by its launched argv instead: the main model is
                 # CPU-only by construction and must read False (not None), or
                 # training needlessly unloads a server holding no VRAM.
-                _deliberate_cpu_only = gpu_memory_mode == "manual" and gpu_layers == 0
-                if _deliberate_cpu_only:
+                # An arch-gated launch is CPU-only by construction too, and for a
+                # stronger reason: the env block masked every device away ("-1"),
+                # so the child could not hold VRAM if it tried.
+                _deliberate_cpu_only = (
+                    gpu_memory_mode == "manual" and gpu_layers == 0
+                ) or _arch_gate_forced_cpu
+                if _arch_gate_forced_cpu:
+                    # False, never None. _classify_gpu_offload answers None here
+                    # (the gated probe left _detected_gpus empty), and training
+                    # spares only a server whose flag is exactly False -- so None
+                    # unloads one whose death frees no VRAM at all.
+                    self._gpu_offload_active = False
+                elif _deliberate_cpu_only:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(
                         _last_spawn_cmd, _detected_gpus, env
                     )
