@@ -8,8 +8,11 @@ All providers expose OpenAI-compatible /v1/chat/completions endpoints
 with Bearer token auth and SSE streaming.
 """
 
+import ipaddress
+import os
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openai_codex": {
@@ -386,6 +389,120 @@ def get_base_url(provider_type: str) -> str | None:
     """Return the default base URL for a provider type."""
     info = PROVIDER_REGISTRY.get(provider_type)
     return info["base_url"] if info else None
+
+
+# Cloud-metadata / link-local hosts. The backend fetches a provider base URL on
+# behalf of the caller, so a URL pointing at one of these would hand instance
+# credentials to whoever asked. No LLM endpoint ever lives here, so this is
+# refused on every deployment. Keep in sync with the tool-approval gate's list in
+# core/inference/tools.py (which is function-local, hence duplicated).
+_METADATA_HOST_LITERALS = frozenset(
+    {
+        "169.254.169.254",
+        "169.254.169.252",
+        "169.254.170.2",
+        "169.254.170.23",
+        "fd00:ec2::254",
+        "100.100.100.200",
+        "100.100.100.110",
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    }
+)
+_METADATA_HOST_PREFIXES = ("169.254.",)
+
+# Opt-in for operators who expose Studio on a shared host: also refuse provider
+# URLs that resolve to a non-public address. Off by default, because loopback and
+# LAN endpoints are the normal case (Ollama, llama.cpp, vLLM, custom gateways).
+_BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
+
+
+def _metadata_host(hostname: str) -> bool:
+    """True when ``hostname`` names a cloud metadata service."""
+    if hostname in _METADATA_HOST_LITERALS or hostname.startswith(_METADATA_HOST_PREFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    # ::ffff:169.254.169.254 and 2002:a9fe:a9fe:: reach the same service.
+    for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
+        if candidate is not None and _metadata_host(candidate.compressed):
+            return True
+    return ip.compressed in _METADATA_HOST_LITERALS
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
+    """Raise when ``hostname`` is, or resolves to, a non-public address."""
+    import socket
+
+    try:
+        addresses = [ipaddress.ip_address(hostname)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                hostname,
+                port or (443 if scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses or any(not ip.is_global for ip in addresses):
+        raise ValueError(
+            "Provider base URL points at a private address, which is disabled on this "
+            f"server ({_BLOCK_PRIVATE_ENV}=1)."
+        )
+
+
+def validate_provider_base_url(base_url: str) -> str:
+    """Return a normalized provider base URL, or raise ``ValueError``.
+
+    The backend issues outbound requests to this URL with the caller's decrypted
+    API key attached, so it is caller-controlled server-side egress. Only shapes
+    that can never be a real provider endpoint are refused: a non-http(s) scheme,
+    embedded credentials, control characters, and cloud metadata services. Plain
+    http, loopback, LAN hosts, odd ports and query strings all stay valid --
+    Ollama, llama.cpp, vLLM and custom gateways rely on them. No DNS lookup
+    happens unless the private-address opt-in is set.
+
+    Normalization is strip + trailing-slash removal only (what the client did
+    before), so validating an already-validated URL returns it unchanged.
+    """
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Provider base URL is required.")
+
+    raw = base_url.strip()
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in raw) or "\\" in raw:
+        raise ValueError("Provider base URL contains invalid characters.")
+
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+        hostname = parts.hostname
+    except ValueError as exc:
+        raise ValueError("Provider base URL is malformed.") from exc
+
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("Provider base URL must use http or https.")
+    # `is not None` rather than truthiness: `http://@host/` has empty userinfo.
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("Provider base URL must not contain credentials.")
+    if not hostname:
+        raise ValueError("Provider base URL must contain a hostname.")
+
+    hostname = hostname.rstrip(".")
+    if _metadata_host(hostname):
+        raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
+
+    if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
+        _reject_non_public(hostname, port, scheme)
+
+    return raw.rstrip("/")
 
 
 def list_available_providers() -> list[dict[str, Any]]:
