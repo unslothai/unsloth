@@ -20,12 +20,15 @@ import pytest
 
 import core.inference.diffusion_prequant as pq
 from core.inference.diffusion_families import DiffusionFamily
+
 from core.inference.diffusion_prequant import (
     PREQUANT_FORMAT,
     PrequantSource,
     load_prequantized_transformer,
     resolve_prequant_source,
 )
+
+from .conftest import pin_prequant_allowlist
 
 
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
@@ -228,7 +231,7 @@ def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch, restricted_
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
 
 
-def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
+def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path, monkeypatch):
     """Two checkpoints of one model differ only in scheme, so an atomic swap is same-size.
 
     The memo key used int(st_mtime), which truncates to seconds: replacing an int8 override with
@@ -239,6 +242,9 @@ def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
     import os
 
     import torch
+
+    # Real torch.load, so the probe only gets past the allowlist gate where it can register.
+    pin_prequant_allowlist(monkeypatch)
 
     ckpt = tmp_path / "model.pt"
 
@@ -331,6 +337,8 @@ def _stub_torch_accelerate(
     torch = types.ModuleType("torch")
     # Registration is version-gated (2.6+), so the stub needs a version or every load declines.
     torch.__version__ = "2.9.1+cu128"
+    # ... and it resolves real torchao classes, which a CPU-only host need not have.
+    pin_prequant_allowlist(monkeypatch)
     seen = {"weights_only": None, "safe_globals": None}
 
     def _load(
@@ -631,7 +639,7 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     assert [name for _obj, name in pq._prequant_safe_globals()] == ["collections.OrderedDict"]
 
 
-def test_a_malicious_checkpoint_is_refused_before_it_executes():
+def test_a_malicious_checkpoint_is_refused_before_it_executes(monkeypatch):
     """The whole point, against real torch: a checkpoint carrying a ``__reduce__`` payload must
     fail to load rather than run. The unrestricted load this replaces executes it."""
     import os
@@ -639,6 +647,10 @@ def test_a_malicious_checkpoint_is_refused_before_it_executes():
     torch = pytest.importorskip("torch")
     if not hasattr(torch.serialization, "safe_globals"):
         pytest.skip("torch < 2.6 has no safe_globals")
+    # The refusal has to be the ALLOWLIST refusing the payload. Without this a host with no
+    # torchao refuses one step earlier, for want of an allowlist to register at all, and the
+    # test passes without ever reaching the guard it is about.
+    pin_prequant_allowlist(monkeypatch)
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -670,6 +682,7 @@ def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monke
     torch = pytest.importorskip("torch")
     if not hasattr(torch.serialization, "safe_globals"):
         pytest.skip("torch < 2.6 has no safe_globals")
+    pin_prequant_allowlist(monkeypatch)  # refuse the payload, not the host's missing torchao
     marker = tmp_path / "executed"
 
     class _Payload:
@@ -706,6 +719,7 @@ def test_the_probe_and_the_loader_agree_on_what_is_readable(tmp_path, monkeypatc
     torch = pytest.importorskip("torch")
     if not hasattr(torch.serialization, "safe_globals"):
         pytest.skip("torch < 2.6 has no safe_globals")
+    pin_prequant_allowlist(monkeypatch)  # both sides must refuse the NAME, not the environment
 
     path = tmp_path / "off-allowlist.pt"
     torch.save(
@@ -896,6 +910,7 @@ def test_the_allowlist_is_registered_once_and_never_withdrawn(monkeypatch):
     if not hasattr(torch.serialization, "add_safe_globals"):
         pytest.skip("torch without add_safe_globals")
     calls = []
+    pin_prequant_allowlist(monkeypatch)  # there are entries to register on a host without torchao
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(
         torch.serialization, "add_safe_globals", lambda entries: calls.append(list(entries))
@@ -1647,6 +1662,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
 
     from core.inference import diffusion_prequant as P
 
+    pin_prequant_allowlist(monkeypatch)  # real torch: the load has to get past the allowlist gate
     seen: list = []
     live_root = tmp_path / "live"
     live_root.mkdir()
@@ -1695,6 +1711,7 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
 
     from core.inference import diffusion_prequant as P
 
+    pin_prequant_allowlist(monkeypatch)  # real torch: the load has to get past the allowlist gate
     seen: list = []
     live = str(tmp_path / "live")  # the moved-to root: nothing is cached under it yet
     other_root = tmp_path / "default-hub"

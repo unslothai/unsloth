@@ -832,3 +832,42 @@ def healthy_diffusers(monkeypatch):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))
     monkeypatch.setitem(sys.modules, "diffusers", proxy)
+
+
+def pin_prequant_allowlist(monkeypatch):
+    """Let the pre-quant constructor allowlist register on a host that has no torchao.
+
+    ``diffusion_prequant._prequant_safe_globals`` resolves the REAL torchao classes, and the
+    registration deliberately refuses unless at least one of them imports, because an install
+    that cannot rebuild a quantized tensor cannot open a pre-quant checkpoint. Backend CI is
+    CPU-only and installs no torchao, so on those runners every load in the pre-quant tests
+    declined for that environment reason before it reached the behaviour under test, and the
+    files asserted against the runner rather than against the code. The two diffusion test
+    modules are documented as hermetic (torch and accelerate are stubbed); this closes the one
+    hole in that, so they hold the same verdict with torchao installed or not.
+
+    Each name resolves to the real class where the host ships it and to a stand-in where it does
+    not, which is the shape a complete torchao install produces. The registration itself still
+    runs, so a test that asserts the load registers the allowlist before it reads still sees it,
+    and a pickle naming anything outside the list is still refused.
+
+    Not a fixture: the module-level helpers that drive the loader take ``monkeypatch`` already,
+    and every load in both files goes through one of them.
+    """
+    import importlib
+
+    import core.inference.diffusion_prequant as pq
+
+    def _pairs():
+        pairs = []
+        for module, name in pq._PREQUANT_SAFE_GLOBALS:
+            try:
+                obj = getattr(importlib.import_module(module), name)
+            except Exception:  # noqa: BLE001 -- a host without torchao gets the stand-in
+                obj = type(name, (), {"__module__": module})
+            pairs.append((obj, f"{module}.{name}"))
+        return pairs
+
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
+    monkeypatch.setattr(pq, "_prequant_safe_globals", _pairs)

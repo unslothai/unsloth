@@ -1692,11 +1692,17 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     src = _read("features/images/images-page.tsx")
     fn = src[src.index("async function settleLostGeneration") :]
     fn = fn[: fn.index("\n}\n")]
-    assert "knownIds" in fn and "sawActive" in fn
-    assert "!knownIds.has(image.id)" in fn
+    assert "sawActive" in fn
+    # The gallery half of the proof is the shared probe now (#8349), reached with a baseline
+    # frozen before the POST rather than with an inline scan.
+    assert "hasUnknownRecord(" in fn
+    assert "baseline," in fn
     assert "did not reach the server" in fn
-    # And the caller snapshots the ids BEFORE the POST.
+    # And the caller snapshots the ids BEFORE the POST, into the baseline the probe reads.
     assert "new Set(galleryCache.images.map((image) => image.id))" in src
+    assert "newRecordProbeBaseline(" in src
+    probe = _read("lib/gallery-flags.ts")
+    assert "return !baseline.knownIds.has(record.id);" in probe
 
 
 def test_parallel_slots_setting_wired_end_to_end():
@@ -3362,9 +3368,10 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
-    # The recommended quant still wins, but only inside its own group.
-    assert "variant.quant === effectiveRecommended" in group
-    assert "current.quant !== effectiveRecommended" in group
+    # The recommended quant still wins, but only inside its own group. `effectiveRecommended` is
+    # the flattened SET of the per-group picks (#8450), so the row asks it by membership.
+    assert "effectiveRecommended.has(variant.quant)" in group
+    assert "!effectiveRecommended.has(current.quant)" in group
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
