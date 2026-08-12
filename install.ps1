@@ -4251,7 +4251,8 @@ exit 0
     # these is a compiled package with no win_arm64 wheel at any version, and every
     # one already degrades at runtime rather than being load-bearing.
     $script:ArmInferenceSkipPackages = @(
-        "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"
+        "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
+        "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab"
     )
 
     # Pins that predate their package's first win_arm64 wheel, rewritten in place.
@@ -4263,8 +4264,9 @@ exit 0
     # PyPI -- so an overrides file added in this change is not there yet, and a lift
     # that silently no-ops leaves uv trying to compile MuPDF from source.
     $script:ArmInferenceLiftPackages = @{
-        "pymupdf" = "pymupdf>=1.28.2"
-        "av"      = "av>=17.0.0"
+        "pymupdf"      = "pymupdf>=1.28.2"
+        "av"           = "av>=17.0.0"
+        "scikit-learn" = "scikit-learn>=1.8.0"
     }
 
     # The requirements file with the ARM64-impossible entries removed, or the original

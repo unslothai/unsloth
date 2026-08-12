@@ -3706,6 +3706,14 @@ NO_DATASETS_SKIP_PACKAGES = {
     "hf-transfer",
     "ddgs",
     "pandas",
+    # Optional extras in the same position: a compiled package with no win_arm64
+    # wheel at any version. pytorch-tokenizers and torch-c-dlpack-ext are ExecuTorch
+    # /DLPack helpers used by specific export paths, MeCab is the Japanese tokenizer
+    # a handful of models want. All three are already installed --no-deps as extras,
+    # so dropping them costs those features rather than the install.
+    "pytorch-tokenizers",
+    "torch-c-dlpack-ext",
+    "mecab",
 }
 
 # Constraint entries dropped in the ARM64 tier: the skipped packages themselves (a

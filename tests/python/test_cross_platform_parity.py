@@ -1093,7 +1093,10 @@ class TestArm64SkipListParity:
     def test_list_covers_the_known_gaps(self):
         """Pinned by name: each has been checked against PyPI and publishes no
         win_arm64 wheel at any version, so a resolver failure here is not a pin bump."""
-        expected = {"datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas"}
+        expected = {
+            "datasets", "trl", "sqlite-vec", "tiktoken", "hf-transfer", "ddgs", "pandas",
+            "pytorch-tokenizers", "torch-c-dlpack-ext", "mecab",
+        }
         assert self._python_set() == expected
 
     @staticmethod

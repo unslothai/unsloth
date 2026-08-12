@@ -23,3 +23,8 @@ pymupdf>=1.28.2
 # Intel/Apple macs and has nothing to say about Windows on ARM, where <16 leaves no
 # installable wheel at all.
 av>=17.0.0
+
+# scikit-learn ships win_arm64 from 1.8.0; extras.txt pins 1.7.1. Below that uv
+# falls through to a source build, whose own build dependency (numpy) then fails
+# to compile -- the failure surfaces as numpy, not as the pin that caused it.
+scikit-learn>=1.8.0
