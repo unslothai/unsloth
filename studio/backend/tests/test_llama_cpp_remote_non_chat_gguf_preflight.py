@@ -462,3 +462,50 @@ def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch,
         monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096), filename = "mystery-Q4_K_M.gguf"
     )[0]
     assert quiet is None
+
+
+def test_the_probe_runs_under_the_same_offline_guard_as_the_download(monkeypatch):
+    # With the Hub unreachable and the model already cached, the probe's two Hub calls (the
+    # file listing, then the cached candidate's revision sizes) would each wait out their own
+    # retry backoff before any local header is read. The download below has always run under
+    # the guard; the probe has to as well, or a cached load that needs no network pays two
+    # timeouts for a verdict that is free off disk.
+    backend = LlamaCppBackend()
+    order: list[str] = []
+    _repo_load(monkeypatch, backend, order)
+    entered: list[str] = []
+
+    @contextlib.contextmanager
+    def _guard():
+        entered.append("enter")
+        yield True
+
+    monkeypatch.setattr(llama_cpp_module, "_hf_offline_if_unreachable", _guard)
+
+    guarded: list[bool] = []
+
+    def _probe_call(**_kwargs):
+        # Recorded, not asserted: an assert here would be swallowed by the raises() below.
+        guarded.append(bool(entered))
+        return None
+
+    monkeypatch.setattr(backend, "_remote_non_chat_gguf_refusal", _probe_call)
+    monkeypatch.setattr(
+        backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
+    )
+
+    with pytest.raises(Exception):
+        backend.load_model(
+            GgufLoadIntent(
+                hf_repo = "unsloth/Qwen3-0.6B-GGUF",
+                hf_variant = "Q4_K_M",
+                model_identifier = "unsloth/Qwen3-0.6B-GGUF",
+            )
+        )
+    assert guarded == [True], guarded
+
+
+def test_the_probe_guard_sits_above_the_teardown_in_source():
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    guarded = src.index("with _hf_offline_if_unreachable():\n                    _early_non_chat")
+    assert guarded < src.index("# ── Phase 1: kill old process")

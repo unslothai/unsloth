@@ -10697,16 +10697,26 @@ class LlamaCppBackend:
             # file, judge that instead -- same verdict, no request. Fails open into the
             # post-download check below, which stays as the backstop.
             if hf_repo:
-                _early_non_chat = (
-                    self._non_chat_gguf_refusal_for_path(_preflight_model_path, model_identifier)
-                    if _preflight_model_path
-                    else self._remote_non_chat_gguf_refusal(
-                        hf_repo = hf_repo,
-                        hf_variant = hf_variant,
-                        hf_token = hf_token,
-                        model_identifier = model_identifier,
+                # Under the same offline guard the download below uses. The probe asks the
+                # Hub twice before it reads any local header (the file listing, then the
+                # cached candidate's revision sizes), and with the Hub unreachable each of
+                # those waits out its own retry backoff. That would have put two timeouts in
+                # front of a cached load that needs no network at all. The guard forces
+                # offline only when the Hub really is unreachable, and its verdict is
+                # memoised, so a reachable Hub pays nothing for this.
+                with _hf_offline_if_unreachable():
+                    _early_non_chat = (
+                        self._non_chat_gguf_refusal_for_path(
+                            _preflight_model_path, model_identifier
+                        )
+                        if _preflight_model_path
+                        else self._remote_non_chat_gguf_refusal(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                            model_identifier = model_identifier,
+                        )
                     )
-                )
                 if _early_non_chat:
                     logger.error(
                         "Refusing non-chat GGUF before teardown: %s (%s)",
