@@ -202,6 +202,7 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
     a non-None ``failure_reason`` means the child never delivered a verdict of its own."""
     from utils.child_stdio import utf8_child_env
     from utils.native_path_leases import child_env_without_native_path_secret
+    from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
     env = utf8_child_env(child_env_without_native_path_secret())
@@ -217,6 +218,11 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
             encoding = "utf-8",
             errors = "replace",
             env = env,
+            # This child can sit in a cold torch import, or wedged in a driver ioctl, for
+            # the whole timeout. Without the parent-death binding, a Studio that is killed
+            # in that window leaves it reparented and running, where it holds the very GPU
+            # the next backend is about to probe. Same treatment as the other GPU children.
+            **child_popen_kwargs(),
             **windows_hidden_subprocess_kwargs(),
         )
     except OSError as spawn_error:
@@ -224,15 +230,22 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
         # device, and "learned nothing" fails closed.
         return None, "", f"probe could not start ({spawn_error})"
 
+    adopt_pid(process.pid)  # terminate_all backstop for a graceful shutdown
     try:
-        _, stderr = process.communicate(timeout = PROBE_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        # Classify BEFORE cleaning up: after the terminate/kill below, returncode is the
-        # signal WE sent, and reporting that as the driver's fault would be a lie.
-        stderr = _terminate_and_drain(process)
-        return process.returncode, stderr, "probe timed out"
+        try:
+            _, stderr = process.communicate(timeout = PROBE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # Classify BEFORE cleaning up: after the terminate/kill below, returncode is
+            # the signal WE sent, and reporting that as the driver's fault would be a lie.
+            stderr = _terminate_and_drain(process)
+            return process.returncode, stderr, "probe timed out"
 
-    return process.returncode, stderr or "", None
+        return process.returncode, stderr or "", None
+    finally:
+        # A child handed to the reaper is still alive, so it stays adopted; the reaper
+        # forgets it once it is really gone.
+        if process.returncode is not None:
+            forget_pid(process.pid)
 
 
 def _reap_later(process: subprocess.Popen) -> None:
@@ -257,6 +270,11 @@ def _wait_forever(process: subprocess.Popen) -> None:
     try:
         process.wait()
     except Exception:  # noqa: BLE001 - nothing to do but stop holding the reference
+        pass
+    try:
+        from utils.process_lifetime import forget_pid
+        forget_pid(process.pid)
+    except Exception:  # noqa: BLE001 - the reaper is best effort by definition
         pass
 
 

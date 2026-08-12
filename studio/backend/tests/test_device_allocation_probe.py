@@ -157,6 +157,57 @@ def test_windows_child_registers_the_rocm_dll_directories(monkeypatch, tmp_path)
     assert script.index("add_dll_directory") < script.index("import torch")
 
 
+def test_child_is_bound_to_the_backend_lifetime(monkeypatch):
+    # The child can sit in a cold torch import, or wedged in a driver ioctl, for the whole
+    # timeout. A Studio killed in that window must not leave it running against the GPU the
+    # next backend is about to probe, so it gets the same binding as the other GPU children.
+    from utils import process_lifetime
+
+    adopted: list = []
+    forgotten: list = []
+    monkeypatch.setattr(process_lifetime, "adopt_pid", adopted.append)
+    monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
+    monkeypatch.setattr(process_lifetime, "child_popen_kwargs", lambda *a, **k: {"preexec_fn": id})
+
+    calls: list = []
+    proc = _FakeProc()
+    _patch_popen(monkeypatch, proc, calls)
+
+    probe_torch_device_allocation("cuda:0")
+
+    assert calls[0][1].get("preexec_fn") is id  # parent-death binding on Linux
+    assert adopted == [proc.pid]
+    assert forgotten == [proc.pid]  # exited cleanly, so the record is released
+
+
+def test_a_stuck_child_stays_adopted_until_the_reaper_collects_it(monkeypatch):
+    from utils import process_lifetime
+
+    forgotten: list = []
+    monkeypatch.setattr(process_lifetime, "adopt_pid", lambda pid: None)
+    monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
+
+    proc = _FakeProc(returncode = -int(signal.SIGKILL), timeouts = 3)
+    proc.returncode = None  # never exited: still alive after the kill
+    reaped = threading.Event()
+
+    def _wait():
+        reaped.set()
+
+    proc.wait = _wait  # type: ignore[method-assign]
+    _patch_popen(monkeypatch, proc)
+
+    probe_torch_device_allocation("cuda:0")
+
+    assert reaped.wait(timeout = 5)
+    # Released by the reaper once it was really gone, not while it was still running.
+    for _ in range(50):
+        if forgotten:
+            break
+        threading.Event().wait(0.05)
+    assert forgotten == [proc.pid]
+
+
 def test_rocm_dll_directories_are_empty_off_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("HIP_PATH", str(tmp_path))
@@ -333,12 +384,21 @@ def test_unrelated_env_change_does_not_invalidate_the_verdict(monkeypatch):
     assert len(calls) == 1
 
 
-def test_no_verdict_is_written_to_disk(monkeypatch, tmp_path):
-    # A cached negative that outlived a driver repair would pin a healthy host to CPU.
+def test_no_verdict_survives_the_process(monkeypatch, tmp_path):
+    # A cached negative that outlived a driver repair would pin a healthy host to CPU with
+    # no way to tell why, so the memo is process-local. Asserted as the property that
+    # matters: a fresh process re-probes. (The studio home does gain a child-lifetime
+    # record here, which is the reaper's, not a verdict.)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    _patch_popen(monkeypatch, _FakeProc(returncode = -int(signal.SIGSEGV)))
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(returncode = -int(signal.SIGSEGV)), calls)
+
     probe_torch_device_allocation("cuda:0")
-    assert list(tmp_path.rglob("*")) == []
+    probe_mod._clear_probe_cache()  # stands in for the next process starting cold
+    probe_torch_device_allocation("cuda:0")
+
+    assert len(calls) == 2
+    assert not list(tmp_path.rglob("*probe*"))
 
 
 # --- exit description -------------------------------------------------------------

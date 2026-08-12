@@ -117,7 +117,16 @@ def _rocm_is_possible() -> bool:
     try:
         torch = sys.modules.get("torch")
         if torch is not None:
-            return bool(getattr(getattr(torch, "version", None), "hip", None))
+            if getattr(getattr(torch, "version", None), "hip", None) is not None:
+                return True
+            # AMD SDK wheels leave torch.version.hip unset and only say rocm in the version
+            # string; hardware.py's own ROCm test carries the same fallback. And a torch
+            # that is in sys.modules but still executing has neither yet, which is absence
+            # of evidence, not evidence of absence, so that stays possible.
+            version_string = getattr(torch, "__version__", None)
+            if not isinstance(version_string, str) or not version_string:
+                return True
+            return "rocm" in version_string.lower()
         if sys.platform in ("darwin", "win32"):
             return False
         return os.path.isdir("/sys/class/kfd/kfd/topology/nodes")

@@ -282,8 +282,34 @@ def test_rocm_is_possible_reads_torch_hip_when_torch_is_already_loaded(monkeypat
     )
     assert embeddings._rocm_is_possible() is True
 
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(version = SimpleNamespace(hip = None)))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(version = SimpleNamespace(hip = None), __version__ = "2.9.1+cu128"),
+    )
     assert embeddings._rocm_is_possible() is False
+
+
+def test_an_amd_sdk_wheel_without_hip_metadata_is_still_rocm(monkeypatch):
+    # AMD SDK wheels leave torch.version.hip unset and only say rocm in the version string.
+    # hardware.py's own ROCm test carries the same fallback (utils/hardware/hardware.py).
+    monkeypatch.setattr(embeddings.sys, "platform", "linux")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(version = SimpleNamespace(hip = None), __version__ = "2.9.1+rocm6.3"),
+    )
+    assert embeddings._rocm_is_possible() is True
+
+
+def test_a_half_imported_torch_is_treated_as_possibly_rocm(monkeypatch):
+    # torch can be in sys.modules while still executing, so neither attribute is there yet.
+    # That is absence of evidence, and the caution has to keep the safe side.
+    monkeypatch.setattr(embeddings.sys, "platform", "linux")
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    assert embeddings._rocm_is_possible() is True
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(version = SimpleNamespace()))
+    assert embeddings._rocm_is_possible() is True
 
 
 def test_settings_gate_does_not_probe_on_a_settled_rocm_host(monkeypatch):
