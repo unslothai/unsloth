@@ -361,9 +361,7 @@ def test_backend_resolver_rejects_cross_repository_switches(monkeypatch):
             source_label = "upstream",
             install_kind = "linux-vulkan",
         )
-        plan = ilp.InstallReleasePlan(
-            "latest", "b9999", "b9999", [choice], SimpleNamespace()
-        )
+        plan = ilp.InstallReleasePlan("latest", "b9999", "b9999", [choice], SimpleNamespace())
         return ilp.BackendSelection(
             backend = kwargs["backend"],
             host = host,

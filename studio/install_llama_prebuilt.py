@@ -7986,12 +7986,8 @@ def resolve_backends_payload(
                 installed_repo = (installed or {}).get("repo")
                 installed_release = (installed or {}).get("release_tag")
                 preserves_install = (
-                    (not installed_repo or selection.published_repo == installed_repo)
-                    and (
-                        not installed_release
-                        or payload.get("release_tag") == installed_release
-                    )
-                )
+                    not installed_repo or selection.published_repo == installed_repo
+                ) and (not installed_release or payload.get("release_tag") == installed_release)
                 if not preserves_install:
                     entry.update(
                         available = False,
