@@ -1653,7 +1653,11 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
-    if [ -n "${LATEST_VER:-}" ]; then
+    # a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
+    # resolves from the mirror while LATEST_VER came from pypi.org, so the strict
+    # check would fail a correct update -- skip it when a custom index is active
+    _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
+    if [ -n "${LATEST_VER:-}" ] && [ -z "$_CUSTOM_INDEX" ]; then
         POST_VER=$("$VENV_DIR/bin/python" -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))

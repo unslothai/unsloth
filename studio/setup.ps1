@@ -4778,7 +4778,11 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
-if ($LatestVer) {
+# a corporate mirror (PIP_INDEX_URL, UV_INDEX_URL, ...) can lag PyPI: the pass
+# resolves from the mirror while $LatestVer came from pypi.org, so the strict
+# check would fail a correct update -- skip it when a custom index is active
+$_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
+if ($LatestVer -and -not $_customIndex) {
     $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from importlib.metadata import version; print('POSTVER=' + version('$_PkgName'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = ($PostVer -eq $LatestVer)
