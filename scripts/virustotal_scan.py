@@ -198,6 +198,46 @@ def _md_text(text: str) -> str:
 SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 
+def submission_packet_lines(detected: Sequence[FileReport]) -> list[str]:
+    """Pre-fill a false-positive submission for every flagged asset.
+
+    The build job already assembles one of these, but only for the Windows `-setup.exe`. The
+    detections that actually arrive are not all Windows: 0.1.701-beta shipped clean everywhere
+    except the Linux AppImage, which came back `Trojan:Script/Wacatac.B!ml` -- a generic ML
+    verdict on script content -- and no packet was produced for it. Anything flagged here gets
+    one, whatever platform it came from.
+
+    Engine names are deliberately not repeated: they are third-party text and they already
+    appear, escaped, under "Flagging engines" above.
+    """
+    lines = [
+        "",
+        "#### False-positive submission packet",
+        "",
+        "Submit each flagged asset before announcing this release.",
+        "",
+        "- Microsoft: <https://www.microsoft.com/en-us/wdsi/filesubmission>, "
+        "**Software developer** -> **Incorrectly detected as malware/malicious** "
+        "(50 MB cap; use <https://security.microsoft.com/reportsubmission> for larger bundles).",
+        "- Any other flagging vendor: use that vendor's own false-positive form. "
+        "Microsoft clearance does not carry across engines.",
+        "",
+        "| Asset | SHA-256 | Size |",
+        "| --- | --- | ---: |",
+    ]
+    for report in detected:
+        lines.append(
+            f"| `{_md_code(report.name)}` | `{_md_code(report.sha256 or 'n/a')}` | "
+            f"{report.size} bytes |"
+        )
+    lines += [
+        "",
+        "> Clearance is per hash. It fixes the release you submit and nothing after it, so this",
+        "> is a complement to signing, not a substitute.",
+    ]
+    return lines
+
+
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     """Render the job-summary table. Kept pure so it is unit testable."""
     lines = [
@@ -230,6 +270,9 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
         lines += ["", "#### Notes", ""]
         for report in notes:
             lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
+
+    if detected:
+        lines += submission_packet_lines(detected)
 
     lines += ["", "<details><summary>SHA-256</summary>", ""]
     for report in reports:
