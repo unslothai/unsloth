@@ -38,18 +38,14 @@ DEFAULT_WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 BANNED_TRIGGERS: tuple[str, ...] = ("pull_request_target",)
 RESTRICTED_TRIGGERS: tuple[str, ...] = ("workflow_run",)
-# Matched on the STEM: scanning `.yaml` too means a rename to
-# `release-desktop.yaml` must still classify as a publisher, or a cache key
-# shared with a PR workflow would stop being a finding.
+# Stem, not filename: `.yaml` is scanned too, and a renamed publisher must
+# still be classified as one.
 PUBLISH_WORKFLOW_STEMS: tuple[str, ...] = ("release-desktop",)
 
-# A workflow that runs this script is a "host". `pull_request` resolves the
+# A workflow running this script is a "host". `pull_request` resolves the
 # workflow file from the PR merge ref, so any narrowing a PR adds to its host
-# takes effect for that same PR -- the gate then never runs on the workflow
-# change it exists to review, which is the hole this whole script closes.
-# `paths` is only the obvious key: `branches`, `branches-ignore` and `types`
-# skip PRs just as well. So a host must trigger on a bare `pull_request:` with
-# no configuration at all, and its lint step must be able to fail the run.
+# applies to that same PR, and the gate misses the change it exists to review.
+# Hence: a bare `pull_request:`, and a step that can fail.
 LINT_SCRIPT_NAME = "lint_workflow_triggers.py"
 
 
@@ -91,20 +87,14 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# Host detection. A host must run the repository's own lint script as a plain,
-# standalone command with no arguments: `echo <script>` runs nothing;
-# `/tmp/lint_workflow_triggers.py` is a decoy with the same basename; a
-# pipeline, redirection or `|| true` detaches the step's exit status from the
-# lint's (the default `run:` shell is `bash -e`, without pipefail); and any
-# argument can point it elsewhere or turn it into a no-op, `--help` included.
-# The BASENAME must be a python, so a `/tmp/fakepython` that exits 0 is not
-# mistaken for an interpreter. A directory prefix stays fine.
+# A host runs this repo's script as a plain command with no arguments. Each
+# clause below is a way that looked satisfied while nothing was enforced: a
+# decoy path, a fake interpreter, a `|| true` (the default `run:` shell is
+# `bash -e`, no pipefail), or an argument that makes it exit early.
 _PYTHON_BASENAME = re.compile(r"python(3(\.\d+)?)?")
-# An ALLOWLIST, not a denylist. Every round of review found another flag
-# that stops the file running or masks its exit status (-c, -m, --version,
-# and -i, which drops into the REPL after the script and exits 0 even when
-# the lint called sys.exit(1)). Only flags that leave "run this file and
-# return its status" intact are accepted; anything else is not a host.
+# Allowlist, not denylist: too many flags skip the file or mask its status
+# (-c, -m, --version, and -i, which exits 0 from the REPL even after
+# sys.exit(1)). Anything unrecognised fails closed.
 _SAFE_OPTS = ("-u", "-E", "-s", "-S", "-B", "-O", "-OO", "-q")
 LINT_SCRIPT_PATH = f"scripts/{LINT_SCRIPT_NAME}"
 # Safe, but they consume the next token, so the script path is not mistaken
@@ -175,14 +165,11 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
     return enforcing, problems
 
 
-# A custom `shell:` template can wrap the command in anything, including
-# `bash -c '"{0}" || true'`, so only the plain executors count.
+# A `shell:` template can wrap the command, e.g. `bash -c '"{0}" || true'`.
 SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
-# These redirect execution without the command text changing at all.
-# Non-interactive bash sources BASH_ENV before the step script, so an
-# `exit 0` in that file ends the step before the lint runs; PATH picks the
-# interpreter.
+# Redirect execution without changing the command: bash sources BASH_ENV
+# before the step script, and PATH picks the interpreter.
 UNSAFE_ENV_KEYS: tuple[str, ...] = ("BASH_ENV", "ENV", "PATH")
 
 

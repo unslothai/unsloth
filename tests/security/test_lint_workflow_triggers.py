@@ -96,12 +96,10 @@ def _host_workflow(restriction: str = "", step_extra: str = "") -> str:
     ],
 )
 def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
-    """A host narrowed any way can be skipped by the PR that narrows it.
+    """A host narrowed any way is skipped by the PR that narrows it.
 
-    `pull_request` resolves the workflow file from the PR merge ref, so the
-    restriction takes effect for its own PR and the gate never runs on the
-    change it exists to review. `paths` is only the most obvious key: a
-    branch or event-type restriction skips ordinary PRs just as well.
+    The merge ref carries the restriction, so it applies to that PR. A branch
+    or event-type filter skips ordinary PRs as well as `paths` does.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
@@ -121,11 +119,9 @@ def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
     ],
 )
 def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expected):
-    """A host that runs but cannot fail, or is skipped, is not a gate.
+    """A host that cannot fail, or is skipped, is not a gate.
 
-    `continue-on-error` makes findings advisory; a false `if:` skips the step
-    entirely. Either way the workflow goes green with the lint never enforcing
-    anything.
+    `continue-on-error` makes findings advisory; a false `if:` skips the step.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
@@ -176,10 +172,8 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
 def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
     """Running the script is not enough; it has to be able to gate.
 
-    A pipeline or `|| true` detaches the step's exit status from the lint's
-    (the default `run:` shell is `bash -e`, with no pipefail), and any
-    argument can point it away from the live tree, switch off its own wiring
-    check, or make it exit before scanning at all.
+    A pipeline or `|| true` detaches the step's status from the lint's, and an
+    argument can redirect it, disable its wiring check, or exit early.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
@@ -532,8 +526,8 @@ def test_lint_rejects_missing_host(tmp_path):
 def test_commented_mention_is_not_a_host(tmp_path, mention):
     """A mention that executes nothing must not register as a host.
 
-    The commented-out `run:` line is the dangerous one: it would let a repo
-    with the real host workflow deleted still satisfy `--require-host`.
+    The commented-out `run:` is the dangerous one: it would satisfy
+    `--require-host` with the real workflow deleted.
     """
     wf = tmp_path / "wf"
     wf.mkdir()
