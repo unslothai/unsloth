@@ -180,6 +180,36 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
+    assert list(observed["model_kwargs"].values()) == ["float16"]
+
+
+def test_accelerator_fallback_loads_float32_on_cpu(monkeypatch, tmp_path):
+    observed = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, name, **kwargs):
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer = FakeSentenceTransformer),
+    )
+    monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
+    monkeypatch.setattr(embeddings, "_guard_model_security", lambda *_a, **_k: None)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "selected-hub"),
+    )
+    embeddings._model = None
+    embeddings._name = None
+
+    embeddings._get("Org/Embedder")
+
+    assert observed["device"] == "cpu"
+    assert list(observed["model_kwargs"].values()) == ["float32"]
 
 
 class _SentinelLlamaBackend:
@@ -318,12 +348,11 @@ def test_load_device_raises_when_torch_crashes_on_cpu_too(monkeypatch):
         embeddings._load_device()
 
 
-def test_load_device_probes_a_cpu_only_host_too(monkeypatch):
+def test_load_device_does_not_probe_a_cpu_only_host(monkeypatch):
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    asked = _patch_probe(monkeypatch, {"cpu": False})
-    with pytest.raises(embeddings.TorchDeviceUnusableError):
-        embeddings._load_device()
-    assert asked == ["cpu"]
+    asked = _patch_probe(monkeypatch, {})
+    assert embeddings._load_device() == "cpu"
+    assert asked == []
 
 
 def test_a_real_crashing_child_moves_the_load_to_cpu(monkeypatch):

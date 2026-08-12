@@ -62,12 +62,15 @@ def _load_device() -> str:
 
     Fall back to CPU to preserve the embedding space. Raise only if CPU also
     crashes, allowing the caller to select the GGUF backend."""
+    device = _device()
+    if device == "cpu":
+        return device
+
     from utils.torch_device_probe import device_can_allocate
 
-    device = _device()
     if device_can_allocate(device):
         return device
-    if device != "cpu" and device_can_allocate("cpu"):
+    if device_can_allocate("cpu"):
         logger.warning(
             "torch cannot allocate on %s without crashing; loading the embedding model "
             "on CPU instead. This install's torch build does not match this machine.",
@@ -383,6 +386,7 @@ def _get(model_name: str | None = None):
         if _model is None or _name != name:
             # Probe before loading sentence-transformers on the selected device.
             device = _load_device()
+            degraded_to_cpu = device == "cpu" and _device() != "cpu"
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
@@ -392,7 +396,7 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                model_kwargs = dtype_kwargs("float16"),
+                model_kwargs = dtype_kwargs("float32" if degraded_to_cpu else "float16"),
             )
             load_target = name
             if local_only:
