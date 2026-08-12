@@ -440,22 +440,6 @@ public static class UnslothStudioFinalPathV2
         uint pathLength,
         uint flags);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr OpenProcess(
-        uint desiredAccess,
-        bool inheritHandle,
-        int processId);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool QueryFullProcessImageNameW(
-        IntPtr process,
-        uint flags,
-        StringBuilder path,
-        ref uint pathLength);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CloseHandle(IntPtr handle);
-
     public static string Resolve(string path)
     {
         using (SafeFileHandle handle = CreateFileW(
@@ -486,28 +470,6 @@ public static class UnslothStudioFinalPathV2
             if (length >= buffer.Capacity)
                 throw new InvalidOperationException("Final path exceeded the allocated buffer");
             return buffer.ToString();
-        }
-  }
-
-    public static string GetProcessImagePath(int processId)
-    {
-        const uint ProcessQueryLimitedInformation = 0x1000;
-        IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, processId);
-        if (process == IntPtr.Zero)
-        {
-            return null;
-        }
-        try
-        {
-            StringBuilder path = new StringBuilder(32768);
-            uint pathLength = (uint)path.Capacity;
-            return QueryFullProcessImageNameW(process, 0, path, ref pathLength)
-                ? path.ToString()
-                : null;
-        }
-        finally
-        {
-            CloseHandle(process);
         }
   }
 }
@@ -1906,6 +1868,23 @@ exit 0
         }
     }
 
+    # PID -> image path for every process this user can see, in ONE query. This used to open a
+    # handle to every running PID through the inline C# type above, which is a shape AV
+    # heuristics score hard and bought nothing here: Win32_Process reports ExecutablePath for
+    # exactly the processes that could be opened, and answers for all of them at once.
+    function Get-StudioProcessImagePathMap {
+        $map = @{}
+        try {
+            foreach ($entry in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+                if ($entry.ExecutablePath) { $map[[int]$entry.ProcessId] = $entry.ExecutablePath }
+            }
+        } catch {
+            # A degraded WMI repository leaves the map empty; the per-process .Path fallback
+            # below still resolves the accessible ones.
+        }
+        return $map
+    }
+
     function Get-RunningStudioVenvProcesses {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPath,
@@ -1917,11 +1896,18 @@ exit 0
             throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
         }
 
+        $imagePaths = Get-StudioProcessImagePathMap
+
         # Block only confirmed executable identities: a command line or working
         # directory that merely mentions the path is not proof of an open file.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
-            try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
+            if ($imagePaths.ContainsKey([int]$process.Id)) { $executable = $imagePaths[[int]$process.Id] }
+            # .Path reads MainModule, which needs rights Win32_Process does not: only a fallback,
+            # and a protected or cross-bitness process throws here exactly as it did before.
+            if (-not $executable) {
+                try { $executable = $process.Path } catch { continue }
+            }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
