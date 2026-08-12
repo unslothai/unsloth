@@ -9608,6 +9608,34 @@ class LlamaCppBackend:
         return discrete if 0 < len(discrete) < len(_selected) else []
 
     @staticmethod
+    def _without_tensor_split(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd with ``--tensor-split``/``-ts`` removed, or None when it
+        carries none.
+
+        The shares are positional over the child's VISIBLE device list: llama.cpp
+        parses them into ``params.tensor_split[i]`` by position and then copies
+        the first ``n_devices()`` entries. So a respawn that masks a device out
+        re-indexes the survivors while keeping the old weights, handing card N
+        the share sized for card N-1 and potentially overcommitting it. Dropping
+        the flag falls back to llama.cpp's own free-VRAM split, which is correct
+        for any device set. Both spellings and the ``--tensor-split=1,2`` form.
+        """
+        out: list[str] = []
+        found = False
+        skip = False
+        for tok in cmd:
+            if skip:
+                skip = False
+                continue
+            token = str(tok)
+            if _flag_name(token) in ("--tensor-split", "-ts"):
+                found = True
+                skip = "=" not in token
+                continue
+            out.append(token)
+        return out if found else None
+
+    @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -13353,6 +13381,19 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
                         )
+                        # The mask re-indexes the surviving devices from 0, so a
+                        # --tensor-split sized for the crashed set now weights the
+                        # wrong cards (see _without_tensor_split). Drop it and let
+                        # llama.cpp split by free VRAM over the narrowed set.
+                        _arch_retry_cmd = self._without_tensor_split(cmd)
+                        if _arch_retry_cmd is not None:
+                            logger.info(
+                                "Dropped --tensor-split for the arch-crash retry: "
+                                "its shares are positional over the visible "
+                                "devices and the narrowed set re-indexes them."
+                            )
+                            cmd = _arch_retry_cmd
+                            self._tensor_split = None
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU

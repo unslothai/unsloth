@@ -495,3 +495,158 @@ class TestArchCrashRetryFiresAtMostOnce:
         assert first == [1]
         assert LlamaCppBackend._arch_crash_retry_gpu_ids(first, [0, 1]) == [0]
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0]) == []
+
+
+class TestArchRetryDropsTensorSplit:
+    """``--tensor-split`` weights are positional over the child's VISIBLE
+    devices (llama.cpp parses them into ``params.tensor_split[i]`` by position,
+    then copies the first ``n_devices()``). The arch-crash retry masks a device
+    out, which re-indexes the survivors, so the crashed set's shares would land
+    on the wrong cards and could overcommit one. The retry drops the flag."""
+
+    def test_the_two_token_form_goes_with_its_value(self):
+        cmd = ["llama-server", "-m", "x.gguf", "--tensor-split", "10,20,30", "-ngl", "-1"]
+        assert LlamaCppBackend._without_tensor_split(cmd) == [
+            "llama-server", "-m", "x.gguf", "-ngl", "-1",
+        ]
+
+    def test_the_short_and_equals_forms_go_too(self):
+        assert LlamaCppBackend._without_tensor_split(["s", "-ts", "1,2", "-ngl", "-1"]) == [
+            "s", "-ngl", "-1",
+        ]
+        # An "=" form carries its value in the token, so nothing may be skipped
+        # after it -- dropping the next token would eat --ngl's flag.
+        assert LlamaCppBackend._without_tensor_split(["s", "--tensor-split=1,2", "-ngl"]) == [
+            "s", "-ngl",
+        ]
+        # llama.cpp normalises long-option underscores; _flag_name mirrors it.
+        assert LlamaCppBackend._without_tensor_split(["s", "--tensor_split", "1,2"]) == ["s"]
+
+    def test_a_command_without_a_split_reports_nothing_to_do(self):
+        cmd = ["llama-server", "-m", "x.gguf", "--split-mode", "tensor", "-ngl", "-1"]
+        assert LlamaCppBackend._without_tensor_split(cmd) is None
+        # A value that merely looks like one is not a flag.
+        assert LlamaCppBackend._without_tensor_split(["s", "--alias", "-ts"]) == ["s", "--alias"]
+
+    def test_only_the_split_is_removed(self):
+        cmd = [
+            "llama-server", "-m", "x.gguf", "--split-mode", "tensor",
+            "--tensor-split", "10,20,30", "--flash-attn", "on", "-ngl", "-1",
+        ]
+        out = LlamaCppBackend._without_tensor_split(cmd)
+        assert "--tensor-split" not in out and "10,20,30" not in out
+        assert out == [
+            "llama-server", "-m", "x.gguf", "--split-mode", "tensor",
+            "--flash-attn", "on", "-ngl", "-1",
+        ]
+
+    def test_the_retry_call_site_drops_it_before_respawning(self):
+        # Source-level, like test_source_has_a_single_archfallback_spawn: the
+        # respawn is one straight-line block with no test seam, so pin that the
+        # drop happens between narrowing the device set and the respawn.
+        path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        text = path.read_text(encoding = "utf-8")
+        assert text.count("_without_tensor_split(") == 2  # definition + the one call site
+        block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
+        assert "_without_tensor_split(cmd)" in block
+        assert "self._tensor_split = None" in block  # /status must not report a dropped split
+
+
+class TestEmbedLlamaServerPinsTheGatedGpus:
+    """Knowing a supported GPU EXISTS is not the same as launching on it. The
+    embed child enumerates every ROCm agent, and that HSA enumeration is what
+    dies on an arch the prebuilt has no kernels for -- so on a mixed host
+    (unsupported iGPU + supported dGPU) the gate passes and the server still
+    crashes unless the surviving ids are carried into the launch env."""
+
+    @staticmethod
+    def _probes(monkeypatch, *, gated, everything, archs = frozenset({"gfx1030"})):
+        """Stub the gate marker + both probes. Returns the per-call kwargs seen,
+        so a test can COUNT calls -- raising inside a spy here would be
+        swallowed by the caller's ``except Exception``."""
+        seen: list[dict] = []
+
+        def _probe(binary = None, *, for_llama_server = False):
+            seen.append({"binary": binary, "for_llama_server": for_llama_server})
+            return list(gated if for_llama_server else everything)
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_llama_gfx_archs", staticmethod(lambda _b = None: archs)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
+        return seen
+
+    def test_a_narrowing_gate_yields_the_surviving_ids(self, monkeypatch):
+        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == [1]
+
+    def test_full_coverage_needs_no_mask(self, monkeypatch):
+        self._probes(
+            monkeypatch, gated = [(0, 60000), (1, 24000)], everything = [(0, 60000), (1, 24000)]
+        )
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
+
+    def test_unknown_coverage_fails_open_without_probing(self, monkeypatch):
+        # NVIDIA, CPU-only, Vulkan and macOS have no mapped_targets marker. The
+        # marker check comes first, so neither probe may run at all.
+        seen = self._probes(
+            monkeypatch, gated = [(1, 24000)], everything = [(0, 1), (1, 24000)], archs = None
+        )
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
+        assert seen == [], f"the GPU probe ran despite unknown arch coverage: {seen}"
+
+    def test_a_probe_failure_never_blocks_the_spawn(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_installed_llama_gfx_archs",
+            staticmethod(lambda _b = None: (_ for _ in ()).throw(RuntimeError("marker"))),
+        )
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        assert LlamaServerBackend._arch_gated_gpu_ids("/fake/llama-server") == []
+
+    @staticmethod
+    def _spy_visibility(monkeypatch):
+        calls: list[tuple] = []
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_emit_child_gpu_visibility",
+            staticmethod(lambda env, pinned, **kw: calls.append((pinned, kw))),
+        )
+        return calls
+
+    def test_the_launch_env_masks_the_child_to_them(self, monkeypatch):
+        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        calls = self._spy_visibility(monkeypatch)
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        # prefer_rocr: a HIP-only mask still lets HSA enumerate the unsupported
+        # agent, which is the segfault the pin exists to avoid.
+        assert calls == [("1", {"prefer_rocr": True})], calls
+        assert env.get("CUDA_VISIBLE_DEVICES") != ""  # the CPU sentinel, not this path
+
+    def test_an_ungated_host_leaves_the_env_alone(self, monkeypatch):
+        self._probes(
+            monkeypatch, gated = [(0, 60000), (1, 24000)], everything = [(0, 60000), (1, 24000)]
+        )
+        calls = self._spy_visibility(monkeypatch)
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        assert calls == [], f"an unnarrowed host was masked anyway: {calls}"
+
+    def test_the_cpu_path_is_untouched(self, monkeypatch):
+        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        calls = self._spy_visibility(monkeypatch)
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = False)
+        assert calls == []
+        assert env["CUDA_VISIBLE_DEVICES"] == ""

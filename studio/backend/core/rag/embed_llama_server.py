@@ -232,6 +232,32 @@ class LlamaServerBackend:
         gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
+    @staticmethod
+    def _arch_gated_gpu_ids(binary: str) -> list[int]:
+        """GPU ids to pin the embedding child to, or [] when it needs no mask.
+
+        Knowing a supported device exists is not enough: the child enumerates
+        every ROCm agent, and the HSA enumeration itself is what dies on a GPU
+        the prebuilt has no kernels for (#7624) -- so on a mixed host the gate
+        would pass on the dGPU and the server would still crash on the iGPU.
+        Pin the survivors instead. Empty (no mask, byte-identical behaviour)
+        unless the arch gate is both known and actually narrowing: NVIDIA, CPU,
+        Vulkan and macOS have no mapped_targets marker, and a build covering
+        every installed card needs no pin."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        try:
+            if LlamaCppBackend._installed_llama_gfx_archs(binary) is None:
+                return []  # unknown coverage: fail open, same as the probe
+            gated = [i for i, _free in LlamaCppBackend._get_gpu_free_memory(
+                binary, for_llama_server = True
+            )]
+            everything = [i for i, _free in LlamaCppBackend._get_gpu_free_memory(binary)]
+            return gated if gated and gated != everything else []
+        except Exception as e:  # noqa: BLE001 - a probe failure must not block the spawn
+            logger.debug("arch-gated GPU pin unavailable: %s", e)
+            return []
+
     def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
         # No --embd-normalize (not in every build; we normalize in Python to match
         # the ST path). --fit off: don't auto-resize ctx/offload to device memory.
@@ -258,6 +284,18 @@ class LlamaServerBackend:
         env["LLAMA_SET_ROWS"] = "1"  # ggml set_rows fast path
         if use_gpu:
             self._add_linux_cuda_libs(env, str(Path(binary).parent))
+            _pinned = self._arch_gated_gpu_ids(binary)
+            if _pinned:
+                from core.inference.llama_cpp import LlamaCppBackend
+
+                # prefer_rocr: a HIP-only mask still lets HSA enumerate (and die
+                # on) the unsupported agent; ROCR drops it at the driver layer.
+                LlamaCppBackend._emit_child_gpu_visibility(
+                    env, ",".join(str(i) for i in _pinned), prefer_rocr = True
+                )
+                logger.info(
+                    "pinning the embed server to arch-supported GPU(s) %s", _pinned
+                )
         else:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
