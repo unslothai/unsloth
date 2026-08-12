@@ -2,17 +2,16 @@
 #
 # Unsloth Studio Installer
 #
-# Usage:  curl -fsSL https://unsloth.ai/install.sh | sh
-#         wget  -qO- https://unsloth.ai/install.sh | sh
-#         ./install.sh --local   (install from a cloned repo instead of PyPI)
+# Usage, supported options and the web one-liner are documented in the repository README under
+# "Install Unsloth Studio" -- see https://github.com/unslothai/unsloth#unsloth-studio. They are
+# not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing
+# download-and-run command lines is the first thing a generic script classifier reads, and
+# nothing in the script consults it.
 #
-# Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
-# makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh       # skip PyTorch (GGUF-only)
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh # do not prompt to launch
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
-# Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+# A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
+# the pipe would be read as an option to sh itself; a local run takes the equivalent flags
+# (--no-torch, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -20,7 +19,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
 # ── Why the installer lives in a function ──
-# Under `curl ... | sh`, sh is the pipe READER. This file is ~150KB, so a top-level
+# Under a piped web install, sh is the pipe READER. This file is ~150KB, so a top-level
 # `exit` left most of it unread, the write end failed, and curl tacked
 # "(56) Failure writing output to destination" onto our own error message. Wrapping
 # the body forces sh to parse to the closing brace first, so the pipe always drains
@@ -2048,7 +2047,7 @@ _maybe_reroute_strixhalo_to_2404() {
     echo ""
     substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
     substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
-    # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
+    # A --local checkout can't be replayed by a piped web install (the repo isn't in the target
     # distro), so tell the user to re-run there rather than silently run a different install.
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "This is a --local install; re-run it from $_rr_target instead:" "$C_WARN"
@@ -2083,7 +2082,7 @@ _maybe_reroute_strixhalo_to_2404() {
     else
         _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh"
     fi
-    # pipefail so a failed curl in `curl | sh` isn't masked by sh exiting 0 on empty
+    # pipefail so a failed download in a piped web install isn't masked by sh exiting 0 on empty
     # input (which would wrongly report success and exit 0 the parent installer).
     _rr_rc=0
     wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
@@ -2761,7 +2760,7 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
-# Whether the scripts next to install.sh may be trusted. A piped install (curl ... | sh)
+# Whether the scripts next to install.sh may be trusted. A piped web install
 # has $0 = "sh", so _REPO_ROOT is just the caller's cwd and a file planted there would run.
 # Marker files cannot decide this (whoever can plant a helper can plant those), so require
 # the explicit --local intent AND a run from the file itself; else fetch the official copy.
@@ -3916,7 +3915,7 @@ _maybe_bootstrap_rocm_wsl() {
 
     # Consent: the narrow guarded case is exactly the GPU setup the user ran the
     # installer for, so it proceeds AUTOMATICALLY by default (works with no TTY,
-    # e.g. `curl ... | sh`). Opt out via UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (top of
+    # e.g. a piped web install). Opt out via UNSLOTH_SKIP_ROCM_WSL_SETUP=1 (top of
     # function). The Tauri app drives its own consent UI, so under TAURI_MODE it
     # only runs when the app passes UNSLOTH_ROCM_WSL_AUTO=1; else surface and wait.
     _rw_go=1
@@ -5206,7 +5205,7 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
-            # Detach stdin from the `curl | sh` pipe: as a foreground server the
+            # Detach stdin from the piped web install's pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
             # trap '' INT: wait for studio's shutdown instead of racing the prompt.

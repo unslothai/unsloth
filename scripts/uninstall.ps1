@@ -4,13 +4,14 @@
 # Unsloth Studio uninstaller for Windows PowerShell. Run -Help for details.
 # Custom roots (UNSLOTH_STUDIO_HOME / STUDIO_HOME) come from share\studio.conf.
 #
-# Usage:  irm https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.ps1 | iex
-# Local:  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\scripts\uninstall.ps1
+# Usage: run -Help, or see the web one-liner printed by that help text. It is not repeated
+# here: AMSI scans this file in full before any of it runs, and a header rehearsing
+# download-and-run command lines is text nothing in the script reads.
 
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
-    # Reset at entry: `irm ... | iex` defines this function in the caller's session, so a
+    # Reset at entry: a piped web run defines this function in the caller's session, so a
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false

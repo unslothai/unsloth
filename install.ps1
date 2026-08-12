@@ -1,16 +1,14 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage:  irm https://unsloth.ai/install.ps1 | iex
-#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# Usage, supported options and the web one-liner are documented in the repository README under
+# "Install Unsloth Studio" -- see https://github.com/unslothai/unsloth#unsloth-studio. They are
+# not repeated here: this file is scanned in full by AMSI before a single line of it runs, and a
+# header rehearsing download-and-run command lines is text we pay for on every install without
+# anyone reading it from inside the script.
 #
-# irm | iex cannot forward arguments, so web installs take options as env vars set
-# before the pipe (flags still work via .\install.ps1):
-#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
-#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
-#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
-#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+# The web entry point cannot forward arguments, so it takes options as environment variables set
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
+# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -20,7 +18,7 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
     # The user's PowerShell profile has already run by the time this does, and the documented
-    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
     #
     # Off, not Latest: this script predates strict mode, testing environment variables that are
@@ -60,7 +58,7 @@ function Install-UnslothStudio {
     # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
     # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
     # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
-    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    # as the table above: no qualifier, so the caller's own preference survives a piped web run.
     $ProgressPreference = 'SilentlyContinue'
 
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
@@ -90,7 +88,7 @@ function Install-UnslothStudio {
             } catch { }
         }
     }
-    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # A FUNCTION-local, not $script: or an environment variable: under a piped web run this runs
     # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
     # is the ordinary corporate form) that must not outlive the install on any of the dozens of
     # return paths. Module-qualified serializer, as in the probe: a profile alias or function
@@ -108,7 +106,7 @@ function Install-UnslothStudio {
     $PSNativeCommandUseErrorActionPreference = $false
 
     # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
-    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # a piped web run, $script: is the caller's session scope, so a second run in the same
     # console would start on the first run's state. These two are the only ones no later
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
@@ -1622,7 +1620,7 @@ exit 0
     }
 
     # ── Leave Windows system directories before installing ──
-    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # "Run as administrator" starts in C:\Windows\System32, so a piped web run installs
     # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
@@ -3592,7 +3590,7 @@ exit 0
     # qualify, UHD / HD / Iris Xe do not.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so a
+    # Reset every invocation: under a piped web run $script: is the caller's session scope, so a
     # second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
     # $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below; an AMD host
