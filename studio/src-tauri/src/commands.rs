@@ -617,19 +617,24 @@ pub async fn start_backend_update(
 /// Whether a native path lease this app signs can actually be verified.
 ///
 /// The lease key is per process, so only a backend THIS process spawned holds
-/// it. A survivor adopted from a dead previous app advertises
-/// `native_path_leases_supported` because it has a key of its own, which is not
-/// ours -- the boolean on /api/health cannot tell the two apart, and every grant
-/// would fail on the signature. Restarting the survivor would also fix it, but
-/// adoption exists so a backend that may be mid-training is not killed, and the
-/// only restart path the UI has runs a network update.
+/// it. Two others advertise `native_path_leases_supported` on /api/health and
+/// cannot verify a thing we sign, and the boolean cannot tell any of them apart:
+/// a survivor adopted from a dead previous app, which has a key of its own, and
+/// a terminal-started backend the app merely attached to, which has whatever was
+/// in its environment. So this answers from a positive fact -- there is a
+/// spawned, non-adopted backend -- rather than from the absence of a bad one.
+///
+/// Restarting the ones that disagree would also work, but adoption exists so a
+/// backend that may be mid-training is not killed, and the only restart path the
+/// UI has runs a network update.
 #[tauri::command]
 pub async fn native_path_leases_usable(
     backend_state: tauri::State<'_, BackendState>,
 ) -> Result<bool, String> {
-    Ok(!process::owned_backend_snapshot(backend_state.inner())?
-        .map(|snapshot| snapshot.is_adopted)
-        .unwrap_or(false))
+    Ok(
+        matches!(process::owned_backend_snapshot(backend_state.inner())?,
+            Some(snapshot) if !snapshot.is_adopted),
+    )
 }
 
 #[tauri::command]

@@ -128,7 +128,8 @@ test("an adopted backend keeps running and only loses lease-backed actions", () 
   );
   assert.match(
     COMMANDS,
-    /fn native_path_leases_usable[\s\S]*?snapshot\.is_adopted/,
-    "the app must answer usable=false for a backend it adopted rather than spawned",
+    /fn native_path_leases_usable[\s\S]*?Some\(snapshot\) if !snapshot\.is_adopted/,
+    "usable must require a spawned, non-adopted backend, not merely the absence " +
+      "of an adopted one: attached_ready installs no snapshot at all",
   );
 });
