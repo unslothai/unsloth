@@ -11,6 +11,8 @@ FRONTEND = REPO / "studio/frontend/src"
 PROVIDERS_API = FRONTEND / "features/chat/api/providers-api.ts"
 SYNC_PROVIDERS = FRONTEND / "features/chat/sync-external-providers.ts"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+CREDENTIAL_BOOTSTRAP = FRONTEND / "features/credentials/bootstrap.ts"
+ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 PROVIDERS_DB = REPO / "studio/backend/storage/providers_db.py"
 PROVIDERS_MODELS = REPO / "studio/backend/models/providers.py"
 
@@ -39,7 +41,17 @@ def test_frontend_sync_backfills_local_models_to_backend():
     source = SYNC_PROVIDERS.read_text(encoding = "utf-8")
     assert "updateProviderConfig" in source
     assert "needsModelBackfill" in source
-    assert "Promise.allSettled(backfillTasks)" in source
+    # The backfill tasks are awaited as a batch, and one failing must not sink
+    # the rest. That used to be a literal Promise.allSettled here; it is now
+    # settleTasksIfCurrent in features/credentials/reconciliation.ts, which
+    # allSettles them AND drops the result when the auth session has moved on.
+    # Same guarantee through a named helper, so the assertion follows it.
+    assert "settleTasksIfCurrent(backfillTasks" in source
+    helper = (FRONTEND / "features/credentials/reconciliation.ts").read_text(encoding = "utf-8")
+    assert "export async function settleTasksIfCurrent" in helper
+    assert (
+        "allSettled" in helper
+    ), "the batch must still settle rather than reject on the first failure"
 
 
 def test_frontend_sync_preserves_local_provider_options():
@@ -49,10 +61,25 @@ def test_frontend_sync_preserves_local_provider_options():
     assert "openaiContainerTtlMinutes" in source
 
 
-def test_chat_page_hydrates_connections_on_startup():
-    source = CHAT_PAGE.read_text(encoding = "utf-8")
-    assert "syncExternalProvidersFromBackend" in source
-    assert "await hydratePersistedSettings()" in source
+def test_connections_are_hydrated_on_startup():
+    """Renamed from test_chat_page_hydrates_connections_on_startup, because the
+    chat page is no longer where it happens.
+
+    The provider sync moved out of chat-page.tsx into
+    features/credentials/bootstrap.ts, which the ROOT route calls. That is a
+    wider guarantee, not a narrower one: connections now hydrate on any entry
+    into the app rather than only on the chat page. Asserting the old location
+    would fail on a change that improved the thing being asserted, so the
+    assertion follows the call to where it went and pins both halves -- the
+    bootstrap wires the sync, and something actually runs the bootstrap."""
+    bootstrap = CREDENTIAL_BOOTSTRAP.read_text(encoding = "utf-8")
+    assert "syncExternalProvidersFromBackend" in bootstrap
+    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+    assert (
+        "bootstrapPersistedCredentials" in root
+    ), "nothing calls the credential bootstrap, so no page hydrates connections"
+    # The chat page still hydrates its own persisted settings.
+    assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 
 
 def test_providers_api_sends_models_to_backend():
