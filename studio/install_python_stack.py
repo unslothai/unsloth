@@ -2809,12 +2809,13 @@ def _selected_linux_strix_gfx(
 
 @dataclass(frozen = True)
 class _LinuxRocmTorchPlan:
-    """One authoritative torch action shared by fast-path checks and repair."""
+    """Authoritative Linux ROCm actions shared by fast-path checks and repair."""
 
     index_url: str
     packages: tuple[str, str, str]
     label: str
     reason: str
+    install_torch: bool = True
     clear_hsa_spoof_gfx: "str | None" = None
 
 
@@ -2961,8 +2962,10 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     ):
         reinstall = _GFX906_LEGACY_TAG not in installed_version
 
-    # A confirmed HSA spoof is itself an action. The dependency pass must clear it
-    # even when the already-installed per-arch wheel matches.
+    # Clearing a confirmed HSA spoof and reinstalling torch are independent actions.
+    # A matching per-arch wheel needs only the clear; coupling the two would download
+    # and reinstall several gigabytes on every update whose parent shell restored the
+    # stale profile export.
     if not reinstall and clear_spoof is None:
         return None, True, runtime_is_gfx906
     return (
@@ -2971,11 +2974,27 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
             packages = _rocm_packages_for_index(desired_url),
             label = label,
             reason = reason,
+            install_torch = reinstall,
             clear_hsa_spoof_gfx = clear_spoof,
         ),
-        False,
+        not reinstall,
         runtime_is_gfx906,
     )
+
+
+def _linux_rocm_fast_path_exit_code(plan: "_LinuxRocmTorchPlan | None") -> int:
+    """Encode actions for setup.sh without conflating an env clear with an install."""
+    if plan is None:
+        return 3
+    install = plan.install_torch
+    clear = plan.clear_hsa_spoof_gfx is not None
+    if install and clear:
+        return 5
+    if install:
+        return 0
+    if clear:
+        return 4
+    return 3
 
 
 def _ensure_rocm_torch() -> None:
@@ -3125,22 +3144,23 @@ def _ensure_rocm_torch() -> None:
     plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()
 
     if plan is not None:
-        _safe_print(
-            f"   {plan.reason} -- installing torch from "
-            f"{_strip_index_url_credentials(plan.index_url)}"
-        )
         if plan.clear_hsa_spoof_gfx is not None:
             _clear_confirmed_hsa_spoof(plan.clear_hsa_spoof_gfx)
-        pip_install(
-            plan.label,
-            "--force-reinstall",
-            "--no-cache-dir",
-            *plan.packages,
-            "--index-url",
-            plan.index_url,
-            constrain = False,
-        )
-        rocm_torch_ready = True
+        if plan.install_torch:
+            _safe_print(
+                f"   {plan.reason} -- installing torch from "
+                f"{_strip_index_url_credentials(plan.index_url)}"
+            )
+            pip_install(
+                plan.label,
+                "--force-reinstall",
+                "--no-cache-dir",
+                *plan.packages,
+                "--index-url",
+                plan.index_url,
+                constrain = False,
+            )
+            rocm_torch_ready = True
 
     # gfx906 has no prebuilt bitsandbytes: the continuous-release/PyPI wheels ship
     # no gfx906 kernels, and force-reinstalling them would clobber a user's
@@ -4671,7 +4691,15 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--rocm-fast-path-needs-repair"]:
         if len(sys.argv) != 2:
             sys.exit(2)
-        # Exit 3 means a successful "no repair" decision. Exit 1 remains available for an
-        # import or startup failure, so setup.sh can distinguish that from a negative result.
-        sys.exit(0 if _linux_rocm_torch_plan()[0] is not None else 3)
+        # The parent shell must apply a confirmed HSA clear itself because a child
+        # process cannot mutate its environment. Keep that action independent from
+        # the dependency-pass decision so a matching wheel is never reinstalled.
+        #
+        #   0 = install torch
+        #   3 = no action
+        #   4 = clear HSA override only
+        #   5 = install torch and clear HSA override
+        #
+        # Other statuses remain startup/import failures for setup.sh to diagnose.
+        sys.exit(_linux_rocm_fast_path_exit_code(_linux_rocm_torch_plan()[0]))
     sys.exit(install_python_stack())

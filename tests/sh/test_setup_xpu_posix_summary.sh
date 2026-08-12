@@ -64,7 +64,7 @@ run_case() {
         run_quiet_no_exit() { shift; "$@"; }
         # shellcheck disable=SC2317
         timeout() {
-            case "$1" in --kill-after=*) shift ;; esac
+            [ "$1" = "-k" ] && shift 2
             shift
             "$@"
         }
@@ -122,7 +122,7 @@ check "floor uses the nonfatal wrapper" \
     "$(grep -q 'run_quiet_no_exit "install bitsandbytes (xpu)"' "$SETUP_SH" && echo yes || echo no)" "yes"
 # An unbounded `import torch` hangs forever on a stalled Intel driver, the host this classifies.
 check "runtime probe is bounded" \
-    "$(grep -q 'timeout --kill-after=5 60 "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
+    "$(grep -q 'timeout -k 5 60 "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
 # ...and `timeout` is not everywhere (base macOS, minimal Linux images), so the fallback arm
 # ran the very probe this bounds with no deadline at all.
 _probe=$(sed -n "s/^ *_setup_xpu_probe='\(.*\)'$/\1/p" "$SETUP_SH" | head -1)

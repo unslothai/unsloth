@@ -1662,25 +1662,33 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         if [ "$_SKIP_PYTHON_DEPS" = true ]; then
             _setup_rocm_fast_path_probe() {
                 if command -v timeout >/dev/null 2>&1; then
-                    timeout --kill-after=5 180 "$VENV_DIR/bin/python" \
+                    timeout -k 5 180 "$VENV_DIR/bin/python" \
                         "$SCRIPT_DIR/install_python_stack.py" --rocm-fast-path-needs-repair
                 else
                     "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
                         --rocm-fast-path-needs-repair
                 fi
             }
-            # Exit 3 is a successful "no repair" result. Any other non-zero status is a
-            # startup, import, argument, or timeout failure and must remain diagnosable.
+            # Exit 3 is a successful "no action" result. Exit 4 asks this parent
+            # shell to clear a confirmed stale HSA override without reinstalling a
+            # matching wheel; exit 5 combines that clear with a dependency pass.
+            # Any other non-zero status is a startup, import, argument, or timeout
+            # failure and must remain diagnosable.
             _setup_rocm_repair_rc=3
             if _setup_rocm_fast_path_probe >/dev/null 2>&1; then
                 _setup_rocm_repair_rc=0
             else
                 _setup_rocm_repair_rc=$?
             fi
-            if [ "$_setup_rocm_repair_rc" -eq 0 ]; then
+            if [ "$_setup_rocm_repair_rc" -eq 4 ] || [ "$_setup_rocm_repair_rc" -eq 5 ]; then
+                unset HSA_OVERRIDE_GFX_VERSION
+                substep "confirmed stale HSA_OVERRIDE_GFX_VERSION cleared for this setup run."
+                substep "Remove its export from ~/.bashrc or ~/.profile so a new shell does not restore it."
+            fi
+            if [ "$_setup_rocm_repair_rc" -eq 0 ] || [ "$_setup_rocm_repair_rc" -eq 5 ]; then
                 substep "installed PyTorch needs ROCm reconciliation -- forcing dependency pass to repair..."
                 _SKIP_PYTHON_DEPS=false
-            elif [ "$_setup_rocm_repair_rc" -ne 3 ]; then
+            elif [ "$_setup_rocm_repair_rc" -ne 3 ] && [ "$_setup_rocm_repair_rc" -ne 4 ]; then
                 verbose_substep "ROCm reconciliation probe failed (exit $_setup_rocm_repair_rc); keeping the dependency fast path"
             fi
         fi
@@ -1776,7 +1784,7 @@ fi
 _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
-_setup_mkt_all=""
+_setup_mkt_records=""
 _setup_amd_records=""
 _setup_amd_probe_kind=""
 
@@ -1803,6 +1811,29 @@ _setup_rocminfo_gpu_records() {
     '
 }
 
+# Emit one |marketing-name record per amd-smi GPU block, including an empty
+# name. The gfx probe is collected separately on older amd-smi releases, so the
+# leading delimiter keeps blank names selectable without compressing ordinals.
+# Keep in sync with install.sh.
+_setup_amd_smi_marketing_records() {
+    awk '
+        /^[[:space:]]*GPU[[:space:]]*[:[]/ {
+            if (seen_gpu) print "|" mkt
+            seen_gpu = 1
+            mkt = ""
+            next
+        }
+        tolower($0) ~ /market.?name[[:space:]]*:/ {
+            value = $0
+            sub(/^[^:]*:[[:space:]]*/, "", value)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (seen_gpu) mkt = value
+            else print "|" value
+        }
+        END { if (seen_gpu) print "|" mkt }
+    '
+}
+
 _setup_select_visible_line() {
     awk -v idx="$1" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }'
 }
@@ -1823,7 +1854,7 @@ for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
     # macOS, minimal Linux images). Either deadline expiring means "no XPU", as a failure does.
     _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
     if command -v timeout >/dev/null 2>&1; then
-        timeout --kill-after=5 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
+        timeout -k 5 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
     elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
         _setup_xpu_ready=true
     fi
@@ -1863,8 +1894,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_setup_gfx_all" ] && \
             _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2) print $2}' || true)
+        _setup_mkt_records=$(_setup_run_smi amd-smi static --asic 2>/dev/null | _setup_amd_smi_marketing_records || true)
     elif [ -e /dev/kfd ] && \
          awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
@@ -1910,7 +1940,12 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_mkt=${_setup_amd_record#*|}
     else
         _setup_gfx=$(printf '%s\n' "$_setup_gfx_all" | _setup_select_visible_line "$_setup_vis_idx")
-        _setup_mkt=$(printf '%s\n' "$_setup_mkt_all" | _setup_select_visible_line "$_setup_vis_idx")
+        if [ -n "$_setup_mkt_records" ]; then
+            _setup_mkt_record=$(printf '%s\n' "$_setup_mkt_records" | _setup_select_visible_line "$_setup_vis_idx")
+            _setup_mkt=${_setup_mkt_record#*|}
+        else
+            _setup_mkt=""
+        fi
     fi
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors setup.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
@@ -1981,7 +2016,7 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_amd_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)'
         _setup_rocm_torch_ok=false
         if command -v timeout >/dev/null 2>&1; then
-            timeout --kill-after=5 60 "$VENV_DIR/bin/python" -c "$_setup_amd_probe" >/dev/null 2>&1 && _setup_rocm_torch_ok=true
+            timeout -k 5 60 "$VENV_DIR/bin/python" -c "$_setup_amd_probe" >/dev/null 2>&1 && _setup_rocm_torch_ok=true
         elif "$VENV_DIR/bin/python" -c "$_setup_amd_probe" >/dev/null 2>&1; then
             _setup_rocm_torch_ok=true
         fi

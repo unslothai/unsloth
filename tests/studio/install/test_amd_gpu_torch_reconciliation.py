@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import pathlib
 import subprocess
@@ -80,6 +81,17 @@ Agent 2
   Device Type:             GPU
 """
 
+AMD_SMI_MULTI_GPU_BLANK_FIRST = """\
+GPU: 0
+    ASIC:
+        MARKET_NAME:
+        TARGET_GRAPHICS_VERSION: gfx1100
+GPU: 1
+    ASIC:
+        MARKET_NAME: AMD Radeon 8060S
+        TARGET_GRAPHICS_VERSION: gfx1151
+"""
+
 
 def _extract_function(script: pathlib.Path, name: str) -> str:
     src = script.read_text(encoding = "utf-8")
@@ -107,6 +119,11 @@ RECORD_HELPERS = [
     (SETUP_SH, "_setup_rocminfo_gpu_records"),
 ]
 RECORD_IDS = ["install.sh", "setup.sh"]
+
+AMD_SMI_RECORD_HELPERS = [
+    (INSTALL_SH, "_amd_smi_marketing_records"),
+    (SETUP_SH, "_setup_amd_smi_marketing_records"),
+]
 
 
 @pytest.mark.parametrize("script, fn", RECORD_HELPERS, ids = RECORD_IDS)
@@ -144,6 +161,14 @@ def test_blank_marketing_name_preserves_its_device_slot(tmp_path, script, fn):
     assert _run_gpu_records(tmp_path, script, fn, ROCMINFO_MULTI_GPU_BLANK_FIRST).splitlines() == [
         "gfx1100|",
         "gfx1151|AMD Radeon 8060S",
+    ]
+
+
+@pytest.mark.parametrize("script, fn", AMD_SMI_RECORD_HELPERS, ids = RECORD_IDS)
+def test_amd_smi_blank_marketing_name_preserves_its_device_slot(tmp_path, script, fn):
+    assert _run_gpu_records(tmp_path, script, fn, AMD_SMI_MULTI_GPU_BLANK_FIRST).splitlines() == [
+        "|",
+        "|AMD Radeon 8060S",
     ]
 
 
@@ -204,6 +229,7 @@ def _plan(
         "inferred_gfx": None,
         "rocm_version": (7, 2),
         "installed_rocm_family": None,
+        "selected_strix_result": None,
     }
     defaults.update(state)
     monkeypatch.setattr(stack, "NO_TORCH", defaults["NO_TORCH"])
@@ -226,6 +252,12 @@ def _plan(
         stack, "_detect_amd_gfx_codes", lambda **_kwargs: list(defaults["gfx_devices"])
     )
     monkeypatch.setattr(stack, "_LAST_AMD_GFX_PROBE", defaults["gfx_probe"])
+    if defaults["selected_strix_result"] is not None:
+        monkeypatch.setattr(
+            stack,
+            "_selected_linux_strix_gfx",
+            lambda *_args, **_kwargs: defaults["selected_strix_result"],
+        )
     return stack._linux_rocm_torch_plan()[0]
 
 
@@ -362,6 +394,72 @@ def test_strix_matching_arch_wheel_keeps_the_fast_path(monkeypatch):
     )
 
 
+def test_matching_strix_wheel_with_a_confirmed_spoof_is_clear_only(monkeypatch):
+    plan = _plan(
+        monkeypatch,
+        imports_as_rocm = True,
+        version = "2.11.0+rocm7.13.0",
+        installed_rocm_family = "gfx1151",
+        selected_strix_result = ("gfx1151", "gfx1151", "gfx1151", {"gfx1151"}),
+    )
+    assert plan is not None
+    assert plan.install_torch is False
+    assert plan.clear_hsa_spoof_gfx == "gfx1151"
+    assert stack._linux_rocm_fast_path_exit_code(plan) == 4
+
+
+def test_linux_rocm_fast_path_encodes_install_and_clear_independently():
+    plan = stack._LinuxRocmTorchPlan(
+        index_url = "https://repo.amd.com/rocm/whl/gfx1151",
+        packages = ("torch", "torchvision", "torchaudio"),
+        label = "test",
+        reason = "test",
+    )
+    assert stack._linux_rocm_fast_path_exit_code(None) == 3
+    assert stack._linux_rocm_fast_path_exit_code(plan) == 0
+    assert (
+        stack._linux_rocm_fast_path_exit_code(
+            dataclasses.replace(plan, install_torch = False, clear_hsa_spoof_gfx = "gfx1151")
+        )
+        == 4
+    )
+    assert (
+        stack._linux_rocm_fast_path_exit_code(
+            dataclasses.replace(plan, clear_hsa_spoof_gfx = "gfx1151")
+        )
+        == 5
+    )
+
+
+def test_clear_only_plan_does_not_reinstall_torch(monkeypatch):
+    plan = stack._LinuxRocmTorchPlan(
+        index_url = "https://repo.amd.com/rocm/whl/gfx1151",
+        packages = ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0"),
+        label = "ROCm torch (Strix arch-specific)",
+        reason = "matching wheel",
+        install_torch = False,
+        clear_hsa_spoof_gfx = "gfx1151",
+    )
+    cleared = []
+    installs = []
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "_explicit_unknown_family_torch_index_url", lambda: None)
+    monkeypatch.setattr(stack, "_linux_rocm_torch_plan", lambda: (plan, True, False))
+    monkeypatch.setattr(stack, "_clear_confirmed_hsa_spoof", cleared.append)
+    monkeypatch.setattr(stack, "_bnb_rocm_prerelease_url", lambda: None)
+    monkeypatch.setattr(stack, "_bnb_rocm_arch_has_binary", lambda: True)
+    monkeypatch.setattr(stack, "pip_install", lambda *args, **kwargs: installs.append(args))
+
+    stack._ensure_rocm_torch()
+
+    assert cleared == ["gfx1151"]
+    assert installs
+    assert all("--index-url" not in call for call in installs)
+    assert all(call[0] != plan.label for call in installs)
+
+
 def test_strix_sibling_arch_wheel_forces_the_pass(monkeypatch):
     assert (
         _plan(
@@ -435,20 +533,26 @@ def test_fast_path_and_repair_use_the_same_plan():
     ensure = source[source.index("def _ensure_rocm_torch()") :]
     main = source[source.index('if __name__ == "__main__":') :]
     assert "plan, rocm_torch_ready, _runtime_is_gfx906 = _linux_rocm_torch_plan()" in ensure
-    assert "_linux_rocm_torch_plan()[0] is not None" in main
+    assert "_linux_rocm_fast_path_exit_code(_linux_rocm_torch_plan()[0])" in main
 
 
 def test_shell_bounds_and_diagnoses_the_delegated_probe():
     source = SETUP_SH.read_text(encoding = "utf-8")
+    assert "--kill-after" not in source
+    assert source.count("timeout -k 5") == 3
     start = source.index("            _setup_rocm_fast_path_probe()")
     block = source[start : start + 3500]
-    assert 'timeout --kill-after=5 180 "$VENV_DIR/bin/python"' in block
+    assert 'timeout -k 5 180 "$VENV_DIR/bin/python"' in block
     assert "--rocm-fast-path-needs-repair" in block
     assert "--amd-detected" not in block
     assert "--nvidia-detected" not in block
     assert 'verbose_substep "ROCm reconciliation probe failed' in block
+    assert "unset HSA_OVERRIDE_GFX_VERSION" in block
+    assert '"$_setup_rocm_repair_rc" -eq 4' in block
+    assert '"$_setup_rocm_repair_rc" -eq 5' in block
     stack_source = STACK_PATH.read_text(encoding = "utf-8")
-    assert "else 3" in stack_source or "else 3)" in stack_source
+    assert "def _linux_rocm_fast_path_exit_code" in stack_source
+    assert "return 3" in stack_source
 
 
 # ── setup.sh: the GPU summary must report the runtime answer ──
@@ -463,7 +567,7 @@ def test_summary_probes_torch_and_has_a_warning_arm():
         "torch.cuda.is_available()" in block
     ), "the AMD summary must ask torch whether it can use the GPU it just announced"
     assert (
-        "signal.alarm(60)" in block and "timeout --kill-after=5 60" in block
+        "signal.alarm(60)" in block and "timeout -k 5 60" in block
     ), "the probe must be bounded: a faulted HIP runtime hangs inside `import torch`"
     assert (
         'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block
