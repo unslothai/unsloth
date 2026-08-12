@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { preflightStaleMessage } from "@/hooks/backend-preflight-message";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
@@ -274,18 +275,9 @@ export function useTauriBackend() {
           stopExternalServerPoll();
           if (preflight.can_auto_repair) {
             await startRepair();
-          } else if (preflight.reason === "working_directory_unavailable") {
-            // The install is fine; the folder Unsloth runs from is not
-            // reachable (an unmounted roaming profile). Telling this user to
-            // update points them at a command that needs the same folder.
-            setBackendError(
-              "Unsloth cannot reach your user folder, so it has nowhere to run from. This usually means a network or roaming profile is not available yet. Reconnect and try again.",
-            );
           } else {
             setBackendError(
-              preflight.disposition === "owned_stale"
-                ? "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth."
-                : "Managed Unsloth install is too old. Run `unsloth studio update`.",
+              preflightStaleMessage(preflight.disposition, preflight.reason),
             );
           }
           return;
