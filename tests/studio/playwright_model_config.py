@@ -67,6 +67,8 @@ MODEL_HINT = os.environ.get("STUDIO_MODEL_HINT", "gemma-3-270m")
 # A distinctive valid (>=128, multiple of 128, below the model's 32768 ceiling)
 # Context Length, clearly not a default, so persistence is unambiguous.
 DISTINCT_CTX = int(os.environ.get("STUDIO_DISTINCT_CTX", "4096"))
+CONTEXT_REPRO_ONLY = os.environ.get("STUDIO_CONTEXT_REPRO_ONLY", "0") == "1"
+CONTEXT_REPRO_IDLE_MS = int(os.environ.get("STUDIO_CONTEXT_REPRO_IDLE_MS", "15000"))
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_modelcfg")
 # Settle window after run-settings opens, before staging an edit. An edit made in
 # the panel's first moments is silently discarded: it re-derives its baseline once
@@ -716,7 +718,11 @@ with sync_playwright() as p:
             default_ctx = ctx_in.input_value()
             info(f"default Context Length shown: {default_ctx!r}")
             remember = popover.get_by_label("Remember for this model").first
-            if _count(remember):
+            if CONTEXT_REPRO_ONLY:
+                if _count(remember) and remember.is_checked():
+                    remember.uncheck()
+                info("repro mode: Remember for this model is off; GPU Memory remains Auto")
+            elif _count(remember):
                 try:
                     remember.check()
                 except Exception:
@@ -725,7 +731,27 @@ with sync_playwright() as p:
                 fail("'Remember for this model' checkbox not found")
             ctx_in.click()
             ctx_in.fill(str(DISTINCT_CTX))
-            page.wait_for_timeout(300)
+            if CONTEXT_REPRO_ONLY:
+                # The report describes an apparently asynchronous reset. Leave the
+                # draft open across multiple inference-status polling intervals and
+                # continuously prove that current main does not replace it.
+                deadline = time.monotonic() + CONTEXT_REPRO_IDLE_MS / 1000
+                while time.monotonic() < deadline:
+                    page.wait_for_timeout(1000)
+                    current = _as_int(ctx_in.input_value())
+                    if current != DISTINCT_CTX:
+                        fail(
+                            "explicit Context Length reset while idle in Auto mode "
+                            f"(expected {DISTINCT_CTX}, got {current})"
+                        )
+                        break
+                else:
+                    info(
+                        "OK idle: explicit Context Length stayed at "
+                        f"{DISTINCT_CTX} for {CONTEXT_REPRO_IDLE_MS} ms"
+                    )
+            else:
+                page.wait_for_timeout(300)
             shoot("05-ctx-set")
             btn = primary_button(popover)
             if btn is None:
@@ -740,14 +766,15 @@ with sync_playwright() as p:
                 # (a) localStorage stored the distinctive context.
                 cfg = read_configs()
                 entries = entries_for_model(cfg)
-                got_ls = any(e.get("customContextLength") == DISTINCT_CTX for e in entries)
-                if got_ls:
-                    info(f"OK persist(localStorage): customContextLength={DISTINCT_CTX} stored")
-                else:
-                    fail(
-                        "context not stored in unsloth_model_configs "
-                        f"(entries={json.dumps(entries)[:400]})"
-                    )
+                if not CONTEXT_REPRO_ONLY:
+                    got_ls = any(e.get("customContextLength") == DISTINCT_CTX for e in entries)
+                    if got_ls:
+                        info(f"OK persist(localStorage): customContextLength={DISTINCT_CTX} stored")
+                    else:
+                        fail(
+                            "context not stored in unsloth_model_configs "
+                            f"(entries={json.dumps(entries)[:400]})"
+                        )
 
                 # (b) the load request carried max_seq_length == distinctive value.
                 got_req = False
@@ -764,10 +791,14 @@ with sync_playwright() as p:
                 else:
                     # The UI may debounce the load; localStorage is the primary
                     # proof, so only warn if the request was missed.
-                    runtime_warn(
+                    message = (
                         "no /api/inference/load carried "
                         f"max_seq_length={DISTINCT_CTX}; posts={load_posts!r}"
                     )
+                    if CONTEXT_REPRO_ONLY:
+                        fail(message)
+                    else:
+                        runtime_warn(message)
 
     # (c) survives a full browser reload.
     close_picker()
@@ -785,6 +816,18 @@ with sync_playwright() as p:
         else:
             fail(f"Context Length did not persist across reload (got {val!r})")
         shoot("07-after-reload")
+
+    if CONTEXT_REPRO_ONLY:
+        if page_errors:
+            fail(f"page errors during run: {page_errors[:3]!r}")
+        browser.close()
+        if _failed:
+            print(f"[ui-modelcfg] RESULT: FAIL ({len(_failed)} issue(s))", flush = True)
+            for message in _failed:
+                print(f"[ui-modelcfg]   - {message}", flush = True)
+            sys.exit(1)
+        print("[ui-modelcfg] RESULT: PASS", flush = True)
+        sys.exit(0)
 
     # ─────────────────────────────────────────────────────
     # 3. Reset clears the override (never pins context) (HARD).

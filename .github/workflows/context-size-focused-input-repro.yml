@@ -12,6 +12,131 @@ permissions:
   contents: read
 
 jobs:
+  latest-main-live:
+    name: Latest main live Auto-mode UI probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
+      GGUF_VARIANT: UD-Q4_K_XL
+      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
+      HF_HOME: ${{ github.workspace }}/hf-cache
+      UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/studio-home
+
+    steps:
+      - name: Check out latest-main repro branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Confirm tested source provenance
+        shell: bash
+        run: |
+          git merge-base --is-ancestor f20d465c752c1b39d86928ffd716c9fc14713ebe HEAD
+          git diff --name-only f20d465c752c1b39d86928ffd716c9fc14713ebe..HEAD | tee tested-files.txt
+          ! git diff --name-only f20d465c752c1b39d86928ffd716c9fc14713ebe..HEAD -- \
+            studio/backend/core/inference/llama_cpp.py \
+            studio/frontend/src/features/model-picker/components/model-config-page.tsx \
+            studio/frontend/src/features/model-picker/components/model-selector/use-model-selector-state.ts
+
+      - name: Linux dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Cache tiny GGUF fixture
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: hf-cache
+          key: context-input-repro-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+
+      - name: Prime model fixtures
+        shell: bash
+        run: |
+          python -m pip install --upgrade huggingface_hub
+          mkdir -p "$HF_HOME" "$UNSLOTH_STUDIO_HOME"
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
+
+      - name: Install current Unsloth Studio
+        shell: bash
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+
+      - name: Install Chromium
+        shell: bash
+        run: |
+          python -m pip install 'playwright>=1.45'
+          python -m playwright install --with-deps chromium
+
+      - name: Boot isolated Studio
+        shell: bash
+        run: |
+          mkdir -p logs/playwright_modelcfg
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
+          bash .github/scripts/wait-for-health.sh \
+            --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/context-repro-health.json
+
+      - name: Create one-run login password
+        shell: bash
+        run: |
+          NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$NEW"
+          echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
+
+      - name: Attempt reported Auto-mode reset
+        shell: bash
+        env:
+          BASE_URL: http://127.0.0.1:18898
+          STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
+          PW_ART_DIR: logs/playwright_modelcfg
+          STUDIO_UI_STRICT: '1'
+          STUDIO_CONTEXT_REPRO_ONLY: '1'
+          STUDIO_CONTEXT_REPRO_IDLE_MS: '15000'
+          STUDIO_DISTINCT_CTX: '8192'
+          STUDIO_MODEL_HINT: gemma-3-270m
+        run: |
+          set -o pipefail
+          python tests/studio/playwright_model_config.py 2>&1 | tee logs/modelcfg-probe.log
+          grep -F "OK idle: explicit Context Length stayed at 8192 for 15000 ms" logs/modelcfg-probe.log
+          grep -F "OK persist(request): /api/inference/load max_seq_length=8192" logs/modelcfg-probe.log
+          grep -F "OK persist(reload): Context Length still '8192' after reload" logs/modelcfg-probe.log
+
+      - name: Stop Studio
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${STUDIO_MODELCFG_PID:-}" ]]; then
+            kill "$STUDIO_MODELCFG_PID" 2>/dev/null || true
+          fi
+
+      - name: Upload live evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: context-size-latest-main-live
+          path: |
+            logs/modelcfg-probe.log
+            logs/studio_modelcfg.log
+            logs/install.log
+            logs/playwright_modelcfg/
+            tested-files.txt
+          retention-days: 1
+
   context-auto-fit:
     name: Reproduce 5,120-token Auto estimate
     runs-on: ubuntu-latest

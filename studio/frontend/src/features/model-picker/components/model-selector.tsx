@@ -50,7 +50,6 @@ import {
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
-import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
