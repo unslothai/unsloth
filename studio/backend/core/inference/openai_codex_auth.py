@@ -317,7 +317,6 @@ async def _exchange_code(
     flow.status = "connected"
     if flow.server:
         flow.server.close()
-        await flow.server.wait_closed()
         flow.server = None
 
 

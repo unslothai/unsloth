@@ -206,6 +206,42 @@ def test_cancelled_oauth_exchange_cannot_persist_credentials(monkeypatch):
     assert persisted == []
 
 
+def test_successful_callback_does_not_wait_for_its_own_connection(monkeypatch):
+    class Server:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+        async def wait_closed(self):
+            raise AssertionError("callback must respond before active connections close")
+
+    server = Server()
+    persisted = []
+    flow = OAuthFlow(
+        id="flow-success",
+        provider_id="provider",
+        method="browser",
+        created_at=time.time(),
+        expires_at=time.time() + 60,
+        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
+        server=server,
+    )
+    token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
+
+    async def token_request(_data):
+        return {"access_token": token, "refresh_token": "refresh", "expires_in": 600}
+
+    monkeypatch.setattr(codex_auth, "_token_request", token_request)
+    asyncio.run(codex_auth._exchange_code(flow, "code"))
+
+    assert flow.status == "connected"
+    assert flow.server is None
+    assert server.closed is True
+    assert len(persisted) == 1
+
+
+
 def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
     captured = {}
 
