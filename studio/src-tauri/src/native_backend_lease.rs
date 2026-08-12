@@ -91,12 +91,6 @@ pub fn encode_secret_env(secret: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(secret)
 }
 
-/// Inverse of `encode_secret_env`; `None` when the text is not the encoding we
-/// wrote, which for a persisted secret means "unusable", not "empty".
-pub fn decode_secret_env(encoded: &str) -> Option<Vec<u8>> {
-    URL_SAFE_NO_PAD.decode(encoded).ok()
-}
-
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

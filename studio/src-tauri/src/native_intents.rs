@@ -111,41 +111,27 @@ struct NativeIntakeInner {
 pub struct NativeIntakeState {
     inner: Mutex<NativeIntakeInner>,
     lease_secret: Vec<u8>,
-    lease_secret_predates_this_process: bool,
 }
 
+/// Per process, and deliberately not persisted.
+///
+/// A key on disk would be shared with a backend this process did not spawn,
+/// which is the only way an ADOPTED survivor could verify what we sign -- but it
+/// also outlives every backend restart, and the backend only remembers spent
+/// nonces in memory, so a consumed lease could be replayed against a replacement
+/// process inside the two minute TTL. The adopted case is handled where it
+/// belongs instead: the preflight reports that leases are unusable and the UI
+/// greys the picker, rather than the app holding a long-lived signing key.
 pub fn new_native_intake_state() -> NativeIntakeState {
-    // Per-install, not per-process: a backend adopted from a dead previous app
-    // still holds the key it was spawned with. See
-    // desktop_backend_owner::ensure_native_path_lease_secret. A home we cannot
-    // write to falls back to a process-local key, which is what this always was.
-    let (lease_secret, lease_secret_predates_this_process) =
-        match crate::desktop_backend_owner::ensure_native_path_lease_secret() {
-            // Loaded, not merely written: a key minted here is new to every
-            // backend alive, including one this install left running before the
-            // upgrade that added the file.
-            Ok((secret, loaded)) => (secret, loaded),
-            Err(error) => {
-                log::warn!("Could not persist the native path lease secret: {error}");
-                (crate::native_backend_lease::new_lease_secret(), false)
-            }
-        };
     NativeIntakeState {
         inner: Mutex::new(NativeIntakeInner::default()),
-        lease_secret,
-        lease_secret_predates_this_process,
+        lease_secret: crate::native_backend_lease::new_lease_secret(),
     }
 }
 
 impl NativeIntakeState {
     pub fn lease_secret_env(&self) -> String {
         encode_secret_env(&self.lease_secret)
-    }
-
-    /// True only when this process ADOPTED an existing key, which is the one
-    /// condition under which a surviving backend can verify what we sign.
-    pub fn lease_secret_predates_this_process(&self) -> bool {
-        self.lease_secret_predates_this_process
     }
 
     #[allow(dead_code)]

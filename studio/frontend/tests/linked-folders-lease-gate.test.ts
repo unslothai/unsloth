@@ -26,6 +26,13 @@ const MANAGER = readFileSync(
   "utf8",
 );
 
+const COMMANDS = readFileSync(
+  fileURLToPath(
+    new URL("../../src-tauri/src/commands.rs", import.meta.url),
+  ),
+  "utf8",
+);
+
 const READINESS = readFileSync(
   fileURLToPath(
     new URL("../src/features/native-intents/use-native-readiness.ts", import.meta.url),
@@ -85,7 +92,7 @@ test("the unsupported branch names the managed backend, not the desktop app", ()
 test("the capability is read from /api/health and only latches on true", () => {
   assert.match(
     READINESS,
-    /native_path_leases_supported\s*===\s*true/,
+    /native_path_leases_supported\s*!==\s*true/,
     "an absent field on an older backend must not read as supported",
   );
   assert.ok(
@@ -94,10 +101,34 @@ test("the capability is read from /api/health and only latches on true", () => {
   );
 });
 
-test("an adopted backend is restarted when the current lease key is transient", () => {
-  assert.match(PREFLIGHT, /snapshot\.is_adopted\s*&&\s*!lease_secret_persisted/);
+test("the health bit alone does not enable the picker inside the app", () => {
+  // A survivor adopted from a dead previous app holds a lease key of its own, so
+  // it answers true while every grant this app signs fails on the signature.
   assert.ok(
-    PREFLIGHT.includes("native_path_lease_secret_not_persisted"),
-    "a transient key must make an adopted survivor stale instead of ready",
+    READINESS.includes("native_path_leases_usable"),
+    "the hook must also ask the app whether the live backend is one it spawned",
+  );
+  const gate = READINESS.slice(READINESS.indexOf("native_path_leases_usable"));
+  assert.match(
+    gate,
+    /if\s*\(usable\)\s*setSupported\(true\)/,
+    "setSupported must be reached only when the app confirms the backend is ours",
+  );
+});
+
+test("an adopted backend keeps running and only loses lease-backed actions", () => {
+  // The earlier shape made an adopted survivor Stale, and owned_stale routes
+  // through startRepair(), which stops the backend and runs a network update.
+  // That is a heavy remedy for a key mismatch, and it fails offline, so the
+  // survivor is left alone and the capability is reported instead.
+  assert.ok(
+    !PREFLIGHT.includes("native_path_lease_secret_not_persisted") &&
+      !PREFLIGHT.includes("native_path_lease_secret_not_shared"),
+    "an adopted survivor must not be forced stale over the lease key",
+  );
+  assert.match(
+    COMMANDS,
+    /fn native_path_leases_usable[\s\S]*?snapshot\.is_adopted/,
+    "the app must answer usable=false for a backend it adopted rather than spawned",
   );
 });
