@@ -323,19 +323,16 @@ def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
 def _h3_replacement_hint(binary: str) -> str:
     """The trailing "or delete it" clause of the H3 refusal, or "" when there is nothing to delete.
 
-    Only a binary sitting in one of the layouts the installer itself writes to can be recovered by
-    deleting the directory: the next load finds it empty and puts the pinned prebuilt back. A
-    binary that PATH or one of the env vars named is somewhere else entirely, and Studio has no
-    business suggesting that directory be removed. The refusal used to end with "or remove that
-    directory" unconditionally, which for the ``/usr/bin/sd`` that PATH discovery picks up reads as
-    "remove /usr/bin".
+    Only a binary in a layout the installer itself writes to is recovered by deleting the
+    directory: the next load finds it empty and puts the pinned prebuilt back. Anything PATH or an
+    env var named is elsewhere entirely. The refusal used to end with "or remove that directory"
+    whatever the binary was, which for the ``/usr/bin/sd`` PATH discovery picks up read as "remove
+    /usr/bin".
 
-    ``in_tree_install_root`` is deliberately NOT one of them. It is ``<repo_root>/stable-diffusion.cpp``,
-    the developer build the finder falls back to, and the installer never writes there, so the
-    hint would be aimed at the user's own source checkout -- which is exactly what a ``git clone``
-    of leejet's repo leaves at that path. ``legacy_sibling_install_root`` is included because it
-    returns a tree only when it carries the ownership marker, i.e. one an older build really did
-    install."""
+    ``in_tree_install_root`` is deliberately NOT one of them: the installer never writes to
+    ``<repo_root>/stable-diffusion.cpp``, so the hint would name the user's own checkout, which is
+    exactly what a ``git clone`` of leejet's repo leaves there. ``legacy_sibling_install_root`` is,
+    because it returns a tree only when it carries the ownership marker."""
     roots = [managed_install_root(), legacy_sibling_install_root()]
     for root in roots:
         if root is None:

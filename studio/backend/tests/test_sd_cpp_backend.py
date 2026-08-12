@@ -1037,17 +1037,17 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
     assert own.exists()
-    # Nothing here is Studio's to delete, so the refusal must not ask for anything to be removed.
-    # The old wording ended with "remove that directory" whatever the binary was, and PATH
-    # discovery hands this branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
+    # Not Studio's to delete, so the refusal must not ask for anything to be removed. The old
+    # wording said "remove that directory" whatever the binary was, and PATH discovery hands this
+    # branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
     assert "remove" not in str(excinfo.value)
     assert str(own) in str(excinfo.value)
 
 
 def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatch, tmp_path):
-    # The one case where deleting IS the fix: an unmarked build sitting in a layout the installer
-    # writes to. It is not ours to unlink (install() refuses a non-empty unmarked target), but
-    # emptying the directory by hand lets the next load put the pinned prebuilt there.
+    # The one case where deleting IS the fix: an unmarked build in a layout the installer writes
+    # to. Not ours to unlink (install() refuses a non-empty unmarked target), but emptying it by
+    # hand lets the next load put the pinned prebuilt there.
     root = tmp_path / "studio" / "stable-diffusion.cpp"
     own = root / "sd-cli"
     root.mkdir(parents = True)
@@ -1064,14 +1064,14 @@ def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatc
 
 
 def test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build(monkeypatch, tmp_path):
-    # <repo_root>/stable-diffusion.cpp is the developer-build fallback, not a layout the installer
-    # writes to, and a git clone of leejet's repo lands exactly there. Deleting it would take the
-    # user's source checkout, and no reinstall would follow, so it is never offered.
+    # <repo_root>/stable-diffusion.cpp is the developer-build fallback, and a git clone of
+    # leejet's repo lands exactly there. Deleting it takes the user's source checkout and no
+    # reinstall follows, so it is never offered.
     root = tmp_path / "repo" / "stable-diffusion.cpp"
     own = root / "build" / "bin" / "sd-cli"
     own.parent.mkdir(parents = True)
     own.write_text("binary")
-    # raising = False because the hint does not import it at all. The patch is what makes this a
+    # raising = False because the hint does not import it. The patch is what makes this a
     # regression guard: re-add the root to _h3_replacement_hint and it resolves to this tree.
     monkeypatch.setattr(bk, "in_tree_install_root", lambda: root, raising = False)
     monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
