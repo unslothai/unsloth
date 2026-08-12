@@ -3327,17 +3327,14 @@ exit 0
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
         }
-        # GPU name → gfx arch for AMD generations ROCm PyTorch does NOT cover
-        # (unslothai#8529). Kept apart from $nameArchTable on purpose: this one is
-        # read only to WORD a message, never to select a wheel index, and an entry
-        # here must never make an arch installable.
-        #
-        # RDNA 1 and Polaris 10/20/30, with the product names taken from LLVM's
-        # AMDGPU processor tables rather than guessed. AMD publishes Windows torch
-        # indexes for gfx103X, gfx110X, gfx1150, gfx1151 and gfx120X; there is no
-        # gfx101X or gfx80X index. The (?!0) guards stop "RX 570" swallowing an
-        # "RX 5700". Polaris 11/12 (RX 460/550/560) is left out on purpose: a
-        # different die, and this table's value is that it never guesses.
+        # GPU name → gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1
+        # and Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529). Kept
+        # apart from $nameArchTable on purpose: it only WORDS a message, never selects
+        # a wheel index, and must never make an arch installable. AMD's Windows torch
+        # indexes are gfx103X/110X/1150/1151/120X; there is no gfx101X or gfx80X index.
+        # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Polaris 11/12 (RX
+        # 460/550/560) is excluded on purpose: a different die, and this table's value
+        # is that it never guesses.
         $unsupportedNameArchTable = @(
             @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
             @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT";      A = "gfx1010" }  # RDNA 1
@@ -3384,12 +3381,11 @@ exit 0
                         break
                     }
                 }
-                # 3. Still nothing: the card may be a generation ROCm PyTorch never
-                #    covered rather than one we failed to recognise (unslothai#8529).
-                #    Naming it only changes what we PRINT below -- $ROCmGfxArch stays
-                #    null so the CPU fallback, which is the correct outcome here, is
-                #    reached by exactly the same path as before. A row in this table
-                #    must never make an arch installable.
+                # 3. Still nothing: the card may be a generation ROCm never covered
+                #    rather than one we failed to recognise (unslothai#8529). Naming it
+                #    only changes what we PRINT -- $ROCmGfxArch stays null, so the CPU
+                #    fallback is reached by exactly the same path as before and no row
+                #    in this table can make an arch installable.
                 if (-not $ROCmGfxArch) {
                     foreach ($row in $unsupportedNameArchTable) {
                         if ($ROCmGpuLabel -match $row.P) {
@@ -3685,11 +3681,10 @@ exit 0
         substep "HIP SDK: $hipSdkPath"
         if ($ROCmVersionFull) { substep "hipconfig: $ROCmVersionFull" }
     } elseif ($HipSdkInstalled -and $ROCmGpuLabel -and -not $ROCmUnsupportedGfxArch) {
-        # HIP SDK is installed but ROCm can't see the device (driver issue, not SDK issue).
-        # Excludes a card we have already identified as out of ROCm PyTorch's scope: the
-        # #8529 reporters installed the HIP SDK BECAUSE this arm told them to, so without
-        # the guard the fix below never prints for exactly the users it is for, and they
-        # are sent back to the compute driver that cannot enumerate a gfx1010 either.
+        # HIP SDK installed but ROCm can't see the device (driver issue, not SDK issue).
+        # Excludes cards already known to be out of ROCm PyTorch's scope: the #8529
+        # reporters installed the HIP SDK BECAUSE this arm said to, so unguarded it
+        # hides the arm below from exactly the users it is for.
         $sdkVer = if ($ROCmVersionFull) { " (HIP $ROCmVersionFull)" } else { "" }
         step "gpu" "AMD GPU detected -- not ROCm-accessible$sdkVer" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
@@ -3704,21 +3699,17 @@ exit 0
         substep "Detected: $ROCmGpuLabel" "Cyan"
         substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
     } elseif ($ROCmUnsupportedGfxArch) {
-        # Detected, identified, and out of scope for ROCm PyTorch. Ranks above the
-        # "arch unknown" arm below because the arch is NOT unknown here, and the
-        # advice that arm gives cannot succeed on this GPU (unslothai#8529).
+        # Detected, identified, out of scope for ROCm PyTorch. Ranks above the "arch
+        # unknown" arm below: the arch is known here, and that arm's advice cannot
+        # succeed on this GPU (unslothai#8529).
         step "gpu" "AMD GPU detected ($ROCmUnsupportedGfxArch) -- not covered by ROCm PyTorch" "Yellow"
         substep "Detected: $ROCmGpuLabel" "Yellow"
-        # Not "training runs on CPU": with neither CUDA nor XPU visible, unsloth
-        # raises NotImplementedError at import (unsloth/device_type.py), so CPU torch
-        # is not a slower training path here, it is no training path at all. Matches
-        # what studio/setup.sh already tells the other CPU-torch hosts.
-        #
-        # The Vulkan setter below is single-quoted and in PowerShell syntax: the shell
-        # must print $env:... rather than expand it, and a pasted VAR=value resolves
-        # as a command name here, so the user sets nothing and the next install picks
-        # the same CPU bundle. Kept out of the arm itself so the per-site window the
-        # tests read stays all-emitter.
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
+        # NotImplementedError at import (unsloth/device_type.py) -- no training path at
+        # all, which is what studio/setup.sh tells its other CPU-torch hosts.
+        # The Vulkan setter below is single-quoted PowerShell syntax: the shell must
+        # print $env:... rather than expand it, and a pasted VAR=value resolves as a
+        # command name here, so the user would set nothing.
         substep "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
@@ -4205,13 +4196,12 @@ exit 0
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {
             if ($HipSdkInstalled -and -not $HasROCm -and -not $ROCmUnsupportedGfxArch) {
-                # Guarded for the same reason as the gpu step above: an installed HIP SDK
-                # is the SYMPTOM on these cards, not a near miss, so it must not outrank
-                # the arm that says why the SDK could never have helped.
+                # Guarded like the gpu step above: an installed HIP SDK is the SYMPTOM on
+                # these cards, so it must not outrank the arm saying why it cannot help.
                 substep "Installing CPU-only PyTorch (HIP SDK found but GPU not ROCm-accessible)." "Yellow"
             } elseif ($ROCmUnsupportedGfxArch) {
-                # Same words as the $ROCmGfxArch arm above, reached by a card whose arch
-                # we know from its name rather than from a probe (unslothai#8529).
+                # Same words as the $ROCmGfxArch arm above, for a card whose arch we know
+                # from its name rather than from a probe (unslothai#8529).
                 substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmUnsupportedGfxArch." "Yellow"
                 substep "Unsloth training and GPU inference are unavailable on CPU torch." "Yellow"
                 substep "Neither the HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can enable ROCm here." "Yellow"

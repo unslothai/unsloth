@@ -4,16 +4,14 @@
 # Behavioural test for the RDNA 1 "detected but not covered by ROCm" wording in
 # install.ps1 and studio/setup.ps1 (issue #8529).
 #
-# The reporter's card is an RX 5700 XT: Navi 10, gfx1010, RDNA 1. AMD publishes
-# Windows torch indexes for gfx103X, gfx110X, gfx1150, gfx1151 and gfx120X only,
-# so CPU torch is the correct outcome and stays. What was wrong is that the
-# installer told them to install the HIP SDK or set UNSLOTH_ROCM_GFX_ARCH, and
-# neither can succeed on gfx1010.
+# The reporter's card is an RX 5700 XT (Navi 10, gfx1010, RDNA 1). AMD's Windows
+# torch indexes are gfx103X/110X/1150/1151/120X only, so CPU torch is the correct
+# outcome and stays; the bug was telling them to install the HIP SDK or set
+# UNSLOTH_ROCM_GFX_ARCH, neither of which can succeed on gfx1010.
 #
 # The Python suite evaluates the table with Python's `re`; this runs it under the
-# .NET regex engine that ships it, which is the only place -match semantics are
-# real. Fixtures are the raw WMI adapter names, since that is what the table is
-# matched against.
+# .NET engine that ships it, the only place -match semantics are real. Fixtures are
+# raw WMI adapter names, which is what the table is matched against.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_rdna1_unsupported_message_8529.ps1
 
@@ -80,9 +78,8 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "RX 550 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 550"))
     Check "RX 460 unclaimed"               ($null -eq (Resolve-Unsupported "AMD Radeon RX 460"))
 
-    # The collision this row is one keystroke away from: "RX 570" is a prefix of
-    # "RX 5700" and "RX 550" of "RX 5500". Matched ALONE, because table order
-    # already stops the RDNA 1 rows from ever reaching the Polaris pattern, so a
+    # "RX 570" is a prefix of "RX 5700" and "RX 550" of "RX 5500". Matched ALONE:
+    # table order already keeps RDNA 1 names away from the Polaris pattern, so a
     # dropped (?!0) guard changes nothing observable until someone reorders.
     $polarisPattern = @($unsupportedNameArchTable | Where-Object { $_.A -eq 'gfx803' })[0].P
     foreach ($rdna1 in @("AMD Radeon RX 5700 XT", "AMD Radeon RX 5700", "AMD Radeon RX 5500 XT")) {
@@ -142,22 +139,19 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
          $src.IndexOf($unsupArm) -lt $src.IndexOf($sdkAdvice))
 
     # --- the Vulkan pointer (#8458) -------------------------------------------
-    # Torch is the end of the road on these cards; llama.cpp is not. Asserted
-    # against the lines that PRINT, never the whole file: every phrase below also
-    # appears in the comments that explain the branch, so a file-wide search stays
-    # green after the message itself has been gutted.
-    # Single quotes count too: the Vulkan setter is emitted as a literal so
-    # PowerShell prints $env:... instead of expanding it, and a double-quote-only
-    # filter would drop exactly the line under test and pass on an empty set.
+    # Torch ends on these cards; llama.cpp does not. Asserted against PRINTING lines
+    # only: every phrase below also appears in the comments explaining the branch, so
+    # a file-wide search stays green after the message is gutted. Single quotes count
+    # too -- the setter is emitted as a literal so PowerShell prints $env:... rather
+    # than expanding it, and a double-quote-only filter would drop the line under test.
     $emitted = @(($src -split "`n") | Where-Object {
         $_ -match 'substep\s+["'']' -and $_.TrimStart() -notmatch '^#'
     })
     Check "the emitted advice offers Vulkan" `
         (($emitted -join "`n").Contains("through Vulkan"))
-    # In PowerShell syntax, and verified by PARSING it rather than by matching text:
-    # a bare UNSLOTH_LLAMA_CPP_BACKEND=vulkan parses as a command name, so a user who
-    # pastes it sets nothing, re-runs the installer and gets the same CPU bundle --
-    # the #8458 failure mode reintroduced by the fix for it.
+    # PowerShell syntax, verified by PARSING rather than matching text: a bare
+    # UNSLOTH_LLAMA_CPP_BACKEND=vulkan parses as a command name, so a user who pastes
+    # it sets nothing and gets the same CPU bundle -- the #8458 failure mode again.
     $setter = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
     Check "the emitted advice teaches the current spelling" `
         (($emitted -join "`n").Contains($setter))
@@ -170,16 +164,14 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
             $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)).Count -eq 1)
 
     # UNSLOTH_FORCE_VULKAN still works, but force_vulkan_requested() resolves
-    # UNSLOTH_LLAMA_CPP_BACKEND first and only falls back to the legacy name when
-    # the new one is absent or unparseable, so =hip stays a real opt-out. New text
-    # must not spread the legacy spelling. Scoped to emitters: setup.ps1 legitimately
+    # UNSLOTH_LLAMA_CPP_BACKEND first and only falls back to the legacy name, so new
+    # text must not spread that spelling. Scoped to emitters: setup.ps1 legitimately
     # READS the legacy variable for back-compat and that is untouched here.
     $teachesLegacy = @($emitted | Where-Object { $_ -match 'UNSLOTH_FORCE_VULKAN' })
     Check "the legacy spelling is not taught" ($teachesLegacy.Count -eq 0)
 
-    # WHEN to set it, per SITE. install.ps1 prints this advice at two places, so a
-    # file-level "install time" search is satisfied by whichever site still has it
-    # and gutting the other one passes.
+    # WHEN to set it, per SITE: install.ps1 prints this advice twice, so a file-level
+    # "install time" search is satisfied by whichever site still has it.
     $mentions = @(0..($emitted.Count - 1) | Where-Object {
         $emitted[$_].Contains($setter)
     })
@@ -191,12 +183,10 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     }
 
     # --- which arm actually WINS, evaluated rather than read ------------------
-    # The ordering checks above compare source offsets, which cannot see a branch
-    # that is unreachable because an earlier condition already matched. This runs
-    # the real if/elseif chain: parse it, then evaluate every clause condition in
-    # order against the #8529 host and assert the FIRST true one is the unsupported
-    # arm. The host is the one that reported the bug and then followed the old
-    # advice: an RX 5700 XT, no ROCm runtime, and the HIP SDK now installed.
+    # Source offsets cannot see a branch made unreachable by an earlier condition.
+    # Parse the real if/elseif chain, evaluate each clause in order against the #8529
+    # host -- RX 5700 XT, no ROCm runtime, HIP SDK installed because the old advice
+    # said to -- and assert the FIRST true clause is the unsupported arm.
     $chainAst = [System.Management.Automation.Language.Parser]::ParseFile(
         $path, [ref]$null, [ref]$null)
     $chains = @($chainAst.FindAll({ param($n)
@@ -232,9 +222,8 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     $tableSrc = Get-AssignmentSource $path '$unsupportedNameArchTable'
     Check "the table assigns no routable arch" (-not ($tableSrc -match 'gfx1(0[3-9]|1|2)'))
 
-    # The table has to be READ, not just declared. Everything above evaluates it in
-    # isolation, so a lookup that was never wired to the message arms would sail
-    # through: assert the consumer the installer actually uses.
+    # The table has to be READ, not just declared: everything above evaluates it in
+    # isolation, so a lookup never wired to the message arms would sail through.
     $consumer = if ($file -eq "install.ps1") {
         'foreach ($row in $unsupportedNameArchTable) {'
     } else {

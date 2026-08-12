@@ -44,11 +44,9 @@ _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 # The setter each source has to teach, in the syntax of the shell that reads it.
-# PowerShell cannot parse a bare VAR=value: it resolves it as a command name and
-# answers "The term 'UNSLOTH_LLAMA_CPP_BACKEND=vulkan' is not recognized as a name
-# of a cmdlet ..." (verified with pwsh). A Windows user who pastes it sets nothing,
-# re-runs the installer, gets the same CPU bundle, and concludes the advice was
-# wrong -- the #8458 failure mode, reintroduced by the fix for it.
+# PowerShell cannot parse a bare VAR=value: it resolves it as a command name (verified
+# with pwsh), so a Windows user who pastes it sets nothing, re-runs the installer and
+# gets the same CPU bundle -- the #8458 failure mode, reintroduced by the fix for it.
 _POSIX_SETTER = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
 _PWSH_SETTER = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
 _SETTER = {
@@ -86,9 +84,8 @@ _RDNA1_NAMES = [
     ("Navi 14 [Radeon RX 5500/5500M / Pro 5500M]", "gfx1012"),
 ]
 
-# Cards the supported table owns, plus a non-AMD one. The new lookup must not
-# reach any of them: a hit here would print "ROCm does not cover this" at a user
-# whose GPU has wheels.
+# Cards the supported table owns, plus a non-AMD one. A hit here would print
+# "ROCm does not cover this" at a user whose GPU has wheels.
 _NOT_RDNA1_NAMES = [
     "AMD Radeon RX 9070 XT",
     "AMD Radeon RX 9060 XT",
@@ -408,10 +405,9 @@ class TestAdviceIsNotEmittedForRdna1:
         assert src.count("_infer_linux_unsupported_amd_gfx_arch 2>/dev/null") == 2
 
     # Every arm that would otherwise outrank the unsupported one, with the guard it
-    # must carry. An installed HIP SDK is the SYMPTOM on these cards -- the #8529
-    # reporters installed it because the old advice told them to -- so without the
-    # guard the fix never prints for the exact users it was written for, and they
-    # are sent back to a ROCm compute driver that cannot enumerate a gfx1010 either.
+    # must carry. An installed HIP SDK is the SYMPTOM here -- the #8529 reporters
+    # installed it because the old advice said to -- so unguarded, the fix never
+    # prints for the exact users it was written for.
     _HIPSDK_ARMS = [
         (_INSTALL_PS1, "$HipSdkInstalled -and $ROCmGpuLabel", " -and -not $ROCmUnsupportedGfxArch"),
         (_INSTALL_PS1, "$HipSdkInstalled -and -not $HasROCm", " -and -not $ROCmUnsupportedGfxArch"),
@@ -441,17 +437,13 @@ class TestAdviceIsNotEmittedForRdna1:
             f"unsupported arm"
         )
 
-    # The claim the arms must NOT make, and the one they must. CPU torch is not a
-    # slow training path on these cards: with neither CUDA nor XPU visible, unsloth
-    # raises NotImplementedError at import (unsloth/device_type.py, reproduced with
-    # CUDA_VISIBLE_DEVICES=""), so "training runs on CPU" sends the user at an
-    # ImportError. studio/setup.sh already tells its other CPU-torch hosts
-    # "training and GPU inference are unavailable"; these arms now agree.
-    # Scoped per ARM, not per file: install.ps1 makes the same claim in the
-    # pre-existing $ROCmGfxArch CPU-hint arm, which predates this change and is a
-    # different card (supported generation, unmapped arch). Widening the ban to the
-    # file would fail on untouched code and would have to be deleted, taking the
-    # real assertion with it.
+    # The claim the arms must NOT make, and the one they must. With neither CUDA nor
+    # XPU visible unsloth raises NotImplementedError at import (unsloth/device_type.py),
+    # so "training runs on CPU" sends the user at an ImportError; studio/setup.sh
+    # already says "training and GPU inference are unavailable" and these arms agree.
+    # Scoped per ARM, not per file: install.ps1's pre-existing $ROCmGfxArch CPU-hint arm
+    # makes the same claim for a different card, so a file-wide ban would fail on
+    # untouched code and would end up deleted, taking the real assertion with it.
     _TRAINING_ARMS = [
         (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
         (
@@ -495,16 +487,14 @@ class TestAdviceIsNotEmittedForRdna1:
         "AMD GPUs older than RDNA 2" would send those users to Vulkan and CPU torch
         for nothing."""
         src = _normalised(PACKAGE_ROOT / "README.md")
-        # Any spelling of the generation cutoff, not one literal: "every AMD GPU older
-        # than RDNA 2" slipped past an exact-string ban while contradicting the gfx906
-        # carve-out two sentences later.
+        # Any spelling of the cutoff, not one literal: "every AMD GPU older than RDNA 2"
+        # slipped past an exact-string ban while contradicting the gfx906 carve-out.
         blanket = re.search(r"AMD GPUs? older than RDNA ?2", src, re.IGNORECASE)
         assert not blanket, (
             f"README: {blanket.group(0)!r} claims ROCm PyTorch covers nothing older "
             "than RDNA 2, which is wrong for gfx906"
         )
-        # The group has to be named by its members, or the carve-out below has nothing
-        # to carve out of.
+        # The group must be named by its members, or the carve-out has nothing to cut.
         for _member in ("Polaris", "RDNA 1"):
             assert _member in src, (
                 f"README: never names {_member} as part of the unsupported group"
@@ -611,26 +601,19 @@ class TestVulkanAdvice:
       no advice, so a message naming the variable must also name the moment.
     """
 
-    # The four sources whose advice is a literal in an emitting statement. The
-    # Python copy builds its message across implicitly-joined string fragments, so
-    # line-scoped source reading cannot see it; it is covered by the live-output
-    # tests below instead, which are stronger anyway.
+    # The four sources whose advice is a literal in an emitting statement. The Python
+    # copy joins string fragments, so line-scoped source reading cannot see it; the
+    # (stronger) live-output tests below cover it instead.
     _SHELL_SOURCES = [_INSTALL_PS1, _SETUP_PS1, _INSTALL_SH, _SETUP_SH]
 
-    # Everything the advice has to carry. Asserted against EMITTED text only.
-    #
-    # Scoping to emitter lines is the whole point: every one of these phrases also
-    # appears in the comments that explain the branch, so a whole-file substring
-    # search passes even after the message itself has been gutted. That is not
-    # hypothetical -- three mutants that deleted or truncated the real advice
-    # survived a file-level version of this test.
-    #
-    # The setter itself is NOT in this list because its spelling is per-file (see
-    # _SETTER); it gets its own per-path tests below.
+    # Everything the advice has to carry, asserted against EMITTED text only: every
+    # phrase here also appears in the comments explaining the branch, so a whole-file
+    # search stays green after the message is gutted (three such mutants survived).
+    # The setter is not listed because its spelling is per-file (see _SETTER); it gets
+    # its own per-path tests below.
     _REQUIRED = [
-        # The offer must survive, not just the variable name: a message that says
-        # "no GPU acceleration is available" and then names a GPU backend is worse
-        # than either half alone.
+        # The offer must survive, not just the variable name: "no GPU acceleration is
+        # available" followed by a GPU backend's name is worse than either half alone.
         ("through Vulkan", "the affirmative Vulkan offer"),
     ]
 
@@ -679,18 +662,13 @@ class TestVulkanAdvice:
             not offenders
         ), f"{path.name}: prints a POSIX assignment PowerShell cannot parse: {offenders}"
 
-    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with how
-    # many times each anchor is expected to appear. The count is the point: the
-    # tests either side of this one ask whether the advice exists somewhere in the
-    # file and whether it is complete wherever it appears, and neither notices a
-    # site deleted outright, because the surviving one answers for the file.
-    # Observed: deleting either install.sh site whole left both of them green.
-    #
-    # Anchors are the announcement line of each arm, so a deleted arm fails on the
-    # count and a gutted one fails on the window below. install.ps1's second anchor
-    # carries $ROCmUnsupportedGfxArch deliberately: the same sentence is printed
-    # four lines earlier for $ROCmGfxArch, which is a supported card on the CPU
-    # path and must NOT be sent to Vulkan.
+    # Every arm that TELLS a pre-RDNA 2 user torch cannot use their GPU, with the
+    # expected occurrence count. The count is the point: the tests either side of this
+    # one are file-scoped, so a site deleted outright leaves both green (observed on
+    # either install.sh site). Anchors are each arm's announcement line, so a deleted
+    # arm fails the count and a gutted one fails the window below. install.ps1's second
+    # anchor names $ROCmUnsupportedGfxArch deliberately: the same sentence four lines
+    # earlier is for $ROCmGfxArch, a supported card that must NOT be sent to Vulkan.
     _ADVICE_SITES = [
         (_INSTALL_SH, "no ROCm PyTorch wheels exist for that arch", 2),
         (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
@@ -729,22 +707,17 @@ class TestVulkanAdvice:
             f"duplicated; the advice must follow it either way."
         )
         for i in hits:
-            # Comments stripped from the WINDOW, not just from the anchor. Every
-            # phrase asserted below also appears in the comment that explains the
-            # branch, so a window over raw lines stays green after the message has
-            # been demoted to a comment. Observed: exactly that mutant survived.
+            # Comments stripped from the WINDOW, not just the anchor: every phrase
+            # below also appears in the comment explaining the branch, so raw lines
+            # stay green after the message is demoted to a comment (observed mutant).
             window = "\n".join(
                 line for line in lines[i : i + 8] if not line.lstrip().startswith(("#", "//"))
             )
             # The offer, not one phrasing of it: these arms are hard-wrapped to
-            # different widths and one says "For GPU GGUF chat through Vulkan"
-            # rather than "GGUF chat can still use this GPU through Vulkan". Both
-            # halves are required, since naming a backend without saying what it
-            # buys, or promising GGUF chat without naming the backend, is half an
-            # answer. "Vulkan" is matched in PROSE and case-sensitively: the
-            # lowercase spelling inside the variable's value is already covered by
-            # the assertion below, so accepting it here would let an arm keep the
-            # variable while dropping the sentence that explains it.
+            # different widths. Both halves are required -- a backend without what it
+            # buys, or GGUF chat without the backend, is half an answer. "Vulkan" is
+            # matched case-sensitively in PROSE, so the lowercase spelling inside the
+            # setter (asserted below) cannot stand in for the sentence explaining it.
             assert "GGUF chat" in window and "Vulkan" in window, (
                 f"{path.name}:{i + 1}: this arm dead-ends without offering GPU GGUF chat "
                 f"through Vulkan:\n{window}"

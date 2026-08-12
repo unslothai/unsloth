@@ -2882,21 +2882,15 @@ _infer_amd_gfx_arch_from_gpu_name() {
     esac
 }
 
-# GPU marketing name -> gfx arch for AMD generations ROCm PyTorch does NOT cover
-# (unslothai#8529). Deliberately NOT part of _infer_amd_gfx_arch_from_gpu_name:
-# nothing here may route to a wheel index, and these cards must keep falling back
-# to CPU. It exists so the installer can name the arch it found and say ROCm does
-# not reach it, instead of advising a ROCm/HIP SDK install that cannot succeed.
-#
-# RDNA 1 and Polaris 10/20/30, with the product names taken from LLVM's AMDGPU
-# processor tables rather than guessed. PyTorch's ROCm wheels are built for
-# gfx90X/gfx94X/gfx103X/gfx110X/gfx120X; no build targets gfx101X or gfx80X.
-#
-# ORDER IS LOAD-BEARING here in a way the Python copy's regexes are not: `case`
-# has no negative lookahead, so a *"RX 570"* arm would happily swallow an
-# "RX 5700 XT". The RDNA 1 arms therefore come FIRST and Polaris last.
-# Polaris 11/12 (RX 460/550/560) is deliberately absent: a different die, and
-# the value of this table is that it never guesses an arch.
+# GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1 and
+# Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529). SEPARATE from
+# _infer_amd_gfx_arch_from_gpu_name on purpose: messaging only, nothing here may
+# route to a wheel index and these cards must keep falling back to CPU. ROCm torch
+# wheels exist for gfx90X/94X/103X/110X/120X; none for gfx101X or gfx80X.
+# ORDER IS LOAD-BEARING: `case` has no negative lookahead, so a *"RX 570"* arm would
+# swallow an "RX 5700 XT" -- RDNA 1 arms come FIRST and Polaris last.
+# Polaris 11/12 (RX 460/550/560) is excluded on purpose: a different die, and this
+# table is only worth having while it never guesses an arch.
 _infer_unsupported_amd_gfx_arch_from_gpu_name() {
     case "$1" in
         *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
@@ -2907,9 +2901,8 @@ _infer_unsupported_amd_gfx_arch_from_gpu_name() {
     esac
 }
 
-# Linux counterpart of the lookup above: the first AMD display-class lspci line
-# naming a generation ROCm does not cover. Messaging only -- no caller may feed
-# the result into index selection.
+# Linux counterpart: first AMD display-class lspci line naming a generation ROCm
+# does not cover. Messaging only -- never feed the result into index selection.
 _infer_linux_unsupported_amd_gfx_arch() {
     command -v lspci >/dev/null 2>&1 || return 1
     _unsup_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
@@ -3374,16 +3367,15 @@ get_torch_index_url() {
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
                 echo "$_base/cpu"; return
             fi
-            # Repairing rocminfo cannot help a generation ROCm PyTorch never covered:
-            # the arch would read fine and still have no wheels (unslothai#8529). Same
-            # CPU index either way; only the advice changes.
+            # Repairing rocminfo cannot help a generation ROCm never covered: the arch
+            # would read fine and still have no wheels (unslothai#8529). Advice only,
+            # same CPU index either way.
             if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                 echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not enable ROCm PyTorch." >&2
-                # Torch is the end of the road on this card, llama.cpp is not. Naming
-                # WHEN to set the variable is the whole point: it picks the llama.cpp
-                # bundle during install, so a user who exports it afterwards sees no
-                # change and concludes it does not work (unslothai#8458).
+                # Torch ends here, llama.cpp does not. Saying WHEN is the whole point:
+                # the variable picks the llama.cpp bundle at install time, so exporting
+                # it afterwards changes nothing (the unslothai#8458 mistake).
                 echo "[INFO] GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer (it selects the llama.cpp bundle at install time)." >&2
                 echo "$_base/cpu"; return
             fi

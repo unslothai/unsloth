@@ -1869,13 +1869,12 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
-    # GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover
-    # (unslothai#8529). Kept apart from the inference table above on purpose: it is
-    # read only to WORD the report below, never to select a wheel index or a
-    # prebuilt, and an entry here must never make an arch installable. RDNA 1 and
-    # Polaris 10/20/30, product names from LLVM's AMDGPU processor tables.
-    # Order is load-bearing: `case` has no negative lookahead, so the RDNA 1 arms
-    # must precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
+    # GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1 and
+    # Polaris 10/20/30, names from LLVM's AMDGPU tables (unslothai#8529). Kept apart
+    # from the inference table above on purpose: it only words the report below, never
+    # selects a wheel index or prebuilt, and must never make an arch installable.
+    # Order is load-bearing: `case` has no negative lookahead, so the RDNA 1 arms must
+    # precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
     _setup_unsupported_gfx_from_name() {
         case "$1" in
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
@@ -1889,9 +1888,9 @@ elif [ "$_setup_amd_detected" = true ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_from_name "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
-        # Not "training runs on CPU": with neither CUDA nor XPU visible, unsloth raises
+        # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU
-        # and no-GPU arms further down already use for their CPU-torch hosts.
+        # and no-GPU arms below already use.
         substep "torch stays CPU-only: Unsloth training and GPU inference are unavailable."
         substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value changes that."
         substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
