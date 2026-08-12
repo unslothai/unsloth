@@ -101,6 +101,7 @@ import {
   useResearchRunStore,
 } from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { useExternalLocalTools } from "@/features/chat/hooks/use-external-local-tools";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
@@ -4154,15 +4155,28 @@ const WebSearchToggle: FC = () => {
       ? externalProviders.find((p) => p.id === externalSelection.providerId)
       : undefined;
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
+  // the pill needs the connection's local-tools opt-in, else the click explains why.
+  const externalLocalTools = useExternalLocalTools();
+  const setLocalToolsNotice = useChatRuntimeStore(
+    (s) => s.setLocalToolsNoticeProvider,
+  );
+  const localToolsOptInMissing =
+    externalLocalTools.supported && !externalLocalTools.enabled;
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
-  const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
+  const disabled =
+    modelLoaded &&
+    !(supportsTools || supportsBuiltinWebSearch || externalLocalTools.supported);
 
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={() => {
+        if (localToolsOptInMissing) {
+          setLocalToolsNotice(externalLocalTools.provider?.name ?? "");
+          return;
+        }
         const next = !toolsEnabled;
         setToolsEnabled(next);
         // Kimi's $web_search builtin requires thinking=disabled (see
@@ -4175,7 +4189,9 @@ const WebSearchToggle: FC = () => {
       }}
       className="composer-pill-btn"
       data-pill-label="Search"
-      data-active={toolsEnabled && !disabled ? "true" : "false"}
+      data-active={
+        toolsEnabled && !disabled && !localToolsOptInMissing ? "true" : "false"
+      }
       aria-label={toolsEnabled ? "Disable web search" : "Enable web search"}
     >
       <PillGlyph>
@@ -4200,18 +4216,41 @@ const CodeToolsToggle: FC = () => {
   );
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  // same local-tools opt-in as the Search pill above.
+  const externalLocalTools = useExternalLocalTools();
+  const setLocalToolsNotice = useChatRuntimeStore(
+    (s) => s.setLocalToolsNoticeProvider,
+  );
+  const localToolsOptInMissing =
+    externalLocalTools.supported && !externalLocalTools.enabled;
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
-  const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
+  const disabled =
+    modelLoaded &&
+    !(
+      supportsTools ||
+      supportsBuiltinCodeExecution ||
+      externalLocalTools.supported
+    );
 
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+      onClick={() => {
+        if (localToolsOptInMissing) {
+          setLocalToolsNotice(externalLocalTools.provider?.name ?? "");
+          return;
+        }
+        setCodeToolsEnabled(!codeToolsEnabled);
+      }}
       className="composer-pill-btn"
       data-pill-label="Code"
-      data-active={codeToolsEnabled && !disabled ? "true" : "false"}
+      data-active={
+        codeToolsEnabled && !disabled && !localToolsOptInMissing
+          ? "true"
+          : "false"
+      }
       aria-label={
         codeToolsEnabled ? "Disable code execution" : "Enable code execution"
       }

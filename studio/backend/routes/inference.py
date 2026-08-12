@@ -11257,6 +11257,54 @@ def _build_external_messages(
     return result
 
 
+def _external_local_tool_names(payload: ChatCompletionRequest, provider_type: str) -> list[str]:
+    """Local tool names this external request may run, or ``[]`` when it may not.
+
+    The loop only opens when the request explicitly asks for Unsloth's tool
+    runtime on a self-hosted OpenAI-compat server. ``tool_choice="none"`` and
+    caller-supplied ``tools`` both opt out: the first is an explicit "no
+    tools", the second is passthrough where the caller drives function calling.
+    """
+    from core.inference.external_tool_loop import (
+        local_tool_loop_supported,
+        select_local_tool_names,
+    )
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    if payload.enable_tools is not True or payload.tools:
+        return []
+    if isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none":
+        return []
+    if not local_tool_loop_supported(provider_type):
+        return []
+    return select_local_tool_names(payload.enabled_tools)
+
+
+def _append_external_tool_nudge(messages: list[dict], nudge: str) -> list[dict]:
+    """Append the tool-use nudge to the leading system turn, adding one if absent.
+
+    The local path rebuilds the system prompt wholesale; here the caller's
+    system turn is already inside ``messages``, so the nudge is appended to it
+    instead of replacing it.
+    """
+    if not nudge:
+        return messages
+    head = messages[0] if messages else None
+    if not isinstance(head, dict) or head.get("role") != "system":
+        return [{"role": "system", "content": nudge}, *messages]
+    content = head.get("content")
+    merged = dict(head)
+    if isinstance(content, str):
+        merged["content"] = f"{content.rstrip()}\n\n{nudge}" if content.strip() else nudge
+    elif isinstance(content, list):
+        merged["content"] = [*content, {"type": "text", "text": nudge}]
+    else:
+        return [{"role": "system", "content": nudge}, *messages]
+    return [merged, *messages[1:]]
+
+
 async def _proxy_to_external_provider(
     payload: ChatCompletionRequest,
     request: Request,
@@ -11295,6 +11343,7 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
+    local_tool_names = _external_local_tool_names(payload, provider_type)
     codex_studio_tool_loop = (
         provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
     )
@@ -11302,6 +11351,7 @@ async def _proxy_to_external_provider(
         payload.confirm_tool_calls
         and not payload.bypass_permissions
         and not codex_studio_tool_loop
+        and not local_tool_names
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
@@ -11629,6 +11679,16 @@ async def _proxy_to_external_provider(
             detail = "external_model is required when using an external provider.",
         )
 
+    if local_tool_names and not payload.stream:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Local tools require stream=true on an external provider.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "stream",
+            ),
+        )
     # Build messages, preserving multimodal content for vision providers
     from core.inference.providers import get_provider_info as _get_provider_info
 
@@ -11640,6 +11700,17 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
+    local_tools: list[dict] = []
+    if local_tool_names:
+        from core.inference.tools import ALL_TOOLS
+
+        local_tools = [
+            tool for tool in ALL_TOOLS if tool["function"]["name"] in local_tool_names
+        ]
+        chat_messages = _append_external_tool_nudge(
+            chat_messages,
+            _build_tool_action_nudge(tools = local_tools, model_name = model),
+        )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -11665,32 +11736,67 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
+    # built once: the local tool loop re-sends these on every follow-up turn.
+    _provider_stream_kwargs = dict(
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        # max_completion_tokens covers a request that caps output without max_tokens.
+        max_tokens = _effective_max_tokens(payload),
+        presence_penalty = payload.presence_penalty,
+        top_k = _top_k_explicit,
+        enable_thinking = payload.enable_thinking,
+        reasoning_effort = payload.reasoning_effort,
+        enable_prompt_caching = payload.enable_prompt_caching,
+        compaction_threshold = payload.compaction_threshold,
+        continue_final_message = _continue_final_message(payload),
+    )
+
     async def _stream():
-        gen = client.stream_chat_completion(
-            messages = chat_messages,
-            model = model,
-            temperature = payload.temperature,
-            top_p = payload.top_p,
-            # Honor max_completion_tokens when max_tokens is absent, so a
-            # provider-routed request capped only by the newer field still gets
-            # a limit instead of falling back to the provider default.
-            max_tokens = _effective_max_tokens(payload),
-            presence_penalty = payload.presence_penalty,
-            top_k = _top_k_explicit,
-            enable_thinking = payload.enable_thinking,
-            reasoning_effort = payload.reasoning_effort,
-            enabled_tools = payload.enabled_tools,
-            enable_prompt_caching = payload.enable_prompt_caching,
-            openai_code_exec_container_id = payload.openai_code_exec_container_id,
-            anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
-            prompt_cache_ttl = payload.prompt_cache_ttl,
-            compaction_threshold = payload.compaction_threshold,
-            tools = payload.tools,
-            tool_choice = payload.tool_choice,
-            fast_mode = payload.fast_mode,
-            continue_final_message = _continue_final_message(payload),
-            stream = payload.stream,
-        )
+        if local_tools:
+            from core.inference.external_tool_loop import (
+                DEFAULT_MAX_TOOL_ITERATIONS,
+                stream_chat_completion_with_local_tools,
+            )
+
+            gen = stream_chat_completion_with_local_tools(
+                client,
+                messages = chat_messages,
+                model = model,
+                tools = local_tools,
+                session_id = payload.session_id,
+                thread_id = payload.thread_id,
+                max_tool_iterations = payload.max_tool_calls_per_message
+                if payload.max_tool_calls_per_message is not None
+                else DEFAULT_MAX_TOOL_ITERATIONS,
+                tool_call_timeout = payload.tool_call_timeout
+                if payload.tool_call_timeout is not None
+                else 300,
+                auto_heal_tool_calls = payload.auto_heal_tool_calls
+                if payload.auto_heal_tool_calls is not None
+                else True,
+                # same gate as the local loops, so "auto" still prompts on a high-risk call.
+                confirm_tool_calls = _permission_mode_confirm(payload)
+                and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = payload.permission_mode,
+                disable_parallel_tool_use = payload.parallel_tool_calls is False,
+                nudge_tool_calls = payload.nudge_tool_calls,
+                **_provider_stream_kwargs,
+            )
+        else:
+            gen = client.stream_chat_completion(
+                messages = chat_messages,
+                model = model,
+                enabled_tools = payload.enabled_tools,
+                openai_code_exec_container_id = payload.openai_code_exec_container_id,
+                anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
+                prompt_cache_ttl = payload.prompt_cache_ttl,
+                tools = payload.tools,
+                tool_choice = payload.tool_choice,
+                fast_mode = payload.fast_mode,
+                stream = payload.stream,
+                **_provider_stream_kwargs,
+            )
         try:
             sent_done = False
             stream_failed = False

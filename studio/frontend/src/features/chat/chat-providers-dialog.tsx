@@ -63,6 +63,7 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
+  supportsProviderLocalTools,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -178,6 +179,7 @@ export function ChatProvidersSettings({
     CUSTOM_PROVIDER_DISPLAY_NAME,
   );
   const [isReasoningModel, setIsReasoningModel] = useState(false);
+  const [enableLocalTools, setEnableLocalTools] = useState(false);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
@@ -189,6 +191,7 @@ export function ChatProvidersSettings({
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
+  const showLocalToolsToggle = supportsProviderLocalTools(providerType);
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
@@ -389,6 +392,7 @@ export function ChatProvidersSettings({
     setModelSearchQuery("");
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
+    setEnableLocalTools(false);
   }
 
   function openAddProvider() {
@@ -700,6 +704,9 @@ export function ChatProvidersSettings({
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
+        enableLocalTools: supportsProviderLocalTools(uiProviderType)
+          ? enableLocalTools
+          : undefined,
         createdAt,
         updatedAt,
       };
@@ -844,6 +851,11 @@ export function ChatProvidersSettings({
                 )
                   ? isReasoningModel
                   : undefined,
+                enableLocalTools: supportsProviderLocalTools(
+                  existing.providerType,
+                )
+                  ? enableLocalTools
+                  : undefined,
                 updatedAt,
               }
             : provider,
@@ -878,6 +890,11 @@ export function ChatProvidersSettings({
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
         ? provider.isReasoningModel === true
+        : false,
+    );
+    setEnableLocalTools(
+      supportsProviderLocalTools(provider.providerType)
+        ? provider.enableLocalTools === true
         : false,
     );
     if (
@@ -1271,6 +1288,42 @@ export function ChatProvidersSettings({
                     />
                     This server runs a reasoning model
                   </label>
+                </div>
+              ) : null}
+
+              {showLocalToolsToggle ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-local-tools"
+                      className="text-sm font-medium"
+                    >
+                      Local tools
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Off by default.
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label
+                      htmlFor="provider-local-tools"
+                      className="flex cursor-pointer items-center gap-2 text-sm"
+                    >
+                      <Checkbox
+                        id="provider-local-tools"
+                        checked={enableLocalTools}
+                        onCheckedChange={(checked) =>
+                          setEnableLocalTools(checked === true)
+                        }
+                      />
+                      Let this model use Search and Code
+                    </label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      Web search and code execution run on this machine, in the
+                      same sandbox local models use. Only enable it for a
+                      tool-calling model on a server you trust.
+                    </p>
+                  </div>
                 </div>
               ) : null}
             </div>

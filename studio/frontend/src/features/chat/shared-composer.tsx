@@ -115,6 +115,7 @@ import {
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useExternalLocalTools } from "./hooks/use-external-local-tools";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -769,19 +770,37 @@ export function SharedComposer({
   // gate strictly on provider builtin support.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
+  // the pills stay clickable without the opt-in so the click can explain why.
+  const externalLocalTools = useExternalLocalTools();
+  const setLocalToolsNotice = useChatRuntimeStore(
+    (s) => s.setLocalToolsNoticeProvider,
+  );
+  const showLocalToolsNotice = () =>
+    setLocalToolsNotice(externalLocalTools.provider?.name ?? "");
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
   const searchDisabled =
     modelLoaded &&
     (isGeminiImageTier
       ? !supportsBuiltinWebSearch
-      : !(supportsTools || supportsBuiltinWebSearch));
+      : !(
+          supportsTools ||
+          supportsBuiltinWebSearch ||
+          externalLocalTools.supported
+        ));
   const codeDisabled =
     (modelLoaded &&
       (isGeminiImageTier
         ? true
-        : !(supportsTools || supportsBuiltinCodeExecution))) ||
+        : !(
+            supportsTools ||
+            supportsBuiltinCodeExecution ||
+            externalLocalTools.supported
+          ))) ||
     imageModeDisablesCode;
+  // opted-out connection: the pill is live but toggling it would send nothing.
+  const localToolsOptInMissing =
+    externalLocalTools.supported && !externalLocalTools.enabled;
   // Images pill lights only on OpenAI cloud Responses-API models and the
   // Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
@@ -2099,11 +2118,15 @@ export function SharedComposer({
               <DropdownMenuItem
                 disabled={searchDisabled}
                 className={
-                  toolsEnabled && !searchDisabled
+                  toolsEnabled && !searchDisabled && !localToolsOptInMissing
                     ? "text-primary font-medium"
                     : undefined
                 }
                 onSelect={() => {
+                  if (localToolsOptInMissing) {
+                    showLocalToolsNotice();
+                    return;
+                  }
                   const next = !toolsEnabled;
                   setToolsEnabled(next);
                   // Mirror the Search pill: Kimi forbids search + thinking together.
@@ -2115,7 +2138,7 @@ export function SharedComposer({
               >
                 <GlobeIcon />
                 Web search
-                {toolsEnabled && !searchDisabled ? (
+                {toolsEnabled && !searchDisabled && !localToolsOptInMissing ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
                     strokeWidth={2}
@@ -2126,11 +2149,17 @@ export function SharedComposer({
               <DropdownMenuItem
                 disabled={codeDisabled}
                 className={
-                  codeToolsEnabled && !codeDisabled
+                  codeToolsEnabled && !codeDisabled && !localToolsOptInMissing
                     ? "text-primary font-medium"
                     : undefined
                 }
-                onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
+                onSelect={() => {
+                  if (localToolsOptInMissing) {
+                    showLocalToolsNotice();
+                    return;
+                  }
+                  setCodeToolsEnabled(!codeToolsEnabled);
+                }}
               >
                 {/* Scale, not width: an oversized box pushed the label out of
                     line. */}
@@ -2140,7 +2169,7 @@ export function SharedComposer({
                   className="scale-[1.12]"
                 />
                 Code
-                {codeToolsEnabled && !codeDisabled ? (
+                {codeToolsEnabled && !codeDisabled && !localToolsOptInMissing ? (
                   <HugeiconsIcon
                     icon={Tick02Icon}
                     strokeWidth={2}
@@ -2210,6 +2239,10 @@ export function SharedComposer({
             type="button"
             disabled={searchDisabled}
             onClick={() => {
+              if (localToolsOptInMissing) {
+                showLocalToolsNotice();
+                return;
+              }
               const next = !toolsEnabled;
               setToolsEnabled(next);
               // Kimi's $web_search builtin requires thinking=disabled
@@ -2222,7 +2255,11 @@ export function SharedComposer({
             }}
             className="composer-pill-btn"
             data-pill-label="Search"
-            data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
+            data-active={
+              toolsEnabled && !searchDisabled && !localToolsOptInMissing
+                ? "true"
+                : "false"
+            }
             aria-label={
               toolsEnabled ? "Disable web search" : "Enable web search"
             }
@@ -2235,10 +2272,20 @@ export function SharedComposer({
           <button
             type="button"
             disabled={codeDisabled}
-            onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
+            onClick={() => {
+              if (localToolsOptInMissing) {
+                showLocalToolsNotice();
+                return;
+              }
+              setCodeToolsEnabled(!codeToolsEnabled);
+            }}
             className="composer-pill-btn"
             data-pill-label="Code"
-            data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
+            data-active={
+              codeToolsEnabled && !codeDisabled && !localToolsOptInMissing
+                ? "true"
+                : "false"
+            }
             aria-label={
               codeToolsEnabled
                 ? "Disable code execution"

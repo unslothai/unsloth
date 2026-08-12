@@ -56,6 +56,7 @@ import {
   loadExternalProviders,
   parseExternalModelId,
 
+  providerLocalToolsEnabled,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
@@ -4102,6 +4103,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
+      // a self-hosted connection runs web_search, python and terminal on this machine.
+      const externalLocalToolsEnabled = providerLocalToolsEnabled(
+        externalProvider,
+      );
+      const localWebSearchEnabledForThisTurn = Boolean(
+        externalLocalToolsEnabled && externalSelection && toolsEnabled,
+      );
+      const localCodeEnabledForThisTurn = Boolean(
+        externalLocalToolsEnabled && externalSelection && codeToolsEnabled,
+      );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
       // without web_fetch the toggle is forced off in chat-page setState.
@@ -4808,10 +4819,12 @@ export function createOpenAIStreamAdapter(
           tools: {
             search:
               webSearchEnabledForThisTurn ||
+              localWebSearchEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && toolsEnabled),
             fetch: webFetchEnabledForThisTurn,
             code:
               codeExecEnabledForThisTurn ||
+              localCodeEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
             mcp:
@@ -5088,11 +5101,16 @@ export function createOpenAIStreamAdapter(
                 : webSearchEnabledForThisTurn ||
                     webFetchEnabledForThisTurn ||
                     codeExecEnabledForThisTurn ||
-                    imageGenerationEnabledForThisTurn
+                    imageGenerationEnabledForThisTurn ||
+                    localWebSearchEnabledForThisTurn ||
+                    localCodeEnabledForThisTurn
                   ? {
                       enable_tools: true,
                       enabled_tools: [
-                        ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
+                        ...(webSearchEnabledForThisTurn ||
+                        localWebSearchEnabledForThisTurn
+                          ? ["web_search"]
+                          : []),
                         ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
                         ...(codeExecEnabledForThisTurn
                           ? ["code_execution"]
@@ -5100,12 +5118,31 @@ export function createOpenAIStreamAdapter(
                         ...(imageGenerationEnabledForThisTurn
                           ? ["image_generation"]
                           : []),
+                        ...(localCodeEnabledForThisTurn
+                          ? ["python", "terminal"]
+                          : []),
                       ],
                     }
                   : // Explicit false: an omitted field falls back to the
                     // server's tools-on default, which would bill provider
                     // server tools.
                     { enable_tools: false }),
+              // local tools need the sandbox session, thread scope and permission gate.
+              ...(localWebSearchEnabledForThisTurn || localCodeEnabledForThisTurn
+                ? {
+                    ...(sandboxSessionId
+                      ? { session_id: sandboxSessionId }
+                      : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
+                  }
+                : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,

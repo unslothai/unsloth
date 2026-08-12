@@ -37,6 +37,12 @@ export interface ExternalProviderConfig {
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
   /**
+   * enable unsloth's local tools (web_search, python, terminal) for this
+   * server. off by default since tools run on the studio host; only for
+   * provider types `supportsProviderLocalTools` accepts.
+   */
+  enableLocalTools?: boolean;
+  /**
    * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
    * "Create container" dialog and is the TTL the auto-create-per-thread path POSTs
    * to /v1/containers. OpenAI's hard default is 20. Only for OpenAI cloud.
@@ -256,6 +262,31 @@ export function isCustomProviderType(
   return providerType in CUSTOM_PROVIDER_LABELS;
 }
 
+// mirrors LOCAL_TOOL_LOOP_PROVIDER_TYPES in backend/core/inference/external_tool_loop.py.
+const LOCAL_TOOLS_PROVIDER_TYPES = new Set<string>([
+  "vllm",
+  "ollama",
+  "llama_cpp",
+  LEGACY_CUSTOM_PROVIDER_TYPE,
+]);
+
+export function supportsProviderLocalTools(
+  providerType: string | null | undefined,
+): boolean {
+  return providerType != null && LOCAL_TOOLS_PROVIDER_TYPES.has(providerType);
+}
+
+/** whether local tools are enabled for this connection. */
+export function providerLocalToolsEnabled(
+  provider: ExternalProviderConfig | null | undefined,
+): boolean {
+  if (!provider) return false;
+  return (
+    supportsProviderLocalTools(provider.providerType) &&
+    provider.enableLocalTools === true
+  );
+}
+
 /** OpenAI-compat custom types that may expose GET /v1/models. */
 const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -424,6 +455,9 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         : undefined,
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
+      : undefined,
+    enableLocalTools: supportsProviderLocalTools(providerType)
+      ? raw.enableLocalTools === true
       : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&

@@ -1011,6 +1011,10 @@ type ChatRuntimeStore = {
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
   bypassConfirmOpen: boolean;
+  /** connection name with an open "local tools off" notice, or null. set
+   *  when a Search/Code pill is clicked on an external OpenAI-compatible
+   *  connection that hasn't opted into local tool runtime. */
+  localToolsNoticeProvider: string | null;
   /**
    * Per-chat set of tool names the user chose to auto-approve via "Always
    * allow". Keyed by UI confirmation scope, not necessarily the backend
@@ -1274,6 +1278,7 @@ type ChatRuntimeStore = {
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
   setBypassConfirmOpen: (open: boolean) => void;
+  setLocalToolsNoticeProvider: (providerName: string | null) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
     toolCallId: string,
@@ -1610,6 +1615,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   bypassConfirmOpen: false,
+  localToolsNoticeProvider: null,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
@@ -2390,6 +2396,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
     set(() => ({ bypassConfirmOpen })),
+  setLocalToolsNoticeProvider: (localToolsNoticeProvider) =>
+    set(() => ({ localToolsNoticeProvider })),
   allowToolAlways: (sessionId, toolName) =>
     set((state) => {
       const current = state.alwaysAllowToolsBySession.get(sessionId);

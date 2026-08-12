@@ -25,6 +25,7 @@ import {
   removeExternalProviderApiKey,
 
   setProviderModelCapabilities,
+  supportsProviderLocalTools,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
@@ -119,6 +120,9 @@ export function mergeLocalProviderOptions(
         : synced.promptCacheTtl,
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? (existing.isReasoningModel ?? synced.isReasoningModel)
+      : undefined,
+    enableLocalTools: supportsProviderLocalTools(providerType)
+      ? (existing.enableLocalTools ?? synced.enableLocalTools ?? false)
       : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
@@ -240,6 +244,9 @@ export async function syncExternalProvidersFromBackend(
           : undefined,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? existing?.isReasoningModel === true
+          : undefined,
+        enableLocalTools: supportsProviderLocalTools(uiProviderType)
+          ? existing?.enableLocalTools === true
           : undefined,
         createdAt: existing?.createdAt ?? createdAt,
         updatedAt,
