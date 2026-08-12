@@ -4,18 +4,11 @@
 """Launcher refresh: fetch install.sh / install.ps1 from main, bundled copy as fallback.
 
 `unsloth studio update` re-runs the installer with --shortcuts-only. It used to fetch
-https://unsloth.ai/install.sh and pipe it into `bash -s`, with no local copy to fall
-back to: a PyPI install has no installer next to the package, so a failed or hijacked
-fetch was the difference between refreshing a launcher and running someone else's shell
-script. Two things changed:
-
-  * the fetch goes to raw.githubusercontent.com, the origin the unsloth.ai URL was a
-    Cloudflare 301 to, so the redirect's control plane is no longer in the path
-  * pyproject ships the installers under <data>/share/unsloth, so there is always a
-    local installer to fall back to when the fetch fails or returns something that is
-    not an installer
-
-A source checkout still outranks both: `update --local` must test its own installer.
+https://unsloth.ai/install.sh and pipe it into `bash -s` with no local copy to fall back
+to. Now the fetch goes to raw.githubusercontent.com, the origin that URL was a Cloudflare
+301 to, and pyproject ships the installers under <data>/share/unsloth so there is always a
+fallback when the fetch fails or returns something that is not an installer. A source
+checkout still outranks both: `update --local` must test its own installer.
 """
 
 from __future__ import annotations
@@ -41,10 +34,8 @@ class _Result:
 
 
 def _posix(monkeypatch, tmp_path):
-    """POSIX refresh with no checkout in sight, which is the shape of a wheel install.
-
-    The tests run from a clone, so _PACKAGE_ROOT would otherwise find the repo's own
-    install.sh and short-circuit every fetch.
+    """POSIX refresh with no checkout in sight, the shape of a wheel install. The tests run
+    from a clone, so _PACKAGE_ROOT would otherwise short-circuit every fetch.
     """
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
@@ -76,10 +67,8 @@ def test_fetch_targets_the_repo_origin_not_the_website():
 
 
 def test_a_starting_url_off_the_pinned_host_is_refused(monkeypatch, tmp_path):
-    """The guard covers the constant too, not just the redirects it may follow.
-
-    https://unsloth.ai/install.sh redirects TO the pinned host, so a redirect-only
-    check would happily fetch through it.
+    """The guard covers the constant too: https://unsloth.ai/install.sh redirects TO the
+    pinned host, so a redirect-only check would happily fetch through it.
     """
     studio = _posix(monkeypatch, tmp_path)
     monkeypatch.setattr(studio, "_INSTALLER_URL_BASH", "https://unsloth.ai/install.sh")
@@ -226,7 +215,7 @@ def test_oversized_and_bad_responses_return_none(monkeypatch, tmp_path):
         assert studio._fetch_installer("install.sh") is None, why
 
 
-# ── review round 1: fetched-installer failure modes ────────────────────────────────
+# ── fetched-installer failure modes ────────────────────────────────────────────────
 
 
 def test_a_fetched_installer_that_exits_nonzero_falls_back(monkeypatch, tmp_path):

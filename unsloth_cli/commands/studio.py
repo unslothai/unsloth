@@ -3398,14 +3398,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-# The launcher refresh runs the installer with --shortcuts-only. It fetches main so a
-# launcher fix reaches users without waiting for a release, and falls back to the copy
-# that shipped with this distribution when the network is unavailable.
+# The launcher refresh runs the installer with --shortcuts-only: fetch main so a launcher
+# fix reaches users without waiting for a release, fall back to the copy shipped with this
+# distribution when the network is unavailable.
 #
-# raw.githubusercontent.com directly, not https://unsloth.ai/install.sh: that URL is a
-# Cloudflare 301 to this exact path, so the bytes were always the repo's, but the hop
-# added the unsloth.ai DNS/CDN control plane as a second thing that has to stay honest
-# to keep code off users' machines. Going to the origin drops that hop.
+# raw.githubusercontent.com, not https://unsloth.ai/install.sh: that URL is a Cloudflare
+# 301 to this exact path, so going to the origin drops the unsloth.ai DNS/CDN control
+# plane from the things that must stay honest to keep code off users' machines.
 _INSTALLER_URL_BASH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh"
 _INSTALLER_URL_PWSH = "https://raw.githubusercontent.com/unslothai/unsloth/main/install.ps1"
 # A redirect off this host is refused rather than followed.
@@ -3446,12 +3445,10 @@ class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _looks_like_installer(body: Optional[bytes], installer_name: str) -> bool:
-    """Cheap shape check on a fetched installer before it is executed.
+    """Cheap shape check before a fetched installer is executed.
 
-    This is not a security control -- anyone who can choose the response can satisfy
-    it. It is here because piping a captive-portal login page or an HTTP error body
-    into bash is a real and boring way to break someone's machine, and refusing that
-    costs two comparisons.
+    Not a security control -- anyone who can choose the response can satisfy it. It just
+    stops a captive-portal page or an HTTP error body from being piped into bash.
     """
     if not body or len(body) < 1024:
         return False
@@ -3469,8 +3466,7 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         return None
 
     url = _INSTALLER_URL_PWSH if installer_name == "install.ps1" else _INSTALLER_URL_BASH
-    # The starting URL is checked with the same rule as the redirects it may follow, so
-    # the guard does not quietly depend on the constants above staying right.
+    # Same rule as for redirects, so the guard does not depend on the constants above.
     if not _is_allowed_installer_url(url):
         typer.echo(f"  refresh-launcher  refusing to fetch {installer_name} from {url}")
         return None
@@ -3481,9 +3477,8 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
             body = response.read(_INSTALLER_MAX_BYTES + 1)
     except (
         urllib.error.URLError,
-        # A truncated chunked transfer (IncompleteRead) or a malformed proxy response
-        # raises at the HTTP framing layer, which is neither URLError nor OSError, so
-        # it would escape and abort an update that had already succeeded.
+        # IncompleteRead / a malformed proxy response raises at the HTTP framing layer,
+        # which is neither URLError nor OSError, so it would abort an already-done update.
         http.client.HTTPException,
         TimeoutError,
         OSError,
@@ -3504,16 +3499,14 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
 
 
 def _installer_checkout_candidates(installer_name: str) -> List[Path]:
-    """Installers belonging to a source tree. These outrank the network.
-
-    A developer running `update --local` is testing their own installer, so fetching
-    main over the top of it would be wrong.
+    """Source-tree installers. They outrank the network because `update --local` is
+    testing its own installer, so fetching main over the top of it would be wrong.
     """
     candidates: List[Path] = []
     local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
     if local_repo:
         candidates.append(Path(local_repo).expanduser() / installer_name)
-    # Running out of a clone or an editable install: _PACKAGE_ROOT is the repo root.
+    # Clone or editable install: _PACKAGE_ROOT is the repo root.
     root = _PACKAGE_ROOT / installer_name
     if root not in candidates:
         candidates.append(root)
@@ -3523,20 +3516,18 @@ def _installer_checkout_candidates(installer_name: str) -> List[Path]:
 def _installer_bundled_candidates(installer_name: str) -> List[Path]:
     """The copy shipped with this distribution, used when the fetch does not land.
 
-    pyproject data-files put these under <data>/share/unsloth, which pip and uv both
-    resolve to the venv root that install.sh/install.ps1 create. The upgrade that runs
-    immediately before the refresh rewrites them, so the bundled copy is the installer
-    from the version that was just installed, not from whenever Studio was set up.
+    pyproject data-files put these under <data>/share/unsloth, which pip and uv resolve to
+    the venv root the installers create. The upgrade that runs just before the refresh
+    rewrites them, so the bundled copy matches the release that was just installed.
     """
     candidates: List[Path] = []
     roots = [
         sysconfig.get_path("data"),
         sys.prefix,
         getattr(site, "USER_BASE", None),
-        # A pip-installed CLI can drive an update into the managed venv rather than its
-        # own (_studio_deps.running_outside_managed_venv). Setup writes the new data
-        # files there, so without this the fallback would run the foreign CLI's older
-        # bundled installer, or none at all.
+        # A pip-installed CLI can update INTO the managed venv rather than its own
+        # (_studio_deps.running_outside_managed_venv), and setup writes the new data files
+        # there, so that root counts too.
         STUDIO_HOME / "unsloth_studio",
     ]
     for root in roots:
@@ -3691,12 +3682,10 @@ def _run_fetched_installer_ps1(
 ) -> bool:
     """Run a fetched install.ps1 from a tempfile. False means use the bundled copy.
 
-    -File rather than `-Command -`: PowerShell reads stdin through
-    [Console]::InputEncoding (CP1252/OEM on most Windows boxes), which mangles the
-    box-drawing characters in install.ps1, while -File honours the BOM written below.
-    -File also passes the arguments through to the script's own `@args` at EOF, so
-    unlike the old stdin path there is nothing to rewrite before running it. The
-    prefix gives AV/EDR engines (and anyone grepping temp) a clear identity.
+    -File rather than `-Command -`: stdin is decoded with [Console]::InputEncoding
+    (CP1252/OEM on most Windows boxes), which mangles install.ps1's box-drawing chars,
+    while -File honours the BOM written below and passes the args on to the script's own
+    `@args`. The prefix gives AV/EDR engines (and anyone grepping temp) a clear identity.
     """
     ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
     try:
