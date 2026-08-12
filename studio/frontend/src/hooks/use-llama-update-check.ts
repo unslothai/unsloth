@@ -7,7 +7,10 @@ import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
 } from "@/lib/llama-job-events";
-import { llamaUpdatePresentation } from "@/lib/llama-job-lifecycle";
+import {
+  llamaUpdateAdoptsRunningJob,
+  llamaUpdatePresentation,
+} from "@/lib/llama-job-lifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -385,11 +388,14 @@ export function useLlamaUpdateCheck({
     // open Settings surface disables and follows the same install immediately.
     signalRunningLlamaJob(actionJob);
 
-    // Non-started jobs stay idle; already_running is tracked below.
+    // Non-started jobs stay idle; an already-running update is tracked below.
+    // A backend switch is not: it shares this job but installs no new release,
+    // so following it here would toast an update that never happened. The
+    // shared background listener still follows the switch itself.
     if (
       action &&
       action.started === false &&
-      action.reason !== "already_running"
+      !llamaUpdateAdoptsRunningJob(action.reason, actionJob)
     ) {
       // A stale banner's click can land after another tab already applied the
       // update (e.g. "up_to_date"): the response still carries that tab's

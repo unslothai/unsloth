@@ -34,6 +34,18 @@ export function ownedLlamaSwitchOutcome(
   return job.state === "idle" ? "interrupted" : job.state;
 }
 
+/**
+ * Whether an `already_running` /update response is the update this apply asked
+ * for. A backend switch shares the same job: adopting it would resolve this
+ * action as an applied update while the pending release is still uninstalled.
+ */
+export function llamaUpdateAdoptsRunningJob(
+  reason: string | null | undefined,
+  job: LlamaJob,
+): boolean {
+  return reason === "already_running" && job.operation !== "switch";
+}
+
 export interface LlamaUpdatePresentation {
   applying: boolean;
   visible: boolean;

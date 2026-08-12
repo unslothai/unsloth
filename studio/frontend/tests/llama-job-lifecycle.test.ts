@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
@@ -74,5 +75,31 @@ test("a completed update stays hidden when no update remains", () => {
       operation: "update",
     }),
     { applying: false, visible: false, running: false },
+  );
+});
+
+test("an apply adopts an already-running update but never a switch", () => {
+  // Both share one job. Following a switch here would resolve the update action
+  // as applied while the release it offered is still not installed.
+  assert.equal(
+    llamaUpdateAdoptsRunningJob("already_running", {
+      state: "running",
+      operation: "update",
+    }),
+    true,
+  );
+  assert.equal(
+    llamaUpdateAdoptsRunningJob("already_running", {
+      state: "running",
+      operation: "switch",
+    }),
+    false,
+  );
+  assert.equal(
+    llamaUpdateAdoptsRunningJob("up_to_date", {
+      state: "success",
+      operation: "update",
+    }),
+    false,
   );
 });

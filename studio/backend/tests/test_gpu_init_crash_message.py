@@ -411,6 +411,22 @@ class TestAutoVulkanCpuFallbackGate:
             {},
         )
 
+    def test_auto_suppresses_a_stale_legacy_vulkan_flag(self, monkeypatch, tmp_path):
+        # UNSLOTH_LLAMA_CPP_BACKEND=auto outranks UNSLOTH_FORCE_VULKAN everywhere
+        # else, so setup detected this bundle rather than being told to install it.
+        # Reading the legacy flag as a choice here would leave a crashing Vulkan
+        # install with no automatic CPU replay.
+        self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+        monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+
+        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            "/managed/llama-server", GgufLoadIntent(model_identifier = "m"), None, {}
+        )
+
     @pytest.mark.parametrize(
         "name,value",
         [
@@ -549,7 +565,6 @@ class TestAutoVulkanCpuFallbackGate:
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
         )
-
 
 class TestCpuIsolatedReplay:
     @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])

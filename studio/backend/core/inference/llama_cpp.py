@@ -9555,19 +9555,20 @@ class LlamaCppBackend:
         if not binary:
             return False
         from utils.llama_cpp_update import _llama_install_root
-        from utils.prebuilt.llama_backend import marker_backend_was_chosen, normalize_backend
+        from utils.prebuilt.llama_backend import (
+            environment_backend_override,
+            marker_backend_was_chosen,
+        )
 
-        # A concrete environment override is explicit. "auto" still has to pass
-        # the managed-install marker check below.
-        explicit = normalize_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
-        if explicit is not None and explicit != "auto":
-            return False
-        if (os.environ.get("UNSLOTH_FORCE_VULKAN") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
+        # The same precedence the installer applied when it chose this bundle, so
+        # a stale UNSLOTH_FORCE_VULKAN cannot mark an install explicit that
+        # UNSLOTH_LLAMA_CPP_BACKEND=auto had setup detect. Only a concrete
+        # override is a choice; "auto" still has to pass the marker check below.
+        override = environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"),
+            os.environ.get("UNSLOTH_FORCE_VULKAN"),
+        )
+        if override is not None and override != "auto":
             return False
         try:
             install_root = _llama_install_root(binary)
