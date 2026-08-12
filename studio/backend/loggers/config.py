@@ -128,9 +128,7 @@ def _echoable(exception: str) -> str:
     ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
     \\n normalises every separator a message could smuggle in, including the \\r the
     export worker's log reader treats as a line break."""
-    return "\n".join(
-        f"{_TRACEBACK_ECHO_PREFIX}{part}" for part in exception.rstrip().splitlines()
-    )
+    return "\n".join(f"{_TRACEBACK_ECHO_PREFIX}{part}" for part in exception.rstrip().splitlines())
 
 
 def with_readable_traceback(renderer):
