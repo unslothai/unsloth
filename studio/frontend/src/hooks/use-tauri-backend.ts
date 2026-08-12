@@ -237,18 +237,19 @@ export function useTauriBackend() {
   }, [status]);
 
   async function checkInstallAndStart() {
+    // Honor a persisted stop before preflight: the native command side-effects
+    // (it can adopt a still-reaping backend, reset the intentional-stop flag,
+    // and arm a watchdog that later fires server-crashed over this screen).
+    if (sessionStorage.getItem(USER_STOPPED_KEY)) {
+      setBackendStatus("stopped");
+      return;
+    }
     try {
       const { invoke } = await import("@tauri-apps/api/core");
 
       const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
       switch (preflight.disposition) {
         case "attached_ready": {
-          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
-            setIsExternalServer(false);
-            stopExternalServerPoll();
-            setBackendStatus("stopped");
-            return;
-          }
           if (!preflight.port) {
             setBackendError("Desktop preflight found a backend without a port.");
             return;
@@ -262,13 +263,6 @@ export function useTauriBackend() {
           return;
         }
         case "owned_ready":
-          // A stop mid-reap can still probe as owned_ready; honor the intent.
-          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
-            setIsExternalServer(false);
-            stopExternalServerPoll();
-            setBackendStatus("stopped");
-            return;
-          }
           if (!preflight.port) {
             setBackendError("Desktop preflight found an owned backend without a port.");
             return;
@@ -283,10 +277,6 @@ export function useTauriBackend() {
         case "managed_ready":
           setIsExternalServer(false);
           stopExternalServerPoll();
-          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
-            setBackendStatus("stopped");
-            return;
-          }
           setBackendStatus("starting");
           await startManagedServer();
           return;
