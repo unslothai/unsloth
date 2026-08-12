@@ -4128,9 +4128,7 @@ class _WindowsLauncherUpdateTransaction:
         python = self.launcher.parent / "python.exe"
         if not python.is_file():
             blocked = reason is self._POLICY_BLOCKED
-            state = (
-                "is blocked by an Application Control policy" if blocked else "is missing"
-            )
+            state = "is blocked by an Application Control policy" if blocked else "is missing"
             return (
                 f"the updated launcher {state} and there is no managed interpreter "
                 f"at {python} to ask instead"

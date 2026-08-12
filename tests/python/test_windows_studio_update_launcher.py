@@ -721,9 +721,7 @@ def test_the_policy_block_helper_only_matches_1260(studio):
     assert not studio._is_application_control_block(OSError(13, "denied"))
 
 
-def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(
-    monkeypatch, studio, tmp_path
-):
+def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):
     """Quarantine removes the unsigned stub rather than denying it.
 
     There is then nothing to run and nothing to put back, and reading that as a
