@@ -8991,6 +8991,11 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                              already taken in the workdir
 #   python, prefix present  -> a real /mnt/data mount is never shadowed, so a
 #                              prefix is only special while it is absent
+#   python, unpatched API   -> only open/io.open/os.open and the mkdir family are
+#                              wrapped, so os.rename / os.symlink raise instead;
+#                              shutil.copy is the awkward middle, writing the
+#                              rewritten file through open and then raising in
+#                              copymode against the path it was handed
 #   terminal, plain shell   -> no shim, so the shell's own rules
 #   terminal, launching python -> _build_bypass_env sets PYTHONPATH for the
 #                              terminal subprocess too, so that Python is patched
@@ -9007,8 +9012,12 @@ _FULL_ACCESS_CLAUSE = {
         "/mnt/outputs, /tmp/outputs, /home/sandbox, /workspace) the rest of the "
         "path is kept relative to the working directory, replacing any file "
         "already sitting there; under any other missing directory only the base "
-        "name is kept, and the write fails outright if that name is taken. Report "
-        "where a file actually landed rather than the path you asked for."
+        "name is kept, and the write fails outright if that name is taken. Both "
+        "reach only open() and the mkdir calls, so os.rename, os.symlink and the "
+        "like are never rewritten and simply fail, and a helper such as "
+        "shutil.copy can write the rewritten file and still raise on a later "
+        "step. Report where a file actually landed rather than the path you asked "
+        "for."
     ),
     "terminal": (
         " The code sandbox is disabled, so absolute paths do resolve as the shell "

@@ -135,6 +135,11 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         assert "replacing any file already sitting there" in full
         assert "only the base name is kept" in full
         assert "fails outright if that name is taken" in full
+        # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
+        # os.rename and os.symlink raise, and shutil.copy writes the rewritten
+        # file through open and then raises in copymode.
+        assert "reach only open() and the mkdir calls" in full
+        assert "shutil.copy can write the rewritten file and still raise" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
         # _build_bypass_env sets PYTHONPATH for the terminal subprocess too, so
