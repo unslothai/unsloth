@@ -368,11 +368,19 @@ function Install-UnslothStudio {
     # than a version, so uv never picks one of these -- but the machine may
     # already have it, and $PythonFallbackFullVersion above is what replaces it.
     $PythonSkip = @("3.13.8")
-    # Windows on ARM, set only when no x64 interpreter could be obtained: the install
-    # then drops the packages with no win_arm64 wheel (datasets/pyarrow, sqlite-vec,
-    # tiktoken, hf-transfer, ddgs, pandas) and Studio runs inference-only. Declared
-    # here so every later read is defined under Set-StrictMode.
+    # Windows on ARM: the install drops the packages with no win_arm64 wheel
+    # (datasets/pyarrow, sqlite-vec, tiktoken, hf-transfer, ddgs, pandas) and Studio
+    # runs inference-only. Set automatically when no x64 interpreter can be obtained,
+    # and up front by UNSLOTH_NO_DATASETS for someone who would rather keep a native
+    # ARM64 environment than run x64 emulated -- which is what the failure messages
+    # here and in setup.ps1 tell them to do, so it has to be honoured before the swap
+    # rather than only after it fails. Declared here so every later read is defined
+    # under Set-StrictMode.
     $script:ArmInferenceOnly = $false
+    if ($env:UNSLOTH_NO_DATASETS -and
+        (@("1", "true", "yes", "on") -contains $env:UNSLOTH_NO_DATASETS.Trim().ToLowerInvariant())) {
+        $script:ArmInferenceOnly = $true
+    }
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
@@ -2083,7 +2091,10 @@ exit 0
         # win_arm64 wheel, so a native ARM64 Python source-builds both and dies on CMake /
         # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
         # there is, and the caller then bootstraps x64 or warns.
-        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64")
+        # -X64Only still forces the search (Install-X64Python's last resort). Otherwise
+        # the inference-only tier keeps the native interpreter: choosing that tier IS
+        # choosing native ARM64 over an emulated x64 build.
+        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $script:ArmInferenceOnly)
         $candidates = @()
         # Try the Python Launcher first (most reliable on Windows)
         # py.exe resolves to the standard CPython install, not conda.
@@ -2207,7 +2218,7 @@ exit 0
         # forces either build, which is how the ARM64 inference-only tier asks for arm64.
         $targetArch = if ($Arch) {
             $Arch
-        } elseif ((Get-HostMachineArch) -eq "arm64") {
+        } elseif ((Get-HostMachineArch) -eq "arm64" -and -not $script:ArmInferenceOnly) {
             "x86_64"
         } else {
             Get-TauriDiagArch
@@ -2410,7 +2421,12 @@ exit 0
     # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
     # pyarrow and hf-transfer publish no win_arm64 wheel, so an ARM64 Python source-builds
     # both and fails deep into the run. Warn up front if x64 is unobtainable.
-    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
+    if ($script:ArmInferenceOnly -and (Get-HostMachineArch) -eq "arm64") {
+        # Asked for by name: keep the native interpreter and skip the swap entirely,
+        # or the x64 bootstrap below would undo the choice on its way past.
+        substep "windows on arm: UNSLOTH_NO_DATASETS is set -- installing inference-only on native ARM64." "Yellow"
+        substep "chat, model downloads and image/video generation work; training does not." "Yellow"
+    } elseif ($DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
         substep "windows on arm: only a native ARM64 Python $($DetectedPython.Version) was found." "Yellow"
         substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
         $X64Python = Install-X64Python
