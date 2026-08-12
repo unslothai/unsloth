@@ -216,13 +216,13 @@ def test_successful_callback_does_not_wait_for_its_own_connection(monkeypatch):
     server = Server()
     persisted = []
     flow = OAuthFlow(
-        id="flow-success",
-        provider_id="provider",
-        method="browser",
-        created_at=time.time(),
-        expires_at=time.time() + 60,
-        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
-        server=server,
+        id = "flow-success",
+        provider_id = "provider",
+        method = "browser",
+        created_at = time.time(),
+        expires_at = time.time() + 60,
+        persist_bundle = lambda _provider, bundle: persisted.append(bundle),
+        server = server,
     )
     token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
 
@@ -236,7 +236,6 @@ def test_successful_callback_does_not_wait_for_its_own_connection(monkeypatch):
     assert flow.server is None
     assert server.closed is True
     assert len(persisted) == 1
-
 
 
 def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
