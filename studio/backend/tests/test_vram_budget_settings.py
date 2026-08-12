@@ -197,9 +197,7 @@ class TestLaunchedMarker:
         backend._vram_fraction_launched = launched
         # The saved budget the next load would use, different from the running one.
         monkeypatch.setattr(lc, "_active_vram_fraction", lambda: active)
-        monkeypatch.setattr(
-            backend, "adopt_load_intent_if_matched", lambda _intent: True
-        )
+        monkeypatch.setattr(backend, "adopt_load_intent_if_matched", lambda _intent: True)
         return backend, lc
 
     def test_duplicate_load_leaves_the_running_child_marker(self, monkeypatch):
