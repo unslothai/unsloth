@@ -157,8 +157,12 @@ def _repair_needed(
         "nvidia": False,
         "amd": True,
         "assume_amd_detected": False,
+        "assume_nvidia_detected": False,
+        "detected_gfx_devices": [],
+        "detected_gfx_probe": None,
         "inferred_gfx": None,
         "rocm_version": (7, 2),
+        "installed_rocm_family": None,
     }
     defaults.update(state)
     monkeypatch.setattr(stack, "NO_TORCH", defaults["NO_TORCH"])
@@ -173,8 +177,16 @@ def _repair_needed(
     monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: defaults["amd"])
     monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: defaults["inferred_gfx"])
     monkeypatch.setattr(stack, "_detect_rocm_version", lambda: defaults["rocm_version"])
+    monkeypatch.setattr(
+        stack, "_installed_rocm_wheel_family", lambda: defaults["installed_rocm_family"]
+    )
     monkeypatch.setattr(stack, "_installed_torch_build_metadata", lambda: (version, hip))
-    return stack._rocm_fast_path_needs_repair(assume_amd_detected = defaults["assume_amd_detected"])
+    return stack._rocm_fast_path_needs_repair(
+        assume_amd_detected = defaults["assume_amd_detected"],
+        assume_nvidia_detected = defaults["assume_nvidia_detected"],
+        detected_gfx_devices = defaults["detected_gfx_devices"],
+        detected_gfx_probe = defaults["detected_gfx_probe"],
+    )
 
 
 @pytest.mark.parametrize("version", ["2.11.0+cpu", "2.10.0", "2.10.0+cu128"])
@@ -206,12 +218,35 @@ def test_unreadable_rocm_without_an_inferred_arch_keeps_the_fast_path(monkeypatc
 
 
 def test_inferred_arch_allows_repair_without_a_rocm_version(monkeypatch):
-    assert _repair_needed(monkeypatch, rocm_version = None, inferred_gfx = "gfx1151")
+    assert _repair_needed(monkeypatch, amd = False, rocm_version = None, inferred_gfx = "gfx1151")
 
 
 def test_setup_can_reuse_its_amd_vendor_verdict(monkeypatch):
     """The delegated decision must not repeat NVIDIA or AMD hardware probes."""
     assert _repair_needed(monkeypatch, assume_amd_detected = True, nvidia = True, amd = False)
+
+
+def test_setup_nvidia_verdict_skips_unpinned_rocm_repair(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        amd = False,
+        nvidia = False,
+        assume_nvidia_detected = True,
+    )
+
+
+def test_missing_or_unreadable_torch_metadata_forces_the_pass(monkeypatch):
+    assert _repair_needed(monkeypatch, version = "", hip = "")
+
+
+def test_explicit_rocm_pin_repairs_without_a_hardware_probe(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        amd = False,
+        nvidia = True,
+        version = "2.11.0+cpu",
+        rocm_pin = "https://download.pytorch.org/whl/rocm7.2",
+    )
 
 
 def test_explicit_rocm_family_mismatch_forces_the_pass(monkeypatch):
@@ -227,6 +262,64 @@ def test_matching_explicit_rocm_family_keeps_the_fast_path(monkeypatch):
         monkeypatch,
         version = "2.10.0+rocm6.4",
         rocm_pin = "https://download.pytorch.org/whl/rocm6.4",
+    )
+
+
+def test_strix_generic_rocm_wheel_forces_the_pass(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.2",
+        hip = "7.2.0",
+        detected_gfx_devices = ["gfx1151"],
+    )
+
+
+def test_strix_matching_arch_wheel_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.13.0",
+        hip = "7.13.0",
+        detected_gfx_devices = ["gfx1151"],
+        installed_rocm_family = "gfx1151",
+    )
+
+
+def test_strix_sibling_arch_wheel_forces_the_pass(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.13.0",
+        hip = "7.13.0",
+        detected_gfx_devices = ["gfx1151"],
+        installed_rocm_family = "gfx1150",
+    )
+
+
+def test_visible_non_strix_gpu_does_not_trigger_present_strix_repair(monkeypatch):
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.2",
+        hip = "7.2.0",
+        detected_gfx_devices = ["gfx1100", "gfx1151"],
+        detected_gfx_probe = "amd-smi",
+    )
+
+
+def test_gfx906_newer_rocm_wheel_forces_the_pass(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.2",
+        hip = "7.2.0",
+        detected_gfx_devices = ["gfx906"],
+    )
+
+
+def test_gfx906_legacy_rocm_wheel_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.7.0+rocm6.3",
+        hip = "6.3.0",
+        detected_gfx_devices = ["gfx906"],
     )
 
 
@@ -264,10 +357,16 @@ def test_fast_path_probe_reads_metadata_without_importing_torch():
 
 def test_shell_bounds_and_diagnoses_the_delegated_probe():
     source = SETUP_SH.read_text(encoding = "utf-8")
-    start = source.index("            _setup_rocm_repair_rc=3")
-    block = source[start : start + 2500]
+    start = source.index("            _setup_rocm_fast_path_probe()")
+    block = source[start : start + 3500]
     assert 'timeout 45 "$VENV_DIR/bin/python"' in block
-    assert "--rocm-fast-path-needs-repair --amd-detected" in block
+    assert "--rocm-fast-path-needs-repair" in block
+    assert "--amd-detected --amd-gfx" in block
+    assert "--nvidia-detected" in block
+    assert (
+        'if [ "$_SKIP_PYTHON_DEPS" = true ] && [ "${_setup_nvidia_usable:-}" != true ]'
+        not in source
+    )
     assert 'verbose_substep "ROCm reconciliation probe failed' in block
     stack_source = STACK_PATH.read_text(encoding = "utf-8")
     assert "else 3" in stack_source

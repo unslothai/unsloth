@@ -1731,28 +1731,37 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         fi
         # Ask the repair implementation for the decision instead of duplicating its platform,
         # manifest, pin-family, version, and HIP-marker rules in shell.
-        if [ "$_SKIP_PYTHON_DEPS" = true ] && [ "${_setup_nvidia_usable:-}" != true ] && \
-           [ "${_setup_amd_detected:-}" = true ]; then
-            # The shell already established AMD-primary hardware, so tell the Python owner not
-            # to repeat rocminfo/amd-smi. Exit 3 is its successful "no repair" result.
+        if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+            # Vendor detection is a probe hint, not an eligibility gate: an explicit ROCm pin or
+            # inferred gfx remains authoritative when no hardware probe succeeds. Pass the AMD
+            # device list too, so hardware-specific reconciliation does not repeat rocminfo/amd-smi.
+            _setup_rocm_fast_path_probe() {
+                if [ "${_setup_amd_detected:-}" = true ]; then
+                    set -- --amd-detected --amd-gfx "$_setup_gfx_all" \
+                        --amd-probe-kind "$_setup_amd_probe_kind"
+                elif [ "${_setup_nvidia_usable:-}" = true ]; then
+                    set -- --nvidia-detected
+                else
+                    set --
+                fi
+                if command -v timeout >/dev/null 2>&1; then
+                    timeout 45 "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+                        --rocm-fast-path-needs-repair "$@"
+                else
+                    "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
+                        --rocm-fast-path-needs-repair "$@"
+                fi
+            }
+            # Exit 3 is a successful "no repair" result. Any other non-zero status is a
+            # startup, import, argument, or timeout failure and must remain diagnosable.
             _setup_rocm_repair_rc=3
-            if command -v timeout >/dev/null 2>&1; then
-                if timeout 45 "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
-                    --rocm-fast-path-needs-repair --amd-detected >/dev/null 2>&1; then
-                    _setup_rocm_repair_rc=0
-                else
-                    _setup_rocm_repair_rc=$?
-                fi
+            if _setup_rocm_fast_path_probe >/dev/null 2>&1; then
+                _setup_rocm_repair_rc=0
             else
-                if "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" \
-                    --rocm-fast-path-needs-repair --amd-detected >/dev/null 2>&1; then
-                    _setup_rocm_repair_rc=0
-                else
-                    _setup_rocm_repair_rc=$?
-                fi
+                _setup_rocm_repair_rc=$?
             fi
             if [ "$_setup_rocm_repair_rc" -eq 0 ]; then
-                substep "AMD GPU detected and installed PyTorch needs ROCm reconciliation -- forcing dependency pass to repair..."
+                substep "installed PyTorch needs ROCm reconciliation -- forcing dependency pass to repair..."
                 _SKIP_PYTHON_DEPS=false
             elif [ "$_setup_rocm_repair_rc" -ne 3 ]; then
                 verbose_substep "ROCm reconciliation probe failed (exit $_setup_rocm_repair_rc); keeping the dependency fast path"

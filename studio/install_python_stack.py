@@ -115,7 +115,7 @@ def _gfx906_needs_legacy_index(ver: tuple[int, int]) -> bool:
     return key is not None and key > (6, 3)
 
 
-def _runtime_target_is_gfx906() -> bool:
+def _runtime_target_is_gfx906(gfx_codes: "list[str] | None" = None) -> bool:
     """True when the runtime GPU target is gfx906 (MI50 / Radeon VII).
 
     An explicit UNSLOTH_ROCM_GFX_ARCH wins (mirrors _infer_linux_amd_gfx_arch /
@@ -130,7 +130,7 @@ def _runtime_target_is_gfx906() -> bool:
     override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
     if override:
         return override == "gfx906"
-    return set(_detect_amd_gfx_codes()) == {"gfx906"}
+    return set(_detect_amd_gfx_codes() if gfx_codes is None else gfx_codes) == {"gfx906"}
 
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug).
@@ -2746,6 +2746,49 @@ def _ensure_cpu_torch() -> None:
     )
 
 
+def _selected_linux_strix_gfx(
+    inferred_linux_gfx: "str | None",
+    *,
+    gfx_devices: "list[str] | None" = None,
+    probe_kind: "str | None" = None,
+) -> "tuple[str | None, str | None, str | None, set[str]]":
+    """The visible Strix target and its probe context, without changing the install.
+
+    setup.sh can pass the rocminfo/amd-smi result it already collected, while the full
+    dependency pass lets this helper probe for itself. Keeping the ordinal and HSA-spoof
+    rules here makes the fast-path decision and the repair select the same GPU.
+    """
+    if gfx_devices is None:
+        gfx_devices = _detect_amd_gfx_codes(dedup = False)
+        probe_kind = _LAST_AMD_GFX_PROBE
+    else:
+        gfx_devices = list(gfx_devices)
+
+    physical_gfx = _hsa_spoofed_physical_gfx(inferred_linux_gfx, gfx_devices)
+    if physical_gfx is not None:
+        gfx_devices = [physical_gfx]
+
+    strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
+    detected_strix = strix_gfx.intersection(gfx_devices)
+    if not detected_strix:
+        return None, None, physical_gfx, detected_strix
+
+    # rocminfo has already applied ROCR_VISIBLE_DEVICES and renumbered its result.
+    # amd-smi is unfiltered, while HIP/CUDA masks are applied by the HIP runtime.
+    rocr_applied = probe_kind == "rocminfo" and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+    runtime_gfx = (
+        gfx_devices[0 if rocr_applied else _pick_visible_index(len(gfx_devices))]
+        if gfx_devices
+        else None
+    )
+    return (
+        runtime_gfx if runtime_gfx in strix_gfx else None,
+        runtime_gfx,
+        physical_gfx,
+        detected_strix,
+    )
+
+
 def _installed_torch_build_metadata() -> tuple[str, str]:
     """Read the active interpreter's torch version and HIP marker without importing torch."""
     version_file = Path(sysconfig.get_path("purelib")) / "torch" / "version.py"
@@ -2781,7 +2824,13 @@ def _installed_torch_build_metadata() -> tuple[str, str]:
     )
 
 
-def _rocm_fast_path_needs_repair(*, assume_amd_detected: bool = False) -> bool:
+def _rocm_fast_path_needs_repair(
+    *,
+    assume_amd_detected: bool = False,
+    assume_nvidia_detected: bool = False,
+    detected_gfx_devices: "list[str] | None" = None,
+    detected_gfx_probe: "str | None" = None,
+) -> bool:
     """Whether skipping the dependency pass would strand a repairable Linux AMD torch."""
     if NO_TORCH or not IS_LINUX:
         return False
@@ -2794,25 +2843,62 @@ def _rocm_fast_path_needs_repair(*, assume_amd_detected: bool = False) -> bool:
 
     rocm_pin = _explicit_rocm_torch_index_url()
     inferred_gfx = _infer_linux_amd_gfx_arch() if rocm_pin is None else None
+    rocm_version = None
     if rocm_pin is None:
         if not assume_amd_detected:
-            if _has_usable_nvidia_gpu():
+            if assume_nvidia_detected or _has_usable_nvidia_gpu():
                 return False
             if not _has_rocm_gpu() and not inferred_gfx:
                 return False
-        if _detect_rocm_version() is None and not inferred_gfx:
+        rocm_version = _detect_rocm_version()
+        if rocm_version is None and not inferred_gfx:
             return False
 
     installed_version, hip = _installed_torch_build_metadata()
     if not installed_version and not hip:
-        return False
+        return True
     if "+xpu" in installed_version.lower():
         return False
 
     is_rocm = bool(hip) or "+rocm" in installed_version.lower()
     if not is_rocm:
         return True
-    return bool(rocm_pin and _rocm_pin_family_mismatch(rocm_pin, installed_version))
+    if rocm_pin is not None:
+        return _rocm_pin_family_mismatch(rocm_pin, installed_version)
+
+    # A working ROCm import is not enough for the hardware-specific exceptions.
+    # Strix needs AMD's per-arch 2.11 build, and gfx906 needs the last wheel family
+    # that still ships its BLAS kernels. Reuse the same target selection as repair.
+    if rocm_version is None:
+        return False
+    gfx906_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[
+        0
+    ] == "gfx906"
+    if _strix_needs_amd_arch_index(rocm_version) and not gfx906_override:
+        selected_gfx, _runtime_gfx, _physical_gfx, _detected_strix = _selected_linux_strix_gfx(
+            inferred_gfx,
+            gfx_devices = detected_gfx_devices,
+            probe_kind = detected_gfx_probe,
+        )
+        if selected_gfx is not None:
+            desired_url = _amd_arch_index_url(selected_gfx)
+            desired_family = (_GFX_TO_AMD_INDEX_ARCH.get(selected_gfx) or "").lower()
+            installed_family = _installed_rocm_wheel_family()
+            if desired_url is not None and _rocm_pin_family_mismatch(
+                desired_url, installed_version
+            ):
+                return True
+            if desired_family and installed_family and installed_family != desired_family:
+                return True
+
+    gfx_codes = detected_gfx_devices
+    if (
+        _runtime_target_is_gfx906(gfx_codes)
+        and _gfx906_needs_legacy_index(rocm_version)
+        and _GFX906_LEGACY_TAG not in installed_version.lower()
+    ):
+        return True
+    return False
 
 
 def _ensure_rocm_torch() -> None:
@@ -3089,38 +3175,11 @@ def _ensure_rocm_torch() -> None:
         and _explicit_rocm_torch_index_url() is None
         and not _gfx906_arch_override
     ):
-        # One entry per DEVICE: the mask names a device ordinal, so a deduplicated list
-        # picks the wrong card when two GPUs share an arch (gfx1100,gfx1100,gfx1151
-        # would read index 1 as the Strix).
-        gfx_devices = _detect_amd_gfx_codes(dedup = False)
-        # HSA_OVERRIDE_GFX_VERSION=11.0.0 (the circulated Strix workaround) makes ROCr
-        # hand rocminfo the SPOOFED ISA, so a gfx1151 host reports gfx1100 and every
-        # check below misses it (unslothai#7331). Correct the reading back to the
-        # physical arch first, only in the narrow shape that cannot be a real mixed host.
-        _physical_gfx = _hsa_spoofed_physical_gfx(_inferred_linux_gfx, gfx_devices)
-        if _physical_gfx is not None:
-            gfx_devices = [_physical_gfx]
-        gfx_codes = list(dict.fromkeys(gfx_devices))
-        _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
-        _detected_strix = _strix_gfx.intersection(gfx_codes)
+        _selected_gfx, _runtime_gfx, _physical_gfx, _detected_strix = _selected_linux_strix_gfx(
+            _inferred_linux_gfx
+        )
         if _detected_strix:
-            # rocminfo links HSA/ROCr directly and never loads HIP, so only
-            # ROCR_VISIBLE_DEVICES filters and renumbers its output; HIP_VISIBLE_DEVICES
-            # and CUDA_VISIBLE_DEVICES (a HIP-layer alias) do not touch it. Re-indexing an
-            # already-ROCR-filtered list applies the mask twice, while skipping the index
-            # for the other two would ignore the pin. amd-smi reads the driver and is
-            # filtered by none of them, so it always indexes.
-            _rocr_applied = (
-                _LAST_AMD_GFX_PROBE == "rocminfo"
-                and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
-            )
-            _runtime_gfx = (
-                gfx_devices[0 if _rocr_applied else _pick_visible_index(len(gfx_devices))]
-                if gfx_devices
-                else None
-            )
-            if _runtime_gfx in _strix_gfx:
-                _selected_gfx = _runtime_gfx
+            if _selected_gfx is not None:
                 _amd_mirror = (
                     os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
                 ).rstrip("/")
@@ -4801,9 +4860,35 @@ def install_python_stack() -> int:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--rocm-fast-path-needs-repair"]:
-        if sys.argv[1:] != ["--rocm-fast-path-needs-repair", "--amd-detected"]:
+        _args = sys.argv[2:]
+        _assume_amd = False
+        _assume_nvidia = False
+        _detected_gfx: "list[str] | None" = None
+        _detected_probe: "str | None" = None
+        while _args:
+            _arg = _args.pop(0)
+            if _arg == "--amd-detected":
+                _assume_amd = True
+            elif _arg == "--nvidia-detected":
+                _assume_nvidia = True
+            elif _arg == "--amd-gfx" and _args:
+                _detected_gfx = [line.strip() for line in _args.pop(0).splitlines() if line.strip()]
+            elif _arg == "--amd-probe-kind" and _args:
+                _detected_probe = _args.pop(0).strip() or None
+            else:
+                sys.exit(2)
+        if _assume_amd and _assume_nvidia:
             sys.exit(2)
         # Exit 3 means a successful "no repair" decision. Exit 1 remains available for an
         # import or startup failure, so setup.sh can distinguish that from a negative result.
-        sys.exit(0 if _rocm_fast_path_needs_repair(assume_amd_detected = True) else 3)
+        sys.exit(
+            0
+            if _rocm_fast_path_needs_repair(
+                assume_amd_detected = _assume_amd,
+                assume_nvidia_detected = _assume_nvidia,
+                detected_gfx_devices = _detected_gfx,
+                detected_gfx_probe = _detected_probe,
+            )
+            else 3
+        )
     sys.exit(install_python_stack())
