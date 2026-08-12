@@ -135,11 +135,16 @@ async def cancel_oauth(
 ):
     require_ui_session(via_api_key)
     _provider(provider_id)
-    flow = codex_auth.get_flow(provider_id, flow_id)
-    async with codex_auth.provider_oauth_write_guard(provider_id):
+    try:
+        flow = codex_auth.get_flow(provider_id, flow_id)
+        # Closing a loopback server can wait for an in-flight callback. Do not
+        # hold the credential guard while waiting for that handler to finish.
         await codex_auth.cancel_flow(flow.id)
-        with current_credential_write(credential):
-            codex_auth.delete_oauth_flow_marker(provider_id, flow.marker)
+        async with codex_auth.provider_oauth_write_guard(provider_id):
+            with current_credential_write(credential):
+                codex_auth.delete_oauth_flow_marker(provider_id, flow.marker)
+    except Exception as exc:
+        raise _safe_error(exc) from exc
 
 
 @router.delete("/{provider_id}/oauth", status_code = 204)

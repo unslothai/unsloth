@@ -4006,6 +4006,10 @@ export function createOpenAIStreamAdapter(
           externalProvider?.providerType,
           externalSelection?.modelId,
         ) === true;
+
+      const supportsStudioToolsForThisTurn = isExternalRequest
+        ? externalUsesStudioTools
+        : supportsTools;
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -4800,13 +4804,9 @@ export function createOpenAIStreamAdapter(
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
             mcp:
-              (!isExternalRequest || externalUsesStudioTools) &&
-              supportsTools &&
-              mcpEnabledForChat,
+              supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              (!isExternalRequest || externalUsesStudioTools) &&
-              supportsTools &&
-              (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -5015,8 +5015,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               // ChatGPT/Codex function calls are executed by Studio. Other
               // external providers keep their provider-hosted tool envelope.
-              ...(externalUsesStudioTools &&
-              supportsTools &&
+              ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
                 codeToolsEnabled ||
                 mcpEnabledForChat ||

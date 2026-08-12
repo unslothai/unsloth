@@ -751,12 +751,12 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
+    _stop_post_warm_thread()
+
     from core.inference.openai_codex_auth import shutdown_flows
 
     await shutdown_flows()
-
-    # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
-    _stop_post_warm_thread()
     try:
         from core.rag.folder_sync import stop_auto_sync
         stop_auto_sync()
