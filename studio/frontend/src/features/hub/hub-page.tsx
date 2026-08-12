@@ -99,7 +99,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
-import { looksLikeLocalPath } from "./lib/local-path";
+import { looksLikeLocalPath, routableToMediaPage } from "./lib/local-path";
 import {
   ggufVariantsMatch,
   modelIdsMatch,
@@ -1292,11 +1292,13 @@ export function ModelsPage() {
       const mediaPage = studioPageForTask(
         taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
       );
-      // A local row's runId is a filesystem path, and the target pages read a routed
-      // `model` as a Hub id (their own local branch splits directory + filename first),
-      // so a path sent through here would arrive as a repo that does not exist. Those keep
-      // today's route; the backend preflight now refuses them by name instead of letting
-      // llama-server fail opaquely.
+      // A FILESYSTEM row's runId is a path, and the target pages read a routed `model` as
+      // a Hub id (their own local branch splits directory + filename first), so a path sent
+      // through here would arrive as a repo that does not exist. Those keep today's route;
+      // the backend preflight now refuses them by name instead of letting llama-server fail
+      // opaquely. An HF-cache row is local in kind only -- it is a complete Hub snapshot,
+      // and inventory dedup leaves it as the only row for its repo whenever the cached row
+      // beside it was partial -- so it routes like the cached row it replaced.
       // A cached repo whose id does not resolve on its own -- one outside the active HF
       // cache, or whose default ref names no whole quant -- is pinned by the inventory to
       // its snapshot directory, so runId is an absolute path on a row that is not `local`.
@@ -1304,7 +1306,11 @@ export function ModelsPage() {
       // dir, and the containment check refuses a child resolving outside the repo root. The
       // Hub id loads the SAME copy, since the loader reuses whichever cache root holds it.
       const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
-      if (mediaPage && selectedModel.kind !== "local" && routeId) {
+      if (
+        mediaPage &&
+        routableToMediaPage(selectedModel.kind, selectedModel.localSource) &&
+        routeId
+      ) {
         void navigate({
           to: `/${mediaPage}`,
           // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.

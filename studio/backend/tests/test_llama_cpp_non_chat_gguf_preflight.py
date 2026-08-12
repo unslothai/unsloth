@@ -324,3 +324,48 @@ def test_an_arch_that_names_its_own_family_still_gets_the_video_page(tmp_path):
         assert message is not None
         assert _arch_to_task("ltxv", name_hints = (identifier, name)) == "text-to-video"
         assert "Open it from the Video page" in message, (identifier, name, message)
+
+
+def _write_split_shard(path: Path) -> Path:
+    """A gguf-split shard past the first: split.no / split.count / split.tensors.count and
+    no general.architecture, the shape measured on unsloth/DeepSeek-R1-GGUF shard 2."""
+    body = b""
+    for key, value in ((b"split.no", 1), (b"split.count", 30), (b"split.tensors.count", 34)):
+        body += struct.pack("<Q", len(key)) + key
+        body += struct.pack("<I", 4)  # UINT32
+        body += struct.pack("<I", value)
+    path.write_bytes(struct.pack("<II", GGUF_MAGIC, 3) + struct.pack("<QQ", 34, 3) + body)
+    return path
+
+
+def test_a_trailing_split_shard_gets_no_verdict(tmp_path):
+    # Shard 1 carries the architecture for the whole set, so a later shard declares none.
+    # Refusing it as a media GGUF would misname a chat model; llama.cpp's own "must be
+    # loaded with the first split" is the accurate answer, so leave the file to it.
+    gguf = _write_split_shard(tmp_path / "DeepSeek-R1.BF16-00002-of-00030.gguf")
+    backend = LlamaCppBackend()
+    backend._model_identifier = "unsloth/DeepSeek-R1-GGUF"
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._gguf_header_parsed is True
+    assert backend._architecture is None
+    assert backend._non_chat_gguf_refusal(str(gguf)) is None
+
+
+def test_a_metadata_less_gguf_that_is_not_a_shard_is_still_refused(tmp_path):
+    # The other half: the no-architecture verdict is what catches MiniMax-H3's bundle, whose
+    # files carry zero KV pairs. Only the split keys buy an exemption.
+    _, message = _refusal(tmp_path, arch = None, name = "video-dit-Q4_K_M.gguf")
+    assert message is not None
+
+
+def test_the_first_shard_is_the_one_a_variant_resolves_to():
+    # The exemption above only has to cover hand-written variant strings because every
+    # producer strips the shard suffix from the variant key, and the matches are sorted, so
+    # shard 1 leads and the rest ride along as extra shards.
+    from core.inference.llama_cpp import _gguf_extra_shards, _gguf_files_for_variant
+
+    files = [f"BF16/model-BF16-{i:05d}-of-00010.gguf" for i in range(1, 11)]
+    for variant in ("BF16", "BF16/model-BF16"):
+        picked = _gguf_files_for_variant(files, variant)
+        assert picked and picked[0].endswith("-00001-of-00010.gguf"), variant
+        assert len(_gguf_extra_shards(picked, picked[0])) == 9

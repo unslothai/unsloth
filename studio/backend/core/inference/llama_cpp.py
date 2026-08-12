@@ -3374,6 +3374,7 @@ class LlamaCppBackend:
         # Whether the last _read_gguf_metadata walked the whole header without failing.
         # Separates "declares no architecture" from "could not be read" (see the preflight).
         self._gguf_header_parsed: bool = False
+        self._gguf_declares_split: bool = False
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
@@ -7336,6 +7337,7 @@ class LlamaCppBackend:
         self._architecture = None
         self._is_diffusion = False
         self._gguf_header_parsed = False
+        self._gguf_declares_split = False
 
         try:
             canvas_seen = False
@@ -7391,6 +7393,15 @@ class LlamaCppBackend:
                         if len(vtype_bytes) < 4:
                             break
                         vtype = struct.unpack("<I", vtype_bytes)[0]
+                        # gguf-split writes the whole metadata block into shard 1 and gives
+                        # every later shard three keys and nothing else: split.no,
+                        # split.count, split.tensors.count. Measured on
+                        # unsloth/DeepSeek-R1-GGUF, shard 1 is 48 KV pairs starting at
+                        # general.architecture = "deepseek2" and shard 2 is those 3. Noted
+                        # here, where the key is already in hand, since none of them is
+                        # WANTED and the value reader skips them.
+                        if key.startswith("split."):
+                            self._gguf_declares_split = True
                     except (struct.error, UnicodeDecodeError):
                         break
 
@@ -9181,6 +9192,16 @@ class LlamaCppBackend:
                     f"this file belongs to -- '{arch}' is shared by several -- so the "
                     "Images page cannot assemble it either."
                 )
+            return None
+
+        # A shard past the first of a gguf-split set: no architecture, because shard 1
+        # holds it, and no verdict to give. It is not a media GGUF, and llama.cpp has its
+        # own precise answer for opening one directly ("model must be loaded with the first
+        # split"), which is more use than being told the file carries no metadata. Every
+        # variant string a producer here emits already resolves to shard 1 (the shard suffix
+        # is stripped from the key and the matches are sorted), so this only covers a
+        # hand-written one.
+        if self._gguf_declares_split:
             return None
 
         # No architecture declared: not loadable by llama-server whatever it is. Say which
