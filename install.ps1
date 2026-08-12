@@ -4267,7 +4267,7 @@ exit 0
         "pymupdf"      = "pymupdf>=1.28.2"
         "av"           = "av>=17.0.0"
         "scikit-learn" = "scikit-learn>=1.8.0"
-        "cryptography" = "cryptography>=46.0.0,<47"
+        "cryptography" = "cryptography>=46.0.0,<46.0.4"
     }
 
     # The requirements file with the ARM64-impossible entries removed, or the original

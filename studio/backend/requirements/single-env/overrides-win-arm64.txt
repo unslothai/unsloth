@@ -29,10 +29,11 @@ av>=17.0.0
 # to compile -- the failure surfaces as numpy, not as the pin that caused it.
 scikit-learn>=1.8.0
 
-# cryptography publishes win_arm64 wheels for 46.0.0 through 46.0.3 only: 45 and
-# below never had one and 47 onwards dropped it again, so studio.txt's open
-# `cryptography>=42.0.0` resolves to the newest release and then needs a Rust
-# toolchain to build. This is the one entry here that pins BELOW the newest release
-# rather than above an old pin, and it is on the TLS path, so treat it as a security
-# pin: drop the ceiling the moment upstream ships a win_arm64 wheel again.
-cryptography>=46.0.0,<47
+# cryptography publishes win_arm64 wheels for 46.0.0 through 46.0.3 and nowhere
+# else: 45 and below never had one, and 46.0.4 onwards dropped it again (46.0.7,
+# the current 46.x, has no ARM64 Windows wheel). studio.txt's open
+# `cryptography>=42.0.0` therefore resolves to a release that needs a Rust
+# toolchain to build. This is the one entry here that pins BELOW the newest
+# release rather than above an old pin, and it is on the TLS path, so treat it as
+# a security pin: drop it the moment upstream ships a win_arm64 wheel again.
+cryptography>=46.0.0,<46.0.4
