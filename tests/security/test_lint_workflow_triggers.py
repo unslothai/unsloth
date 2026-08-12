@@ -51,6 +51,46 @@ def test_lint_rejects_pull_request_target(tmp_path):
     assert "GHSA-g7cv-rxg3-hmpx" in proc.stderr
 
 
+def test_lint_rejects_pull_request_target_in_yaml_extension(tmp_path):
+    """GitHub Actions also loads `.yaml`; the lint must not stop at `.yml`."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "bad.yaml").write_text(
+        "name: bad\n"
+        "on:\n"
+        "  pull_request_target:\n"
+        "    branches: [main]\n"
+        "jobs:\n"
+        "  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: echo evil\n"
+    )
+    proc = _run(wf)
+    assert proc.returncode == 1
+    assert "bad.yaml" in proc.stderr
+    assert "BANNED trigger 'pull_request_target'" in proc.stderr
+
+
+def test_security_audit_runs_on_every_pull_request():
+    """The lint job is wired inside security-audit.yml, so that workflow must
+    not carry a `paths` filter -- a filter that omits `.github/workflows/**`
+    would let a PR add a dangerous workflow without ever running the lint."""
+    yaml = pytest.importorskip("yaml")
+    doc = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "security-audit.yml").read_text(
+            encoding = "utf-8",
+        )
+    )
+    on = doc.get(True, doc.get("on"))
+    assert isinstance(on, dict) and "pull_request" in on
+    pr = on["pull_request"] or {}
+    assert "paths" not in pr, (
+        "security-audit.yml gained a pull_request `paths` filter; the "
+        "workflow-trigger lint would stop running for workflow-file PRs."
+    )
+
+
 def test_lint_rejects_unjustified_workflow_run(tmp_path):
     """`workflow_run` requires an explicit allow-comment in the YAML."""
     wf = tmp_path / "wf"

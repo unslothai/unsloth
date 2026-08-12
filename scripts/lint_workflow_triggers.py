@@ -85,7 +85,12 @@ def main() -> int:
     workflows_dir = args.workflows_dir
 
     findings: list[str] = []
-    workflows = sorted(workflows_dir.glob("*.yml"))
+    # GitHub Actions loads BOTH `.yml` and `.yaml` from .github/workflows/, so
+    # scanning only `*.yml` leaves a rename-away bypass: `evil.yaml` with
+    # `pull_request_target` would run for real and lint clean.
+    workflows = sorted(
+        list(workflows_dir.glob("*.yml")) + list(workflows_dir.glob("*.yaml"))
+    )
     pr_triggered: list[tuple[Path, list[str]]] = []
     publish_triggered: list[tuple[Path, list[str]]] = []
 
