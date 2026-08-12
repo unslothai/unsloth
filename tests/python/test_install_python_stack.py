@@ -301,9 +301,9 @@ class TestSdistOnlyBuildArgs:
     def test_emits_no_binary_for_every_sdist_only_package(self):
         args = ips._sdist_only_build_args()
         for name in ips.SDIST_ONLY_PACKAGES:
-            assert ["--no-binary", name] == args[args.index(name) - 1 : args.index(name) + 1], (
-                f"{name} must be passed as a package-scoped --no-binary, got: {args}"
-            )
+            assert ["--no-binary", name] == args[
+                args.index(name) - 1 : args.index(name) + 1
+            ], f"{name} must be passed as a package-scoped --no-binary, got: {args}"
         assert len(args) == 2 * len(ips.SDIST_ONLY_PACKAGES)
 
     def test_openai_whisper_is_covered(self):
@@ -341,9 +341,7 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "extras.txt" not in ast.unparse(req.value):
                 continue
-            starred = [
-                ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)
-            ]
+            starred = [ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)]
             assert "_sdist_only_build_args()" in starred, (
                 f"the extras.txt install at line {node.lineno} must splat "
                 "_sdist_only_build_args() or a hardened uv.toml fails it again"
