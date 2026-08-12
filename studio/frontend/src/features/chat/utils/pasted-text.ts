@@ -14,6 +14,8 @@ const PASTED_TEXT_FALLBACK_NAME = "Pasted text";
 const PASTED_TEXT_TAG = "pasted_text";
 // A preview is for reading, so render an opening rather than megabytes.
 export const PASTED_TEXT_PREVIEW_MAX_CHARS = 100_000;
+// A title only ever uses the first line of this.
+const ATTACHMENT_SAMPLE_CHARS = 512;
 // Illegal in filenames on at least one platform, plus control characters.
 const UNSAFE_NAME_CHARS = /[\\/:*?"<>|\p{Cc}]/gu;
 
@@ -131,6 +133,26 @@ export function pastedTextContentBytes(
   return bytes === undefined ? undefined : Number(bytes);
 }
 
+// Where the body sits inside the wrapper, so callers can slice out the piece
+// they need instead of unwrapping megabytes. Unwrapped content is all body.
+function attachmentBodyRange(content: string): { start: number; end: number } {
+  const tag = content.startsWith("<attachment name=")
+    ? "attachment"
+    : isPastedTextContent(content)
+      ? PASTED_TEXT_TAG
+      : undefined;
+  const headerEnd = tag === undefined ? -1 : content.indexOf("\n");
+  if (headerEnd === -1) return { start: 0, end: content.length };
+
+  const closing = `\n</${tag}>`;
+  return {
+    start: headerEnd + 1,
+    end: content.endsWith(closing)
+      ? Math.max(content.length - closing.length, headerEnd + 1)
+      : content.length,
+  };
+}
+
 /**
  * Previews wrapped content without unwrapping it: the body can be megabytes,
  * and only the opening is ever rendered.
@@ -139,21 +161,46 @@ export function pastedTextContentPreview(content: string): {
   text: string;
   remaining: number;
 } {
-  const headerEnd = content.indexOf("\n");
-  if (headerEnd === -1) return pastedTextPreview(content);
-
-  const start = headerEnd + 1;
-  const closing = `\n</${content.startsWith("<attachment ") ? "attachment" : PASTED_TEXT_TAG}>`;
-  const end = content.endsWith(closing)
-    ? content.length - closing.length
-    : content.length;
-
-  const length = Math.max(end - start, 0);
+  const { start, end } = attachmentBodyRange(content);
+  const length = end - start;
   const taken = Math.min(length, PASTED_TEXT_PREVIEW_MAX_CHARS);
   return {
     text: content.slice(start, start + taken),
     remaining: length - taken,
   };
+}
+
+/**
+ * The opening of an attachment's body, for naming a thread. A paste-only
+ * message has no inline text, so this is all the title has to work from.
+ */
+export function attachmentContentSample(
+  content: string,
+  max: number = ATTACHMENT_SAMPLE_CHARS,
+): string {
+  const { start, end } = attachmentBodyRange(content);
+  return content.slice(start, Math.min(end, start + max)).trim();
+}
+
+type AttachmentLike = {
+  readonly content?: readonly {
+    readonly type: string;
+    readonly text?: string;
+  }[];
+};
+
+/** The same opening, taken from the first attachment that carries text. */
+export function attachmentsSample(
+  attachments: readonly AttachmentLike[] | undefined,
+): string {
+  for (const attachment of attachments ?? []) {
+    for (const part of attachment.content ?? []) {
+      if (part.type !== "text" || part.text === undefined) continue;
+      const sample = attachmentContentSample(part.text);
+      if (sample.length > 0) return sample;
+    }
+  }
+  return "";
 }
 
 function clipboardHasFiles(clipboardData: DataTransfer): boolean {

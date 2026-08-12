@@ -81,7 +81,11 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
-import { attachmentContentText, isPastedTextFile } from "./utils/pasted-text";
+import {
+  attachmentContentText,
+  attachmentsSample,
+  isPastedTextFile,
+} from "./utils/pasted-text";
 import {
   refreshContextUsage,
   setActiveBranchReader,
@@ -527,6 +531,14 @@ function extractTextParts(m: ThreadMessage | undefined): string {
     .trim();
 }
 
+// A message that is only a paste has no inline text, so the thread would stay
+// "New Chat". The attachment holds what the user actually sent.
+function titleTextOf(m: ThreadMessage | undefined): string {
+  const text = extractTextParts(m);
+  if (text.length > 0) return text;
+  return m?.role === "user" ? attachmentsSample(m.attachments) : "";
+}
+
 async function generateTitleWithModel(payload: {
   userText: string;
   assistantText?: string;
@@ -874,7 +886,7 @@ function createStudioDbAdapter(
         firstUserIndex === -1
           ? undefined
           : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
-      const userText = extractTextParts(firstUser) || defaultTitle;
+      const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
       if (!autoTitle) {

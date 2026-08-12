@@ -4,11 +4,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { fallbackTitleFromUserText } from "../src/features/chat/utils/chat-title.ts";
 import {
   PASTED_TEXT_MIN_CHARS,
   PASTED_TEXT_MIN_LINES,
   PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentSample,
   attachmentContentText,
+  attachmentsSample,
   createPastedTextFile,
   isPastedTextContent,
   isPastedTextFile,
@@ -198,6 +201,52 @@ test("previewing sent content never materialises the body", () => {
     text: "body",
     remaining: 0,
   });
+});
+
+test("a paste-only message still has something to name the thread with", () => {
+  const paste = `Fix the retry backoff\n${"detail\n".repeat(500)}`;
+  const sent = attachmentContentText(
+    pastedTextFileName(paste),
+    paste,
+    true,
+    paste.length,
+  );
+
+  // The composer sends no text at all in this case, so the title comes from
+  // the attachment or the thread stays "New Chat".
+  assert.equal(
+    fallbackTitleFromUserText(attachmentsSample([{ content: [] }])),
+    "New Chat",
+  );
+  assert.equal(
+    fallbackTitleFromUserText(
+      attachmentsSample([{ content: [{ type: "text", text: sent }] }]),
+    ),
+    "Fix the retry backoff",
+  );
+  // Only a bounded opening is read, never the whole body.
+  assert.ok(
+    attachmentsSample([{ content: [{ type: "text", text: sent }] }]).length <=
+      512,
+  );
+  // Non-text parts are skipped, and the first text part wins.
+  assert.equal(
+    attachmentsSample([
+      { content: [{ type: "image" }] },
+      { content: [{ type: "text", text: sent }] },
+    ]),
+    attachmentContentSample(sent),
+  );
+  assert.equal(attachmentsSample(undefined), "");
+});
+
+test("a sample of unwrapped content is left as it is", () => {
+  // PDF and DOCX adapters write their own prefix with no wrapper.
+  assert.equal(
+    attachmentContentSample("[PDF: paper.pdf]\nAbstract"),
+    "[PDF: paper.pdf]\nAbstract",
+  );
+  assert.equal(attachmentContentSample("plain", 3), "pla");
 });
 
 test("the preview is capped, and says how much it is holding back", () => {
