@@ -187,9 +187,9 @@ def test_update_refuses_any_edit_of_a_stdio_row_from_api_key(
 
 
 def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio_on):
-    """clear_oauth_tokens_async awaits, which hands the event loop to other
-    requests. If the owner converts this row to stdio in that window, the write
-    that follows must not land the API key's headers as the command's env."""
+    """clear_oauth_tokens_async awaits, handing the loop to other requests. If
+    the owner converts the row to stdio in that window, the write that follows
+    must not land the API key's headers as the command's env."""
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
 
