@@ -2682,7 +2682,6 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
     """True when tools are on ONLY because of the launcher's tools-on default:
     no CLI override is installed and the request itself asked for nothing."""
     from state.tool_policy import get_tool_policy
-
     return (
         get_tool_policy() is None
         and payload.enable_tools is None
