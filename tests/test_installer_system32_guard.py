@@ -764,9 +764,9 @@ def test_cli_guard_pins_a_relative_studio_home_before_moving():
     )
     assert colour == "yellow"
     assert chdir_calls == [_RELOCATED]
-    assert environ_out["UNSLOTH_STUDIO_HOME"] == r"C:\Windows\System32\.\custom", (
-        "the override must keep naming the folder the caller meant"
-    )
+    assert (
+        environ_out["UNSLOTH_STUDIO_HOME"] == r"C:\Windows\System32\.\custom"
+    ), "the override must keep naming the folder the caller meant"
 
 
 @pytest.mark.parametrize(

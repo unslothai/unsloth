@@ -245,7 +245,11 @@ _RELATIVE_PATH_ENV = (
 )
 
 
-def pin_relative_overrides(environ, cwd, pathmod = _os.path):
+def pin_relative_overrides(
+    environ,
+    cwd,
+    pathmod = _os.path,
+):
     """Rewrite relative path overrides so they keep meaning the folder they did.
 
     Returns the names that were pinned. A `~` value is left alone: expanduser
