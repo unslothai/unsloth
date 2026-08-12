@@ -105,7 +105,7 @@ def test_child_runs_this_interpreter_with_hidden_window_kwargs(monkeypatch):
     argv, kwargs = calls[0]
     assert argv[0] == sys.executable
     assert argv[1] == "-c"
-    assert argv[-1] == "cuda:1"  # the device is passed as argv, never interpolated
+    assert argv[-2] == "cuda:1"  # the device is passed as argv, never interpolated
     for key, value in windows_hidden_subprocess_kwargs().items():
         assert key in kwargs
     assert kwargs["stdout"] is subprocess.PIPE
@@ -157,17 +157,17 @@ def test_windows_child_registers_the_rocm_dll_directories(monkeypatch, tmp_path)
     assert script.index("add_dll_directory") < script.index("import torch")
 
 
-def test_child_is_bound_to_the_backend_lifetime(monkeypatch):
-    # The child can sit in a cold torch import, or wedged in a driver ioctl, for the whole
-    # timeout. A Studio killed in that window must not leave it running against the GPU the
-    # next backend is about to probe, so it gets the same binding as the other GPU children.
+def test_child_is_tracked_without_a_pre_exec_hook(monkeypatch):
+    # preexec_fn would fork this multithreaded server and run Python before exec, where a
+    # lock another uvicorn thread held at fork time is still held; the child can hang there
+    # while the parent waits inside Popen, before any timeout applies. Python's docs call
+    # it unsafe in the presence of threads. Shutdown tracking must not reintroduce it.
     from utils import process_lifetime
 
     adopted: list = []
     forgotten: list = []
     monkeypatch.setattr(process_lifetime, "adopt_pid", adopted.append)
     monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
-    monkeypatch.setattr(process_lifetime, "child_popen_kwargs", lambda *a, **k: {"preexec_fn": id})
 
     calls: list = []
     proc = _FakeProc()
@@ -175,9 +175,55 @@ def test_child_is_bound_to_the_backend_lifetime(monkeypatch):
 
     probe_torch_device_allocation("cuda:0")
 
-    assert calls[0][1].get("preexec_fn") is id  # parent-death binding on Linux
+    assert "preexec_fn" not in calls[0][1]
     assert adopted == [proc.pid]
     assert forgotten == [proc.pid]  # exited cleanly, so the record is released
+
+
+def test_the_child_bounds_its_own_life(monkeypatch):
+    # With no parent-death hook, an orphaned probe has to stop by itself rather than sit on
+    # the GPU the next backend will want.
+    calls: list = []
+    _patch_popen(monkeypatch, _FakeProc(), calls)
+
+    probe_torch_device_allocation("cuda:0")
+
+    argv = calls[0][0]
+    assert float(argv[-1]) == probe_mod._CHILD_SELF_LIMIT_SECONDS
+    # Past the parent's own deadline, so in a normal run the parent always decides first.
+    assert probe_mod._CHILD_SELF_LIMIT_SECONDS > probe_mod.PROBE_TIMEOUT_SECONDS
+    script = argv[2]
+    assert "os._exit" in script  # a wedged driver will not run a clean shutdown
+    assert script.index("threading.Timer") < script.index("import torch")
+    # A Timer is a Thread and is NOT daemon by default. Without this the child cannot exit
+    # until the watchdog fires, so every probe on every host times out. Caught live.
+    assert "daemon = True" in script
+
+
+def test_the_child_script_exits_promptly(tmp_path):
+    # Runs the real child, with torch stubbed out, so the watchdog cannot silently make a
+    # healthy probe hang. This is the check that caught the non-daemon Timer.
+    stub = tmp_path / "torch.py"
+    stub.write_text(
+        "class _Dev:\n"
+        "    type = 'cpu'\n"
+        "class _T:\n"
+        "    device = _Dev()\n"
+        "    def zero_(self):\n"
+        "        pass\n"
+        "def empty(*a, **k):\n"
+        "    return _T()\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    done = subprocess.run(
+        [sys.executable, "-c", probe_mod._CHILD_SCRIPT, "cpu", "300"],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "ok" in done.stdout
 
 
 def test_a_stuck_child_stays_adopted_until_the_reaper_collects_it(monkeypatch):

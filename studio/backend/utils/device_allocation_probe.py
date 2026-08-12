@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 # this probe is off the request/boot critical path. Being generous here costs a late
 # warm; being stingy condemns a healthy host to CPU.
 PROBE_TIMEOUT_SECONDS = 120.0
+# The child's own deadline. Comfortably past the parent's, so in a normal run the parent
+# always decides first and this only ever fires for a child whose parent is gone.
+_CHILD_SELF_LIMIT_SECONDS = 300.0
 # Grace between terminate and kill when the child overran, mirroring the sidecars.
 _TERMINATE_GRACE_SECONDS = 5.0
 # Child stderr is a torch traceback or a driver's parting words; keep the tail only.
@@ -83,6 +86,16 @@ ROCM_DLL_DIRS_ENV_VAR = "UNSLOTH_STUDIO_PROBE_ROCM_DLL_DIRS"
 _CHILD_SCRIPT = """
 import os
 import sys
+import threading
+
+# Self-limit. The parent cannot bind this child to its own death without a pre-exec hook,
+# and that hook is what makes a fork of a multithreaded server able to deadlock, so the
+# child bounds itself instead: a Studio killed mid-probe leaves something that exits on its
+# own rather than an orphan holding the GPU. Daemon timer, so a normal run is unaffected,
+# and os._exit because a wedged driver is exactly where a clean shutdown will not run.
+_watchdog = threading.Timer(float(sys.argv[2]), lambda: os._exit(70))
+_watchdog.daemon = True  # a Timer is a Thread and is NOT daemon by default; without this
+_watchdog.start()        # the child cannot exit until it fires and every probe times out
 
 if sys.platform == "win32":
     _handles = []
@@ -202,7 +215,7 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
     a non-None ``failure_reason`` means the child never delivered a verdict of its own."""
     from utils.child_stdio import utf8_child_env
     from utils.native_path_leases import child_env_without_native_path_secret
-    from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+    from utils.process_lifetime import adopt_pid, forget_pid
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
     env = utf8_child_env(child_env_without_native_path_secret())
@@ -211,18 +224,22 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
         env[ROCM_DLL_DIRS_ENV_VAR] = os.pathsep.join(dll_dirs)
     try:
         process = subprocess.Popen(
-            [sys.executable, "-c", _CHILD_SCRIPT, device],
+            [sys.executable, "-c", _CHILD_SCRIPT, device, str(_CHILD_SELF_LIMIT_SECONDS)],
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
             text = True,
             encoding = "utf-8",
             errors = "replace",
             env = env,
-            # This child can sit in a cold torch import, or wedged in a driver ioctl, for
-            # the whole timeout. Without the parent-death binding, a Studio that is killed
-            # in that window leaves it reparented and running, where it holds the very GPU
-            # the next backend is about to probe. Same treatment as the other GPU children.
-            **child_popen_kwargs(),
+            # Deliberately NO preexec_fn, so no child_popen_kwargs() here. The other GPU
+            # children take the PDEATHSIG hook from it, but that hook forks this
+            # multithreaded, possibly torch-initialised server and runs Python before exec;
+            # a lock another uvicorn thread held at fork time is still held in the child,
+            # which can hang it before exec while the parent waits inside Popen, where the
+            # timeout below does not yet apply. Python's own docs call preexec_fn unsafe in
+            # the presence of threads for exactly this. It also disables subprocess's vfork
+            # fast path. The child self-limits instead, which bounds an orphan without
+            # forking a hook, and adopt_pid still gives shutdown its backstop.
             **windows_hidden_subprocess_kwargs(),
         )
     except OSError as spawn_error:
