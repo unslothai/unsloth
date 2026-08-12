@@ -813,8 +813,17 @@ mod tests {
         } else {
             String::new()
         };
+        // Only an owned backend can advertise lease support: the secret comes
+        // from the desktop spawn. `ready_health(false)` stands in for a server
+        // the user started from a terminal, so giving it the capability would
+        // model a backend that does not exist.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{ROOT_ID}"{owner}}}"#
         )
     }
 

@@ -779,8 +779,18 @@ exit 1
 
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
+        // Tied to the owner on purpose. The lease secret comes from the desktop
+        // spawn, so an owned backend reports the capability and an ownerless one
+        // (started from a terminal) never can. A fixture that reports both an
+        // absent owner and lease support describes a backend that cannot exist,
+        // and would hide exactly the case these tests are here to pin.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -905,7 +915,14 @@ exit 1
     }
 
     #[tokio::test]
-    async fn same_root_backend_without_native_path_leases_is_an_external_conflict() {
+    async fn terminal_started_backend_without_native_path_leases_stays_adoptable() {
+        // The lease secret is per-process and only the desktop spawn sets it,
+        // so this is what EVERY terminal-started server looks like, not an edge
+        // case. Refusing it would take "attach to a server I started myself",
+        // which use-tauri-backend.ts supports on purpose, away from every such
+        // user in order to grey out one button. The picker is gated in the UI
+        // instead: use-linked-folders.ts reads the same capability off
+        // /api/health and says so in the panel.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
@@ -914,10 +931,64 @@ exit 1
         )
         .await;
 
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_predating_the_lease_capability_field_stays_adoptable() {
+        // Absent, not false: the field arrived with native GGUF intake, so a
+        // backend built before it reports nothing at all. Option<bool> makes
+        // that indistinguishable from `false` unless it is spelled out.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn owned_backend_without_native_path_leases_is_stale_not_a_conflict() {
+        // A backend this app owns and cannot lease from is a defect in our own
+        // spawn. That one IS ours to restart, and the restart re-injects the
+        // secret, so it is Stale (repairable) rather than a conflict the user
+        // has to resolve by hand.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old { reason, .. } if reason == "native_path_leases_unsupported"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_is_still_reported_as_a_version_problem() {
+        // Ordering guard. The lease check used to run first, so a backend that
+        // genuinely needed an update was told its leases were unsupported, and
+        // the reason string that reaches diagnostics and the user-facing
+        // message named the wrong cause.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
         assert!(matches!(
             probe,
             BackendProbe::ExternalConflict { reason, .. }
-                if reason == "native_path_leases_unsupported"
+                if reason == "desktop_backend_version_too_old"
         ));
     }
 
@@ -925,7 +996,7 @@ exit 1
     async fn stale_same_root_without_desktop_owner_is_external_conflict() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
             ),
             "401 Unauthorized",
         )

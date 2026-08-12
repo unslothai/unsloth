@@ -160,15 +160,31 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
-    if health.native_path_leases_supported != Some(true) {
-        return Some("native_path_leases_unsupported".to_string());
-    }
     // Unauthenticated /api/health gates `version` behind a bearer, and the bits
     // above predate the floor, so no version means "auth-gated", not "old".
     match health.version.as_deref() {
         Some(version) if !version.is_empty() => backend_version_stale_reason(Some(version)),
         _ => None,
     }
+}
+
+/// Deliberately NOT part of `backend_capability_stale_reason`.
+///
+/// The lease secret is a per-process environment variable that only the desktop
+/// spawn sets (`process.rs`), so "does not support native path leases" does not
+/// mean "too old to talk to". It means "this app did not start it", and it is
+/// permanently true of a backend the user started from a terminal.
+///
+/// Folding it in with the protocol bits would therefore make every
+/// terminal-started same-root backend an ExternalConflict, and the app would
+/// refuse to start against a server it can otherwise drive perfectly -- to fix a
+/// folder picker that `use-linked-folders.ts` already greys out with a message
+/// naming the reason. Apply it only where a restart is ours to perform.
+fn backend_native_lease_stale_reason(health: &BackendHealth) -> Option<String> {
+    if health.native_path_leases_supported != Some(true) {
+        return Some("native_path_leases_unsupported".to_string());
+    }
+    None
 }
 
 #[derive(Serialize)]
@@ -185,6 +201,11 @@ pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
         return BackendProbe::Missing;
     };
     if let Some(reason) = backend_capability_stale_reason(&health) {
+        return BackendProbe::Old { port, reason };
+    }
+    // This backend is one WE spawned, so a missing lease secret is a defect in
+    // our own start and a restart fixes it.
+    if let Some(reason) = backend_native_lease_stale_reason(&health) {
         return BackendProbe::Old { port, reason };
     }
 
@@ -257,6 +278,16 @@ pub(super) async fn backend_desktop_auth_status(
         } else {
             BackendProbe::Old { port, reason }
         };
+    }
+    // Only for a backend this app owns: that one is ours to stop and start
+    // again, and the restart re-injects the secret. An ownerless same-root
+    // backend is a terminal-started server we cannot repair by restarting, and
+    // blocking on it would make the app unstartable for a user who runs
+    // `unsloth studio` themselves. See backend_native_lease_stale_reason.
+    if !same_root_external {
+        if let Some(reason) = backend_native_lease_stale_reason(health) {
+            return BackendProbe::Old { port, reason };
+        }
     }
 
     let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
