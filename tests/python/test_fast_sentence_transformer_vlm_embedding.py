@@ -28,15 +28,20 @@ import pytest
 
 
 def _import_fast_sentence_transformer():
-    """Import FastSentenceTransformer or skip. unsloth pulls in torch and may refuse to
-    import without an accelerator; treat any import-time failure as a skip so these
-    logic tests never turn a minimal runner red."""
+    """Import FastSentenceTransformer for the logic tests.
+
+    Skips ONLY when a required heavy dependency is genuinely absent -- an
+    unsupported environment, not a regression. The import of the code under test
+    is then run WITHOUT a catch-all: a syntax error, a missing symbol, or any
+    other import-time regression introduced by this change must fail these tests,
+    not silently skip them. (A previous version wrapped the import in
+    `except Exception: pytest.skip(...)`, which turned every such regression into
+    a green skip.)"""
     pytest.importorskip("torch")
     pytest.importorskip("sentence_transformers")
-    try:
-        from unsloth import FastSentenceTransformer
-    except Exception as exc:  # noqa: BLE001 - unsloth may raise NotImplementedError on CPU-only
-        pytest.skip(f"unsloth not importable in this environment: {exc}")
+    pytest.importorskip("unsloth_zoo")
+    from unsloth import FastSentenceTransformer
+
     return FastSentenceTransformer
 
 
