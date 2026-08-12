@@ -275,9 +275,7 @@ class LlamaServerBackend:
             # gets (#8566); Apple Silicon is routed here with use_gpu set, so
             # this branch is the normal macOS path, not an edge case.
             existing = [p for p in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
-            env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
-                dict.fromkeys([binary_dir, *existing])
-            )
+            env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([binary_dir, *existing]))
             return
         arch = platform.machine()
         lib_dirs = [binary_dir]

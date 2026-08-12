@@ -754,9 +754,7 @@ class TestDiagnosticsDoNotLeak:
 
     def test_a_non_secret_env_value_is_left_alone(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_MODEL_DIR", "/models/mymodels")
-        msg = _classify(
-            "loading from /models/mymodels failed", "/models/x.gguf", "local/x", 1
-        )
+        msg = _classify("loading from /models/mymodels failed", "/models/x.gguf", "local/x", 1)
         assert "/models/mymodels" in msg
 
     def test_a_bare_hf_token_shape_is_redacted(self):

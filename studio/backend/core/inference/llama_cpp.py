@@ -9115,11 +9115,7 @@ class LlamaCppBackend:
             # "no such file" (the modern per-path "tried:" list) and the older
             # bare "image not found" both mean absent; anything else means dyld
             # found it and refused it, where reinstalling a package is wrong.
-            if (
-                not verdict_l
-                or "no such file" in verdict_l
-                or "image not found" in verdict_l
-            ):
+            if not verdict_l or "no such file" in verdict_l or "image not found" in verdict_l:
                 return LlamaCppBackend._missing_library_message(lib, binary)
             return LlamaCppBackend._unloadable_library_message(
                 lib, verdict[: LlamaCppBackend._MACOS_REASON_CHARS], binary
