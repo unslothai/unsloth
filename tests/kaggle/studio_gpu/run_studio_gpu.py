@@ -114,6 +114,11 @@ MAX_EVIDENCE_BYTES = 2_500_000
 # less, and running out halfway produces a failure that reads like a code bug.
 MIN_FREE_GB = 25.0
 
+# The CUDA llama.cpp bundle is a large download and an extraction, and it runs
+# once per session before anything needs it. Generous, because the cost of
+# being too tight is a red that reads like a selection bug.
+LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
+
 CANARY = "__UNSLOTH_STUDIO__!!!"
 
 # The tool the model is asked to call. Deliberately trivial and deliberately
@@ -659,6 +664,82 @@ class Payload:
 
     # ----------------------------------------------------------- assertion C
 
+    def install_llama_cpp(self) -> bool:
+        """Put a CUDA llama.cpp under STUDIO_HOME before anything asks for one.
+
+        Four hardware runs reported ``install_kind=None`` and failed the export
+        assertion for it, and the reason was never subtle: nothing had ever
+        installed a llama.cpp at all. The export route falls back to whatever
+        it can find, so the assertion was measuring an absence.
+
+        Its own assertion rather than a step inside the export one, because
+        "the CUDA bundle would not install on this box" and "the CUDA bundle
+        installed and the export against it failed" are different findings and
+        only the second is about exporting.
+
+        A failure here is NOT fatal to the run. The export assertion still
+        executes and still reports the install_kind it found, so a box where
+        the bundle cannot be installed produces the same honest red it did
+        before rather than skipping the export entirely.
+        """
+        detail: dict = {}
+        installer = self.repo_root / "studio" / "install_llama_prebuilt.py"
+        detail["installer"] = str(installer)
+        if not installer.is_file():
+            return self.record(
+                "llama_cpp_install",
+                False,
+                {**detail, "failures": [f"the installer is not where it should be: {installer}"]},
+            )
+
+        install_dir = self.studio_home / "llama.cpp"
+        env = dict(os.environ)
+        env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
+        # `run` already applies capture_output and text; passing them again is
+        # a TypeError, and it is one no test here would reach.
+        try:
+            proc = run(
+                [sys.executable, str(installer), "--install-dir", str(install_dir)],
+                env = env,
+                timeout = LLAMA_CPP_INSTALL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return self.record(
+                "llama_cpp_install",
+                False,
+                {
+                    **detail,
+                    "failures": [
+                        f"the llama.cpp installer did not finish within "
+                        f"{LLAMA_CPP_INSTALL_TIMEOUT_S:.0f}s"
+                    ],
+                },
+            )
+        detail["returncode"] = proc.returncode
+        # The selection log is the whole diagnostic when a CUDA host gets a CPU
+        # bundle: install_llama_prebuilt.py explains its choice line by line.
+        detail["stdout_tail"] = self.scrub(proc.stdout or "")[-2000:]
+        detail["stderr_tail"] = self.scrub(proc.stderr or "")[-2000:]
+
+        marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+        kind = install_kind(marker)
+        detail["llama_cpp_install_kind"] = kind
+
+        failures: list[str] = []
+        if proc.returncode != 0:
+            failures.append(f"the llama.cpp installer exited {proc.returncode}")
+        elif not is_cuda_install(kind):
+            # Reaching here means the installer SUCCEEDED and still chose a
+            # non-CUDA bundle on a box with a working NVIDIA driver, which is
+            # the selection regression this leg exists to catch. Distinct from
+            # the installer failing, so it is worded distinctly.
+            failures.append(
+                f"the installer succeeded but selected install_kind={kind!r} on a CUDA "
+                f"box; see stdout_tail for its linux_cuda_selection lines"
+            )
+        detail["failures"] = failures
+        return self.record("llama_cpp_install", not failures, detail)
+
     def assert_gguf_export(self, adapter_dir: str | None) -> bool:
         failures: list[str] = []
         detail: dict = {"adapter_dir": adapter_dir}
@@ -943,6 +1024,12 @@ class Payload:
     def execute(self) -> int:
         if not self.preflight():
             return self.finish()
+        # Before the server, so the export route sees a llama.cpp that was
+        # already there rather than one that appeared underneath it. Its
+        # result is recorded and deliberately not checked: a box where the
+        # bundle will not install should still run every other assertion and
+        # report the export failing for the reason it actually failed.
+        self.install_llama_cpp()
         if not self.start_server():
             return self.finish()
         if not self.authenticate():

@@ -19,6 +19,7 @@ Whichever ran first would win.
 
 from __future__ import annotations
 
+import argparse
 import base64
 import importlib.util
 import io
@@ -1076,3 +1077,128 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     assert body.index("self.start_server()") < body.index(
         '"STUDIO_OLD_PW"'
     ), "the password must be read after the restart, or it is the old one"
+
+
+# The llama.cpp install step. Four hardware runs reported install_kind=None and
+# failed the export assertion for it, because nothing had ever installed a
+# llama.cpp under STUDIO_HOME. install_llama_prebuilt.py resolves a real
+# "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
+# time and simply never fetched.
+
+
+def _load_payload():
+    """Import run_studio_gpu under a private name.
+
+    The module runs a CLI at import time only under __main__, so importing it
+    is safe, but it must not collide with the copy test_t4_smoke_harness puts
+    on sys.path.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_studio_gpu_payload_under_test", PAYLOAD_DIR / "run_studio_gpu.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _session(module, tmp_path, **overrides):
+    args = argparse.Namespace(
+        repo_root = str(tmp_path / "repo"),
+        studio_home = str(tmp_path / "home"),
+        **overrides,
+    )
+    session = module.Payload.__new__(module.Payload)
+    session.repo_root = Path(args.repo_root)
+    session.studio_home = Path(args.studio_home)
+    session.args = args
+    session.assertions = []
+    session.failures = []
+    session.secrets = set()
+    return session
+
+
+def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypatch):
+    """Exercises the call, not just its source text.
+
+    `run()` in this payload already applies capture_output and text, so passing
+    either again is a TypeError -- and one that only appears on hardware, since
+    every other test here reads the file rather than calling it. That is exactly
+    how it got written wrong the first time.
+    """
+    module = _load_payload()
+    session = _session(module, tmp_path)
+    installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
+    installer.parent.mkdir(parents = True)
+    installer.write_text("")
+    install_dir = session.studio_home / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"install_kind": "linux-cuda"})
+    )
+
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["kw"] = kw
+        return subprocess.CompletedProcess(cmd, 0, "linux_cuda_selection: ok", "")
+
+    monkeypatch.setattr(module, "run", fake_run)
+    assert session.install_llama_cpp() is True
+
+    assert str(installer) in seen["cmd"]
+    assert "--install-dir" in seen["cmd"]
+    assert str(install_dir) in seen["cmd"]
+    # The TypeError guard: `run` supplies these itself.
+    assert "capture_output" not in seen["kw"]
+    assert "text" not in seen["kw"]
+    assert seen["kw"]["timeout"] == module.LLAMA_CPP_INSTALL_TIMEOUT_S
+
+    recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
+    assert len(recorded) == 1
+    assert recorded[0]["llama_cpp_install_kind"] == "linux-cuda"
+
+
+def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_path, monkeypatch):
+    """The selection regression this leg exists to catch.
+
+    Worded separately from "the installer failed", because a CPU bundle chosen
+    ON PURPOSE by a working installer on a CUDA box is a different bug from an
+    installer that could not run.
+    """
+    module = _load_payload()
+    session = _session(module, tmp_path)
+    installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
+    installer.parent.mkdir(parents = True)
+    installer.write_text("")
+    install_dir = session.studio_home / "llama.cpp"
+    install_dir.mkdir(parents = True)
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"install_kind": "linux-cpu"})
+    )
+
+    monkeypatch.setattr(
+        module, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    assert session.install_llama_cpp() is False
+    recorded = [e for e in session.assertions if e["name"] == "llama_cpp_install"][0]
+    assert any("succeeded but selected" in f for f in recorded["failures"])
+
+
+def test_a_failed_llama_cpp_install_does_not_stop_the_run():
+    """Every other assertion still has to execute and report.
+
+    A box where the bundle will not install should produce the same honest
+    export red it did before, not a run that stops at the install.
+    """
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    body = source[source.index("def execute(self)") :]
+    body = body[: body.index("\n    def ")]
+    assert "self.install_llama_cpp()" in body
+    assert "if not self.install_llama_cpp()" not in body, (
+        "a llama.cpp install failure now aborts the run, so a box that cannot "
+        "install the bundle reports nothing about inference, training or the UI"
+    )
+    # And it must happen before the server, so the export route never sees a
+    # llama.cpp appear underneath it.
+    assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
