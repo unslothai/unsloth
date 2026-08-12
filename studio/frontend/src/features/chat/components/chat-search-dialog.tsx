@@ -13,7 +13,13 @@ import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
@@ -46,6 +52,19 @@ export function selectVisibleChats<
   return items.filter((it) => haystackMatches(it.searchText, tokens));
 }
 
+// The rendered list trails the input by a render while the deferred filter catches up, so a
+// row stays activatable only while it still matches what the user has typed.
+export function matchesChatQuery<
+  T extends { userSearchText: string; searchText: string },
+>(item: T, search: string): boolean {
+  const tokens = queryTokens(search);
+  if (tokens.length === 0) return true;
+  return (
+    haystackMatches(item.userSearchText, tokens) ||
+    haystackMatches(item.searchText, tokens)
+  );
+}
+
 function formatRelative(createdAt: number): string {
   const diff = Date.now() - createdAt;
   const day = 86_400_000;
@@ -71,12 +90,17 @@ export function ChatSearchDialog() {
     [items, deferredQuery],
   );
 
+  // Reset on open rather than on close: Radix keeps the surface mounted for its exit
+  // animation, and dropping rows there tears down the DOM mid-transition. Layout effect
+  // so the reset lands before the reopened dialog paints.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    setQuery("");
+    setRowLimit(INITIAL_ROW_COUNT);
+  }, [isOpen]);
+
   useEffect(() => {
-    if (!isOpen) {
-      setQuery("");
-      setRowLimit(INITIAL_ROW_COUNT);
-      return;
-    }
+    if (!isOpen) return;
     const timer = setTimeout(
       () => setRowLimit(Number.POSITIVE_INFINITY),
       FULL_ROW_REVEAL_MS,
@@ -148,6 +172,7 @@ export function ChatSearchDialog() {
                 key={item.id}
                 value={item.id}
                 onSelect={() => {
+                  if (!matchesChatQuery(item, query)) return;
                   navigate({
                     to: "/chat",
                     search:

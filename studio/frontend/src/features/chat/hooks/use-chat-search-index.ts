@@ -230,6 +230,8 @@ export function useChatSearchIndex(enabled: boolean): {
       // History can change while the dialog is closed, so drop the cache rather
       // than reopening onto rows for chats that no longer exist.
       const invalidate = () => {
+        // The event fires per streaming chunk, so skip the render when there is nothing cached.
+        if (cachedIndex === null) return;
         cachedIndex = null;
         setItems([]);
       };
@@ -245,9 +247,10 @@ export function useChatSearchIndex(enabled: boolean): {
       if (cachedIndex === null) setLoading(true);
       buildIndex()
         .then((result) => {
-          cachedIndex = result;
-          // Drop out-of-order responses so a slower rebuild can't clobber a fresher one.
+          // Drop out-of-order responses so a slower rebuild can't clobber a fresher one,
+          // and never repopulate the cache a close or an invalidation already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
+          cachedIndex = result;
           setItems(result);
         })
         .catch(() => {
