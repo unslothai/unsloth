@@ -34,9 +34,9 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
-/// Whether the managed install sits on a profile the app cannot reach right now.
-/// Reported either way round: as `Unavailable` when the binary itself could not
-/// be looked up, and as `Stale` when it was found but has nowhere to run from.
+/// Whether the managed install sits on a profile the app cannot reach. Reported
+/// as `Unavailable` when the binary could not be looked up, and as `Stale` when
+/// it was found but has nowhere to run from.
 fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     match managed {
         ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
@@ -46,18 +46,16 @@ fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
     }
 }
 
-/// Repair reinstalls through the managed CLI, which needs the same profile the
-/// probe just failed to reach, and it stops the backend to do it. Offering it
-/// there trades a backend that still answers for one that cannot come back.
+/// Repair reinstalls through the managed CLI, which needs the profile the probe
+/// just failed to reach, and stops the backend to do it: that trades one that
+/// still answers for one that cannot come back.
 fn stale_auto_repair(managed: &ManagedProbe) -> bool {
     release_auto_repair() && !managed_profile_unreachable(managed)
 }
 
-/// What to tell the user about a stale backend.
-///
-/// The unreachable profile comes first: updating is what the frontend advises
-/// for every other stale reason, and the update runs through the very profile
-/// the probe could not reach. The backend's own reason stays in the log.
+/// What to tell the user about a stale backend. The unreachable profile comes
+/// first, since the frontend answers every other reason with "update", which
+/// needs that same profile. The backend's own reason stays in the log.
 fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     if managed_profile_unreachable(managed) {
         info!("Desktop preflight: stale backend ({reason}) reported as an unreachable profile");

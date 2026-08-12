@@ -946,9 +946,8 @@ pub(crate) fn home_dir_available() -> Result<(), String> {
 
 /// The profile a managed install may live under, or why it cannot.
 ///
-/// One policy for both callers: reporting a home as available that the working
-/// directory resolver then rejects sends a SYSTEM or service account to an
-/// install flow that cannot start.
+/// One policy for both callers: a home reported available that the resolver then
+/// rejects sends a SYSTEM account to an install flow that cannot start.
 fn usable_home_dir(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
@@ -1088,13 +1087,10 @@ fn windows_roots_from(
     roots
 }
 
-/// Path overrides whose relative values are resolved against the working
-/// directory, so moving the child without rewriting them would silently point
-/// them somewhere else. Mirrors `_RELATIVE_PATH_ENV` in
-/// unsloth_cli/_system_dir_guard.py, which does the same for a CLI that has to
-/// leave a system folder on its own; a parity test in
-/// tests/test_installer_system32_guard.py keeps the two lists identical.
-/// Search lists such as PATH are deliberately absent: they are not single paths.
+/// Path overrides a relative value makes cwd-dependent, so moving the child
+/// without rewriting them would point them somewhere else. Search lists such as
+/// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
+/// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
@@ -1136,10 +1132,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
 
 /// Whether a value already names a directory of its own.
 ///
-/// Windows rules are applied on every platform, and deliberately: a Windows
-/// value is what reaches this code, and hard-coding the rules keeps the check
-/// testable from Linux CI. Matches `_is_rooted` in the CLI guard, down to
-/// treating a drive-relative "C:sub" as naming no directory of its own.
+/// Windows rules on every platform: a Windows value is what reaches this code,
+/// and hard-coding them keeps the check testable from Linux CI. Matches
+/// `_is_rooted` in the CLI guard, "C:sub" naming no directory included.
 fn is_rooted(value: &str) -> bool {
     let value = match value.strip_prefix("\\\\?\\UNC\\") {
         Some(rest) => rest,
@@ -1187,9 +1182,8 @@ fn relative_override_pins_from(
                 return None;
             }
             if is_drive_relative(value) {
-                // "D:cache" is relative to the current directory on drive D,
-                // which is not the one being left and which only Windows
-                // tracks, so join() would hand the value straight back.
+                // "D:cache" is relative to drive D's own current directory, which
+                // join() cannot know, so it would hand the value straight back.
                 return Some((*name, absolute(value)?));
             }
             Some((*name, cwd.join(value)))
@@ -2646,8 +2640,7 @@ mod managed_cli_working_dir_tests {
             "only relative values are rewritten, and against the directory being left"
         );
 
-        // A drive-relative value the OS cannot resolve is left alone rather
-        // than rewritten to something that means a different folder.
+        // An unresolvable drive-relative value is left alone, not rewritten.
         assert!(
             !relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None)
                 .iter()
@@ -2664,9 +2657,8 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_pinned_override_list_matches_the_cli_guard() {
-        // Both layers move a child out of a system folder, so a name in one list
-        // and not the other means the same install places state in two
-        // different folders depending on which layer did the move.
+        // A name in one list and not the other means the same install places
+        // state in two folders, depending on which layer moved the child.
         let guard = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../unsloth_cli/_system_dir_guard.py");
         let source = fs::read_to_string(&guard).unwrap();

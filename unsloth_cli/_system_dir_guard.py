@@ -242,9 +242,7 @@ def is_relocatable_invocation(argv, environ):
 
 # Path overrides the caller may have written relative to the folder being left.
 # Studio resolves them with Path.resolve(), which anchors a relative value to the
-# working directory, so moving first would silently retarget them: STUDIO_HOME
-# unsloth_cli/commands/studio.py, the caches storage_roots.py and
-# hf_cache_settings.py.
+# working directory, so moving first would silently retarget them.
 _RELATIVE_PATH_ENV = (
     # Studio roots: storage_roots.py.
     "UNSLOTH_STUDIO_HOME",
@@ -306,10 +304,9 @@ def pin_relative_overrides(
         if not value or value.startswith("~") or _is_rooted(value, pathmod):
             continue
         if pathmod.splitdrive(value)[0]:
-            # "D:cache" means the current directory on drive D, which is not the
-            # one being left and which only Windows knows. join() would hand it
-            # back unchanged, so the move would retarget it. Ask the OS, and let
-            # a failure reach the caller, which then refuses to move at all.
+            # "D:cache" means drive D's own current directory, which only
+            # Windows knows and which join() would hand back unchanged. Ask the
+            # OS, and let a failure reach the caller, which then declines to move.
             environ[name] = (abspath or pathmod.abspath)(value)
         else:
             environ[name] = pathmod.join(cwd, value)
@@ -332,9 +329,9 @@ def relocation_target(
         return None
     if home_isdir is None:
         home_isdir = pathmod.isdir
-    # A roaming profile that has not mounted yet still has a writable parent, so
-    # makedirs would happily build a second, empty one that shadows the real
-    # profile when it arrives. Report it unavailable, as the Rust half does.
+    # A profile that has not mounted yet still has a writable parent, so makedirs
+    # would build an empty second one that shadows the real profile when it
+    # arrives. Report it unavailable, as the Rust half does.
     if not home_isdir(home):
         return None
     work_dir = pathmod.join(home, WORK_DIR_NAME)
