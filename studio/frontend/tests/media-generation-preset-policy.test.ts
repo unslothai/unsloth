@@ -12,7 +12,6 @@ import {
   imageLoadConfigFromStatus,
   mergeUntouchedParams,
   reapplyTargetFromStatus,
-  residentLoadConfigIsKnown,
   videoLoadConfigFromStatus,
 } from "../src/features/generation-presets/preset-policy.ts";
 
@@ -217,24 +216,17 @@ test("video duration mapping uses the closest supported temporal lattice", () =>
   assert.equal(closestDurationIndex(options, 2.4), 1);
 });
 
-test("a build reporting no resolved record has no load options to preserve", () => {
-  // The native sd.cpp engine reports no resolved record at all, so Reapply cannot be replacing an
-  // explicit choice it never read: offering it there matches a page-initiated load of the same build.
-  assert.equal(residentLoadConfigIsKnown({}, null), true);
-  assert.equal(residentLoadConfigIsKnown({ resolved: null }, null), true);
-  // A diffusers build names them, so an incomplete parse must keep Reapply off.
+test("the native engine's resident load configuration cannot be read back from status", () => {
+  // sd.cpp consumes cpu_offload, memory_mode and speed_mode, but collapses the first two into
+  // offload flags and never reports memory_mode, so status cannot say what a reload should submit.
+  // Reapply stays unavailable for a resident native build rather than replacing it with local
+  // defaults: the parse must answer null, not a config assembled from what little status names.
+  assert.equal(videoLoadConfigFromStatus({}), null);
+  assert.equal(videoLoadConfigFromStatus({ resolved: null }), null);
   assert.equal(
-    residentLoadConfigIsKnown(
-      { resolved: { memory_mode: automaticControl("balanced") } },
-      null,
-    ),
-    false,
-  );
-  assert.equal(
-    residentLoadConfigIsKnown(
-      { resolved: { memory_mode: automaticControl("balanced") } },
-      { memoryMode: "balanced" },
-    ),
-    true,
+    imageLoadConfigFromStatus({
+      resolved: { cpu_offload: explicitControl(true) },
+    }),
+    null,
   );
 });

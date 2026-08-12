@@ -469,6 +469,9 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     const paramsUntouched =
       configKey(currentParamsRef.current) === configKey(previousBaseline);
     if (appliesToForm) {
+      // A newly picked model's recipe takes over the form exactly as a preset selection does, so a
+      // save still in flight must not put its older snapshot back over it once it answers.
+      claimForm(formClaim);
       const applied = applyParamsRef.current(
         pending
           ? mergeUntouchedParams(

@@ -64,6 +64,24 @@ def _record_write(stored: dict, scope: str, write: PresetWriteOrder) -> None:
     stored[_WRITE_VERSIONS] = versions
 
 
+def _with_unknown_preserved(stored, updated):
+    """Carry forward what the writing build does not model.
+
+    A GET drops fields the reading build cannot validate, so the state it sends back is a lossy
+    view of the store. Without this, opening a store once with an older build would erase every
+    field a newer one had written. Only a background state write goes through here; replacing a
+    named preset is a deliberate whole-value overwrite by the user.
+    """
+    if not isinstance(stored, dict) or not isinstance(updated, dict):
+        return updated
+    merged = dict(updated)
+    for key, value in stored.items():
+        merged[key] = (
+            value if key not in merged else _with_unknown_preserved(value, merged[key])
+        )
+    return merged
+
+
 def get_media_generation_preset_settings(kind: MediaGenerationKind) -> dict:
     with _settings_lock:
         return _public_settings(_stored_settings(kind))
@@ -79,12 +97,10 @@ def set_media_generation_preset_settings(
         stored = _stored_settings(kind)
         if not _is_newer(stored, "settings", write):
             return False
-        updated = {
-            **settings,
-            "customPresets": stored.get("customPresets", []),
-        }
-        if _WRITE_VERSIONS in stored:
-            updated[_WRITE_VERSIONS] = stored[_WRITE_VERSIONS]
+        updated = _with_unknown_preserved(
+            stored,
+            {**settings, "customPresets": stored.get("customPresets", [])},
+        )
         _record_write(updated, "settings", write)
         upsert_app_settings({_setting_key(kind): updated})
         return True

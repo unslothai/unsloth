@@ -313,3 +313,55 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
     assert body["saved"] is True
     assert [preset["name"] for preset in body["customPresets"]] == ["Readable"]
     assert body["activePreset"] == "Default"
+
+
+def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
+    # The GET drops what this build cannot validate, so the state the client echoes back is lossy.
+    # Opening the store with an older build must not cost the newer build its fields.
+    stored = {
+        "image_generation_presets": {
+            "activePreset": "Default",
+            "currentParams": {"steps": 24, "aFieldFromLater": 7},
+            "somethingElseEntirely": {"nested": True},
+            "customPresets": [],
+        }
+    }
+    client = _client(monkeypatch, stored)
+
+    body = client.get("/api/settings/generation-presets/image").json()
+    assert "aFieldFromLater" not in body["currentParams"]
+
+    # The client autosaves the representation it was given.
+    echoed = {
+        "activePreset": body["activePreset"],
+        "currentParams": body["currentParams"],
+        "currentLoadConfig": body["currentLoadConfig"],
+    }
+    assert client.put("/api/settings/generation-presets/image", json = echoed).status_code == 200
+
+    kept = stored["image_generation_presets"]
+    assert kept["currentParams"]["aFieldFromLater"] == 7
+    assert kept["somethingElseEntirely"] == {"nested": True}
+    assert kept["currentParams"]["steps"] == 24
+
+
+def test_clearing_the_load_config_is_not_undone_by_field_preservation(monkeypatch):
+    stored = {
+        "image_generation_presets": {
+            "activePreset": "Default",
+            "currentParams": {"steps": 24},
+            "currentLoadConfig": {"speedMode": "max", "aFieldFromLater": 1},
+            "customPresets": [],
+        }
+    }
+    client = _client(monkeypatch, stored)
+
+    assert (
+        client.put(
+            "/api/settings/generation-presets/image",
+            json = {"activePreset": "Default", "currentParams": {"steps": 24}},
+        ).status_code
+        == 200
+    )
+
+    assert stored["image_generation_presets"]["currentLoadConfig"] is None
