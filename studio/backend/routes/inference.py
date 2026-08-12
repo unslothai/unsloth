@@ -5686,22 +5686,6 @@ def _remote_gguf_companion_bytes(
 # established direction here is to over-estimate. Only reached when the listing
 # cannot be read at all, where llama-server may still open the repo from its
 # local HF cache and make every one of those bytes resident.
-# The extras flags that name a Hugging Face repository rather than a path on disk.
-# _extra_args_mtp_draft_path returns the value without saying which flag carried it,
-# and the two need different treatment: a repo id is sized from its listing, while a
-# --model-draft that is not a file is simply a drafter that will not load.
-_HF_DRAFT_FLAGS = ("--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft")
-
-
-def _extra_args_name_a_remote_draft(extra_args: Optional[list[str]]) -> bool:
-    for raw in extra_args or []:
-        token = str(raw)
-        head = token.split("=", 1)[0]
-        if head in _HF_DRAFT_FLAGS:
-            return True
-    return False
-
-
 _REMOTE_DRAFTER_RESERVE_BYTES = 12 * 1024**3
 
 
@@ -6028,6 +6012,7 @@ def _estimate_gguf_required_gb(
             _canonicalize_spec_mode,
             _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
+            _extra_args_mtp_draft_source,
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
@@ -6205,7 +6190,12 @@ def _estimate_gguf_required_gb(
         # sidecars, so a target that ships none left a multi-GB drafter billed
         # nowhere and the guard admitted a load that evicts the training job.
         _extras_bytes = 0
-        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        # The value AND which flag carried it. Draft flags are last-wins, so a repo
+        # id followed by a path leaves a path as the drafter, and pricing that path
+        # as a repository would charge a reserve for something that never loads.
+        _extras_draft, _extras_draft_is_remote = _extra_args_mtp_draft_source(
+            llama_extra_args, env = {}
+        )
         # -ngld 0 / --spec-draft-device cpu keeps the drafter in host memory, so it
         # competes for RAM, not for the training job's VRAM. Charging it here is not
         # the safe over-estimate the rest of this guard makes; it is simply the wrong
@@ -6215,7 +6205,7 @@ def _estimate_gguf_required_gb(
         elif _extras_draft and Path(_extras_draft).is_file():
             if _same_file_key(str(_extras_draft)) not in _sized_keys:
                 _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
-        elif _extras_draft and _extra_args_name_a_remote_draft(llama_extra_args):
+        elif _extras_draft and _extras_draft_is_remote:
             _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
         # else: a local --model-draft that is not on disk. llama-server cannot load
         # a drafter from it, so it becomes no VRAM; charging a repository reserve

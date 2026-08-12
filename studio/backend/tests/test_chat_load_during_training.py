@@ -1901,6 +1901,41 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
         self.assertAlmostEqual(charged, 4.0, places = 6)
 
+    def test_only_the_winning_draft_flag_decides_repo_or_path(self):
+        """Draft flags are last-wins in llama-server, so a repo id followed by a
+        --model-draft leaves the path as the drafter. Asking "does any remote flag
+        appear" prices that path as a repository and charges the 12 GiB reserve for
+        a drafter the launch cannot open."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
+        ):
+            charged = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = [
+                    "--spec-draft-hf",
+                    "org/drafter",
+                    "--model-draft",
+                    "/nope/does-not-exist.gguf",
+                ],
+            )
+        self.assertAlmostEqual(charged, 4.0, places = 6)
+
     def test_a_listing_that_carries_no_sizes_still_pays_the_reserve(self):
         """A complete family whose listing omits sizes is not a free drafter, it is
         an unmeasured one: something loads and the guard does not know how big. The

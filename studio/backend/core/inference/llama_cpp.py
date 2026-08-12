@@ -2725,37 +2725,53 @@ def _extra_args_mtp_draft_path(
     --spec-draft-hf/-hfd/...), else the LLAMA_ARG_SPEC_DRAFT_MODEL/_HF_REPO env,
     else None. An HF repo isn't a local file, so the budget can't size it (falls
     back to the flat reserve), but recognizing it avoids sizing the wrong one."""
-    flags = {
-        "--model-draft",
-        "--spec-draft-model",
-        "-md",
-        "--spec-draft-hf",
-        "-hfd",
-        "-hfrd",
-        "--hf-repo-draft",
-    }
+    return _extra_args_mtp_draft_source(extra_args, env)[0]
+
+
+_HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
+_LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
+
+
+def _extra_args_mtp_draft_source(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[Optional[str], bool]:
+    """The drafter the launch resolves to, and whether it is a repo id.
+
+    The two travel together on purpose. Draft flags are last-wins, so a remote flag
+    followed by a local one leaves a local path as the winner; a caller that asks
+    only "does any remote flag appear" would then price a filesystem path as a
+    Hugging Face repository and charge a reserve for something llama-server will
+    not load. Only the winning flag decides which of the two the value is.
+    """
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
+    found_remote = False
     for i, raw in enumerate(args):
         flag = _flag_name(raw)
         _, eq, inline = raw.partition("=")
-        if flag not in flags:
+        if flag not in _HF_DRAFT_FLAGS and flag not in _LOCAL_DRAFT_FLAGS:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if value and not value.startswith("-"):
             found = value
+            found_remote = flag in _HF_DRAFT_FLAGS
     if found is not None:
-        return found
+        return found, found_remote
     e = os.environ if env is None else env
-    return (
-        e.get("LLAMA_ARG_SPEC_DRAFT_MODEL")
-        or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO")
-        # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
-        # rename (2026-04-28).
-        or e.get("LLAMA_ARG_MODEL_DRAFT")
-        or e.get("LLAMA_ARG_HFD_REPO")
-        or None
-    )
+    # Same precedence the value lookup has always used; the env spelling is what
+    # says local or remote here, there being no flag to read.
+    # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
+    # rename (2026-04-28).
+    for var, remote in (
+        ("LLAMA_ARG_SPEC_DRAFT_MODEL", False),
+        ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", True),
+        ("LLAMA_ARG_MODEL_DRAFT", False),
+        ("LLAMA_ARG_HFD_REPO", True),
+    ):
+        value = e.get(var)
+        if value:
+            return value, remote
+    return None, False
 
 
 def _extra_args_draft_cache_types(
