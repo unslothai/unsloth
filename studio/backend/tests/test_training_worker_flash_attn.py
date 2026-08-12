@@ -372,6 +372,9 @@ def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    # The discard is state-based, so the installed-but-broken state has to be stated here.
+    # Without this the test only passes on a machine that happens to have flash-attn.
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
     monkeypatch.setattr(
         worker,
         "flash_attn_wheel_url",
@@ -419,6 +422,8 @@ def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
     monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    # State the installed-but-broken state explicitly; see the note above.
+    monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
     monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
     monkeypatch.setattr(worker, "url_exists", lambda url: False)
     monkeypatch.setattr(worker.shutil, "which", lambda name: None)
