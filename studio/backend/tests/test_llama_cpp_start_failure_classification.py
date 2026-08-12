@@ -871,3 +871,52 @@ class TestCommandLineSecrets:
     def test_no_known_secret_is_harmless(self):
         msg = _classify("plain failure", "/models/x.gguf", "local/x", 1, None, None, (None,))
         assert "plain failure" in msg
+
+
+class TestClassifierScoping:
+    """The classifier is pure text and runs on every platform, so a macOS
+    diagnosis needs macOS evidence, not an English phrase."""
+
+    def test_a_bare_symbol_not_found_is_not_a_macos_diagnosis(self):
+        # A Linux wrapper or a plugin loader saying this is not dyld.
+        out = "plugin loader: Symbol not found in module registry\nexiting"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "llama.cpp libraries are from" not in msg
+        assert "llama-server failed to start." in msg
+        assert "plugin loader" in msg  # the tail survives instead
+
+    def test_dyld_framing_still_classifies(self):
+        out = (
+            "dyld[1]: Symbol not found: __ZN4ggml7backendE\n"
+            "  Expected in: /Users/me/.unsloth/llama.cpp/build/bin/libllama.dylib"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "different build" in msg
+
+
+class TestNestedDyldPlaceholders:
+    def test_a_nested_placeholder_is_reduced_to_the_library_name(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
+        out = (
+            "dyld[1]: Library not loaded: @loader_path/../Frameworks/libomp.dylib\n"
+            "  Reason: tried: '/opt/mybuild/Frameworks/libomp.dylib' (no such file)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, "/opt/mybuild/bin/llama-server")
+        assert "libomp.dylib" in msg
+        assert "@loader_path" not in msg
+        assert "../Frameworks" not in msg
+        assert "that exact location" not in msg
+
+
+class TestShortSecrets:
+    def test_a_short_password_is_redacted_beside_its_name(self, monkeypatch):
+        monkeypatch.setenv("DATABASE_PASSWORD", "hunter2")
+        out = "env dump: DATABASE_PASSWORD=hunter2 PORT=8080"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "hunter2" not in msg
+        assert "PORT=8080" in msg  # non-secret short values are untouched
+
+    def test_a_short_non_secret_value_is_not_replaced_globally(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_PORT", "8080")
+        msg = _classify("bound 8080 then failed", "/models/x.gguf", "local/x", 1)
+        assert "8080" in msg

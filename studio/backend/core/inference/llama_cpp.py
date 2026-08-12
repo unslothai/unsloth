@@ -4532,7 +4532,12 @@ class LlamaCppBackend:
         ``--spec-draft-n-max`` post-rename, ``--draft-max`` on legacy.
         ``None`` means n_max cannot be set.
         """
-        bin_path = binary or cls._find_llama_server_binary()
+        # Resolve here, not only in load_model: the startup, status and
+        # preflight routes probe directly, and on macOS a shell entrypoint
+        # loses DYLD_* to SIP before it reaches the real server. The probe then
+        # reports inconclusive capabilities, which clamps slots and disables
+        # DSpark/DFlash sizing for a server that supports both (#8566).
+        bin_path = cls._exec_path_for_launch(binary or cls._find_llama_server_binary())
         if not bin_path or not Path(bin_path).is_file():
             return {
                 "found": False,
@@ -8985,6 +8990,23 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _exec_path_for_launch(binary: Optional[str]) -> Optional[str]:
+        """The path to actually execute, resolving a managed macOS entrypoint.
+
+        SIP purges DYLD_* while starting the protected /bin/sh a shell
+        entrypoint runs under, so the loader path we build for the child would
+        not survive the wrapper's own exec (#8566). Only OUR entrypoint is
+        resolved: a user's own LLAMA_SERVER_PATH wrapper may export backend
+        variables or do other setup before its exec line, and skipping past it
+        would silently drop that.
+        """
+        if not binary or sys.platform != "darwin":
+            return binary
+        if not LlamaCppBackend._is_unsloth_managed_binary(binary):
+            return binary
+        return str(_resolve_llama_binary(binary))
+
+    @staticmethod
     def _runtime_remedy(binary: Optional[str]) -> str:
         """The repair advice for ``binary``, by provenance.
 
@@ -9011,9 +9033,11 @@ class LlamaCppBackend:
         restore a file at a directory that does not exist. The soname is what
         they can act on, and _is_bundled_llama_library already matches on it.
         """
-        for directive in ("@rpath/", "@loader_path/", "@executable_path/"):
-            if lib.startswith(directive):
-                return lib[len(directive) :]
+        # Basename, not just the directive: "@loader_path/../Frameworks/libomp.dylib"
+        # still carries a relative path that _is_library_path would read as an
+        # exact location, which is the same unusable advice one level in.
+        if lib.startswith(("@rpath/", "@loader_path/", "@executable_path/")):
+            return os.path.basename(lib)
         return lib
 
     @staticmethod
@@ -9127,7 +9151,13 @@ class LlamaCppBackend:
         # newer macOS than this one (reinstalling the same build cannot make
         # the OS export it), while a llama.cpp dylib means our own files are
         # from different builds.
-        if "symbol not found" in lowered:
+        # Only with dyld's own framing. "Symbol not found" on its own is
+        # ordinary English that a wrapper or a plugin loader on any platform
+        # can print, and diagnosing that as a mixed macOS runtime both misleads
+        # and suppresses the output tail the fallback would have carried.
+        if "symbol not found" in lowered and any(
+            marker in lowered for marker in ("dyld[", "dyld:", "referenced from:", "expected in:")
+        ):
             expected = re.search(r"expected in:\s*(?:<[^>]*>\s*)?([^\r\n]+)", output, re.IGNORECASE)
             expected_path = expected.group(1).strip() if expected else ""
             if expected_path.startswith(("/System/", "/usr/lib/")):
@@ -9411,10 +9441,21 @@ class LlamaCppBackend:
         try:
             from utils.prebuilt.child_env import URL_USERINFO_RE, is_secret_env_name
             for name, value in os.environ.items():
-                # Short values match innocuous substrings ("1", "true", a port).
-                if len(value or "") < 8:
+                if not value:
                     continue
-                if is_secret_env_name(name) or URL_USERINFO_RE.search(value):
+                secret_name = is_secret_env_name(name)
+                if len(value) < 8:
+                    # Too short to replace globally ("1", "true", a port number
+                    # would match everywhere), but a short password is still a
+                    # password: redact it where it appears next to its name.
+                    if secret_name:
+                        cleaned = re.sub(
+                            rf"({re.escape(name)}\s*[=:]\s*){re.escape(value)}",
+                            r"\1***",
+                            cleaned,
+                        )
+                    continue
+                if secret_name or URL_USERINFO_RE.search(value):
                     cleaned = cleaned.replace(value, "***")
         except Exception:  # noqa: BLE001 - redaction must never break a load error
             pass
@@ -10501,8 +10542,7 @@ class LlamaCppBackend:
             # does nothing but exec the target with "$@", so this is the same
             # launch minus the shell hop. The resolved path stays inside the
             # managed install, so provenance-aware advice is unaffected.
-            if binary and sys.platform == "darwin":
-                binary = str(_resolve_llama_binary(binary))
+            binary = self._exec_path_for_launch(binary)
             # Kept so a stand-down blamed on the binary can later tell a real update
             # from the same file still being installed.
             self._launch_binary_revision = self._binary_revision(binary)

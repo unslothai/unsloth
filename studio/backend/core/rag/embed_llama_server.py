@@ -51,11 +51,13 @@ def _resolve_entrypoint(binary: str) -> str:
 
     macOS only matters here: SIP purges DYLD_* while starting the protected
     /bin/sh a wrapper runs under, so probing or launching the wrapper loses the
-    loader path however carefully the environment was built (#8566).
+    loader path however carefully the environment was built (#8566). Shared
+    with the chat backend, which restricts this to OUR entrypoint so a user's
+    own wrapper keeps whatever setup it does before its exec.
     """
     try:
-        from core.inference.llama_cpp import _resolve_llama_binary
-        return str(_resolve_llama_binary(binary))
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._exec_path_for_launch(binary) or binary
     except Exception:  # noqa: BLE001 - launch what we were given
         return binary
 
@@ -122,8 +124,7 @@ class LlamaServerBackend:
         # Resolve before the probe, so both the `--help` capability check and
         # the later spawn run the real executable rather than an entrypoint
         # that would lose DYLD_* to SIP.
-        if sys.platform == "darwin":
-            binary = _resolve_entrypoint(binary)
+        binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
         return binary

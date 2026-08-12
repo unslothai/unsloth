@@ -178,3 +178,40 @@ class TestDarwinSpawnsTheResolvedBinary:
 
     def test_a_plain_binary_is_returned_unchanged(self, binary):
         assert llama_module._resolve_llama_binary(str(binary)) == binary.resolve()
+
+
+class TestExecPathForLaunch:
+    """Only OUR entrypoint is resolved past. A user's LLAMA_SERVER_PATH wrapper
+    may export backend variables before its exec line, and jumping straight to
+    the target would silently drop that setup."""
+
+    def _wrapper(self, tmp_path):
+        real_dir = tmp_path / "llama.cpp" / "build" / "bin"
+        real_dir.mkdir(parents = True)
+        (real_dir / "llama-server-real").write_text("")
+        wrapper = real_dir / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
+        return wrapper, real_dir / "llama-server-real"
+
+    def test_a_managed_entrypoint_is_resolved(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        wrapper, target = self._wrapper(tmp_path)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "llama.cpp"))
+        assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(target)
+
+    def test_a_pinned_custom_wrapper_is_launched_as_given(self, monkeypatch, tmp_path):
+        wrapper, _ = self._wrapper(tmp_path)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setenv("LLAMA_SERVER_PATH", str(wrapper))
+        assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(wrapper)
+
+    def test_other_platforms_are_untouched(self, monkeypatch, tmp_path):
+        wrapper, _ = self._wrapper(tmp_path)
+        for platform in ("linux", "win32"):
+            monkeypatch.setattr(sys, "platform", platform)
+            assert LlamaCppBackend._exec_path_for_launch(str(wrapper)) == str(wrapper)
+
+    def test_no_binary_is_passed_through(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert LlamaCppBackend._exec_path_for_launch(None) is None
