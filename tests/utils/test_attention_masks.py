@@ -166,7 +166,6 @@ def test_xformers_bias_move_skips_matching_metadata_device():
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two CUDA devices")
 def test_real_xformers_packed_mask_validates_on_each_device():
     from xformers.ops.fmha.common import Inputs
-
     packing_utils.clear_packed_caches()
     try:
         masks = []

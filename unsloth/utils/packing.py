@@ -37,9 +37,7 @@ except Exception:
         _XFormersBlockMask = None
 
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[
-    Tuple[torch.device, Tuple[int, ...], int], Any
-] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int], Any] = OrderedDict()
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -97,9 +95,7 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
 
 
 def _get_cached_block_mask(
-    lengths: Tuple[int, ...],
-    sliding_window: Optional[int],
-    device: torch.device,
+    lengths: Tuple[int, ...], sliding_window: Optional[int], device: torch.device
 ):
     if _XFormersBlockMask is None:
         return None
