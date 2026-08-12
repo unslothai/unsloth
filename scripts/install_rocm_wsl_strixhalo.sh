@@ -33,6 +33,14 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# What this helper guarantees about the third-party source it builds as root. install.sh
+# refuses to run a copy that does not declare the contract it requires, so a helper fetched
+# from an older pin can never quietly drop one of these. Bump BOTH on any change here.
+#   1: builds LIBROCDXG_REF, no verification.
+#   2: verifies the clone against LIBROCDXG_SHA before building, and treats a failed
+#      checkout with no SHA to verify against as fatal rather than building default HEAD.
+UNSLOTH_ROCM_WSL_HELPER_CONTRACT=2
+
 # ── Tunables (override via env) ──────────────────────────────────────────────
 ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
 # GPU arch: empty = auto-detect from rocminfo after install (override UNSLOTH_WSL_GFX=gfx1200).
