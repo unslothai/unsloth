@@ -20,6 +20,8 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    is_qualified_gguf_variant_key,
+    quant_token_with_bpw,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -132,10 +134,16 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    # A path-qualified variant key names its own folder; its quant token belongs to
-    # sibling checkpoints too, so it must not reach for a <quant>/ dir it does not own.
+    # A qualified key names its own folder; its quant token belongs to sibling checkpoints too,
+    # so it must not reach for a <quant>/ dir it does not own. Qualified means a path
+    # (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier (``IQ4_XS-3.53bpw``, whose
+    # token-only ``IQ4_XS/`` folder is a different build's).
+    qualified = (
+        is_qualified_gguf_variant_key(variant)
+        or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    )
     variant_key = (
-        variant.lower() if "/" in variant else (extract_quant_token(variant) or variant).lower()
+        variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
     )
     removed = 0
     failures: list[str] = []
@@ -159,7 +167,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                 try:
                     if sub.is_symlink() or not sub.is_dir():
                         continue
-                    folder_quant = extract_quant_token(sub.name)
+                    folder_quant = quant_token_with_bpw(sub.name)
                     matches = (
                         folder_quant is not None and folder_quant.lower() == variant_key
                     ) or sub.name.lower() == variant.lower()
@@ -225,6 +233,8 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     }
     if wanted in keys:
         return {wanted}
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must not delete either.
     aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
     return aliased if len(aliased) == 1 else {wanted}
 
@@ -700,17 +710,71 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
     return None
 
 
+def _is_companion_base_repo(repo_id: str) -> bool:
+    """Whether *repo_id* is a curated image-family companion base (pure table lookup, no I/O)."""
+    try:
+        from hub.utils import companion_assets
+        return companion_assets.is_companion_base(repo_id)
+    except Exception as e:  # noqa: BLE001 -- an unavailable table just skips the extra guard
+        logger.debug(f"Companion base classification unavailable for {repo_id}: {e}")
+        return False
+
+
+def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
+    """Whether *variant* names a file an installed checkpoint's native load actually opens.
+
+    Not "would this empty the repo": the asset is a FIXED filename, so a sibling quant left
+    behind substitutes for nothing. Fails CLOSED, and cheaply -- a True here only runs the
+    dependants check, which answers "nobody needs it" for every ordinary repo and lets the
+    delete through.
+    """
+    from hub.services.models import cache_inventory
+    from hub.utils import companion_assets
+    from hub.utils.gguf import extract_quant_label
+
+    try:
+        wanted = companion_assets.required_companion_asset_files(
+            cache_inventory.all_hf_cache_scans()
+        ).get((repo_id or "").strip().lower(), set())
+        target = (variant or "").strip().lower()
+        return any(extract_quant_label(name).lower() == target for name in wanted)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not permission to delete
+        logger.warning(f"Could not check companion assets for {repo_id}: {exc}")
+        return True
+
+
+def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
+    from hub.services.models import companion_cleanup
+
+    holders = companion_cleanup.companion_dependents(repo_id, ignore_repo_ids = [repo_id])
+    if not holders:
+        return None
+    shown = ", ".join(holders[:3])
+    extra = len(holders) - 3
+    if extra > 0:
+        shown = f"{shown} and {extra} more"
+    return (
+        f"{repo_id} holds the text encoder, VAE and tokenizer that {shown} still "
+        "needs. Delete those models first, then remove these shared assets."
+    )
+
+
 async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
     cache_path: Optional[str] = None,
+    only_if_orphan: bool = False,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
     When *variant* is provided, only the GGUF files matching that quant label
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
     Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
     """
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
@@ -757,7 +821,12 @@ async def delete_cached_model_response(
         raise HTTPException(status_code = 400, detail = detail)
     try:
         return await asyncio.to_thread(
-            _delete_cached_model_blocking, repo_id, variant, hf_token, cache_path
+            _delete_cached_model_blocking,
+            repo_id,
+            variant,
+            hf_token,
+            cache_path,
+            only_if_orphan = only_if_orphan,
         )
     finally:
         downloads.registry.end_delete(repo_key, variant)
@@ -769,7 +838,91 @@ def _delete_cached_model_blocking(
     variant: Optional[str],
     hf_token: Optional[str],
     cache_path: Optional[str] = None,
+    *,
+    only_if_orphan: bool = False,
 ) -> dict:
+    # Free up space asks for this: the row it is removing was an orphan when the list was built,
+    # and the list can be minutes old. A download of that same repo finishing in the background
+    # turns it into an installed checkpoint, and neither guard below catches that -- begin_delete
+    # only refuses a download still in flight, and the companion guard deliberately ignores the
+    # target as its own dependent. Re-derived here, after begin_delete has closed the repo to new
+    # downloads, so the answer cannot go stale between the check and the unlink.
+    if only_if_orphan:
+        from hub.services.models import companion_cleanup
+        from hub.utils import companion_assets
+
+        try:
+            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
+                repo_id.strip().lower(), []
+            )
+            # Only the copy being removed. The orphan listing emits one row per cache root
+            # precisely because a delete is scoped to one, so a full-pipeline copy in another
+            # remembered cache must not veto removing the companion-only copy that was listed.
+            if cache_path:
+                wanted = Path(cache_path)
+                copies = [
+                    r
+                    for r in copies
+                    if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
+                ]
+                if not copies:
+                    # No fallback to the other copies. An empty match means the target root is
+                    # not in this scan (its scan failed, or the copy is gone), and the delete
+                    # below can still purge that directory by path -- so concluding "orphan" from
+                    # copies we did not look at is exactly the fail-open this precondition exists
+                    # to prevent. Raising here lands in the fail-closed 503 below.
+                    raise RuntimeError(f"cache root not present in the scan: {cache_path}")
+            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
+        except Exception as e:
+            logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = ("Couldn't confirm these assets are still unused. Try again in a moment."),
+            )
+        if not still_orphan:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"{repo_id} now holds an installed model, so it is no longer an unused "
+                    "asset. Reopen Free up space to see the current list."
+                ),
+            )
+
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
+    # family, so removing it while one is installed leaves that quant unloadable with nothing on
+    # screen to say why. Derived from what is installed right now, never from a stored count, and
+    # only for a WHOLE-repo delete: a variant delete cannot touch another repo. Deleting the
+    # dependants first makes the base an orphan, which Free up space then offers.
+    #
+    # Here rather than in the async caller so it shares this function's cache walk and its stubs:
+    # the check IS part of the destructive stage, and a caller that replaces that stage should not
+    # end up with half of it still running.
+    # A variant delete normally cannot touch another repo, so the guard is a whole-repo check.
+    # The exception is a companion whose asset IS a named GGUF variant: native Qwen-Image opens
+    # exactly Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf inside a chat GGUF repo, so removing that one
+    # quant strands the image checkpoint however many siblings remain, and none of them is a
+    # substitute for a fixed filename. A FLAG, never a rewrite of `variant`: that name is the
+    # destructive scope, and widening it here would delete every revision and manifest the user
+    # did not ask for, and purge a sibling quant out from under an in-flight download.
+    guard_this_delete = variant is None or _variant_is_a_required_companion_asset(repo_id, variant)
+    if guard_this_delete and _is_companion_base_repo(repo_id):
+        # Fails CLOSED, and only here: the lookup above already established this repo IS a
+        # companion base, so an unreadable cache means the dependants cannot be enumerated, not
+        # that there are none. Every other repo skips the check entirely and is unaffected.
+        try:
+            shared_detail = _companion_share_blocks_delete(repo_id)
+        except Exception as e:
+            logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "Couldn't check whether other installed models still need these shared "
+                    "assets. Try again in a moment."
+                ),
+            )
+        if shared_detail:
+            raise HTTPException(status_code = 400, detail = shared_detail)
+
     try:
         # If a sibling quant is downloading concurrently, restrict this delete to
         # the variant's own files and leave the shared mmproj companion for it.

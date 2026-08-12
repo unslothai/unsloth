@@ -34,6 +34,8 @@ export interface ModelArtifact {
   totalParams?: number;
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
+  /** Fixed quant when a specialized runtime pins one exact GGUF file. */
+  deviceQuant?: string;
 }
 
 export interface CatalogGroup {
@@ -42,7 +44,9 @@ export interface CatalogGroup {
   displayName: string;
   /** Row meta line ("Text-to-image", "Image editing", "Text-to-video with audio"). */
   description: string;
-  scope: "image" | "video";
+  scope: "image" | "video" | "audio";
+  /** Audio-only task tag driving the Audio page's Speak/Transcribe mode interlock. */
+  task?: "tts" | "stt";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
   /** Cross-owner ids that resolve to this group. Suffix stripping never merges two owners on its own. */
@@ -346,16 +350,36 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
-        // Cluster measurements at the default 1344x768, 124-frame preset. The
-        // lower-GPU tier holds one 66 GB component at a time and keeps the full
-        // model in RAM; the higher tier retains more weights on-device.
+        // Cluster measurements at the default 1344x768, 124-frame preset. The lower-GPU tier
+        // holds one 66 GB component at a time and keeps the full model in RAM; the higher tier
+        // retains more weights on-device.
+        //
+        // THESE ARE GiB, and the backend estimators they mirror are decimal GB, so the two sets
+        // of numbers must never be copied across. The hardware API divides MiB and bytes by
+        // 1024-based units (nvidia.py memory_total_gb, main.py available_gb) while the generation
+        // guard in video.py divides runtime bytes by 1_000_000_000. Converted, these tiers are
+        // 79.5 / 150.3 GB and 132.1 / 85.9 GB, which is exactly the estimators' 78.74 / 150 and
+        // 132 / 85 with a small margin. Raising them to the decimal figures applies the
+        // conversion twice and sends capable hosts to GGUF.
         offloadFitTiers: [
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
-      gguf("unsloth/MiniMax-H3-GGUF", { totalParams: 20_111_438_744 }),
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
+      gguf("unsloth/MiniMax-H3-GGUF", {
+        label: "GGUF",
+        keywords: [
+          "gguf",
+          "quantized",
+          "fl2va",
+          "ref2va",
+          "keyframes",
+          "references",
+        ],
+        totalParams: 20_111_438_744,
+      }),
     ],
   },
   {
@@ -422,6 +446,121 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         keywords: ["bf16", "480p"],
       }),
     ],
+  },
+];
+
+// The Audio page's curated list. tts groups load into the main slot via /api/inference/load
+// (Orpheus is the only family the llama.cpp TTS path also serves as GGUF); stt groups map to
+// the dictation sidecar models in stt-model-catalog.ts, so their sizes are informational only.
+export const AUDIO_CATALOG: CatalogGroup[] = [
+  {
+    canonicalId: "unsloth/orpheus-3b-0.1-ft",
+    displayName: "Orpheus TTS 3B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/orpheus-3b-0.1-ft", 7, { label: "Safetensors" }),
+      gguf("unsloth/orpheus-3b-0.1-ft-GGUF"),
+    ],
+  },
+  {
+    canonicalId: "unsloth/csm-1b",
+    displayName: "Sesame CSM 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    // No GGUF artifact: the llama.cpp TTS path has no csm decode, so CSM runs transformers-only.
+    artifacts: [bf16Pipeline("unsloth/csm-1b", 6, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Spark-TTS-0.5B",
+    displayName: "Spark TTS 0.5B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [bf16Pipeline("unsloth/Spark-TTS-0.5B", 3, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/Llama-OuteTTS-1.0-1B",
+    displayName: "Oute TTS 1B",
+    description: "Text-to-speech",
+    scope: "audio",
+    task: "tts",
+    artifacts: [
+      bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
+    ],
+  },
+  // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
+  // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
+  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
+  // picker. Re-add both rows together with an xcodec2 decoder.
+  {
+    canonicalId: "unslothai/Qwen3-ASR-0.6B-GGUF",
+    displayName: "Qwen3-ASR 0.6B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unslothai/Qwen3-ASR-1.7B-GGUF",
+    displayName: "Qwen3-ASR 1.7B",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3-turbo",
+    displayName: "Whisper Large v3 Turbo",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3-turbo", 2, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-large-v3",
+    displayName: "Whisper Large v3",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [
+      bf16Pipeline("unsloth/whisper-large-v3", 4, { label: "Safetensors" }),
+    ],
+  },
+  {
+    canonicalId: "unsloth/whisper-small",
+    displayName: "Whisper Small",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" })],
+  },
+  // Both sidecars carry tiny/base (GGML_STT_REPOS, STT_MODEL_REPOS) and Voice
+  // settings lists them; only this picker was missing them.
+  {
+    canonicalId: "unsloth/whisper-base",
+    displayName: "Whisper Base",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/whisper-tiny",
+    displayName: "Whisper Tiny",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
 ];
 
@@ -494,7 +633,7 @@ interface CatalogIndex {
   artifactById: Map<string, ModelArtifact>;
 }
 
-// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice twice (images + video).
+// Rebuilt only on a new catalog array identity; the curated arrays are module constants, so in practice once per catalog (images, video, audio).
 const indexCache = new WeakMap<CatalogGroup[], CatalogIndex>();
 
 function indexFor(catalog: CatalogGroup[]): CatalogIndex {
@@ -583,6 +722,19 @@ export function curatedCapabilitiesFor(
   };
 }
 
+/** Human-facing name of an exact curated artifact, including the artifact label
+ * when its model has more than one selectable representation. */
+export function curatedDisplayNameFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): string | null {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return null;
+  return hit.group.artifacts.length > 1
+    ? `${hit.group.displayName} (${hit.artifact.label})`
+    : hit.group.displayName;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
@@ -590,12 +742,10 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
     for (const artifact of group.artifacts) {
       options.push({
         id: artifact.repoId,
-        name:
-          group.artifacts.length > 1
-            ? `${group.displayName} (${artifact.label})`
-            : group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
+        deviceQuant: artifact.deviceQuant,
       });
     }
   }

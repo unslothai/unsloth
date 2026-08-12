@@ -14,9 +14,11 @@ from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
+    detect_reasoning_channel_markers,
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
+    prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
     trailing_assistant_text,
 )
@@ -102,6 +104,14 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
+def _ascii_registry_key(value):
+    """An mlx-vlm registry key lowered within ASCII, else None. Not `casefold`:
+    it folds non-ASCII onto ASCII, so "ſmolvlm" would reach `smolvlm`."""
+    if not isinstance(value, str) or not value.isascii():
+        return None
+    return value.lower()
+
+
 def _render_registered_vlm_prompt(
     processor,
     model,
@@ -122,8 +132,29 @@ def _render_registered_vlm_prompt(
     config, model_type = _mlx_vlm_model_config(model)
     if config is None:
         return None
-    if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
-        return None
+    model_config = getattr(prompt_utils, "MODEL_CONFIG", {})
+    if model_type not in model_config:
+        # Registry keys are ASCII, so fold in ASCII: casefold would route
+        # "ſmolvlm" into the unrelated `smolvlm` renderer.
+        folded = _ascii_registry_key(model_type)
+        matches = (
+            [
+                key
+                for key in model_config
+                if isinstance(key, str) and _ascii_registry_key(key) == folded
+            ]
+            if folded is not None
+            else []
+        )
+        # An ambiguous fold is not evidence for either key: stay fail-closed.
+        if len(matches) != 1:
+            return None
+        canonical = matches[0]
+        # Preserve the checkpoint's config object. The prompt helper only needs
+        # its own canonical routing key, and mutating the loaded model would make
+        # later capability and export logic observe a value it never published.
+        config = dict(config) if isinstance(config, dict) else dict(config.__dict__)
+        config["model_type"] = canonical
 
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
     swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
@@ -1531,6 +1562,9 @@ class MLXInferenceBackend:
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers
+        # Not the request flag: a later tool-loop pass keeps it but renders an
+        # ordinary post-tool prompt.
+        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
@@ -1563,7 +1597,12 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
-            ReasoningChannelNormalizer(*reasoning_channel_markers)
+            ReasoningChannelNormalizer(
+                *reasoning_channel_markers,
+                in_reasoning = prompt_opens_reasoning_channel(
+                    prompt, reasoning_channel_markers, _resumed_partial
+                ),
+            )
             if reasoning_channel_markers is not None
             else None
         )
@@ -1846,7 +1885,12 @@ class MLXInferenceBackend:
                         )
 
         yield from normalize_reasoning_snapshots(
-            _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
+            _stream_vlm_snapshots(),
+            chat_target,
+            cancel_event,
+            tools = tools,
+            prompt = prompt,
+            continued = bool(continue_final_message and trailing_assistant_text(messages)),
         )
 
     def generate_audio_input_response(
@@ -1900,6 +1944,8 @@ class MLXInferenceBackend:
             )
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
+        markers = detect_reasoning_channel_markers(self._processor)
+        normalizer = ReasoningChannelNormalizer(*markers) if markers is not None else None
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
@@ -1917,6 +1963,8 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_text = response.text if hasattr(response, "text") else str(response)
+                    if normalizer is not None:
+                        token_text = normalizer.feed(token_text)
                     if token_text:
                         yield token_text
                     if cancel_event and cancel_event.is_set():
@@ -1929,6 +1977,11 @@ class MLXInferenceBackend:
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
                     )
+        if normalizer is not None:
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            tail = normalizer.drain() if cancelled else normalizer.finish()
+            if tail:
+                yield tail
 
     def generate_with_adapter_control(
         self,

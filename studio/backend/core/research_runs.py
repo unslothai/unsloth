@@ -864,7 +864,7 @@ class ResearchSupervisor:
         for source, result in zip(targets, results):
             if isinstance(result, BaseException) or not isinstance(result, str):
                 continue
-            body = strip_result_for_model(result)
+            body = strip_result_for_model(result, "web_search")
             if is_tool_error(body):
                 continue
             body = _clean_scraped_text(body)
@@ -1143,6 +1143,12 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
+            # Gathered page text lands in these prompts and research never reads tool calls
+            # back, so this hop must stay out of the tool loop. Both opt-outs are needed:
+            # --enable-tools overrides a per-request enable_tools, and an omitted
+            # enabled_tools resolves to every built-in, python and terminal included.
+            "tool_choice": "none",
+            "enabled_tools": [],
             "temperature": inference.get("temperature", 0.2),
         }
         if inference.get("topP") is not None:
@@ -2054,7 +2060,7 @@ class ResearchSupervisor:
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
-            clean_result = strip_result_for_model(result)
+            clean_result = strip_result_for_model(result, "web_search")
             step_result = {
                 "action": action["action"],
                 "input": argument,

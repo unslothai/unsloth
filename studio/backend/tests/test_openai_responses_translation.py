@@ -20,6 +20,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -110,6 +111,50 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert "frequency_penalty" not in body
     assert "top_k" not in body
     assert "messages" not in body
+
+
+def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _responses_sse(
+                [
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": "resp_failed_123",
+                            "status": "failed",
+                            "error": None,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    error_line = next(line for line in lines if '"error"' in line)
+    error = json.loads(error_line[len("data:") :].strip())["error"]
+    assert "Unknown error" not in error["message"]
+    assert "resp_failed_123" in error["message"]
 
 
 def test_responses_translates_image_parts(monkeypatch):
@@ -301,7 +346,6 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
         {
             "type": "reasoning",
             "id": "rs_abc",
-            "status": "completed",
             "summary": [{"type": "summary_text", "text": "Check weather."}],
         }
     ]
@@ -490,7 +534,6 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
     assert reasoning == {
         "type": "reasoning",
         "id": "rs_abc",
-        "status": "completed",
         "summary": [{"type": "summary_text", "text": "Check weather."}],
     }
     fc = next(it for it in items if it.get("type") == "function_call")
@@ -777,3 +820,54 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         if payload["choices"][0]["delta"]
     )
     assert "<think>plan</think>answer" in combined
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        # OpenAI, Anthropic and Gemini error envelopes.
+        (
+            '{"error": {"message": "You have no credits remaining.",'
+            ' "type": "insufficient_quota", "code": "credit_balance_exhausted"}}',
+            "You have no credits remaining. (credit_balance_exhausted)",
+        ),
+        (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"`temperature` is deprecated for this model."},"request_id":"req_1"}',
+            "`temperature` is deprecated for this model. (invalid_request_error)",
+        ),
+        (
+            '{"error": {"code": 400, "message": "API key not valid.",'
+            ' "status": "INVALID_ARGUMENT"}}',
+            "API key not valid. (INVALID_ARGUMENT)",
+        ),
+        # FastAPI-style bodies from OpenAI-compat backends (vllm, llama.cpp).
+        ('{"detail": "Model unavailable"}', "Model unavailable"),
+        (
+            '{"detail": [{"loc": ["body", "model"], "msg": "field required"},'
+            ' {"msg": "bad temperature"}]}',
+            "field required; bad temperature",
+        ),
+        # Already-friendly text passes through; empty/detail-free bodies fall back.
+        ("Timeout waiting for openai response", "Timeout waiting for openai response"),
+        ("", "openai returned HTTP 500 with no error details."),
+        ('{"error": {}}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": []}', "openai returned HTTP 500 with no error details."),
+        ('{"detail": {"weird": 1}}', "openai returned HTTP 500 with no error details."),
+    ),
+)
+def test_upstream_error_body_reduced_to_its_message(body, expected):
+    assert ep_mod._readable_provider_error(500, body, "openai") == expected
+
+
+def test_error_sse_line_carries_no_json_blob(monkeypatch):
+    """A raw upstream body must not reach the client as nested JSON."""
+    line = ep_mod._error_sse_line(
+        429,
+        '{"error": {"message": "Rate limit reached.", "code": "rate_limit_exceeded"}}',
+        "openai",
+    )
+    error = json.loads(line[len("data:") :].strip())["error"]
+    assert error["message"] == "Rate limit reached. (rate_limit_exceeded)"
+    assert "{" not in error["message"]
+    assert error["code"] == "429"

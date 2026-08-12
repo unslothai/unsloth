@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import importlib.util
+import json
 import os
 import platform
 import re
@@ -3494,20 +3495,43 @@ def _bootstrap_uv() -> bool:
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
-    """Return a temp copy of a requirements file with certain packages removed."""
+    """Return a temp copy, adjacent when writable, with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
         line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
-    tmp = tempfile.NamedTemporaryFile(
+    # Beside the source so relative -r/-c includes resolve; a read-only tree
+    # (root-owned install, non-root user) falls back rather than aborting.
+    kwargs = dict(
         mode = "w",
+        prefix = f".{req.stem}-filtered-",
         suffix = ".txt",
         delete = False,
         encoding = "utf-8",
     )
+    try:
+        tmp = tempfile.NamedTemporaryFile(dir = req.parent, **kwargs)
+    except OSError:
+        tmp = tempfile.NamedTemporaryFile(**kwargs)
     tmp.writelines(filtered)
     tmp.close()
     return Path(tmp.name)
+
+
+def _shared_base_requirements() -> Path | None:
+    """The shared torch-bound requirements file, or None when it has no work."""
+    if NO_TORCH:
+        return None
+    req = REQ_ROOT / "base.txt"
+    try:
+        # utf-8-sig: a BOM would otherwise read as content, scheduling an empty step.
+        text = req.read_text(encoding = "utf-8-sig")
+    except OSError:
+        return None  # missing or unreadable: nothing to apply
+    for line in text.splitlines():
+        if line.split("#", 1)[0].strip():
+            return req
+    return None
 
 
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:
@@ -3527,11 +3551,10 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
     """Build a standard pip install command.
 
     pip has no --upgrade-package, so uv's flag is translated rather than
-    dropped. Dropping it made this fallback a no-op on the update path:
-    `studio update` passes --upgrade-package unsloth with a base.txt that lists
-    a bare unsloth, so pip found the requirement already satisfied, installed
-    nothing, and the update still reported success. Any uv failure reached that,
-    not just the Windows in-use launcher.
+    dropped. Dropping it made this fallback a no-op on the update path: pip saw
+    the named distributions as already satisfied, installed nothing, and the
+    update still reported success. Any uv failure reached that, not just the
+    Windows in-use launcher.
 
     --upgrade-strategy is pinned to only-if-needed rather than left to pip's
     default, because that default is the load-bearing part: it upgrades the
@@ -3787,6 +3810,48 @@ def _has_working_git() -> bool:
         return False
 
 
+_MLX_HEALTH_PROBE = (
+    "import json, sys;"
+    "sys.path.insert(0, sys.argv[1]);"
+    "from utils.mlx_repair import mlx_stack_blockers;"
+    "print(json.dumps(mlx_stack_blockers()))"
+)
+
+
+def _report_mlx_stack_health() -> None:
+    """Name what would keep Train off on this Apple Silicon host, if anything.
+
+    Advisory only: the install has already succeeded, chat still works, and the
+    background self-heal gets another go at startup. It just must not be silent,
+    which is the whole of the reported "Train is blacked out after an update".
+
+    Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
+    installed one of those can abort rather than raise.
+    """
+    backend = str(SCRIPT_DIR / "backend")
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _MLX_HEALTH_PROBE, backend],
+            capture_output = True,
+            text = True,
+            timeout = 180,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        blockers = json.loads(probe.stdout.strip() or "null")
+    except Exception as exc:  # noqa: BLE001 - advisory, never fail the install
+        _step("mlx", f"could not verify the MLX stack ({exc})", _dim)
+        return
+    if blockers is None:
+        _step("mlx", "could not verify the MLX stack", _dim)
+        return
+    if not blockers:
+        _step("mlx", "training stack ready")
+        return
+    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    for blocker in blockers:
+        _step("", blocker, _cyan)
+
+
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     _STEP = 0
@@ -3794,9 +3859,9 @@ def install_python_stack() -> int:
     # the first message would get a stray newline.
     _PROGRESS_LINE_ACTIVE = False
 
-    # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling base packages;
+    # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling the core packages;
     # `studio update` does NOT, so unsloth + unsloth-zoo are reinstalled to pick
-    # up new versions.
+    # up new versions. Shared base.txt requirements are handled independently.
     skip_base = os.environ.get("SKIP_STUDIO_BASE", "0") == "1"
     # --package installs a different package name (for testing).
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
@@ -3810,7 +3875,12 @@ def install_python_stack() -> int:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         if not IS_WINDOWS:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
-    _TOTAL = (base_total - 1) if skip_base else base_total
+    if IS_MAC_ARM and not skip_base:
+        base_total += 1  # MLX stack, same gate as the step itself
+    base_requirements = _shared_base_requirements() if skip_base else None
+    # Core packages and shared base requirements occupy one progress slot. A
+    # shell-installer handoff skips that slot only while base.txt has no work.
+    _TOTAL = base_total - int(skip_base and base_requirements is None)
 
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
@@ -3894,6 +3964,7 @@ def install_python_stack() -> int:
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:
+        # install.sh / install.ps1 already installed both core distributions.
         pass
     elif NO_TORCH:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
@@ -3944,17 +4015,18 @@ def install_python_stack() -> int:
                 constrain = False,
             )
     elif local_repo:
-        # Local dev install: update deps from base.txt, then overlay the local
+        # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
         _progress("base packages")
         pip_install(
-            "Updating base packages",
+            "Updating core packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
+            "unsloth",
+            "unsloth-zoo",
         )
         _step(_LABEL, f"overlaying local repo (editable): {local_repo}")
         pip_install(
@@ -3988,13 +4060,30 @@ def install_python_stack() -> int:
         # --upgrade-package targets only base pkgs.
         _progress("base packages")
         pip_install(
-            "Updating base packages",
+            "Updating core packages",
             "--no-cache-dir",
             "--upgrade-package",
             "unsloth",
             "--upgrade-package",
             "unsloth-zoo",
-            req = REQ_ROOT / "base.txt",
+            "unsloth",
+            "unsloth-zoo",
+        )
+
+    if not skip_base:
+        base_requirements = _shared_base_requirements()
+
+    # Independent of the core phase: the shell installers skip that after
+    # installing the two distributions inline, but still apply this file.
+    if base_requirements is not None:
+        if skip_base:
+            _progress("base requirements")
+        else:
+            _step(_LABEL, "applying shared base requirements")
+        pip_install(
+            "Applying shared base requirements",
+            "--no-cache-dir",
+            req = base_requirements,
         )
 
     # 2b. AMD ROCm: reinstall torch with HIP wheels if the host has ROCm but the
@@ -4186,15 +4275,11 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: install.sh installs
-    #      unsloth itself and then runs this script with SKIP_STUDIO_BASE=1, so the whole
-    #      base-packages step is skipped and anything pinned there reaches `unsloth studio
-    #      update` but never a fresh install -- where unsloth's own metadata has already
-    #      pulled a diffusers RELEASE from PyPI, and Studio then refuses to load MiniMax-H3.
-    #      This step is outside every skip_base / NO_TORCH branch, and it runs after every
-    #      other requirements file, so nothing left can re-resolve diffusers behind it.
-    #      constrain stays on: constraints.txt says nothing about diffusers, and a future
-    #      entry there should win rather than be silently bypassed here.
+    # 11b. The pinned Diffusers revision. NOT in base.txt, which is applied early: this must
+    #      run after every other requirements file so nothing re-resolves Diffusers back to a
+    #      release, and outside every skip_base / NO_TORCH branch so it reaches every path.
+    #      constrain stays on: constraints.txt says nothing about diffusers today, and a
+    #      future entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")
     pip_install(
         "Installing the pinned Diffusers revision",
@@ -4245,6 +4330,21 @@ def install_python_stack() -> int:
             file = sys.stderr,
         )
         return 1
+
+    # 16. Apple Silicon: say so when the MLX stack this install just laid down is not
+    # one Train can use. The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and
+    # a resolver backtrack (or an mlx-vlm built against a different transformers) leaves
+    # packages present but unusable. Without this the install reports success and the app
+    # silently comes up chat-only, telling the user to run the update that has just
+    # finished.
+    #
+    # AFTER the manifest, not before it. The probe is advisory and out of process, and on
+    # the host it exists for the imports are the ones that hang, so it can hold its full
+    # timeout; run ahead of the manifest, a kill during that wait leaves every dependency
+    # step done and no record of it, and verify-install, the desktop preflight and the
+    # setup fast path all then call a complete install incomplete.
+    if IS_MAC_ARM and not NO_TORCH:
+        _report_mlx_stack_health()
 
     _step(_LABEL, "installed")
     return 0

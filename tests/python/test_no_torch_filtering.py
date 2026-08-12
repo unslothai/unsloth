@@ -133,6 +133,21 @@ class TestFilterRequirements:
         # Blank lines must be preserved.
         assert "\n\n" in content or content.count("\n") >= 3
 
+    @pytest.mark.skipif(
+        os.geteuid() == 0 if hasattr(os, "geteuid") else True,
+        reason = "root ignores directory permissions",
+    )
+    def test_read_only_requirements_dir_falls_back(self, tmp_path):
+        """A root-owned install tree must not abort the install (torchcodec/Windows filters)."""
+        req = self._write_req(tmp_path, "numpy\ntorchcodec>=0.1\n")
+        tmp_path.chmod(0o555)
+        try:
+            result = Path(ips._filter_requirements(req, {"torchcodec"}))
+        finally:
+            tmp_path.chmod(0o755)
+        assert result.read_text(encoding = "utf-8").split() == ["numpy"]
+        result.unlink()
+
     def test_stacked_windows_and_no_torch_filters(self, tmp_path):
         """Both WINDOWS_SKIP_PACKAGES and NO_TORCH_SKIP_PACKAGES applied."""
         req = self._write_req(
@@ -209,6 +224,10 @@ class TestRealRequirementsFiltering:
             pytest.skip("extras.txt not found in repo")
         if not EXTRAS_NO_DEPS_TXT.is_file():
             pytest.skip("extras-no-deps.txt not found in repo")
+        existing_filtered = set(REQ_ROOT.glob(".*-filtered-*.txt"))
+        yield
+        for path in set(REQ_ROOT.glob(".*-filtered-*.txt")) - existing_filtered:
+            path.unlink(missing_ok = True)
 
     def _non_blank_non_comment(self, path: Path) -> list[str]:
         """Return non-blank, non-comment lines from a requirements file."""
@@ -461,6 +480,11 @@ class TestInstallPythonStackSubprocessMock:
         """Check if any captured command references the given filename."""
         return any(filename in cmd for cmd in cmds)
 
+    def _cmds_contain_filtered_file(self, cmds: list[str], filename: str) -> bool:
+        """Check for the adjacent temp name produced from a requirements file."""
+        prefix = f".{Path(filename).stem}-filtered-"
+        return any("-r" in cmd and prefix in cmd for cmd in cmds)
+
     # -- NO_TORCH=True, IS_MACOS=True (Intel Mac scenario) --
 
     def test_no_torch_macos_skips_overrides(self):
@@ -480,17 +504,17 @@ class TestInstallPythonStackSubprocessMock:
     def test_no_torch_macos_extras_called(self):
         """With NO_TORCH=True, extras.txt is still called (but filtered)."""
         cmds = self._capture_install(no_torch = True, is_macos = True, is_windows = False)
-        has_extras = self._cmds_contain_file(cmds, "extras.txt") or any(
-            "-r" in cmd and "tmp" in cmd.lower() for cmd in cmds
-        )
+        has_extras = self._cmds_contain_file(
+            cmds, "extras.txt"
+        ) or self._cmds_contain_filtered_file(cmds, "extras.txt")
         assert has_extras, "extras.txt (or its filtered temp) should be called"
 
     def test_no_torch_macos_extras_no_deps_called(self):
         """With NO_TORCH=True, extras-no-deps.txt is still called (but filtered)."""
         cmds = self._capture_install(no_torch = True, is_macos = True, is_windows = False)
-        has_extras_nd = self._cmds_contain_file(cmds, "extras-no-deps.txt") or any(
-            "-r" in cmd and "tmp" in cmd.lower() for cmd in cmds
-        )
+        has_extras_nd = self._cmds_contain_file(
+            cmds, "extras-no-deps.txt"
+        ) or self._cmds_contain_filtered_file(cmds, "extras-no-deps.txt")
         assert has_extras_nd, "extras-no-deps.txt (or its filtered temp) should be called"
 
     # -- IS_WINDOWS=True + NO_TORCH=True (stacked) --

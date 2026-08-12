@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { STEPS } from "@/config/training";
 import { markOnboardingDone } from "@/features/auth";
+import { waitForHfTokenPersistence } from "@/features/hub/stores/hf-token-store";
 import { useTrainingConfigStore } from "@/features/training";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -38,7 +39,12 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
       <Button
         size="sm"
         className="mt-2 w-full md:hidden"
-        onClick={() => {
+        onClick={async () => {
+          try {
+            await waitForHfTokenPersistence();
+          } catch {
+            return;
+          }
           markOnboardingDone();
           window.location.assign(returnTo);
         }}
@@ -54,7 +60,12 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
       <Button
         size="sm"
         className="mt-3 hidden w-full md:flex"
-        onClick={() => {
+        onClick={async () => {
+          try {
+            await waitForHfTokenPersistence();
+          } catch {
+            return;
+          }
           markOnboardingDone();
           window.location.assign(returnTo);
         }}

@@ -47,7 +47,15 @@ nothing configured.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Optional
+
+# The ConvRot primitives, shared with the denoiser's hosted INT8 checkpoint. Re-exported below
+# under the names this module has always used.
+from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests name them here)
+    build_convrot_hadamard,
+    rotate_convrot_activation,
+)
 
 # The repo the Diffusers H3 path already pulls its VAEs from, so this adds no new dependency.
 from .video_minimax_h3 import H3_COMPONENT_REPO
@@ -63,6 +71,16 @@ H3_TE_QUANT_REPO = H3_COMPONENT_REPO
 H3_TE_QUANT_FILES: dict[str, str] = {
     "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
+
+# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it.
+#
+# The released conditioner is a 66.7 GB dense bfloat16 Qwen3-VL of 64 decoder layers and H3 reads
+# ``hidden_states[50]``; transformers has no early exit, so the default runs all 64 layers and
+# streams 66.7 GB across the CPU-offload boundary every generation. The hosted artifact is 27.1 GB
+# over 50 layers with the same read, which is why it is the default rather than an opt-in. NOT an
+# INT8 GEMM: the ConvRot forward dequantizes to the compute dtype and runs an ordinary
+# ``F.linear``, so the win is bytes moved and layers executed, not faster math.
+H3_TE_QUANT_DEFAULT = "int8"
 
 # Resident bytes of each conditioner, decimal GB, measured from the safetensors headers on the Hub
 # (2026-08-09) as the end of the last tensor's data. The quantized load is storage-faithful -- INT8
@@ -129,56 +147,24 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # rotation, 137% without).
 #
 # This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight``
-# exactly, in ~30 lines of torch, rather than taking a dependency on a wheel Studio does not ship.
-
-_HADAMARD_CACHE: dict[tuple[int, str, Any], Any] = {}
-
-
-def build_convrot_hadamard(
-    size: int,
-    device: Any = "cpu",
-    dtype: Any = None,
-) -> Any:
-    """The normalized regular Hadamard matrix ConvRot rotates by. Cached per (size, device, dtype)."""
-    import math
-
-    import torch
-
-    if dtype is None:
-        dtype = torch.float32
-    key = (size, str(device), dtype)
-    cached = _HADAMARD_CACHE.get(key)
-    if cached is not None:
-        return cached
-    if size < 4 or (size & (size - 1)) != 0 or math.log(size, 4) % 1 != 0:
-        raise ValueError(f"ConvRot group size must be a power of 4, got {size}")
-    h4 = torch.tensor(
-        [[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]],
-        dtype = dtype,
-        device = device,
-    )
-    h = h4
-    current = 4
-    while current < size:
-        h = torch.kron(h, h4)
-        current *= 4
-    h = h / (size**0.5)
-    _HADAMARD_CACHE[key] = h
-    return h
+# exactly, in a few lines of torch, rather than taking a dependency on a wheel Studio does not ship.
+#
+# ``build_convrot_hadamard`` and ``rotate_convrot_activation`` are imported at the top of this
+# module from ``diffusion_convrot``, where they now live. The DENOISER runs the same ConvRot on its
+# own hosted INT8 checkpoint, and the two rotations have to agree with the same comfy-kitchen
+# definition down to the normalizer -- two copies of a matrix nobody re-derives at review time is
+# exactly how they would stop agreeing. Both stay importable from here.
 
 
-def rotate_convrot_activation(x: Any, h: Any, group_size: int) -> Any:
-    """``x @ H`` blockwise over the last dimension."""
-    shape = x.shape
-    features = shape[-1]
-    if features % group_size != 0:
-        raise ValueError(f"features {features} not divisible by ConvRot group {group_size}")
-    grouped = x.reshape(-1, features // group_size, group_size)
-    return grouped.matmul(h.to(dtype = x.dtype, device = x.device)).reshape(shape)
-
-
+@lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
-    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports torch."""
+    """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
+    torch, and built exactly ONCE.
+
+    One load already shares a single class across every projection, so the cache is about the
+    SECOND load in a process: a fresh class there is a fresh ``___check_type_id`` guard, which
+    retraces every compiled block that survived the first one. Same reason the denoiser's
+    ``convrot_linear_class`` is cached."""
     import torch
     from torch import nn
 

@@ -83,6 +83,9 @@ export const ko = {
       recipes: "레시피",
       images: "이미지",
       video: "동영상",
+      audio: "오디오",
+      trainChecking: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
+      videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
@@ -373,6 +376,9 @@ export const ko = {
         keepKv: "유휴 해제 후에도 채팅 컨텍스트 유지",
         keepKvDescription:
           "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
+        apiOnly: "API가 불러온 모델만 해제",
+        apiOnlyDescription:
+          "유휴 해제 시 Studio에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -888,6 +894,11 @@ export const ko = {
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      thinking: {
+        collapseByDefault: "기본적으로 사고 과정 접기",
+        collapseByDefaultDescription:
+          "모델이 생각하는 동안 사고 과정을 자동으로 펼치지 않고 접어 둡니다. 읽으려면 블록을 펼치세요.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
@@ -966,6 +977,10 @@ export const ko = {
         "이 기기에 저장된 채팅 기록과 업로드한 파일을 관리합니다.",
       archivedChats: "보관된 채팅",
       archivedChatsDescription: "보관한 채팅을 확인하고 관리합니다.",
+      archivedImages: "보관된 이미지",
+      archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
+      archivedVideos: "보관된 동영상",
+      archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
       manageAction: "관리",
       exportArchivedChats: "내보내기",
       exportingArchivedChats: "내보내는 중...",
@@ -1367,6 +1382,7 @@ export const ko = {
       history: "기록",
     },
     loadingRuntime: "학습 런타임을 로딩하는 중...",
+    checkingSupport: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
     backToHistory: "기록으로 돌아가기",
     sections: {
       model: "모델",

@@ -8,17 +8,38 @@ import {
   FlimSlateIcon,
   Image03Icon,
   InformationCircleIcon,
+  PinIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
-import { usePlatformStore } from "@/config/env";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import {
+  applyPin,
+  fetchNextPage,
+  fetchWhileStable,
+  nextSelectedId,
+  pinnedOrder,
+  removeGalleryItem,
+  restorePinOrder,
+  serializeById,
+  sortGalleryItems,
+  subscribeGalleryChanged,
+} from "@/lib/gallery-flags";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -65,6 +86,7 @@ import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
+import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
@@ -83,7 +105,11 @@ import {
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
-import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import {
+  downloadFile,
+  downloadUrlStreaming,
+  isDownloadCancelled,
+} from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
@@ -95,10 +121,12 @@ import {
   type VideoGenerateProgress,
   type VideoReferenceVideo,
   type VideoLoadProgress,
+  type VideoLoadRequest,
   type VideoStatus,
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
+  setGalleryVideoFlags,
   fetchGalleryVideoExport,
   fetchGalleryVideoSignedUrl,
   generateVideo,
@@ -164,6 +192,9 @@ const galleryCache: {
   inflight: Set<string>;
   // Ids deleted while their link was still being minted, so a reply landing after the delete is not cached. Clear-all bumps the epoch instead.
   deleted: Set<string>;
+  /** Clips archived locally: a terminal progress response snapshotted before the archive cannot be
+   *  revoked, so the merges below must refuse it or the clip returns to the active strip. */
+  archived: Set<string>;
   epoch: number;
 } = {
   videos: [],
@@ -174,6 +205,7 @@ const galleryCache: {
   refreshed: new Set(),
   inflight: new Set(),
   deleted: new Set(),
+  archived: new Set(),
   epoch: 0,
 };
 
@@ -182,6 +214,10 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
+
+// Passes a window resync may make before giving up. Each extra pass only happens when pagination
+// moved while it was fetching, which cannot repeat indefinitely without the user scrolling along.
+const RESYNC_MAX_ATTEMPTS = 3;
 
 // Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
 type VideoExportFormat = "mp4" | "webm" | "gif";
@@ -194,13 +230,6 @@ function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"):
     : `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
       `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   return `Unsloth_video_${stamp}_${video.seed}.${format}`;
-}
-
-function saveLink(href: string, filename: string) {
-  const link = document.createElement("a");
-  link.href = href;
-  link.download = filename;
-  link.click();
 }
 
 // MP4 streams from its signed link to the chosen path: that link is cross-origin under Tauri,
@@ -216,12 +245,7 @@ async function downloadVideo(
     return;
   }
   const blob = await fetchGalleryVideoExport(video.id, format);
-  const url = URL.createObjectURL(blob);
-  try {
-    saveLink(url, exportFilename(video, format));
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-  }
+  await downloadFile(blob, exportFilename(video, format), blob.type);
 }
 
 function formatTimestamp(iso: string): string {
@@ -660,6 +684,55 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
+type VideoLoadOptions = {
+  kind: "gguf" | "single_file" | "pipeline";
+  filename?: string;
+  h3Task?: H3Task;
+};
+/** A pick held back while the user chooses the H3 partition. It carries what the deferred
+ *  loadOrStage call would otherwise have been given inline, so the choice only adds `h3Task`:
+ *  `source` decides whether the pick is preflighted against the Hub download plan or loaded
+ *  straight off disk, and a dialog must not silently change that for the pick it is holding. */
+type PendingH3Load = {
+  repoId: string;
+  opts: VideoLoadOptions;
+  source: ModelSelectorChangeMeta["source"];
+  token: number;
+};
+
+const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
+
+/** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
+ *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
+ *  without passing through handleModelSelect, so checking it in one place staged the default
+ *  fl2va partition, tens of GB, with no way to ask for References.
+ *
+ *  An on-device copy counts. The same pipeline added as a directory reaches the generic
+ *  local-pipeline branch, which a Hub-id equality test never recognises, so an omitted h3_task
+ *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
+ *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
+ *  is read off its filename elsewhere. */
+function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+  if (kind !== "pipeline") return false;
+  const id = repoId.toLowerCase();
+  if (id === H3_BF16_REPO.toLowerCase()) return true;
+  const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
+  return leaf === H3_BF16_REPO.split("/")[1].toLowerCase();
+}
+
+// What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
+// label and the generation recipe move together at pick time, so they have to roll back together too.
+type PickRevert = { prev: string | null; steps: number; guidance: number };
+// Resolved Advanced controls pinned across preflight, staging, and load.
+type VideoLoadAdvanced = Pick<
+  VideoLoadRequest,
+  | "memory_mode"
+  | "speed_mode"
+  | "attention_backend"
+  | "transformer_cache"
+  | "transformer_quant"
+>;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
 function VideoGate({ children }: { children: ReactNode }) {
@@ -673,20 +746,18 @@ function VideoGate({ children }: { children: ReactNode }) {
 /**
  * Capability gate in front of the generator.
  *
- * The root guard never bounces /video: not on the browser-platform guess, and not on a measured
- * chat-only verdict either, because a CPU-only host or a Mac without MLX is precisely where the
- * explanation below has something to say. Video also has no Apple path in the backend, so the
- * page answers for itself: spin while the answer is out, explain when it is no.
+ * The root guard never bounces /video: a chat-only host is both where the explanation below has
+ * something to say (a CPU-only box) and where video works anyway (Apple Silicon whose only
+ * problem is MLX). So the page answers for itself: spin while the answer is out, explain a no.
  *
- * The spin is bounded: AppSidebar is mounted on this route and re-reads /api/health while the
- * verdict is unknown, writing it to the same store this reads, so a host slower than
- * fetchDeviceType's bounded wait still lands here rather than spinning for the session.
+ * That answer is /api/system/hardware's alone, which settles detection before replying. Waiting
+ * on the chat-only verdict too would spin through an MLX self-heal /api/health holds it back for,
+ * which cannot change a Metal answer.
  */
 export function VideoPage({ active = true }: { active?: boolean }) {
   const hardware = useHardwareInfo();
-  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
 
-  if (capabilitiesUnknown || !hardware.loaded) {
+  if (!hardware.loaded) {
     return (
       <VideoGate>
         <Spinner className="size-5" />
@@ -718,12 +789,18 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 function VideoGenerator({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "a tiny ginger sloth surfing a wave at sunset, cinematic, smooth motion",
+    "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
+  const revertPick = useCallback((r: PickRevert) => {
+    setQuant(r.prev);
+    setSteps(r.steps);
+    setGuidance(r.guidance);
+  }, []);
   const [seed, setSeed] = useState("");
   // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
   const [resolutionIdx, setResolutionIdx] = useState(0);
@@ -762,9 +839,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
+  const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -777,6 +852,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const {
     attach: attachSettingsScroll,
     onScroll: onSettingsScroll,
@@ -812,7 +888,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails.
-  const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // A pick also applies its own step/guidance recipe, so the rollback carries those too: a cancelled distilled
+  // pick otherwise leaves its low-step, guidance-0 recipe applied to the model that is still resident.
+  const quantRevert = useRef<PickRevert | null>(null);
+  // Which quantRevert entry the live staged download belongs to. Staging does not set `busy`, so a second pick can overwrite
+  // quantRevert while the first plan is still resolving; without this the dying first job reverts the newer pick's label.
+  const stagedQuantRevert = useRef<PickRevert | null>(null);
+  // Bumped per Hub pick, so a plan that resolves after a newer pick can tell it has been superseded.
+  const pickSeq = useRef(0);
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails: handleLoad overwrites lastLoad at
   // load start, and a load failing AFTER that leaves the previous model resident, so the poll rolls it back.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
@@ -1142,9 +1225,30 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     })();
   }, [selected, ensureSrc]);
 
+  // Bumped by every LOCAL change to the strip: a pin, an archive, a delete, a merged generation.
+  // A resync started before one of those holds a snapshot the server listing cannot reconcile with
+  // what the user just did, so it drops it rather than applying a window they have moved off.
+  const stripEpoch = useRef(0);
+  // Bumped by the window growing from the server instead: a load, an appended page. That is not a
+  // conflict, it just means the resync sized itself against a smaller window, so it refetches.
+  const pageEpoch = useRef(0);
+  // Only the most recently started resync may apply. Two restores in a row start two of them, and
+  // the older snapshot arriving last would drop whatever the newer one had already shown.
+  const resyncSeq = useRef(0);
+  // Shelf mutations in flight. The epoch is an EDGE, so a page starting after the bump and landing
+  // before the row is dropped sees it hold still. A page is only trusted while this is zero.
+  const pendingShelfMutations = useRef(0);
+
   const loadGallery = useCallback(async () => {
     try {
-      const page = await getVideoGallery(0, PAGE_SIZE);
+      // Fenced: this page renders from the module cache while the load runs, so its tiles are
+      // actionable, and a pre-pin snapshot would undo the action with nothing to correct it.
+      const page = await fetchWhileStable(
+        () => stripEpoch.current,
+        () => getVideoGallery(0, PAGE_SIZE),
+      );
+      if (!page) return;
+      pageEpoch.current += 1;
       galleryCache.videos = page.videos;
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
@@ -1162,7 +1266,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      const page = await getVideoGallery(galleryCache.videos.length, PAGE_SIZE);
+      // Guarded on all three counters: an archive landing anywhere across this GET shortens the
+      // shelf, and the clip that shifts over the page boundary is returned by no page at all.
+      const result = await fetchNextPage(
+        () => galleryCache.videos.length,
+        () => stripEpoch.current,
+        () => pendingShelfMutations.current,
+        (offset) => getVideoGallery(offset, PAGE_SIZE),
+      );
+      if (!result) return;
+      const page = result.page;
+      pageEpoch.current += 1;
       setVideos((prev) => {
         const seen = new Set(prev.map((v) => v.id));
         const next = [...prev, ...page.videos.filter((v) => !seen.has(v.id))];
@@ -1188,46 +1302,235 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
-      if (format === "mp4") {
-        void downloadVideo(src, video, format).catch((err) => {
-          if (!isDownloadCancelled(err)) toast.error("Could not save video.");
-        });
-        return;
-      }
-      const toastId = toast.loading(`Converting to ${format.toUpperCase()}…`);
+      const toastId =
+        format === "mp4" ? null : toast.loading(`Converting to ${format.toUpperCase()}…`);
       try {
         await downloadVideo(src, video, format);
-        toast.dismiss(toastId);
+        if (toastId !== null) toast.dismiss(toastId);
+        if (isTauri) {
+          toast.success("Video saved", { description: exportFilename(video, format) });
+        }
       } catch (err) {
-        toast.dismiss(toastId);
+        if (toastId !== null) toast.dismiss(toastId);
         if (isDownloadCancelled(err)) return;
-        toast.error(
-          err instanceof Error ? err.message : `Failed to export ${format}`,
-        );
+        toast.error("Could not save video", {
+          description: err instanceof Error ? err.message : undefined,
+        });
       }
     },
     [],
   );
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await deleteGalleryVideo(id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete video");
-      return;
+  // Drop a clip from the strip. `discardLink` is for a real delete: the bytes are gone, so the
+  // cached link must go and any mint in flight must throw its result away. An archived clip keeps
+  // both, since the archived view plays the same file.
+  const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
+    if (discardLink) {
+      galleryCache.srcById.delete(id);
+      galleryCache.refreshed.delete(id);
+      galleryCache.deleted.add(id);
+      setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
-    galleryCache.srcById.delete(id);
-    galleryCache.refreshed.delete(id);
-    // A mint still in flight for this id must throw its link away rather than cache it.
-    galleryCache.deleted.add(id);
-    setSrcById((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setVideos((prev) => prev.filter((v) => v.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
+    stripEpoch.current += 1;
+    // Read the list from the cache (kept in sync with state every render) rather than nesting a
+    // setSelectedId inside a setVideos updater, which would run a side effect during dispatch.
+    const at = galleryCache.videos.findIndex((v) => v.id === id);
+    const next = removeGalleryItem(galleryCache.videos, id);
+    galleryCache.videos = next;
+    setVideos(next);
+    setSelectedId((cur) => nextSelectedId(next, id, cur, at));
   }, []);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
+      try {
+        await deleteGalleryVideo(id);
+      } catch (err) {
+        pendingShelfMutations.current -= 1;
+        toast.error(err instanceof Error ? err.message : "Failed to delete video");
+        return;
+      }
+      dropFromStrip(id, true);
+      pendingShelfMutations.current -= 1;
+    },
+    [dropFromStrip],
+  );
+
+  /**
+   * Refetch the loaded window from offset 0.
+   *
+   * Unpinning can drop a clip past the end of the loaded window and promote a previously unloaded
+   * one into it. The local reorder cannot know about the promoted clip, and the next loadMore
+   * still pages from the unchanged length, so that clip would be skipped until a reload.
+   */
+  const resyncWindow = useCallback(
+    async (count: number, stillFresh?: () => boolean) => {
+      const ticket = (resyncSeq.current += 1);
+      for (let attempt = 0; attempt < RESYNC_MAX_ATTEMPTS; attempt += 1) {
+        const paged = pageEpoch.current;
+        // Sized against the live window, so a page appended while this ran is covered rather than
+        // cut back off the bottom of the strip when the snapshot lands.
+        const wanted = Math.max(count, galleryCache.videos.length, PAGE_SIZE);
+        const collected: GalleryVideo[] = [];
+        let more = false;
+        while (collected.length < wanted) {
+          // The REMAINDER, not a whole page: a window of 51 (a page plus one new generation) would
+          // otherwise ask for 100 and grow the strip to match, reading 49 recipes off disk and
+          // rendering their tiles for a one-row shortfall.
+          const page = await getVideoGallery(
+            collected.length,
+            Math.min(PAGE_SIZE, wanted - collected.length),
+          );
+          collected.push(...page.videos);
+          more = page.has_more;
+          if (!page.has_more || page.videos.length === 0) break;
+        }
+        // Checked here, not by the caller: by the time this returns the window is already applied,
+        // so a stale snapshot has to be dropped before it overwrites a newer local change.
+        if (stillFresh && !stillFresh()) return;
+        if (resyncSeq.current !== ticket) return;
+        // Pagination moved under this pass. That is only server data, so cover it with another
+        // pass instead of giving up: giving up is what left an unpin's promoted clip missing.
+        if (pageEpoch.current !== paged) continue;
+        galleryCache.videos = collected;
+        galleryCache.hasMore = more;
+        setVideos(collected);
+        setHasMore(more);
+        if (typeof IntersectionObserver === "undefined") {
+          collected.forEach((video) => void ensureSrc(video));
+        }
+        return;
+      }
+    },
+    [ensureSrc],
+  );
+
+  // This page stays mounted across route changes, so a restore from the Settings archive would
+  // otherwise not reach the strip until a full reload. Resync the window that is actually loaded:
+  // loadGallery would cut it back to the first page and throw away everything scrolled to.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("videos", () => {
+        // Bumped FIRST: a restore changes the shelf, so reads already in flight must be discarded.
+        // Capturing without advancing let them pass their own checks and land on the new window.
+        stripEpoch.current += 1;
+        // Fenced like the unpin resync: a generation or a new page landing while this GET runs
+        // would otherwise be overwritten by a snapshot taken before it.
+        const epoch = stripEpoch.current;
+        void resyncWindow(
+          galleryCache.videos.length,
+          () => stripEpoch.current === epoch,
+        ).catch(() => void loadGallery());
+      }),
+    [loadGallery, resyncWindow],
+  );
+
+  // The pin state each id was last CLICKED into, so a failing request can tell whether it is still
+  // the current intent. Without it, a slow first click failing after a later click succeeded would
+  // roll the strip back onto the state the user has since moved off.
+  const pinAttempt = useRef(new Map<string, number>());
+  const pinSeq = useRef(0);
+
+  const handleTogglePin = useCallback(
+    async (id: string, pinned: boolean) => {
+      const loadedCount = galleryCache.videos.length;
+      // The pinned order as it stands BEFORE the click, so a failed unpin can put the clip back
+      // where it was instead of at the front of the pins.
+      const orderBefore = pinnedOrder(galleryCache.videos);
+      // A per-attempt token, not the target boolean: pin, unpin, pin stores true twice, so the FIRST
+      // attempt's failure would roll back the THIRD attempt's pin and leave the two disagreeing.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
+      stripEpoch.current += 1;
+      const epoch = stripEpoch.current;
+      // Optimistic: the reorder should land on the click, not a round trip later.
+      setVideos((prev) => {
+        const next = applyPin(prev, id, pinned);
+        galleryCache.videos = next;
+        return next;
+      });
+      try {
+        // One queue for the whole gallery, not one per clip. The server stamps `pinned_at` when
+        // it runs the PATCH and orders pins by that stamp, so two requests in flight together can
+        // be stamped in either order and the strip disagrees with the next load. Issuing them one
+        // at a time makes the stamps follow the clicks.
+        await serializeById("video-pin", () => setGalleryVideoFlags(id, { pinned }));
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to pin video");
+        // Put the old order back rather than leave the strip lying about server state, but only
+        // while this is still what the user last asked for.
+        if (pinAttempt.current.get(id) === attempt) {
+          pinAttempt.current.delete(id);
+          stripEpoch.current += 1;
+          setVideos((prev) => {
+            // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
+            // old position among the pins, which applyPin cannot do (it means "freshly pinned").
+            const next = pinned
+              ? applyPin(prev, id, false)
+              : restorePinOrder(prev, id, orderBefore);
+            galleryCache.videos = next;
+            return next;
+          });
+        }
+        return;
+      }
+      if (pinAttempt.current.get(id) !== attempt) return; // superseded by a later click
+      pinAttempt.current.delete(id);
+      // Pinning keeps the same set in the window (it only moves an already-loaded clip to the
+      // front), so only unpinning can open a gap.
+      if (!pinned && loadedCount > 0) {
+        try {
+          // Fenced: a pin clicked while this GET is in flight would otherwise be overwritten by a
+          // snapshot taken before it, leaving the strip unpinned while the server is pinned.
+          await resyncWindow(loadedCount, () => stripEpoch.current === epoch);
+        } catch {
+          // Best-effort: the strip is still usable, just possibly short one clip until a reload.
+        }
+      }
+    },
+    [resyncWindow],
+  );
+
+  const handleArchive = useCallback(
+    async (id: string) => {
+      // Held for the whole round trip: the server shortens the shelf when it processes this, and a
+      // page read inside that window sees the shortened list at an offset nothing contradicts.
+      stripEpoch.current += 1;
+      pendingShelfMutations.current += 1;
+      try {
+        await setGalleryVideoFlags(id, { archived: true });
+      } catch (err) {
+        pendingShelfMutations.current -= 1;
+        toast.error(err instanceof Error ? err.message : "Failed to archive video");
+        return;
+      }
+      galleryCache.archived.add(id);
+      dropFromStrip(id, false);
+      pendingShelfMutations.current -= 1;
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("videos");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived videos in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropFromStrip],
+  );
 
   const handleClearAll = useCallback(async () => {
     try {
@@ -1240,6 +1543,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     galleryCache.refreshed.clear();
     // Every mint in flight now belongs to a cleared gallery, so their links are discarded on arrival. The epoch covers unlisted ids too.
     galleryCache.epoch += 1;
+    stripEpoch.current += 1;
     galleryCache.videos = [];
     galleryCache.hasMore = false;
     galleryCache.selectedId = null;
@@ -1383,7 +1687,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
-          setQuant(quantRevert.current.prev);
+          revertPick(quantRevert.current);
           quantRevert.current = null;
         }
         // Same rollback for the Reapply target: the previous model is still resident, so point Reapply back at it.
@@ -1400,7 +1704,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         dismissLoadToast();
         setBusy(null);
         if (quantRevert.current) {
-          setQuant(quantRevert.current.prev);
+          revertPick(quantRevert.current);
           quantRevert.current = null;
         }
         // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
@@ -1462,11 +1766,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           setBusy(null);
           setGenStep(null);
           if (p.phase === "completed" && p.video) {
-            // Prepend the new clip (newest first) and mint its link.
+            // Merge the new clip and mint its link. Sorted, not prepended: a new clip is unpinned,
+            // so the server puts it after the pinned group.
             const clip = p.video;
-            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
-            setSelectedId(clip.id);
-            void ensureSrc(clip);
+            // Refused if archived while this poll was in flight: forgetting the backend record
+            // cannot revoke a response already on the wire, and it still says archived: false.
+            if (!galleryCache.archived.has(clip.id) && !galleryCache.deleted.has(clip.id)) {
+              stripEpoch.current += 1;
+              setVideos((prev) =>
+                sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
+              );
+              setSelectedId(clip.id);
+              void ensureSrc(clip);
+            }
           } else if (p.phase === "failed") {
             const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
@@ -1525,8 +1837,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // The job finished while no page was mounted. The terminal record persists until the next job; merging here covers the race where it completed after the mount fetch.
           const clip = g.video;
           // Deleted this session: the backend clears its terminal record on delete, but a client racing that must not merge a record whose file is gone.
-          if (!galleryCache.deleted.has(clip.id)) {
-            setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+          if (!galleryCache.deleted.has(clip.id) && !galleryCache.archived.has(clip.id)) {
+            stripEpoch.current += 1;
+            setVideos((prev) =>
+              prev.some((v) => v.id === clip.id) ? prev : sortGalleryItems([clip, ...prev]),
+            );
             void ensureSrc(clip);
           }
         } else if (g.phase === "failed") {
@@ -1545,14 +1860,68 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, cancelLoadFromToast]);
 
+  // Keep the snapshot helper stable: route effects depend on loadOrStage.
+  const loadControlsRef = useRef({
+    memoryMode,
+    speedMode,
+    attentionBackend,
+    transformerCache,
+    transformerQuant,
+  });
+  loadControlsRef.current = {
+    memoryMode,
+    speedMode,
+    attentionBackend,
+    transformerCache,
+    transformerQuant,
+  };
+  const currentLoadAdvanced = useCallback(
+    (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
+      const controls = loadControlsRef.current;
+      return {
+        memory_mode: controls.memoryMode === "auto" ? undefined : controls.memoryMode,
+        speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
+        attention_backend:
+          controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        transformer_cache:
+          controls.transformerCache === "auto" ? undefined : controls.transformerCache,
+        transformer_quant:
+          kind === "pipeline" && controls.transformerQuant !== "auto"
+            ? controls.transformerQuant
+            : undefined,
+      };
+    },
+    [],
+  );
+  const resolveDownloadFootprint = useCallback(
+    async (repoId: string, meta: ModelSelectorChangeMeta) => {
+      if (!meta.ggufFilename) return null;
+      const advanced = currentLoadAdvanced("gguf");
+      const plan = await getVideoDownloadPlan({
+        model_path: repoId,
+        gguf_filename: meta.ggufFilename,
+        model_kind: "gguf",
+        hf_token: hfApiToken(getHfToken()),
+        transformer_quant: advanced.transformer_quant,
+        memory_mode: advanced.memory_mode,
+      });
+      const requiredBytes = plan.required_bytes ?? 0;
+      if (requiredBytes <= 0) return null;
+      return {
+        requiredBytes,
+        checkpointBytes: plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
+      };
+    },
+    [currentLoadAdvanced],
+  );
+
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
-      opts: {
-        kind: "gguf" | "single_file" | "pipeline";
-        filename?: string;
-      },
+      opts: VideoLoadOptions,
+      // Staged loads use the controls their preflight validated.
+      pinned?: VideoLoadAdvanced,
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -1580,26 +1949,27 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      const advanced = pinned ?? currentLoadAdvanced(opts.kind);
+      // Spread, so the H3 partition rides along: Reapply reloads the same denoiser, not the default one.
+      lastLoad.current = { repoId, ...opts };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       try {
-        // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id; the "auto"/"off" sentinels map to omitted.
+        // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
           model_path: repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
-          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          speed_mode: speedMode === "auto" ? undefined : speedMode,
-          attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-          // Full-pipeline loads only: a GGUF / single-file DiT runs the precision its checkpoint
-          // carries. The Precision control is hidden for those kinds but the state persists across
-          // picks, so a stale scheme would reach a load that can only refuse it.
-          transformer_quant:
-            opts.kind === "pipeline" && transformerQuant !== "auto" ? transformerQuant : undefined,
+          memory_mode: advanced.memory_mode,
+          speed_mode: advanced.speed_mode,
+          attention_backend: advanced.attention_backend,
+          transformer_cache: advanced.transformer_cache,
+          transformer_quant: advanced.transformer_quant,
+          // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
+          // than joining the pinned set.
+          h3_task: opts.h3Task,
         });
         await startRequest;
       } catch (err) {
@@ -1642,45 +2012,44 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       dismissLoadToast,
       cancelLoadFromToast,
       canReapply,
-      memoryMode,
-      speedMode,
-      attentionBackend,
-      transformerCache,
-      transformerQuant,
+      currentLoadAdvanced,
     ],
   );
 
   // Downloads go through the Hub download manager like every other model, sharing its panel, progress, cancel and preflight. Mirrors Images.
   const pendingStagedLoad = useRef<{
     repoId: string;
-    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    opts: VideoLoadOptions;
+    advanced: VideoLoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
-  // Read through a ref for the same reason handleLoad is: loadOrStage is memoized so its
-  // consumers keep a stable identity, and a plain capture froze the precision at whatever was
-  // selected when the callback was built. The ordinary auto -> FP8 change then sent the plan no
-  // precision at all, skipping the pre-download refusal, and the user staged tens of GB before
-  // /video/load rejected the same pick.
-  const transformerQuantRef = useRef(transformerQuant);
-  transformerQuantRef.current = transformerQuant;
-  // And the memory request, for the same reason and through the same ref: the route refuses an
-  // explicit precision under balanced or low_vram only when it is told the memory mode, so a
-  // plan asked without it staged tens of GB and left the 409 to the load.
-  const memoryModeRef = useRef(memoryMode);
-  memoryModeRef.current = memoryMode;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
-  // A pick made while the download ran already owns the page; only the newest may load. `isLatest`, not `holds`: leaving the
-  // page is not a new pick, and the deferred load below is exactly that case.
-  const runStagedLoad = useCallback(() => {
-    const pending = pendingStagedLoad.current;
-    pendingStagedLoad.current = null;
-    if (!pending || !pickGuard.isLatest(pending.token)) return;
-    void handleLoadRef.current(pending.repoId, pending.opts);
-  }, [pickGuard]);
+  // Both deferred paths run the load minutes after the pick was reported started, so both need
+  // the same rollback: onReady when the page is active, and the effect below when the download
+  // finished off-tab. The deferred load can still be REFUSED, by a training run or another load
+  // claiming the slot while the download ran. Staging started no load, so nothing polls and the
+  // poll's own rollback never runs; without this the selector keeps advertising a quant that was
+  // never loaded. `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  const runStagedLoad = useCallback(
+    (pending: NonNullable<typeof pendingStagedLoad.current>) => {
+      if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
+      if (!pickGuard.isLatest(pending.token)) return;
+      const owned = stagedQuantRevert.current;
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
+        if (started) return;
+        if (quantRevert.current && quantRevert.current === owned) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
+        }
+        if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
+      });
+    },
+    [pickGuard, revertPick],
+  );
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
@@ -1688,14 +2057,31 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         stagedLoadDeferred.current = true;
         return;
       }
-      runStagedLoad();
+      const pending = pendingStagedLoad.current;
+      if (pending) runStagedLoad(pending);
+    },
+    onCancelled: () => {
+      // Same rule as the images page: a plan that ends without every dependency on disk must not
+      // leave an intent for a late completion or a deferred activation to act on.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+      // No load started, so the poll that owns the after-start rollback never runs: put the
+      // optimistic quant label back, or the selector describes the resident model with a
+      // quant nothing ever loaded. Only for the pick that staged THIS job: a newer pick owns
+      // the label from the moment it is made.
+      if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
+        revertPick(quantRevert.current);
+        quantRevert.current = null;
+      }
+      stagedQuantRevert.current = null;
     },
   });
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
     stagedLoadDeferred.current = false;
-    runStagedLoad();
+    const pending = pendingStagedLoad.current;
+    if (pending) runStagedLoad(pending);
   }, [active, runStagedLoad]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly.
@@ -1703,12 +2089,31 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const loadOrStage = useCallback(
     async (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
-      isDownloaded?: boolean,
+      opts: VideoLoadOptions,
+      source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
+      // Every Hub pick needs the plan, not just an undownloaded one: a cached checkpoint can
+      // still be missing its base repo's text encoder or VAE, and only the plan can see that.
+      // The plan is cache-aware, so a fully cached pick comes back with no entries.
+      // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
+      // plan is still in flight. Plans then resolve in response order, not pick order: without
+      // this the older one restages over the newer queue, or loads the model the user left.
+      // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
+      const pick = ++pickSeq.current;
+      // The previous pick's staged intent dies with it. A pick that stages nothing (fully cached,
+      // local, no plan) never calls stage(), so the hook's queue keeps running the older job and
+      // its onReady would load the model the user moved away from, evicting this one.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+      stagedQuantRevert.current = null;
       const owns = () => token === undefined || pickGuard.holds(token);
-      if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      if (!owns()) return true;
+      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+
+      const advanced = currentLoadAdvanced(opts.kind);
+      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
+      const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
       let incompatible: string | null = null;
       try {
@@ -1718,20 +2123,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
           hf_token: hfApiToken(getHfToken()),
-          // And the same precision, for the same reason: the plan refuses a scheme this host
-          // cannot honour, so omitting it staged tens of GB of weights and left the refusal to
-          // the load afterwards. Sent under the identical pipeline-only rule handleLoad applies.
-          transformer_quant:
-            opts.kind === "pipeline" && transformerQuantRef.current !== "auto"
-              ? transformerQuantRef.current
-              : undefined,
-          // The same memory request handleLoad sends: the precision gate refuses the
-          // offload-forcing modes only when it can see them.
-          memory_mode:
-            memoryModeRef.current === "auto" ? undefined : memoryModeRef.current,
+          // The route preflights the same values used by the eventual load.
+          transformer_quant: advanced.transformer_quant,
+          memory_mode: advanced.memory_mode,
+          // And the partition, for the same reason: the two H3 denoisers are separate downloads,
+          // so a plan asked without it stages the default fl2va weights for a References pick.
+          h3_task: opts.h3Task,
         });
-        // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
-        if (!owns()) return false;
+        // Superseded. Report started so this pick's `.then` leaves the newer label alone.
+        if (pick !== pickSeq.current || !owns()) return true;
         // Same selection-time refusal the images page makes: the plan is the last point at which
         // an incompatible pairing can be caught before the download it would waste. No video
         // family declares one today (the check is the FLUX.2 GGUF/base size pairing, and the video
@@ -1739,13 +2139,33 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // the contract rather than a live path -- keep it, or a future one lands unguarded.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = { repoId, opts, token: token ?? pickGuard.claim() };
+          pendingStagedLoad.current = {
+            repoId,
+            opts,
+            advanced,
+            token: token ?? pickGuard.claim(),
+          };
+          stagedQuantRevert.current = ownRevert;
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
               files: e.files,
               bytes: e.bytes,
               ggufFilename: e.gguf_filename,
+              // The entry carrying the picked checkpoint file, so the panel can label it without
+              // guessing: filenames cannot tell the two apart once a checkpoint ships as
+              // .safetensors like its companions do. Repo identity alone is not enough, because a
+              // checkpoint that shares its repo with the companions and is already cached leaves an
+              // entry of companion files only. A pipeline pick has no one file: the repo IS it.
+              // The backend's own answer wins: a gated pipeline is staged from an ungated MIRROR,
+              // so its entry no longer carries the id we picked and the id test below reads the
+              // whole selected model as companion assets. `??`, not `||`: a planner that says false
+              // is answering, and the fallback exists only for a backend too old to send the key.
+              checkpoint:
+                e.checkpoint ??
+                (opts.filename
+                  ? e.files.includes(opts.filename)
+                  : e.repo_id === repoId),
             })),
           );
           return true;
@@ -1753,14 +2173,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
-      if (!owns()) return false;
+      // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
+      if (pick !== pickSeq.current || !owns()) return true;
       if (incompatible) {
         toast.error(incompatible);
         return false;
       }
-      return handleLoadRef.current(repoId, opts);
+      return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, pickGuard],
+    [stage, pickGuard, currentLoadAdvanced],
   );
 
   // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend
@@ -1769,13 +2190,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     async (
       repoId: string,
       quantHint: string | null,
-      isDownloaded?: boolean,
+      source: ModelSelectorChangeMeta["source"] = "hub",
       localPath?: string | null,
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
-      const prevQuant = quant;
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
         resolve: () =>
@@ -1789,7 +2210,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           toast.error("Pick a quantization for this model to load it"),
         // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
         onResolved: (filename) => {
-          quantRevert.current = { prev: prevQuant };
+          quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           // Filename-qualified like the expander branch: the LTX variant lives in the checkpoint name, not the repo id.
           const d = defaultsFor(`${repoId}/${filename}`);
@@ -1797,20 +2218,43 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           setGuidance(d.guidance);
         },
         onNotStarted: () => {
-          setQuant(prevQuant);
-          quantRevert.current = null;
+          if (quantRevert.current === revert) {
+            revertPick(revert);
+            quantRevert.current = null;
+          }
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename }, isDownloaded, token),
+          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [loadOrStage, pickGuard, quant],
+    [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
   );
+
+  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
+  // nothing will load and nothing else will restore the label. Hand the resident state back here or
+  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  const abandonPick = useCallback(() => {
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [revertPick]);
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
-    if (!active) pickGuard.release();
-  }, [active, pickGuard]);
+    if (!active) {
+      pickGuard.release();
+      // Through the SAME ending as pressing Cancel. The pick that opened this dialog already
+      // replaced the quant label, steps and guidance and parked their rollback in quantRevert,
+      // and the load it was deferring never ran. Clearing the dialog alone leaves the controls
+      // describing H3 over whatever model is still resident, and leaves a stale rollback for the
+      // next pick to trip over.
+      setPendingH3Load((pending) => {
+        if (pending) abandonPick();
+        return null;
+      });
+    }
+  }, [abandonPick, active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
@@ -1846,7 +2290,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, false),
+        loadGgufRepoPick(wanted, routedLabel, "hub"),
       );
       return;
     }
@@ -1858,10 +2302,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, false));
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
-    void loadOrStage(pick.repoId, pick.opts, false, token);
+    // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+      setPendingH3Load({
+        repoId: pick.repoId,
+        opts: pick.opts,
+        source: "hub",
+        token,
+      });
+      return;
+    }
+    void loadOrStage(pick.repoId, pick.opts, "hub", token);
   }, [
     active,
     routeSearch.model,
@@ -1873,41 +2327,113 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     pickGuard,
   ]);
 
+
+  // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
+  // ways out of it carry that branch's two endings: choosing runs the load and reverts if it never
+  // starts, cancelling abandons the pick outright.
+  const chooseH3Task = useCallback(
+    (task: H3Task) => {
+      const pending = pendingH3Load;
+      setPendingH3Load(null);
+      if (!pending || !pickGuard.holds(pending.token)) return;
+      const revert = quantRevert.current;
+      void loadOrStage(
+        pending.repoId,
+        { ...pending.opts, h3Task: task },
+        pending.source,
+        pending.token,
+      ).then((started) => {
+        // One slot, so only the pick that set the label may take it back.
+        if (!started && revert && quantRevert.current === revert && pickGuard.holds(pending.token)) {
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
+    },
+    [loadOrStage, pendingH3Load, pickGuard, revertPick],
+  );
+
+  const cancelH3TaskChoice = useCallback(() => {
+    setPendingH3Load(null);
+    abandonPick();
+    pickGuard.cancel();
+  }, [abandonPick, pickGuard]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+    if (l) {
+      void handleLoad(l.repoId, {
+        kind: l.kind,
+        filename: l.filename,
+        h3Task: l.h3Task,
+      });
+    }
   }, [handleLoad]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
+  // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
+  // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
+  // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
+  // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
+  const beginPick = useCallback(() => {
+    pickSeq.current += 1;
+    pendingStagedLoad.current = null;
+    stagedLoadDeferred.current = false;
+    stagedQuantRevert.current = null;
+  }, []);
+
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       // Ignore picks while a load/generation/unload is in flight.
       if (busy !== null) return;
+      beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging never
       // sets `busy`, so any pick can land on an awaiting one.
       const token = pickGuard.claim();
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
+      // Carried forward when one is already pending: a superseded staged pick left its
+      // optimistic quant and recipe in state, so snapshotting now would record THAT and
+      // restore a model which never loaded. The live entry already holds the resident one.
+        // Registers its own rollback like every other branch. Leaving the previous pick's entry in
+        // place would let that older staged download, on cancelling, revert to state from before it
+        // -- over a selection this pick already replaced -- and leave this one with no rollback.
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
         // Without it these distilled entries fall through to the generic LTX 40-step/CFG-4 defaults instead of the 8-step schedule.
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
+        if (isH3PipelinePick(id, spec.kind)) {
+          setPendingH3Load({
+            repoId: id,
+            opts: { kind: spec.kind, filename: spec.filename },
+            source: meta.source,
+            token,
+          });
+          return;
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
-          meta.isDownloaded,
+          meta.source,
           token,
-        );
+        ).then((started) => {
+            if (!started && pickGuard.holds(token)) {
+              revertPick(revert);
+              quantRevert.current = null;
+            }
+          });
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
         const dq = defaultsFor(`${id}/${meta.ggufFilename}`);
@@ -1916,12 +2442,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
-          meta.isDownloaded,
+          meta.source,
           token,
         ).then((started) => {
           // `quantRevert` is one slot, so only the pick that set the label may take it back.
           if (!started && pickGuard.holds(token)) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -1939,20 +2465,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           void loadGgufRepoPick(
             id,
             meta.ggufVariant ?? null,
-            meta.isDownloaded,
+            meta.source,
             meta.source === "local" ? id : null,
           );
           return;
         }
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -1964,15 +2490,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(filename);
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -1985,7 +2511,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         void loadGgufRepoPick(
           id,
           spec?.filename ?? meta.ggufVariant ?? null,
-          meta.isDownloaded,
+          meta.source,
           meta.source === "local" ? id : null,
         );
         return;
@@ -1993,15 +2519,48 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device video models can be loaded here");
+        abandonPick();
         return;
       }
+      // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
+      // older staged download revert over a selection this pick already replaced.
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
+      quantRevert.current = revert;
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded, token);
+      // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
+      // it needs the same partition question: without it the load silently takes fl2va.
+      if (isH3PipelinePick(id, "pipeline")) {
+        setPendingH3Load({
+          repoId: id,
+          opts: { kind: "pipeline" },
+          source: meta.source,
+          token,
+        });
+        return;
+      }
+      void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
+        if (!started && pickGuard.holds(token)) {
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
     },
-    [busy, handleLoad, loadGgufRepoPick, loadOrStage, pickGuard, quant],
+    [
+      abandonPick,
+      beginPick,
+      busy,
+      guidance,
+      handleLoad,
+      loadGgufRepoPick,
+      loadOrStage,
+      pickGuard,
+      quant,
+      revertPick,
+      steps,
+    ],
   );
 
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
@@ -2289,6 +2848,50 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <Dialog
+        open={pendingH3Load !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelH3TaskChoice();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Choose how MiniMax H3 should generate</DialogTitle>
+            <DialogDescription>
+              MiniMax H3 uses a separate denoiser for reference generation. Choose the mode you
+              want to load now. Shared components already on disk are reused.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("fl2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">Text and frames</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from text, with optional first and last frame images.
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("ref2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">References</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from reference pictures, videos and audio tracks.
+                </span>
+              </span>
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
       <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
@@ -2298,6 +2901,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
             className="!h-[34px]"
@@ -2354,16 +2958,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           letting a wide row pan the page sideways on a phone. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0">
+        <div className="flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              // pb-20 at every width: the floating Generate button below is absolutely
-              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
-              // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-7 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -2715,12 +3316,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           </AdvancedDisclosure>
 
           </div>
-          {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-7">
+          {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
+          <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-7">
             {busy === "generating" ? (
               <Button
-                // Opaque hover: this one floats over the settings too.
-                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                // Kept in step with the Images Stop control, which uses the same fill.
+                className="relative z-10 h-11 px-8 hover:bg-muted dark:hover:bg-muted"
                 variant="outline"
                 onClick={handleCancelGenerate}
               >
@@ -2729,7 +3330,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               </Button>
             ) : (
               <Button
-                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                 onClick={handleGenerate}
                 disabled={busy !== null || !status?.loaded}
               >
@@ -2799,20 +3400,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Delete video"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => void handleDelete(selected.id)}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
+                  <GalleryItemMenu
+                    noun="video"
+                    active={active}
+                    pinned={Boolean(selected.pinned)}
+                    archived={Boolean(selected.archived)}
+                    onTogglePin={() =>
+                      void handleTogglePin(selected.id, !selected.pinned)
+                    }
+                    onToggleArchive={() => void handleArchive(selected.id)}
+                    onDelete={() => void handleDelete(selected.id)}
+                  />
                 </div>
               </>
             ) : selected ? (
@@ -2874,14 +3472,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
+              {/* The card is a wrapper, not a button: the actions menu has to be the select
+                  button's SIBLING, since a button inside a button is invalid and would swallow
+                  its own clicks. data-clip-id rides the wrapper so the observer still sees it. */}
               {videos.map((video) => (
-                <Tooltip key={video.id}>
+                <div
+                  key={video.id}
+                  data-clip-id={video.id}
+                  className="group relative h-16 w-24 shrink-0"
+                >
+                <Tooltip>
                 <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  data-clip-id={video.id}
                   onClick={() => setSelectedId(video.id)}
-                  className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {srcById[video.id] ? (
                     // Muted, preload="metadata" so the first frame renders as a poster without playing every card at once.
@@ -2918,6 +3523,25 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   </span>
                 </TooltipContent>
                 </Tooltip>
+                {/* Pin marker, top-left so it clears both the caption and the menu. */}
+                {video.pinned && (
+                  <span className="pointer-events-none absolute left-0.5 top-0.5 z-30 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
+                    <HugeiconsIcon icon={PinIcon} className="size-3" />
+                  </span>
+                )}
+                <div className="absolute right-0.5 top-0.5 z-30 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  <GalleryItemMenu
+                    variant="overlay"
+                    noun="video"
+                    active={active}
+                    pinned={Boolean(video.pinned)}
+                    archived={Boolean(video.archived)}
+                    onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
+                    onToggleArchive={() => void handleArchive(video.id)}
+                    onDelete={() => void handleDelete(video.id)}
+                  />
+                </div>
+                </div>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (

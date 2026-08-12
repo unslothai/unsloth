@@ -201,6 +201,16 @@ import _platform_compat  # noqa: F401
 # unsloth-zoo import below, whose LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Same reason, same deadline: unsloth_zoo.compiler reads UNSLOTH_COMPILE_LOCATION
+# at import time, and without this a direct start falls back to a CWD-relative
+# unsloth_compiled_cache (on Windows that is the user profile).
+from utils.paths.storage_roots import setup_cache_env as _setup_cache_env
+
+try:
+    _setup_cache_env()
+except Exception:  # noqa: BLE001
+    pass
+
 try:
     _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
 except (OSError, ValueError):
@@ -338,7 +348,7 @@ from utils.update_status import (
     get_studio_install_source_status,
     get_studio_update_status,
 )
-from utils.changelog import get_release_notes, is_supported_version_query
+from utils.release_notes import get_release_notes, is_supported_version_query
 from utils.studio_version import get_studio_version
 from utils.api_errors import install_api_error_handlers
 
@@ -349,13 +359,17 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    version_file = _Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
-    try:
-        for line in version_file.read_text(encoding = "utf-8").splitlines():
-            if line.startswith("__version__ = "):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    except (OSError, UnicodeDecodeError):
-        pass
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
+    root = _Path(__file__).resolve().parents[2] / "unsloth"
+    for version_file in (root / "_version.py", root / "models" / "_utils.py"):
+        try:
+            for line in version_file.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("__version__ = "):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except (OSError, UnicodeDecodeError):
+            continue
     return "dev"
 
 
@@ -553,6 +567,25 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     return True
 
 
+def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
+    # A real lifespan worker carries a generation; direct calls without one are tests.
+    if generation is None:
+        return
+    try:
+        from core.rag.folder_sync import start_auto_sync
+        from storage.studio_db import get_chat_project
+        start_auto_sync(
+            admission_lock = _post_warm_lock,
+            admit = lambda: _post_warm_generation == generation,
+            project_exists = lambda project_id: get_chat_project(project_id) is not None,
+        )
+    except Exception as exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).warning(
+            "linked-folder auto-sync failed at startup: %s", exc
+        )
+
+
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
@@ -582,8 +615,12 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
+    if _post_warm_retired(generation):
+        return
+    _start_linked_folder_auto_sync(generation)
+
     # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair has its own opt-out, and gating it would leave a broken MLX Mac chat-only.
+    # autorepair and linked-folder scheduling have their own lifecycles.
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return
 
@@ -603,6 +640,21 @@ async def lifespan(app: FastAPI):
 
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
+
+    # Move the legacy sandbox up here rather than from the first request: the
+    # copy can be minutes when the studio home is on another filesystem.
+    try:
+        from core.inference.tools import (
+            migrate_legacy_sandbox_in_background,
+            start_sandbox_recovery,
+        )
+        migrate_legacy_sandbox_in_background()
+        # A tree renamed for deletion by a run that was killed, and the
+        # workspace deletes it left pending: both waited for the next Python or
+        # terminal call, which ordinary chat never makes.
+        start_sandbox_recovery()
+    except Exception:  # noqa: BLE001
+        pass
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
@@ -700,6 +752,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+    try:
+        from core.rag.folder_sync import stop_auto_sync
+        stop_auto_sync()
+    except Exception as exc:
+        _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
 
     # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
     # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
@@ -738,6 +795,12 @@ app = FastAPI(
     version = UNSLOTH_VERSION,
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
+    # Swagger UI and ReDoc are re-registered below on these same paths, against vendored
+    # assets instead of a CDN. FastAPI's built-ins point at cdn.jsdelivr.net, and this origin
+    # holds the auth tokens, so nothing third-party may execute here.
+    docs_url = None,
+    redoc_url = None,
+    swagger_ui_oauth2_redirect_url = None,
 )
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
@@ -791,10 +854,11 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
-_DOCS_CDN = "https://cdn.jsdelivr.net"
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
+_DOCS_ASSETS_URL = "/docs-assets"
+_DOCS_ASSETS_DIR = Path(__file__).parent / "assets" / "docs_ui"
 
 
 # /content is Colab's working directory -- more reliable than env vars.
@@ -813,9 +877,11 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     worker_src = "worker-src 'self'"
     font_src = "font-src 'self' data:"
     if docs:
-        script_src += f" 'unsafe-inline' {_DOCS_CDN}"
-        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
-        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        # script-src is deliberately untouched: the docs bundles are served from this origin
+        # and their inline init runs off the nonce. What is left cannot execute script, only
+        # style and lay out the page. ReDoc's Google Fonts sheet pulls faces from gstatic, and
+        # its search index runs in a worker it builds from a blob.
+        style_src += f" {_DOCS_FONT_CSS}"
         font_src += f" {_DOCS_FONT_FILES}"
         worker_src += " blob:"
     if script_nonce:
@@ -904,6 +970,84 @@ class SecurityHeadersMiddleware:
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+# Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
+# FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
+# an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
+# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# bundles are vendored under assets/docs_ui (pinned + digest-checked by
+# tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
+# bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
+import secrets as _secrets_for_docs  # noqa: E402
+from fastapi.openapi.docs import (  # noqa: E402
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+
+# fastapi is unpinned, so match the opening tag by what follows it rather than by the
+# surrounding whitespace and comment: a reflowed template must not 500 the page.
+_SWAGGER_INIT_TAG = _re.compile(r"<script>(?=\s*const ui = SwaggerUIBundle)")
+_OAUTH2_REDIRECT_TAG = _re.compile(r"<script>")
+
+
+def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse:
+    """Hand the page's own inline script a nonce; injected script never gets one."""
+    nonce = _secrets_for_docs.token_urlsafe(16)
+    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count = 1)
+    if not replaced:
+        # Upstream retemplated the page: fail loudly rather than serve a blank one.
+        raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
+    return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+if _DOCS_ASSETS_DIR.is_dir():
+    app.mount(
+        _DOCS_ASSETS_URL,
+        StaticFiles(directory = _DOCS_ASSETS_DIR),
+        name = "docs-assets",
+    )
+
+    def _docs_url(request: Request, path: str) -> str:
+        """Prefix with the mount point, as FastAPI's own docs routes do.
+
+        Behind a path-stripping proxy (or `uvicorn --root-path`) the browser sees the prefix
+        the server never does, so an unprefixed URL escapes the mapping and 404s.
+        """
+        return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
+
+    @app.get("/docs", include_in_schema = False)
+    async def swagger_ui_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        html = get_swagger_ui_html(
+            openapi_url = _docs_url(request, app.openapi_url),
+            title = f"{app.title} - Swagger UI",
+            oauth2_redirect_url = _docs_url(request, "/docs/oauth2-redirect"),
+            swagger_js_url = f"{assets}/swagger-ui-bundle.js",
+            swagger_css_url = f"{assets}/swagger-ui.css",
+            swagger_favicon_url = f"{assets}/favicon-32x32.png",
+        ).body.decode()
+        return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
+
+    @app.get("/docs/oauth2-redirect", include_in_schema = False)
+    async def swagger_ui_redirect():
+        # This page is nothing but an inline script, so it needs the nonce too.
+        html = get_swagger_ui_oauth2_redirect_html().body.decode()
+        return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
+
+    @app.get("/redoc", include_in_schema = False)
+    async def redoc_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        # ReDoc's bundle carries no inline init, so this one needs no nonce.
+        return HTMLResponse(
+            get_redoc_html(
+                openapi_url = _docs_url(request, app.openapi_url),
+                title = f"{app.title} - ReDoc",
+                redoc_js_url = f"{assets}/redoc.standalone.js",
+                redoc_favicon_url = f"{assets}/favicon-32x32.png",
+            ).body.decode()
+        )
+
+
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
@@ -940,17 +1084,26 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # The diffusion dataset upload (POST /api/train/diffusion/dataset) is a multipart upload
 # under /api/train; like /api/datasets/upload it enforces its own cap. EXACT path.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
+_STT_MULTIPART_UPLOAD_PATHS = (
+    "/v1/audio/transcriptions",
+    "/api/inference/audio/transcriptions",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
 )
-# Matched by EXACT path (the multipart upload only), so sibling JSON sub-routes keep the normal cap.
-_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
+# Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
+_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
+    _DIFFUSION_DATASET_UPLOAD_PATH,
+    *_STT_MULTIPART_UPLOAD_PATHS,
+)
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -966,6 +1119,9 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
+    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     return default_request_body_limit_bytes()
 
 
@@ -1271,8 +1427,8 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
-    """``(chat_only, chat_only_reason)`` if detection is settled, else ``None``.
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
+    """``(chat_only, chat_only_reason, chat_only_detail)`` if detection is settled, else ``None``.
 
     A seqlock read rather than ``_DETECT_LOCK``: that lock would park the endpoint for the
     whole torch import, the stall this startup path removes. A forced re-detect clears the
@@ -1291,12 +1447,16 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
         reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
+        # re-detect starting in between would pair this reply's reason with a detail from
+        # a different pass, or with none at all.
+        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason
+            return chat_only, reason, detail
     return None
 
 
@@ -1466,9 +1626,10 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
-    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
-    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
-    # under a tooltip the reinstall makes wrong minutes later.
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold it
+    # back and keep replying provisionally, or the Mac gets Train greyed out under a tooltip the
+    # reinstall makes wrong minutes later. Video does not wait on this: it runs on Metal without
+    # MLX, so it reads /api/system/hardware instead.
     mlx_repairing = _superseded_by_mlx_repair(snapshot)
     if mlx_repairing:
         snapshot = None
@@ -1539,6 +1700,12 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # What specifically blocked that reason, when detection recorded one. Only the MLX
+        # gate does today, and only because it is all-or-nothing: without it the greyed-out
+        # Train row can only say "run `unsloth studio update`", which is no help to someone
+        # whose update has already run and left one package behind. From the snapshot, so it
+        # cannot come from a different detection pass than the reason beside it.
+        authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
@@ -1578,7 +1745,7 @@ def studio_release_notes(
     refresh: bool = Query(False),
     _current_subject: str = Depends(get_current_subject),
 ):
-    """Return CHANGELOG.md notes for exactly `version` (never a nearby one)."""
+    """Return the newest release's notes. `version` is echoed, not looked up."""
     if not is_supported_version_query(version):
         raise HTTPException(status_code = 422, detail = "Invalid version.")
     return get_release_notes(version, refresh = refresh)

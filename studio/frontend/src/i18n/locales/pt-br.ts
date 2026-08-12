@@ -85,6 +85,9 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      audio: "Áudio",
+      trainChecking: "Verificando se esta máquina oferece suporte a treino...",
+      videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
       newBadge: "Novo",
@@ -380,6 +383,9 @@ export const ptBR = {
         keepKv: "Manter o contexto do chat ao descarregar por inatividade",
         keepKvDescription:
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
+        apiOnly: "Descarregar apenas modelos carregados pela API",
+        apiOnlyDescription:
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Studio e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
@@ -902,6 +908,11 @@ export const ptBR = {
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      thinking: {
+        collapseByDefault: "Recolher o raciocínio por padrão",
+        collapseByDefaultDescription:
+          "Mantém o raciocínio recolhido enquanto o modelo pensa, em vez de abri-lo automaticamente. Expanda um bloco para lê-lo.",
+      },
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
@@ -979,6 +990,10 @@ export const ptBR = {
         "Gerencie o histórico de chats e os arquivos enviados que ficam armazenados neste dispositivo.",
       archivedChats: "Chats arquivados",
       archivedChatsDescription: "Veja e gerencie os chats que você arquivou.",
+      archivedImages: "Imagens arquivadas",
+      archivedImagesDescription: "Veja e gerencie as imagens que você arquivou.",
+      archivedVideos: "Vídeos arquivados",
+      archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
       manageAction: "Gerenciar",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
@@ -1385,6 +1400,7 @@ export const ptBR = {
       history: "Histórico",
     },
     loadingRuntime: "Carregando ambiente de execução de treino...",
+    checkingSupport: "Verificando se esta máquina oferece suporte a treino...",
     backToHistory: "Voltar ao histórico",
     sections: {
       model: "Modelo",

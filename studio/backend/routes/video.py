@@ -31,6 +31,7 @@ from auth.authentication import get_current_subject
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
+    GalleryFlagsPatch,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -118,6 +119,11 @@ async def video_download_plan(
             # pre-quantized checkpoint has to be refused HERE, on the route that stages the
             # download, or the panel fetches ~98.7 GB before /video/load can say no.
             transformer_quant = request.transformer_quant,
+            # And the partition, because one of those quant-keyed refusals is task-keyed: the
+            # hosted pre-quantized H3 checkpoints are fl2va denoisers, so a quantized ref2va is
+            # rejected. /video/load passes this and refuses; without it here the plan below staged
+            # the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first.
+            h3_task = request.h3_task,
         )
         # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
@@ -149,6 +155,10 @@ async def video_download_plan(
             # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
             # the load never opens.
             transformer_quant = request.transformer_quant,
+            # And the MiniMax-H3 partition, because the two denoisers live in separate 66.28 GB
+            # subfolders: a ref2va load opens transformer_ref/, which the plan would otherwise
+            # miss entirely while staging the fl2va transformer/ it never opens.
+            h3_task = request.h3_task,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -365,6 +375,7 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
 async def list_gallery_videos(
     limit: int = 50,
     offset: int = 0,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import video_gallery
@@ -382,7 +393,11 @@ async def list_gallery_videos(
 
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(
-        video_gallery.list_videos, limit + 1, offset, valid = _valid_gallery_video
+        video_gallery.list_videos,
+        limit + 1,
+        offset,
+        valid = _valid_gallery_video,
+        archived = archived,
     )
     has_more = len(records) > limit
     videos = [GalleryVideo(**r) for r in records[:limit]]
@@ -530,6 +545,33 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
 
 
+@router.patch("/video/gallery/{video_id}", response_model = GalleryVideo)
+async def update_gallery_video_flags(
+    video_id: str,
+    patch: GalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Pin/unpin or archive/restore one clip. Omitted fields are left alone."""
+    from core.inference import video_gallery
+
+    try:
+        record = await asyncio.to_thread(
+            video_gallery.set_flags, video_id, pinned = patch.pinned, archived = patch.archived
+        )
+    except OSError as exc:
+        # The client already applied this optimistically, so a silent miss would look like it stuck
+        # and then quietly undo on reload.
+        logger.warning("video_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this video.")
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    # Archiving takes the clip off the strip, so the completed-job record must go with it: the page
+    # merges that snapshot on mount, which would keep resurrecting the clip it just archived.
+    if patch.archived:
+        _forget_terminal_video(video_id)
+    return GalleryVideo(**record)
+
+
 @router.delete("/video/gallery/{video_id}")
 async def delete_gallery_video(video_id: str, current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
@@ -544,8 +586,18 @@ async def delete_gallery_video(video_id: str, current_subject: str = Depends(get
 @router.delete("/video/gallery")
 async def clear_gallery_videos(current_subject: str = Depends(get_current_subject)):
     from core.inference import video_gallery
+    from core.inference.gallery_flags import FlagsUnavailable
 
-    removed = await asyncio.to_thread(video_gallery.clear)
+    try:
+        removed = await asyncio.to_thread(video_gallery.clear)
+    except FlagsUnavailable as exc:
+        # Refuse rather than delete the archive we cannot prove is archived.
+        logger.warning("video_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's pin/archive data, so clearing was stopped to "
+            "avoid deleting archived videos.",
+        )
     # Clear-all takes the terminal record's clip with it whatever its id.
     _forget_terminal_video(None)
     return {"removed": removed}

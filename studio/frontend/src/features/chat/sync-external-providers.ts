@@ -2,18 +2,27 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  reconcileLegacyProviderKeys,
+  settleTasksIfCurrent,
+} from "@/features/credentials/reconciliation";
+
+import {
   type ProviderRegistryEntry,
   listProviderConfigs,
   listProviderRegistry,
+  migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   type ExternalProviderConfig,
+  getExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  pruneExternalProviderApiKeys,
+  removeExternalProviderApiKey,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
@@ -118,21 +127,34 @@ export function mergeLocalProviderOptions(
   };
 }
 
+
+
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
+  isCurrent?: () => boolean,
 ): Promise<ExternalProviderConfig[]> {
-  const [registryRows, configRows] = await Promise.all([
+  const [registryRows, loadedConfigRows] = await Promise.all([
     listProviderRegistry(),
     listProviderConfigs(),
   ]);
+  const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
+    getLegacyKey: getExternalProviderApiKey,
+    saveLegacyKey: migrateProviderApiKey,
+    removeLegacyKey: removeExternalProviderApiKey,
+
+    isCurrent,
+  });
+
+  if (isCurrent && !isCurrent()) return existingProviders;
+  pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
 
   const existingById = new Map<string, ExternalProviderConfig>();
   for (const provider of existingProviders) {
     existingById.set(provider.id, provider);
   }
 
-  const backfillTasks: Promise<unknown>[] = [];
+  const backfillTasks: Array<() => Promise<unknown>> = [];
   const syncedProviders = configRows
     .filter((config) => config.is_enabled)
     .map((config) => {
@@ -188,7 +210,7 @@ export async function syncExternalProvidersFromBackend(
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
       if (needsModelBackfill || needsAvailableBackfill) {
-        backfillTasks.push(
+        backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
             availableModels: resolvedAvailableModels,
@@ -203,6 +225,7 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         studioToolExecution: config.studio_tool_execution === true,
+        hasApiKey: config.has_api_key,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,
@@ -215,8 +238,8 @@ export async function syncExternalProvidersFromBackend(
       return mergeLocalProviderOptions(existing, synced);
     });
 
-  if (backfillTasks.length > 0) {
-    await Promise.allSettled(backfillTasks);
-  }
+  if (isCurrent && !isCurrent()) return existingProviders;
+
+  await settleTasksIfCurrent(backfillTasks, isCurrent);
   return syncedProviders;
 }

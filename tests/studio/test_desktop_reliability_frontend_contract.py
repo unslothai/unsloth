@@ -210,6 +210,35 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "fs::write(&path, content)" not in native_dialogs
 
 
+def test_media_galleries_save_natively_with_feedback():
+    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+        "\n}\n\nasync function downloadImage", 1
+    )[0]
+    download = images_page.split("async function downloadImage(", 1)[1].split(
+        "\n}\n\nfunction formatTimestamp", 1
+    )[0]
+    video_download = video_page.split("const handleDownload = useCallback(", 1)[1].split(
+        "\n\n  const handleDelete", 1
+    )[0]
+
+    assert "await downloadUrl(src, filename);" in download
+    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
+    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    assert "blob.type !== `image/${format}`" in reencode
+    assert "isDownloadCancelled(error)" in download
+    assert "if (isTauri)" in download
+    assert 'toast.success("Image saved", { description: filename });' in download
+    assert 'document.createElement("a")' not in download
+
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "if (isTauri)" in video_download
+    assert 'toast.success("Video saved"' in video_download
+    assert "function saveLink(" not in video_page
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
@@ -290,8 +319,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
-    assert "URL.createObjectURL(blob)" in video_page
+    # Converted exports cross the same native boundary after the backend returns their blob.
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
@@ -509,15 +539,22 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only.
-    assert source.count("{showSidebarSurface && pinned && (") == 2
+
+    # Keep the decoration below z-50 modals and outside the z-[70] header.
+    assert 'data-slot="window-titlebar-decoration"' in source
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
-        in source
+        'className="pointer-events-none absolute inset-x-0 '
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
     )
+    # The border is always visible.
+    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
+    # The backing and corner only appear when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="pointer-events-none absolute top-full size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
-        in source
+        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        in decoration
     )
 
 
@@ -730,7 +767,9 @@ def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
-    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    assert (
+        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
+    )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
@@ -745,7 +784,12 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
     assert "@[50rem]:w-[408px]" in section
     assert "md:flex-row" not in section
-    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
+    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
+    # -action mask, which is why the two are asserted together -- the small padding is
+    # only correct while the fade is there to dissolve the last control into the footer.
+    assert "panel-scroll-fade-action" in section
+    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
     assert "border-t border-foreground/10 px-10 py-3" in section
 

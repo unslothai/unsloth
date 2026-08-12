@@ -18,6 +18,7 @@ mod native_intents;
 mod native_path_policy;
 mod preflight;
 mod process;
+mod process_identity;
 mod update;
 mod windows_job;
 mod x11_threads;
@@ -1558,6 +1559,7 @@ fn main() {
             native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
+            native_intents::pick_native_document_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,

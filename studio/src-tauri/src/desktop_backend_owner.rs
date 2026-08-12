@@ -1052,6 +1052,16 @@ async fn probe_verified_owned_backend_at_path_with_expected(
     Ok(probe_owned_backend_state(owner, port, true).await)
 }
 
+/// False only when the pid is provably gone.
+///
+/// A pid we cannot resolve counts as running: on Windows an OpenProcess that
+/// fails for anything but a bad pid usually means the process is there and
+/// owned by somebody else, and every caller here treats "still running" as the
+/// safe answer.
+pub(crate) fn pid_is_not_dead(pid: u32) -> bool {
+    process_liveness(pid) != PreviousAppPidStatus::Dead
+}
+
 fn previous_app_pid_status(pid: u32) -> PreviousAppPidStatus {
     if pid == 0 || pid == std::process::id() {
         return PreviousAppPidStatus::AliveOrCurrent;

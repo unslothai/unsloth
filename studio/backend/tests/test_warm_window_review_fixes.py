@@ -378,6 +378,26 @@ def test_the_torch_kill_switch_leaves_mlx_selfheal_running():
     )
 
 
+def test_the_torch_kill_switch_leaves_linked_folder_sync_running(monkeypatch):
+    import main as main_mod
+    import utils.mlx_repair as mlx_repair
+
+    calls = []
+    monkeypatch.setattr(main_mod, "join_background_warm", lambda: None)
+    monkeypatch.setattr(mlx_repair, "start_mlx_autorepair_if_needed", lambda: None)
+    monkeypatch.setattr(main_mod, "_post_warm_retired", lambda generation: False)
+    monkeypatch.setattr(
+        main_mod,
+        "_start_linked_folder_auto_sync",
+        lambda generation: calls.append(generation),
+    )
+    monkeypatch.setenv(main_mod.DISABLE_ENV_VAR, "1")
+
+    main_mod._post_warm_background_work(123)
+
+    assert calls == [123]
+
+
 def test_the_purge_rechecks_before_touching_sys_modules():
     """A racing retry republishes the parent; do not strip modules under it."""
     src = (_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8")
@@ -641,7 +661,9 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
     hw_mod.DETECTION_COMPLETE.set()
-    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable")
+    # Three items: the detail travels with the reason it explains, out of the same
+    # guarded read, so the two can never be paired across different detection passes.
+    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None)
 
 
 def test_health_rereads_the_verdict_after_authentication():

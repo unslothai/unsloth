@@ -124,8 +124,13 @@ def is_reclaimable_drafter_path(path: str) -> bool:
     """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
     variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
     left, and companion filtering hides them from the variant menu, so leaving one
-    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
-    name doubles as a family a user picks for real weights."""
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded even
+    though Auto now launches it: the name doubles as a family a user picks for
+    real weights, whole repos publish nothing but root-level ``dflash-*.gguf``
+    (Lucebox/Qwen3.6-27B-DFlash-GGUF), and the two outcomes are not symmetric.
+    Reclaiming wrongly destroys weights a user chose; not reclaiming leaves
+    ~1.5 GiB, an order of magnitude under the DSpark case this rule was written
+    for. Locked by test_deleting_the_last_variant_keeps_a_dflash_weight."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
@@ -263,16 +268,38 @@ def _select_quant_match(text: str) -> Optional[re.Match]:
     return fallback
 
 
-def extract_quant_token(filename: str) -> Optional[str]:
-    stem = _gguf_stem(filename)
+def _quant_search_stem(filename: str) -> str:
+    """The text a quant token is looked for in: the basename, less any shard suffix.
+
+    Unlike :func:`_gguf_stem` this keeps everything after the last dot. The extension is not in
+    the way, since the token is matched rather than the whole string, while cutting at the dot
+    truncates a bare ``IQ4_XS-3.53bpw`` to ``IQ4_XS-3``. Bare names do arrive here: a ``<quant>/``
+    folder and a stored variant string both come without ``.gguf``.
+    """
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", filename.rsplit("/", 1)[-1]).strip()
+
+
+def _locate_quant_match(filename: str) -> tuple[Optional[re.Match], str]:
+    """The quant match naming *filename*, with the text it was found in.
+
+    The basename decides; only when it names no quant do parent directories, nearest first.
+    Callers that need what trails the token (the bpw modifier) need that text too, so this is
+    the one place the search order lives.
+    """
+    stem = _quant_search_stem(filename)
     match = _select_quant_match(stem)
-    if not match and "/" in filename:
-        parents = filename.rsplit("/", 1)[0]
-        for segment in reversed(parents.split("/")):
+    if match:
+        return match, stem
+    if "/" in filename:
+        for segment in reversed(filename.rsplit("/", 1)[0].split("/")):
             parent_match = _select_quant_match(segment)
             if parent_match:
-                match = parent_match
-                break
+                return parent_match, segment
+    return None, ""
+
+
+def extract_quant_token(filename: str) -> Optional[str]:
+    match, _ = _locate_quant_match(filename)
     if match:
         prefix = match.group(1) or ""
         return f"{prefix}{match.group(2)}"
@@ -284,28 +311,48 @@ def extract_quant_token(filename: str) -> Optional[str]:
 # label keeps the modifier for exactly that reason. The variant KEY has to keep it too: without it
 # the lister advertises IQ4_XS-3.53bpw while the plan, the download map and the delete predicate
 # all say IQ4_XS, so the advertised name 404s and the collapsed one unlinks every build.
-_GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
+#
+# Applied with ``match`` against the text that follows the token, never ``search``: only a
+# modifier IMMEDIATELY after the quant qualifies it, so ``flux1-dev-Q8_0-fp32-08.577bpw`` keeps
+# the bare ``Q8_0`` rather than borrowing a number that describes something else in the name.
+_GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw", re.IGNORECASE)
+
+# The same modifier ending a name of its own, with or without the extension still on it. Used
+# only for the basename under a quant DIRECTORY (``Q6_K/model-3.5bpw.gguf``), where the token is
+# in the parent and the number is all the file has to say which build it is.
+_GGUF_BPW_TRAILING_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw(?=\.[A-Za-z0-9]+$|$)", re.IGNORECASE)
 
 
-def _gguf_bpw_suffix(filename: str) -> str:
-    """``-3.53bpw`` from whichever path segment names the quant, else ``""``.
+def quant_token_with_bpw(filename: str) -> Optional[str]:
+    """:func:`extract_quant_token` with the bpw modifier that trails it, when there is one.
 
-    Not the basename alone: the quant-directory layout carries it upstairs
-    (``IQ4_XS-3.53bpw/model.gguf``), which is exactly where ``extract_quant_token`` looks next, so
-    reading only ``model`` gave both bpw builds the bare ``IQ4_XS`` key. The walk stops at the
-    segment that named the quant -- a modifier further up the tree belongs to something else.
+    The spelling that identifies a checkpoint. The bare token does not: a repo publishing one
+    base quant at several bit widths gives every one of them the same token, and the modifier is
+    the only thing telling them apart.
+
+    Where the modifier is found follows where the token was. Named by the basename, only a
+    modifier IMMEDIATELY after it counts, so ``flux1-dev-Q8_0-fp32-08.577bpw`` keeps the bare
+    ``Q8_0`` rather than borrowing a number describing something else. Named by a parent
+    directory, the modifier may sit against the token there (``IQ4_XS-3.53bpw/model.gguf``) or
+    end the basename instead (``Q6_K/model-3.5bpw.gguf``), and both are this build's own.
+
+    Returns the bare token unchanged for every repo without one, which is nearly all of them,
+    and ``None`` when nothing in the path names a quant.
     """
     path = filename.replace("\\", "/")
-    parents = path.rpartition("/")[0]
-    for segment in (_gguf_stem(path), *reversed(parents.split("/"))):
-        if not segment:
-            continue
-        match = _GGUF_BPW_SUFFIX_RE.search(segment)
-        if match:
-            return match.group(0)
-        if _select_quant_match(segment) is not None:
-            return ""
-    return ""
+    match, text = _locate_quant_match(path)
+    if match is None:
+        return None
+    token = f"{match.group(1) or ''}{match.group(2)}"
+    adjacent = _GGUF_BPW_SUFFIX_RE.match(text[match.end() :])
+    if adjacent:
+        return f"{token}{adjacent.group(0)}"
+    stem = _quant_search_stem(path)
+    if text != stem:
+        trailing = _GGUF_BPW_TRAILING_RE.search(stem)
+        if trailing:
+            return f"{token}{trailing.group(0)}"
+    return token
 
 
 def _unknown_gguf_variant_key(filename: str) -> str:
@@ -338,10 +385,34 @@ def bare_quant_alias(key: str) -> str:
     key (the plan lookup, auto-download admission, deletion) have to keep it -- comparing on the
     token alone means a persisted ``IQ4_XS-3.53bpw`` resolves nothing.
     """
-    # A key is already shard- and extension-stripped, so re-stemming it would cut at the dot in
-    # "3.53bpw" (and at the one in "ltx-2.3"). Hand the extractors a name they expect instead.
-    probe = f'{(key or "").replace(chr(92), "/").rsplit("/", 1)[-1]}.gguf'
-    return f"{extract_quant_label(probe)}{_gguf_bpw_suffix(probe)}"
+    basename = (key or "").replace("\\", "/").rsplit("/", 1)[-1]
+    token = quant_token_with_bpw(basename)
+    if token is not None:
+        return token
+    # Nothing in the name is a quant, so the alias is the unknown-variant spelling. That one
+    # still re-stems, and a key arrives already extension-stripped, so hand it an extension to
+    # strip rather than let it cut at the dot in "ltx-2.3".
+    return extract_quant_label(f"{basename}.gguf")
+
+
+def is_qualified_gguf_variant_key(key: str) -> bool:
+    """Whether *key* names more than its bare quantization.
+
+    Usually a directory (``distilled/model-Q6_K``), but H3's root-level partitions use the full
+    filename stem (``minimax_h3_ref2va_pruned-Q6_K``). Comparing against the bare alias covers
+    both and leaves ordinary keys such as ``Q6_K`` and ``IQ4_XS-3.53bpw`` untouched.
+    """
+    normalized = (key or "").strip().replace("\\", "/")
+    return bool(normalized) and bare_quant_alias(normalized).lower() != normalized.lower()
+
+
+def is_h3_denoiser_variant_key(key: str) -> bool:
+    """Whether *key* is one of H3's root-level denoiser checkpoint identities."""
+    normalized = (key or "").strip().replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1].lower()
+    return basename.startswith(_H3_DENOISER_PARTITIONS) and is_qualified_gguf_variant_key(
+        normalized
+    )
 
 
 def _is_quant_directory(segment: str) -> bool:
@@ -373,13 +444,18 @@ def gguf_variant_key(filename: str) -> str:
     set would disagree between them and strand a finished download as incomplete.
     """
     path = filename.replace("\\", "/")
-    quant = extract_quant_token(path)
+    quant = quant_token_with_bpw(path)
     if quant is None:
+        return _unknown_gguf_variant_key(path)
+    # MiniMax H3 bundles two denoiser partitions, and may publish both full and pruned
+    # builds at one quant. Each file is a different loadable checkpoint, so the bare
+    # quant cannot identify the row, download state, or file the loader should open.
+    if path.rsplit("/", 1)[-1].lower().startswith(_H3_DENOISER_PARTITIONS):
         return _unknown_gguf_variant_key(path)
     parents = path.rpartition("/")[0]
     if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
         return _unknown_gguf_variant_key(path)
-    return f"{quant}{_gguf_bpw_suffix(path)}"
+    return quant
 
 
 def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
@@ -407,8 +483,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
     # ("IQ4_XS-3.53bpw"), so a key that is only the token plus its bpw suffix is NOT a
     # path-qualified one and needs no scope label.
     def _plain_key(variant) -> Optional[str]:
-        token = extract_quant_token(variant.filename)
-        return None if token is None else f"{token}{_gguf_bpw_suffix(variant.filename)}"
+        return quant_token_with_bpw(variant.filename)
 
     qualified = [
         variant
@@ -422,6 +497,16 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         scopes[scope] = scopes.get(scope, 0) + 1
     for variant in variants:
         token = extract_quant_token(variant.filename)
+        h3_name = Path(variant.filename).name.lower()
+        h3_partition = next(
+            (partition for partition in _H3_DENOISER_PARTITIONS if h3_name.startswith(partition)),
+            None,
+        )
+        if h3_partition is not None:
+            task = "References" if h3_partition.endswith("ref2va") else "Text & frames"
+            build = "Pruned" if "_pruned-" in h3_name else "Full"
+            variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
+            continue
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():
@@ -496,7 +581,11 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
 
 def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> set[str]:
     """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
-    interrupted split download); a quant with shards in any snapshot is excluded."""
+    interrupted split download); a quant with shards in any snapshot is excluded.
+
+    Labelled the way a row is keyed, bpw modifier included, or an empty ``IQ4_XS-3.53bpw/``
+    folder would be reported against a bare ``IQ4_XS`` row that does not exist while the row
+    it belongs to reads as absent."""
     empty: dict[str, str] = {}
     nonempty: set[str] = set()
     snapshots = (
@@ -513,7 +602,7 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
             try:
                 if sub.is_symlink() or not sub.is_dir():
                     continue
-                quant = extract_quant_token(sub.name)
+                quant = quant_token_with_bpw(sub.name)
                 if not quant:
                     continue
                 has_child = any(sub.iterdir())

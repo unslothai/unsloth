@@ -231,6 +231,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (s === "dspark" || s === "draft-dspark") {
     return "dspark";
   }
+  if (s === "dflash" || s === "draft-dflash") {
+    return "dflash";
+  }
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }

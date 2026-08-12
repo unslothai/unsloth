@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Callable
 
@@ -167,6 +169,168 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
         )
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _CaptureLoadReport(logging.Filter):
+    """Swallow transformers' multi-line "<Model> LOAD REPORT" table, keeping the text.
+
+    transformers >= 5 emits the report through ``logger.warning`` with embedded ANSI
+    colour codes, so it lands in the server log as ~7 unstructured lines that break
+    every JSON consumer. It fires on every boot for the RAG embedder because
+    bge-small-en-v1.5 ships a legacy ``embeddings.position_ids`` key that the current
+    BertModel does not expect, which is benign and identical every time.
+
+    Nothing is lost: the caller re-emits the report (see ``_quiet_transformers_load``)
+    at debug when it only reports that known legacy key, and at warning when it
+    mentions anything that could change the model's behaviour.
+    """
+
+    _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
+    # The only UNEXPECTED key worth downgrading is the legacy buffer every BERT-era
+    # sentence-transformer ships. Any other discarded weight can genuinely change
+    # retrieval quality, so it stays a warning. Matched on the whole key, not as a
+    # substring: "encoder.position_ids_projection.weight" is a real discarded weight.
+    _KNOWN_BENIGN_UNEXPECTED = "embeddings.position_ids"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reports: list[str] = []
+        # These filters sit on process-global loggers, so a concurrent load on another
+        # thread would otherwise have its report swallowed and attributed here. Only
+        # capture what the thread that opened the context emits.
+        self.thread_id = threading.get_ident()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if threading.get_ident() != self.thread_id:
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - a broken record must not break loading
+            return True
+        if "LOAD REPORT" not in msg:
+            return True
+        self.reports.append(msg)
+        return False
+
+    def is_serious(self) -> bool:
+        for report in self.reports:
+            if any(tag in report for tag in self._SERIOUS):
+                return True
+            # Row by row over the table only. transformers appends a "Notes:" section
+            # explaining each status ("- UNEXPECTED: can be ignored when loading from
+            # a different task/architecture"), and reading that as a key row would make
+            # every unexpected report serious, including the benign one.
+            table = report.split("Notes:", 1)[0]
+            for row in table.splitlines():
+                if "UNEXPECTED" not in row:
+                    continue
+                key = _ANSI_RE.sub("", row).split("|", 1)[0].strip()
+                if key != self._KNOWN_BENIGN_UNEXPECTED and not key.endswith(
+                    "." + self._KNOWN_BENIGN_UNEXPECTED
+                ):
+                    return True
+        return False
+
+
+_LOAD_REPORT_LOGGERS = (
+    "transformers.utils.loading_report",
+    "transformers.modeling_utils",
+    # An adapter-backed embedding model reports through the PEFT integration's own
+    # logger, which is not a descendant of either of the above.
+    "transformers.integrations.peft",
+)
+
+
+@contextmanager
+def _quiet_transformers_load():
+    """Keep a transformers weight load from writing raw ANSI/tqdm output to stdout.
+
+    Scoped to the embedder load only, so a user-visible model load keeps its normal
+    progress bar and report. Restores the progress-bar setting exactly as found, so
+    a caller that had already disabled bars stays disabled.
+    """
+    capture = _CaptureLoadReport()
+    attached = []
+    for name in _LOAD_REPORT_LOGGERS:
+        log = logging.getLogger(name)
+        log.addFilter(capture)
+        attached.append(log)
+
+    # The weight-load bar is transformers.utils.logging.tqdm, so disable_progress_bar()
+    # reaches it. The "is it on right now" probe has been spelled both ways across
+    # versions (is_progress_bar_enabled in 4.x/5.x, are_progress_bars_disabled in
+    # some builds), so accept either and skip the restore when neither exists rather
+    # than re-enabling a bar the caller had deliberately turned off.
+    # transformers' enable_progress_bar() also calls the Hub's enable_progress_bars(),
+    # so restoring the transformers flag would clobber a Hub-only disable that someone
+    # else installed (unsloth does exactly that in patch_ipykernel_hf_xet for the
+    # broken hf-xet/ipykernel pair). Snapshot the Hub state separately and put it back.
+    hub_bars_off = None
+    try:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        hub_bars_off = bool(are_progress_bars_disabled())
+    except Exception:  # noqa: BLE001 - no Hub, or a version without the probe
+        hub_bars_off = None
+
+    reenable = False
+    hf_logging = None
+    try:
+        from transformers.utils import logging as hf_logging
+        if hasattr(hf_logging, "is_progress_bar_enabled"):
+            was_on = bool(hf_logging.is_progress_bar_enabled())
+        elif hasattr(hf_logging, "are_progress_bars_disabled"):
+            was_on = not bool(hf_logging.are_progress_bars_disabled())
+        else:
+            was_on = False
+        if was_on:
+            hf_logging.disable_progress_bar()
+            reenable = True
+    except Exception:  # noqa: BLE001 - older/absent transformers: nothing to disable
+        hf_logging = None
+
+    try:
+        yield capture
+    finally:
+        for log in attached:
+            log.removeFilter(capture)
+        if reenable and hf_logging is not None:
+            try:
+                hf_logging.enable_progress_bar()
+            except Exception:  # noqa: BLE001
+                pass
+            if hub_bars_off:
+                try:
+                    from huggingface_hub.utils import disable_progress_bars
+                    disable_progress_bars()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+def _one_line(text: str) -> str:
+    """The report as a single plain-text line.
+
+    This module logs through the stdlib logger, not structlog, so re-emitting the
+    captured table verbatim would put the ANSI escapes and embedded newlines straight
+    back into the server log, which is the thing being fixed.
+    """
+    plain = _ANSI_RE.sub("", text)
+    return " | ".join(part.strip() for part in plain.splitlines() if part.strip())
+
+
+def _emit_load_reports(report) -> None:
+    """Re-emit what the filter swallowed, as one record on our own logger: debug for
+    the expected legacy-key notice, warning for anything that could change the
+    embeddings. Drains the list so a retry does not report the same lines twice."""
+    serious = report.is_serious()
+    for text in report.reports:
+        if serious:
+            logger.warning("embedding model load report: %s", _one_line(text))
+        else:
+            logger.debug("embedding model load report: %s", _one_line(text))
+    report.reports.clear()
+
+
 def _st_accepts_local_files_only(st_cls) -> bool:
     """Whether this SentenceTransformer version accepts local_files_only; passing it to an
     older constructor raises, so gate on the signature."""
@@ -210,7 +374,14 @@ def _get(model_name: str | None = None):
                     load_target = str(snapshot)
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
-            _model = SentenceTransformer(load_target, **st_kwargs)
+            with _quiet_transformers_load() as report:
+                # The re-emit runs in finally: a load that raises after transformers
+                # wrote its report is exactly when a MISSING or MISMATCH line matters,
+                # and letting the exception skip the loop would swallow it.
+                try:
+                    _model = SentenceTransformer(load_target, **st_kwargs)
+                finally:
+                    _emit_load_reports(report)
             _name = name
         return _model
 

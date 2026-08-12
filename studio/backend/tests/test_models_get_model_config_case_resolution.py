@@ -53,7 +53,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
         local_files_only = False,
     ):
         calls["detect_audio_type"] = model_name
-        return None
+        return None, True
 
     def _record_from_identifier(
         cls,
@@ -72,7 +72,7 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
     monkeypatch.setattr(models_route, "load_model_defaults", _record_load)
     monkeypatch.setattr(models_route, "is_vision_model", _record_vision)
     monkeypatch.setattr(models_route, "is_embedding_model", _record_embedding)
-    monkeypatch.setattr(model_config_module, "detect_audio_type", _record_audio)
+    monkeypatch.setattr(model_config_module, "detect_audio_type_checked", _record_audio)
     monkeypatch.setattr(
         models_route.ModelConfig,
         "from_identifier",

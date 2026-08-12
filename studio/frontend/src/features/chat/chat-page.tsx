@@ -60,6 +60,11 @@ import {
   useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
+  INVENTORY_FRESHNESS_WINDOW_MS,
+  useDeviceInventorySources,
+} from "@/features/hub/inventory";
+import { chatLocalModelOptions } from "./local-model-options";
+import {
   type NativeIntent,
   NativeAttachmentTargetContext,
   NativeModelChip,
@@ -112,7 +117,7 @@ import {
   useState,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { listLocalModels, notifyChatHistoryUpdated } from "./api/chat-api";
+import { notifyChatHistoryUpdated } from "./api/chat-api";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
@@ -190,7 +195,6 @@ import {
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
-import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import { clearNewChatDraft } from "./utils/composer-draft";
@@ -1869,18 +1873,8 @@ export function ChatPage({
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
-    void (async () => {
-      await hydratePersistedSettings();
-      try {
-        const synced = await syncExternalProvidersFromBackend(
-          useExternalProvidersStore.getState().providers,
-        );
-        setExternalProviders(synced);
-      } catch {
-        // Silent on startup; Connections settings still surfaces load errors.
-      }
-    })();
-  }, [hydratePersistedSettings, setExternalProviders]);
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   useEffect(() => {
     // Skip while off-route: ChatPage stays mounted, and toast+navigate here would
@@ -3070,38 +3064,17 @@ export function ChatPage({
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
 
-  const [localModels, setLocalModels] = useState<LoraModelOption[]>([]);
+  const localModelInventory = useDeviceInventorySources(["localModels"], {
+    enabled: active,
+  });
+  const localModels = useMemo<LoraModelOption[]>(
+    () => chatLocalModelOptions(localModelInventory.localModels.rows),
+    [localModelInventory.localModels.rows],
+  );
 
   const refreshLocalModels = useCallback(() => {
-    void listLocalModels()
-      .then((res) => {
-        setLocalModels(
-          res.models
-            .filter(
-              (m) =>
-                m.source === "lmstudio" ||
-                m.source === "models_dir" ||
-                m.source === "custom",
-            )
-            .map((m) => ({
-              id: m.id,
-              name:
-                m.source === "lmstudio" && m.model_id
-                  ? m.model_id
-                  : m.display_name,
-              baseModel:
-                m.source === "lmstudio"
-                  ? "LM Studio"
-                  : m.source === "custom"
-                    ? "Custom Folders"
-                    : "Local models",
-              updatedAt: m.updated_at ?? undefined,
-              source: "local" as const,
-            })),
-        );
-      })
-      .catch(() => {});
-  }, [navigate]);
+    void localModelInventory.refresh();
+  }, [localModelInventory.refresh]);
 
   const refreshModelLists = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -3130,6 +3103,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
@@ -3138,8 +3112,8 @@ export function ChatPage({
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
     void refresh({ includeLoras: true });
-    refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+    void localModelInventory.refreshIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
+  }, [refresh, localModelInventory.refreshIfOlderThan]);
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;

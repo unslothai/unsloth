@@ -1322,9 +1322,6 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
 
 
 def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
-    # Regression: the legacy /cached-models picker must pass the snapshot path so
-    # the config check hides a custom (non-curated) Whisper checkpoint; a bare
-    # repo id cannot ("user/whisper-finetune" is not in the curated set).
     repo_path = tmp_path / "models--user--whisper-finetune"
     snap = repo_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
@@ -1355,7 +1352,7 @@ def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path
     )
     # The route passed the snapshot path (not just the repo id) ...
     assert any(str(repo_path) in values for values in captured)
-    # ... so the custom Whisper checkpoint is hidden from the chat picker.
+    # ... so the legacy chat inventory keeps hiding the custom checkpoint.
     assert result["cached"] == []
 
 
@@ -2845,7 +2842,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None: {
+        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },
@@ -4367,3 +4364,21 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         )
     )
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
+
+
+def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
+    """H3's GGUFs carry no metadata keys at all (kv_count 0), so ``general.architecture`` is
+    absent and the NAME is the only evidence there is. Keying only on the two bundle repo ids
+    meant a denoiser copied into a custom local directory returned a null task and was dropped
+    from the Video On Device picker, even though the loader validates exactly these prefixes.
+    """
+    for name in (
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "minimax_h3_ref2va-Q8_0.gguf",
+        "/home/me/models/h3/minimax_h3_fl2va-Q4_K_M.gguf",
+    ):
+        assert models_route._arch_to_task(None, (name,)) == models_route._VIDEO_GEN_TASK, name
+
+    # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
+    for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
+        assert models_route._arch_to_task(None, (name,)) is None, name

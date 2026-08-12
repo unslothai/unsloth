@@ -19,7 +19,7 @@ from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
-    add_scan_folder,
+    add_scan_folder_with_status,
     list_scan_folders,
     remove_scan_folder,
 )
@@ -123,10 +123,17 @@ def _is_diffusers_pipeline_dir(path: Path) -> bool:
     publisher walk descends into it and offers its components (``vae``, ``transformer``, ...) as
     separate models, none of which any loader can start.
 
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, which is the pair the video loader accepts, so recognising only the
+    conventional one hid a valid local root from the picker and left the publisher walk to offer
+    its components separately.
+
     ``routes.models._local_pipeline_index`` is the same test; the two scanners are separate
     modules, and only that one had it."""
     try:
-        return (path / "model_index.json").is_file()
+        return (path / "model_index.json").is_file() or (
+            path / "modular_model_index.json"
+        ).is_file()
     except OSError:
         return False
 
@@ -1006,15 +1013,24 @@ def get_scan_folders_response() -> dict:
 
 def add_scan_folder_response(path: str) -> dict:
     try:
-        folder = add_scan_folder(_coerce_scan_folder_path(path))
+        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
         raise HTTPException(status_code = 400, detail = str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        invalidate_index()
+        warm_index_soon()
     return folder
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = remove_scan_folder(folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        invalidate_index()
+        warm_index_soon()
     return {"ok": True}

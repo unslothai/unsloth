@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
 import stat as stat_module
 import sys
+from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
@@ -24,6 +26,122 @@ TRANSPORT_AUTO = "auto"
 VALID_TRANSPORT_MODES = frozenset({TRANSPORT_HTTP, TRANSPORT_XET, TRANSPORT_AUTO})
 TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
+_PROCESS_UNIQUE_PARTIAL_RE = re.compile(
+    r"^(?P<blob_hash>(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64}))\.[0-9a-fA-F]{8}$"
+)
+
+
+def incomplete_blob_hash(name: str) -> Optional[str]:
+    """Return the logical HF blob hash represented by a partial filename.
+
+    huggingface_hub historically wrote ``<etag>.incomplete``. Version 1.18
+    changed the writer to a process-unique ``<etag>.<8 hex>.incomplete`` path
+    before atomically moving it into place. Hub etags used as cache blob names
+    are Git SHA-1 or LFS SHA-256 hex digests, which lets us remove the nonce
+    without mis-parsing an arbitrary legacy filename containing a dot.
+    """
+    if not name.endswith(INCOMPLETE_SUFFIX):
+        return None
+    stem = name[: -len(INCOMPLETE_SUFFIX)]
+    if not stem:
+        return None
+    process_unique = _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(stem)
+    return process_unique.group("blob_hash") if process_unique else stem
+
+
+# The last huggingface_hub line whose partials a later attempt can append to.
+_LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
+
+# How long a partial must sit untouched before it reads as abandoned rather than in flight.
+# huggingface_hub writes to one continuously, so anything still advancing has a live writer --
+# possibly a client in another process that no registry here can see. Shared by the sweep that
+# deletes abandoned partials and the progress scan that must not report one as current.
+ABANDONED_PARTIAL_SECONDS = 120
+
+
+@lru_cache(maxsize = 1)
+def hf_partials_are_resumable() -> bool:
+    """Whether an interrupted download leaves bytes the next attempt can reuse.
+
+    Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
+    its length over a Range request. 1.18 moved the writer to a process-unique
+    ``<etag>.<nonce>.incomplete``, opened ``"wb"`` and unlinked in a ``finally``
+    (huggingface/huggingface_hub#4228), so an interrupted file is refetched from zero and
+    whatever partial survives a hard kill can never be read again.
+
+    An unreadable version answers True: not knowing which writer is installed is not grounds
+    for deleting bytes that may still be resumable.
+    """
+    try:
+        from huggingface_hub import __version__ as hf_version
+    except Exception:  # noqa: BLE001 - an unimportable hub is the caller's problem, not ours
+        return True
+    release = []
+    for chunk in str(hf_version).split(".")[:2]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return True
+        release.append(int(digits))
+    return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
+
+
+def partial_is_process_unique(name: str) -> bool:
+    """Whether a partial filename carries the 1.18+ per-process nonce."""
+    if not name.endswith(INCOMPLETE_SUFFIX):
+        return False
+    return _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(name[: -len(INCOMPLETE_SUFFIX)]) is not None
+
+
+def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
+    """Whether some process holds huggingface_hub's per-blob download lock right now.
+
+    hf takes ``<hub cache>/.locks/<repo dir>/<etag>.lock`` for the whole of a file download, so
+    a lock we cannot take means a live writer -- including a client in another process that no
+    peer registry here can see. It answers False when the lock cannot be probed at all, since
+    upstream calls the lock best-effort and some filesystems grant it to everyone; callers pair
+    it with a staleness check rather than trusting it alone.
+    """
+    lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
+    if not lock_path.exists():
+        # hf creates the lock file before taking the lock, so no file means no writer. It is
+        # also the answer for a SoftFileLock, whose file IS the lock (see below).
+        return False
+    try:
+        from filelock import FileLock, Timeout
+    except Exception:  # noqa: BLE001 - no filelock at all means no opinion
+        return False
+    try:
+        with FileLock(str(lock_path), timeout = 0):
+            return False
+    except Timeout:
+        return True
+    except Exception:  # noqa: BLE001 - deliberately broad, see below
+        # A filesystem without flock raises NotImplementedError here, and upstream's
+        # WeakFileLock answers it by retrying as a SoftFileLock (huggingface_hub
+        # utils/_fixes.py). Retrying is pointless for a PROBE: a soft lock is its file, and we
+        # only reach this line because that file exists, so the soft answer is "held" too.
+        # What matters is that the exception does not escape -- it used to travel out through
+        # the purge and fail the download on every retry. Any other unprobeable error answers
+        # the same way, because the caller's remaining guard is a staleness check that an
+        # ownership claim may skip, and a wrong "free" there deletes a live writer's file.
+        return True
+
+
+def partial_is_resumable(name: str) -> bool:
+    """Whether any later attempt could append to this particular partial.
+
+    Two conditions, and the layout half matters on its own: a nonce partial is private to the
+    process that created it, so even a legacy writer will not reopen it. That combination is
+    reachable whenever caches are shared across environments, which this repo's own pins
+    produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+    """
+    if partial_is_process_unique(name):
+        return False
+    return hf_partials_are_resumable()
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:

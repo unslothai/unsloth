@@ -9,7 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from auth.authentication import get_current_subject
+from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.dependencies import get_hf_token
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
@@ -27,17 +27,20 @@ from hub.schemas.inventory import (
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
+    DeleteImpactResponse,
     GgufVariantsResponse,
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
     RecommendedFoldersResponse,
+    OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
 )
 from hub.services.models import (
     cache_inventory,
+    companion_cleanup,
     deletion,
     downloads,
     folder_browser,
@@ -122,9 +125,14 @@ async def get_gguf_variants(
 async def download_model(
     body: DownloadModelRequest,
     hf_token: Optional[str] = Depends(get_hf_token),
+    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await downloads.download_model_response(body, hf_token)
+    return await downloads.download_model_response(
+        body,
+        hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
 
 
 @router.post("/download/cancel", response_model = CancelDownloadResponse, status_code = 202)
@@ -225,6 +233,27 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
     return HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths)
 
 
+@router.post("/delete-impact", response_model = DeleteImpactResponse)
+async def delete_impact(
+    repo_id: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
+
+    POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
+    own; it is a pure query and mutates nothing.
+    """
+    return await companion_cleanup.delete_impact_response(repo_id, variant)
+
+
+@router.get("/orphan-companions", response_model = OrphanCompanionsResponse)
+async def orphan_companions(current_subject: str = Depends(get_current_subject)):
+    """Cached companion assets no installed model needs. Listing only; removal goes through
+    the ordinary guarded delete."""
+    return await companion_cleanup.orphan_companions_response()
+
+
 @router.delete(
     "/delete-cached",
     response_model = DeleteCachedModelResponse,
@@ -234,7 +263,11 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
+    # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
+    only_if_orphan: bool = Body(False),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    return await deletion.delete_cached_model_response(
+        repo_id, variant, hf_token, cache_path, only_if_orphan
+    )
