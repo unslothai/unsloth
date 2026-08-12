@@ -1339,7 +1339,12 @@ def test_a_future_cuda_major_is_recognised():
 class _FakeStudio:
     """Records calls and answers /api/inference/status from a script."""
 
-    def __init__(self, status_body, *, unload_raises = False):
+    def __init__(
+        self,
+        status_body,
+        *,
+        unload_raises = False,
+    ):
         self.status_body = status_body
         self.unload_raises = unload_raises
         self.posts = []
@@ -1356,8 +1361,14 @@ class _FakeStudio:
         return 200, {}
 
 
-def _baseline_session(module, tmp_path, status_body, readings,
-                      *, unload_raises = False):
+def _baseline_session(
+    module,
+    tmp_path,
+    status_body,
+    readings,
+    *,
+    unload_raises = False,
+):
     session = _session(module, tmp_path, load_timeout = 30.0)
     session.studio = _FakeStudio(status_body, unload_raises = unload_raises)
     seq = list(readings)
@@ -1365,8 +1376,7 @@ def _baseline_session(module, tmp_path, status_body, readings,
     return session
 
 
-def test_the_baseline_waits_for_the_old_model_to_actually_leave(
-        tmp_path, monkeypatch):
+def test_the_baseline_waits_for_the_old_model_to_actually_leave(tmp_path, monkeypatch):
     """The run-7 shape, in miniature.
 
     A 3004 MiB chat model is resident; the probe about to run loads a 531 MB
@@ -1375,11 +1385,10 @@ def test_the_baseline_waits_for_the_old_model_to_actually_leave(
     """
     module = _load_payload()
     session = _baseline_session(
-        module, tmp_path, {"model_path": "chat.gguf"},
-        [4000.0, 2600.0, 1000.0, 996.0, 996.0])
+        module, tmp_path, {"model_path": "chat.gguf"}, [4000.0, 2600.0, 1000.0, 996.0, 996.0]
+    )
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
-    monkeypatch.setattr(module, "nvidia_used_mib",
-                        lambda: session._readings.pop(0))
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 996.0
     assert session.studio.posts[0][0] == "/api/inference/unload"
     assert session.studio.posts[0][1]["model_path"] == "chat.gguf"
@@ -1390,8 +1399,7 @@ def test_nothing_loaded_means_nothing_to_unload(tmp_path, monkeypatch):
     module = _load_payload()
     session = _baseline_session(module, tmp_path, {}, [500.0, 500.0])
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
-    monkeypatch.setattr(module, "nvidia_used_mib",
-                        lambda: session._readings.pop(0))
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 500.0
     assert session.studio.posts == []
 
@@ -1401,11 +1409,10 @@ def test_a_refused_unload_does_not_abort_the_probe(tmp_path, monkeypatch):
     load result that the probe is actually there to record."""
     module = _load_payload()
     session = _baseline_session(
-        module, tmp_path, {"model_path": "chat.gguf"}, [900.0, 900.0],
-        unload_raises = True)
+        module, tmp_path, {"model_path": "chat.gguf"}, [900.0, 900.0], unload_raises = True
+    )
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
-    monkeypatch.setattr(module, "nvidia_used_mib",
-                        lambda: session._readings.pop(0))
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 900.0
 
 
@@ -1413,11 +1420,9 @@ def test_driver_jitter_is_not_mistaken_for_a_release(tmp_path, monkeypatch):
     """A few MiB of wobble must settle immediately, not burn the full budget
     and return whatever the last sample happened to be."""
     module = _load_payload()
-    session = _baseline_session(
-        module, tmp_path, {}, [1000.0, 995.0, 1000.0])
+    session = _baseline_session(module, tmp_path, {}, [1000.0, 995.0, 1000.0])
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
-    monkeypatch.setattr(module, "nvidia_used_mib",
-                        lambda: session._readings.pop(0))
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 995.0
 
 
@@ -1432,6 +1437,7 @@ def test_a_card_that_never_settles_is_bounded(tmp_path, monkeypatch):
     def _falling():
         calls[0] += 1
         return 10000.0 - calls[0] * 100.0
+
     monkeypatch.setattr(module, "nvidia_used_mib", _falling)
     session.settled_baseline()
     assert calls[0] <= module.VRAM_SETTLE_SAMPLES + 1

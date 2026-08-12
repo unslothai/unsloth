@@ -454,8 +454,7 @@ class Payload:
         code, body = self.studio.get("/api/inference/status")
         active = None
         if code == 200 and isinstance(body, dict):
-            active = (body.get("model_path") or body.get("model")
-                      or body.get("active_model_name"))
+            active = body.get("model_path") or body.get("model") or body.get("active_model_name")
         if isinstance(active, str) and active:
             try:
                 self.studio.post(
