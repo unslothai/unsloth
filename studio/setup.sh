@@ -1688,6 +1688,12 @@ try:
     releases = json.loads(raw).get('releases') or {}
 except Exception:
     sys.exit(1)
+try:
+    from packaging.tags import sys_tags
+    from packaging.utils import parse_wheel_filename
+    supported = set(str(t) for t in sys_tags())
+except Exception:
+    supported = None
 cur = Version('.'.join(map(str, sys.version_info[:3])))
 best = None
 for ver, files in releases.items():
@@ -1706,6 +1712,15 @@ for ver, files in releases.items():
                 continue
         except Exception:
             pass
+        pt = f.get('packagetype')
+        if pt == 'bdist_wheel' and supported is not None:
+            try:
+                if not any(str(t) in supported for t in parse_wheel_filename(f.get('filename') or '')[3]):
+                    continue
+            except Exception:
+                pass
+        elif pt and pt != 'sdist' and pt != 'bdist_wheel':
+            continue
         if best is None or v > best:
             best = v
         break
