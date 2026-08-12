@@ -830,6 +830,21 @@ download() {
     fi
 }
 
+# ── Helper: download with resume (wget -c / curl -C -) ──
+# pip/uv abort mid-stream on flaky links and restart from zero; wget -c keeps partial
+# bytes so large torch wheels can finish after a drop (#8456).
+download_resumable() {
+    _dr_url="$1"
+    _dr_dest="$2"
+    if command -v wget >/dev/null 2>&1; then
+        wget -c -qO "$_dr_dest" "$_dr_url"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL -C - "$_dr_url" -o "$_dr_dest"
+    else
+        download "$_dr_url" "$_dr_dest"
+    fi
+}
+
 # ── Helper: check if a single package is available on the system ──
 _is_pkg_installed() {
     case "$1" in
@@ -3883,11 +3898,174 @@ _previous_torch_pin() {
     echo "torch==$_ptp_base"
 }
 
+# Wheel arch suffix for the running host (used when scraping PEP 503 simple indexes).
+_pytorch_wheel_arch_suffix() {
+    case "$_ARCH" in
+        aarch64|arm64) printf '%s\n' "aarch64" ;;
+        x86_64|amd64)  printf '%s\n' "x86_64" ;;
+        *)             printf '%s\n' "x86_64" ;;
+    esac
+}
+
+# First dotted version prefix from a pip constraint, e.g. torch>=2.11.0,<2.12.0 -> 2.11.
+_constraint_ver_prefix() {
+    printf '%s\n' "$1" | sed -n \
+        -e 's/.*==\([0-9][0-9]*\.[0-9][0-9]*\)\.\*/\1./p' \
+        -e 's/.*==\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*/\1./p' \
+        -e 's/.*>=\([0-9][0-9]*\.[0-9][0-9]*\)\.[0-9][0-9]*.*/\1./p' \
+        | head -n 1
+}
+
+# Fetch a package listing from a pytorch.org-style PEP 503 simple index.
+_pytorch_simple_listing() {
+    _psl_base="${1%/}"
+    _psl_pkg="$2"
+    _psl_url="$_psl_base/$_psl_pkg/"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 30 "$_psl_url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- --timeout=30 "$_psl_url" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+# Pick the newest wheel href for PACKAGE from a simple-index HTML listing.
+# $3 = optional version prefix (e.g. 2.11.), $4 = cp tag, $5 = arch suffix (x86_64/aarch64).
+_pick_simple_index_wheel() {
+    _psi_listing="$1"
+    _psi_pkg="$2"
+    _psi_ver_prefix="${3:-}"
+    _psi_tag="$4"
+    _psi_arch="$5"
+    [ -n "$_psi_listing" ] || return 1
+    [ -n "$_psi_tag" ] || return 1
+    [ -n "$_psi_arch" ] || return 1
+    _psi_href=$(printf '%s\n' "$_psi_listing" \
+        | awk -v pkg="$_psi_pkg" -v tag="$_psi_tag" -v ver_prefix="$_psi_ver_prefix" \
+              -v arch="$_psi_arch" '
+            BEGIN { max_pad = ""; max_url = "" }
+            {
+                line = $0
+                while (match(line, /href="[^"]*"/)) {
+                    url = substr(line, RSTART + 6, RLENGTH - 7)
+                    line = substr(line, RSTART + RLENGTH)
+                    n = split(url, p, "/")
+                    base = p[n]
+                    sub(/[?#].*/, "", base)
+                    prefix = pkg "-" ver_prefix
+                    if (substr(base, 1, length(prefix)) == prefix &&
+                            index(base, "-" tag "-") > 0 &&
+                            match(base, arch "\\.whl$")) {
+                        if (match(base, /[0-9]+\.[0-9]+(\.[0-9]+)?/)) {
+                            ver = substr(base, RSTART, RLENGTH)
+                            m = split(ver, v, ".")
+                            pad = ""
+                            for (i = 1; i <= m; i++)
+                                pad = pad sprintf("%08d", v[i])
+                            if (pad > max_pad) {
+                                max_pad = pad
+                                max_url = url
+                            }
+                        }
+                    }
+                }
+            }
+            END { if (max_url != "") print max_url }')
+    [ -z "$_psi_href" ] && return 1
+    printf '%s\n' "$_psi_href"
+}
+
+# Resolve a wheel href against a simple-index base URL (base includes /package).
+_resolve_simple_index_wheel_url() {
+    _rsw_base="${1%/}"
+    _rsw_href="$2"
+    case "$_rsw_href" in
+        http*) printf '%s\n' "$_rsw_href" ;;
+        /*)   printf '%s\n' "${_rsw_base%/*}${_rsw_href}" ;;
+        *)    printf '%s\n' "$_rsw_base/${_rsw_href#./}" ;;
+    esac
+}
+
+# Download torch/torchvision/torchaudio wheels with resume, install locally, then fetch
+# runtime deps from the index without re-pulling the trio (#8456).
+_install_torch_resumable_wheels() {
+    _itr_torch_con="$1"
+    _itr_tv_con="$2"
+    _itr_ta_con="$3"
+    shift 3
+
+    _itr_base="${TORCH_INDEX_URL%/}"
+    _itr_cache="${STUDIO_HOME:-$HOME/.unsloth}/share/torch-wheel-cache"
+    mkdir -p "$_itr_cache" || return 1
+
+    _itr_pytag=$("$_VENV_PY" -c "
+import sys
+print('cp{}{}'.format(sys.version_info.major, sys.version_info.minor))
+" 2>/dev/null) || return 1
+    _itr_arch=$(_pytorch_wheel_arch_suffix)
+
+    _itr_torch_p=$(_constraint_ver_prefix "$_itr_torch_con")
+    _itr_tv_p=$(_constraint_ver_prefix "$_itr_tv_con")
+    _itr_ta_p=$(_constraint_ver_prefix "$_itr_ta_con")
+
+    _itr_tl=$(_pytorch_simple_listing "$_itr_base" "torch") || return 1
+    _itr_vl=$(_pytorch_simple_listing "$_itr_base" "torchvision") || return 1
+    _itr_al=$(_pytorch_simple_listing "$_itr_base" "torchaudio") || return 1
+
+    _itr_th=$(_pick_simple_index_wheel "$_itr_tl" "torch" "$_itr_torch_p" "$_itr_pytag" "$_itr_arch") || return 1
+    _itr_vh=$(_pick_simple_index_wheel "$_itr_vl" "torchvision" "$_itr_tv_p" "$_itr_pytag" "$_itr_arch") || return 1
+    _itr_ah=$(_pick_simple_index_wheel "$_itr_al" "torchaudio" "$_itr_ta_p" "$_itr_pytag" "$_itr_arch") || return 1
+
+    _itr_tw=""
+    _itr_vw=""
+    _itr_aw=""
+    for _itr_pair in "torch:$_itr_th" "torchvision:$_itr_vh" "torchaudio:$_itr_ah"; do
+        _itr_pkg=${_itr_pair%%:*}
+        _itr_href=${_itr_pair#*:}
+        _itr_url=$(_resolve_simple_index_wheel_url "$_itr_base/$_itr_pkg" "$_itr_href") || return 1
+        _itr_name=$(printf '%s' "${_itr_href##*/}" | sed 's/%2[Bb]/+/g')
+        _itr_dest="$_itr_cache/$_itr_name"
+        substep "resumable download $_itr_name..."
+        download_resumable "$_itr_url" "$_itr_dest" || return 1
+        case "$_itr_pkg" in
+            torch) _itr_tw="$_itr_dest" ;;
+            torchvision) _itr_vw="$_itr_dest" ;;
+            torchaudio) _itr_aw="$_itr_dest" ;;
+        esac
+    done
+
+    run_install_cmd_retry "install PyTorch (resumable wheels)" uv pip install --python "$_VENV_PY" \
+        --no-deps "$_itr_tw" "$_itr_vw" "$_itr_aw" "$@" || return 1
+
+    _itr_deps=$("$_VENV_PY" -c "
+import importlib.metadata as m
+seen = set()
+for pkg in ('torch', 'torchvision', 'torchaudio'):
+    try:
+        reqs = m.requires(pkg) or []
+    except Exception:
+        continue
+    for req in reqs:
+        spec = req.split(';')[0].strip()
+        if spec and spec not in seen:
+            seen.add(spec)
+            print(spec)
+" 2>/dev/null)
+    if [ -n "$_itr_deps" ]; then
+        # shellcheck disable=SC2086
+        run_install_cmd_retry "install PyTorch runtime deps" uv pip install --python "$_VENV_PY" \
+            --default-index "$TORCH_INDEX_URL" $_itr_deps || return 1
+    fi
+    return 0
+}
+
 # Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
 # set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
 # if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
 # path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac, ROCm repairs) so preservation is
 # uniform. Extra args (e.g. --force-reinstall) are passed through to uv.
+# On transient download failure, retry via wget -c resumable wheel fetch (#8456).
 _install_torch_default_index() {
     if [ -n "$_PREV_TORCH_PIN" ]; then
         # Pair the companions with the kept torch minor: torchaudio no longer
@@ -3904,18 +4082,31 @@ _install_torch_default_index() {
                 _itdi_ta="torchaudio==2.${_itdi_minor}.*"
                 ;;
         esac
-        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+        if run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
             --default-index "$TORCH_INDEX_URL" "$@"; then
-            substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
-            TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
-            _PREV_TORCH_PIN=""
-            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
-                --default-index "$TORCH_INDEX_URL" "$@"
+            return 0
         fi
-    else
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
-            --default-index "$TORCH_INDEX_URL" "$@"
+        substep "[WARN] uv PyTorch install failed; retrying kept release with resumable wheel downloads (wget -c)..." "$C_WARN"
+        if _install_torch_resumable_wheels "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" "$@"; then
+            return 0
+        fi
+        substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
+        TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
+        _PREV_TORCH_PIN=""
+        if run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+            --default-index "$TORCH_INDEX_URL" "$@"; then
+            return 0
+        fi
+        substep "[WARN] uv PyTorch install failed; retrying with resumable wheel downloads (wget -c)..." "$C_WARN"
+        _install_torch_resumable_wheels "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" "$@"
+        return $?
     fi
+    if run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+        --default-index "$TORCH_INDEX_URL" "$@"; then
+        return 0
+    fi
+    substep "[WARN] uv PyTorch install failed; retrying with resumable wheel downloads (wget -c)..." "$C_WARN"
+    _install_torch_resumable_wheels "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" "$@"
 }
 
 # Expected tag from the index leaf ($1): cuXXX / cpu / xpu / rocm (rocmX.Y and gfx* ->

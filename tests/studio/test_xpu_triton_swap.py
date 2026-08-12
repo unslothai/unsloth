@@ -14,8 +14,8 @@ Three things here are easy to get wrong and are asserted by execution rather tha
 
 * the ORDER. Fetch, then uninstall, then install. Uninstalling last deletes the shared paths
   the XPU build just wrote, because those paths are in generic triton's own RECORD.
-* the venv has no pip. ``uv venv`` is created without ``--seed``, so a fresh venv cannot run
-  ``pip download`` at all, and without a bootstrap the swap silently never happens.
+* the venv has no pip. ``uv venv`` is created without ``--seed``, so pip must be
+  bootstrapped before the local wheel install can run.
 * the pin is ONE-SHOT. ``UNSLOTH_TORCH_INDEX_FAMILY=xpu ./install.sh`` leaves nothing behind
   in the environment, so a later plain ``unsloth studio update`` must recognise the installed
   ``+xpu`` wheel instead. See TestTheInstalledWheelIsThePin.
@@ -122,12 +122,19 @@ def _load(
 
     pip_state = {"present": has_pip}
     index_urls: list[str] = []
-    download_envs: list = []
+
+    def fake_download_pinned(spec, pin, dest_dir):
+        log.append("DOWNLOAD")
+        index_urls.append(pin)
+        if download_ok and drops_wheel:
+            wheel_name = f"{spec.split('==')[0]}-{spec.split('==')[1]}-py3-none-any.whl"
+            path = Path(dest_dir) / wheel_name
+            path.write_bytes(b"")
+            return path
+        return None
 
     def fake_run(cmd, **kw):
         joined = " ".join(str(c) for c in cmd)
-        if "download" in cmd:
-            download_envs.append(kw.get("env"))
         if "-m pip --version" in joined or ("pip" in cmd and "--version" in cmd):
             return subprocess.CompletedProcess(cmd, 0 if pip_state["present"] else 1)
         if "ensurepip" in joined:
@@ -138,13 +145,6 @@ def _load(
         if "importlib.metadata" in joined:
             out = f"SPEC={spec}\nGENERIC={generic}\n".encode()
             return subprocess.CompletedProcess(cmd, 0, stdout = out)
-        if "download" in cmd:
-            log.append("DOWNLOAD")
-            index_urls.append(cmd[cmd.index("--index-url") + 1])
-            if download_ok and drops_wheel:
-                target = cmd[cmd.index("-d") + 1]
-                Path(target, "pytorch_triton_xpu-3.5.0-py3-none-any.whl").write_bytes(b"")
-            return subprocess.CompletedProcess(cmd, 0 if download_ok else 1, stdout = b"")
         if "uninstall" in cmd:
             log.append("UNINSTALL")
             return subprocess.CompletedProcess(cmd, 0 if uninstall_ok else 1)
@@ -193,6 +193,7 @@ def _load(
         ),
         "pip_install_try": fake_pip_install_try,
         "pip_install": fake_pip_install,
+        "_download_pinned_wheel_resumable": fake_download_pinned,
         "_red": lambda s: s,
         # _safe_print, not print: the slice calls it by name, so stubbing "print"
         # would leave _safe_print undefined at exec time.
@@ -203,7 +204,6 @@ def _load(
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)
     mod.__dict__["_test_index_urls"] = index_urls
-    mod.__dict__["_test_download_envs"] = download_envs
     return mod, log
 
 
@@ -225,7 +225,7 @@ class TestXpuTritonSwap:
         assert log == ["DOWNLOAD", "UNINSTALL", "INSTALL"]
 
     def test_bootstraps_pip_when_the_venv_has_none(self, monkeypatch, tmp_path):
-        # uv venv has no --seed, so a fresh venv cannot run pip download at all.
+        # uv venv has no --seed, so pip must be bootstrapped before the local wheel install.
         log = _run(
             monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1", has_pip = False
         )
@@ -365,15 +365,8 @@ class TestTheInstalledWheelIsThePin:
         assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
 
 
-class TestTheFetchIgnoresTheUsersIndexEnvironment:
-    """`pip download` honours PIP_* exactly like `pip install`, and that breaks the pin.
-
-    PIP_NO_INDEX makes pip ignore --index-url outright, and PIP_EXTRA_INDEX_URL /
-    PIP_FIND_LINKS are consulted IN ADDITION to it. Either the fetch fails, leaving generic
-    triton shadowing the XPU build, or the wheel arrives from an index the pin never named.
-    Every other pinned install in this file already routes through _install_env_for_cmd; this
-    one is a raw subprocess.run, so it has to ask for the same scrub explicitly.
-    """
+class TestTheFetchUsesThePinnedIndex:
+    """Resumable wheel fetch must use the explicit XPU pin, not ambient pip index env."""
 
     @pytest.mark.parametrize(
         "var, value",
@@ -385,30 +378,11 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
             ("UV_INDEX_URL", "https://mirror.internal/simple"),
         ],
     )
-    def test_the_fetch_drops_index_environment(self, monkeypatch, tmp_path, var, value):
+    def test_the_fetch_ignores_index_environment(self, monkeypatch, tmp_path, var, value):
         monkeypatch.setenv(var, value)
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
-        env = mod.__dict__["_test_download_envs"][0]
-        assert env is not None, "the fetch inherited the ambient environment"
-        assert var not in env
-
-    def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does.
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
-        mod.__dict__["_ensure_xpu_triton"]()
-        env = mod.__dict__["_test_download_envs"][0]
-        assert env["PIP_CONFIG_FILE"] == os.devnull
-        assert env["UV_NO_CONFIG"] == "1"
-
-    def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
-        # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate
-        # host reaches the index at all.
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.internal:8080")
-        mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
-        mod.__dict__["_ensure_xpu_triton"]()
-        env = mod.__dict__["_test_download_envs"][0]
-        assert env["HTTPS_PROXY"] == "http://proxy.internal:8080"
+        assert mod.__dict__["_test_index_urls"] == ["https://download.pytorch.org/whl/xpu"]
 
 
 class TestADeadDriverIsNotAFlavourMismatch:

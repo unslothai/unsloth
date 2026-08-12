@@ -23,6 +23,7 @@ import sys
 import sysconfig
 import tempfile
 import textwrap
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -2667,39 +2668,14 @@ def _ensure_xpu_triton() -> None:
     # Fetch, THEN uninstall, THEN install from the file. The uninstall cannot go last: the shared
     # paths live in generic triton's OWN record, so removing it afterwards deletes what the XPU
     # build just wrote. Pre-fetching stops a dead mirror stranding the venv between the two
-    # steps. uv has no `pip download`, hence pip here.
+    # steps. wget -c resumes partial downloads; pip download restarts from zero (#8456).
     tmp = tempfile.mkdtemp(prefix = "unsloth_triton_xpu_")
     try:
-        _dl_cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "download",
-            "--no-deps",
-            "--only-binary=:all:",
-            "-d",
-            tmp,
-            spec,
-            "--index-url",
-            pin,
-        ]
         try:
-            dl = subprocess.run(
-                _dl_cmd,
-                # Same scrub every other pinned install gets: PIP_NO_INDEX would ignore
-                # --index-url outright, and PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS are consulted in
-                # addition to it, so an inherited environment could serve the wheel from
-                # somewhere the pin never named.
-                env = _install_env_for_cmd(_dl_cmd),
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                timeout = 900,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            dl = None
-        wheels = glob.glob(os.path.join(tmp, "*.whl"))
-        # The exit code alone is not enough: no wheel on disk means nothing to install from.
-        if dl is None or dl.returncode != 0 or not wheels:
+            wheel = _download_pinned_wheel_resumable(spec, pin, Path(tmp))
+        except (OSError, subprocess.CalledProcessError, urllib.error.URLError):
+            wheel = None
+        if wheel is None:
             _safe_print(
                 _red(
                     f"   could not fetch {spec}; generic triton {generic} left in place -- "
@@ -2731,7 +2707,7 @@ def _ensure_xpu_triton() -> None:
             "triton (Intel XPU)",
             "--force-reinstall",
             "--no-deps",
-            wheels[0],
+            str(wheel),
             constrain = False,
         )
     finally:
@@ -4167,6 +4143,78 @@ def pip_install(
 def download_file(url: str, dest: Path) -> None:
     """Download a file using urllib (no curl dependency)."""
     urllib.request.urlretrieve(url, dest)
+
+
+def download_file_resumable(url: str, dest: Path) -> None:
+    """Download with resume support via wget -c or curl -C - (#8456).
+
+    pip/uv restart interrupted multi-gigabyte wheel downloads from zero; wget -c keeps
+    partial bytes so flaky links can finish.
+    """
+    dest.parent.mkdir(parents = True, exist_ok = True)
+    if shutil.which("wget"):
+        subprocess.run(["wget", "-c", "-qO", str(dest), url], check = True)
+        return
+    if shutil.which("curl"):
+        subprocess.run(["curl", "-fsSL", "-C", "-", "-o", str(dest), url], check = True)
+        return
+    download_file(url, dest)
+
+
+def _fetch_http_text(url: str, timeout: int = 30) -> str:
+    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-installer"})
+    with urllib.request.urlopen(req, timeout = timeout) as resp:
+        return resp.read().decode("utf-8", errors = "replace")
+
+
+def _parse_package_spec(spec: str) -> tuple[str, str]:
+    name, _, version = spec.partition("==")
+    return name.strip(), version.strip()
+
+
+def _pick_wheel_href_from_listing(
+    listing: str,
+    package: str,
+    version: str,
+    py_tag: str,
+) -> str | None:
+    import re
+
+    version_escaped = re.escape(version)
+    pattern = re.compile(
+        rf'href="([^"]*/{re.escape(package)}-{version_escaped}[^"]*{re.escape(py_tag)}[^"]*\.whl)"',
+        re.IGNORECASE,
+    )
+    matches = pattern.findall(listing)
+    if not matches:
+        pattern = re.compile(
+            rf'href="([^"]*/{re.escape(package)}-{version_escaped}[^"]*\.whl)"',
+            re.IGNORECASE,
+        )
+        matches = pattern.findall(listing)
+    if not matches:
+        return None
+    return matches[-1]
+
+
+def _download_pinned_wheel_resumable(spec: str, index_url: str, dest_dir: Path) -> Path | None:
+    """Fetch one wheel from a pinned simple index with wget/curl resume."""
+    package, version = _parse_package_spec(spec)
+    listing = _fetch_http_text(f"{index_url.rstrip('/')}/{package}/")
+    py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    href = _pick_wheel_href_from_listing(listing, package, version, py_tag)
+    if not href:
+        return None
+    if href.startswith("http"):
+        wheel_url = href
+    else:
+        wheel_url = f"{index_url.rstrip('/')}/{package}/{href.lstrip('./')}"
+    from urllib.parse import unquote
+
+    wheel_name = unquote(wheel_url.split("?")[0].split("/")[-1])
+    dest = dest_dir / wheel_name
+    download_file_resumable(wheel_url, dest)
+    return dest if dest.is_file() else None
 
 
 def patch_package_file(package_name: str, relative_path: str, url: str) -> None:
