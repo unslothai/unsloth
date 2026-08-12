@@ -90,9 +90,7 @@ import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   type ImageGenerationPresetParams,
-  type DynamicDefaultRollback,
   MediaGenerationPresetControl,
-  chainDynamicDefaultRollback,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -1139,7 +1137,11 @@ type Busy = "loading" | "unloading" | "generating" | null;
 // label and the generation recipe move together at pick time, so they have to roll back together too.
 type PickRevert = {
   prev: string | null;
-  presetDefaultRollback?: DynamicDefaultRollback;
+  steps: number;
+  guidance: number;
+  // What the pick applied. A field the user changed after that is theirs, not ours to put back.
+  appliedSteps?: number;
+  appliedGuidance?: number;
 };
 
 // The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
@@ -1180,8 +1182,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    r.presetDefaultRollback?.();
+    setPendingModelDefaults(null);
+    setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
+    setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
   }, []);
+  // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
+  // it. Without this the Default preset would read as "modified" for the whole download.
+  const [pendingModelDefaults, setPendingModelDefaults] = useState<{
+    steps: number;
+    guidance: number;
+  } | null>(null);
   const [seed, setSeed] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
@@ -1341,7 +1351,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended = defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
+    const recommended =
+      pendingModelDefaults ??
+      defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
     return {
       negativePrompt: "",
       width: 1024,
@@ -1351,7 +1363,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       batchSize: 1,
       runs: 1,
     };
-  }, [status?.base_repo, status?.repo_id]);
+  }, [pendingModelDefaults, status?.base_repo, status?.repo_id]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
     setWidth(params.width);
@@ -1371,24 +1383,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     currentParams: imagePresetParams,
     applyParams: applyImagePresetParams,
   });
-  const applyImageDynamicDefault = imagePresets.applyDynamicDefault;
-  const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
-      const recommended = defaultsFor(repoId);
-      const rollback = applyImageDynamicDefault({
-        steps: recommended.steps,
-        guidance: recommended.guidance,
-      });
-      const revert = quantRevert.current;
-      if (rollback && revert) {
-        revert.presetDefaultRollback = chainDynamicDefaultRollback(
-          revert.presetDefaultRollback,
-          rollback,
-        );
-      }
-    },
-    [applyImageDynamicDefault],
-  );
+  const applyImageModelDefaults = useCallback((repoId: string) => {
+    const recommended = defaultsFor(repoId);
+    setPendingModelDefaults(recommended);
+    setSteps(recommended.steps);
+    setGuidance(recommended.guidance);
+    const revert = quantRevert.current;
+    if (revert) {
+      revert.appliedSteps = recommended.steps;
+      revert.appliedGuidance = recommended.guidance;
+    }
+  }, []);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -2252,8 +2257,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
     // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a GGUF resident has no family substring.
-    applyImageModelDefaults(status?.base_repo ?? repoId);
-  }, [applyImageModelDefaults, status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
+    // Status is the authority for a resident model, so this is not a pick's optimistic claim.
+    const d = defaultsFor(status?.base_repo ?? repoId);
+    setPendingModelDefaults(null);
+    setSteps(d.steps);
+    setGuidance(d.guidance);
+  }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
   // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
   // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
@@ -2647,7 +2656,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
-      const revert: PickRevert = quantRevert.current ?? { prev: quant };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
         resolve: () =>
@@ -2732,7 +2741,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
     // the model-specific Default recipe, and a load that never becomes resident rolls both back.
-    const revert: PickRevert = quantRevert.current ?? { prev: quant };
+    const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
     quantRevert.current = revert;
     setQuant(pick.opts.kind === "pipeline" ? null : (pick.opts.filename ?? null));
     applyImageModelDefaults(wanted);
@@ -2803,7 +2812,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // Registers its own rollback like every other branch. Leaving the previous pick's entry in
         // place would let that older staged download, on cancelling, revert to state from before it
         // -- over a selection this pick already replaced -- and leave this one with no rollback.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
         applyImageModelDefaults(id);
@@ -2823,7 +2832,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
       // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         applyImageModelDefaults(id);
@@ -2860,7 +2869,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
         // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
@@ -2879,7 +2888,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
@@ -2910,7 +2919,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(id);
@@ -2954,7 +2963,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
-      const revert: PickRevert = quantRevert.current ?? { prev: quant };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       applyImageModelDefaults(args.baseRepo);

@@ -3,34 +3,8 @@
 
 export const DEFAULT_PRESET_NAME = "Default";
 
-export type DynamicDefaultRollback = () => boolean;
-
-export function chainDynamicDefaultRollback(
-  previous: DynamicDefaultRollback | undefined,
-  next: DynamicDefaultRollback,
-): DynamicDefaultRollback {
-  if (!previous) {
-    return next;
-  }
-  return () => next() && previous();
-}
-
 export function configKey(value: unknown): string {
   return JSON.stringify(value ?? null);
-}
-
-export function mergeUntouchedParams<Params extends object>(
-  baseline: Params,
-  current: Params,
-  next: Params,
-): Params {
-  const merged = { ...next };
-  for (const key of Object.keys(merged) as Array<keyof Params>) {
-    if (configKey(current[key]) !== configKey(baseline[key])) {
-      merged[key] = current[key];
-    }
-  }
-  return merged;
 }
 
 export function getBuiltinVariantName(usedNames: Set<string>): string {

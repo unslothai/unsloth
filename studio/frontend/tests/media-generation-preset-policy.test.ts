@@ -5,52 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  chainDynamicDefaultRollback,
   closestDurationIndex,
   closestResolutionIndex,
   getBuiltinVariantName,
-  mergeUntouchedParams,
 } from "../src/features/generation-presets/preset-policy.ts";
-
-test("pending model defaults preserve only fields the user edited", () => {
-  const baseline = { negativePrompt: "", width: 768, steps: 8 };
-  assert.deepEqual(
-    mergeUntouchedParams(
-      baseline,
-      { ...baseline, negativePrompt: "keep this", width: 1024 },
-      { negativePrompt: "", width: 1280, steps: 40 },
-    ),
-    { negativePrompt: "keep this", width: 1024, steps: 40 },
-  );
-});
-
-test("dynamic default rollbacks unwind newest-first to the original baseline", () => {
-  const calls: string[] = [];
-  const previous = () => {
-    calls.push("previous");
-    return true;
-  };
-  const next = () => {
-    calls.push("next");
-    return true;
-  };
-  const rollback = chainDynamicDefaultRollback(previous, next);
-  assert.equal(rollback(), true);
-  assert.deepEqual(calls, ["next", "previous"]);
-});
-
-test("a stale newer rollback cannot continue into an older transaction", () => {
-  let previousCalled = false;
-  const rollback = chainDynamicDefaultRollback(
-    () => {
-      previousCalled = true;
-      return true;
-    },
-    () => false,
-  );
-  assert.equal(rollback(), false);
-  assert.equal(previousCalled, false);
-});
 
 test("saving over Default creates a protected custom variant", () => {
   const used = new Set(["Default", "Default 1", "Portrait"]);

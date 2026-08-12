@@ -21,7 +21,6 @@ import {
   DEFAULT_PRESET_NAME,
   configKey,
   getBuiltinVariantName,
-  mergeUntouchedParams,
 } from "./preset-policy";
 import type {
   MediaGenerationKind,
@@ -62,8 +61,6 @@ export function useMediaGenerationPresets<Params extends object>({
   const [customPresets, setCustomPresets] = useState<
     MediaGenerationPreset<Params>[]
   >([]);
-  const [effectiveDefaultParams, setEffectiveDefaultParams] =
-    useState(defaultParams);
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET_NAME);
   const [hydrationSource, setHydrationSource] = useState<
     "pending" | "fresh" | "saved" | "unreadable"
@@ -83,29 +80,30 @@ export function useMediaGenerationPresets<Params extends object>({
   // Bumped by every action that takes over the form, so a write that resolves late can still
   // update the list without moving a selection the user made while it was in flight.
   const formClaim = useRef(0);
-  const isDefaultUnmodifiedRef = useRef(true);
-  const hydratedRef = useRef(hydrated);
   const defaultParamsRef = useRef(defaultParams);
   const applyParamsRef = useRef(applyParams);
   const paramsKeyRef = useRef(paramsKey);
   useLayoutEffect(() => {
     currentParamsRef.current = currentParams;
-    hydratedRef.current = hydrated;
     activePresetRef.current = activePreset;
-    isDefaultUnmodifiedRef.current =
-      activePreset === DEFAULT_PRESET_NAME &&
-      (!hydrated ||
-        paramsKey(currentParams) === paramsKey(baselineParamsRef.current));
     applyParamsRef.current = applyParams;
+    defaultParamsRef.current = defaultParams;
     paramsKeyRef.current = paramsKey;
-  }, [activePreset, applyParams, currentParams, hydrated, paramsKey]);
+  }, [
+    activePreset,
+    applyParams,
+    currentParams,
+    defaultParams,
+    hydrated,
+    paramsKey,
+  ]);
 
   const presets = useMemo(
     () => [
-      { name: DEFAULT_PRESET_NAME, params: effectiveDefaultParams },
+      { name: DEFAULT_PRESET_NAME, params: defaultParams },
       ...customPresets,
     ],
-    [customPresets, effectiveDefaultParams],
+    [customPresets, defaultParams],
   );
 
   const hydrateLocalSettings = useCallback((source: "fresh" | "unreadable") => {
@@ -329,64 +327,9 @@ export function useMediaGenerationPresets<Params extends object>({
     restoreDefaultAfterDelete,
   ]);
 
-  const applyDynamicDefault = useCallback((patch: Partial<Params>) => {
-    const previousDefault = defaultParamsRef.current;
-    const nextDefault = { ...previousDefault, ...patch };
-    const previousBaseline = baselineParamsRef.current;
-    const ownsDefault = activePresetRef.current === DEFAULT_PRESET_NAME;
-    const appliesToForm = isDefaultUnmodifiedRef.current;
-    const pending = !hydratedRef.current;
-    defaultParamsRef.current = nextDefault;
-    setEffectiveDefaultParams(nextDefault);
-    const paramsUntouched =
-      configKey(currentParamsRef.current) === configKey(previousBaseline);
-    if (appliesToForm) {
-      // A newly picked model's recipe takes over the form exactly as a preset selection does, so a
-      // save still in flight must not put its older snapshot back over it once it answers.
-      claimForm(formClaim);
-      const applied = applyParamsRef.current(
-        pending
-          ? mergeUntouchedParams(
-              previousBaseline,
-              currentParamsRef.current,
-              nextDefault,
-            )
-          : nextDefault,
-      );
-      if (pending && paramsUntouched) {
-        initialParamsKey.current = configKey(applied);
-      }
-    }
-    if (ownsDefault) {
-      baselineParamsRef.current = nextDefault;
-    }
-    return () => {
-      // A newer model default owns the definition. A preset selection owns only the form baseline,
-      // so a failed load still restores Default without overwriting that newer user choice.
-      if (defaultParamsRef.current !== nextDefault) {
-        return false;
-      }
-      defaultParamsRef.current = previousDefault;
-      setEffectiveDefaultParams(previousDefault);
-      if (baselineParamsRef.current === nextDefault) {
-        const current = currentParamsRef.current;
-        const optimisticUntouched =
-          configKey(current) === configKey(nextDefault);
-        const applied = applyParamsRef.current(
-          mergeUntouchedParams(nextDefault, current, previousBaseline),
-        );
-        if (pending && optimisticUntouched) {
-          initialParamsKey.current = configKey(applied);
-        }
-        baselineParamsRef.current = previousBaseline;
-      }
-      return true;
-    };
-  }, []);
-
   const activeDefinition =
     activePreset === DEFAULT_PRESET_NAME
-      ? { name: DEFAULT_PRESET_NAME, params: effectiveDefaultParams }
+      ? { name: DEFAULT_PRESET_NAME, params: defaultParams }
       : customPresets.find((preset) => preset.name === activePreset);
   const hasUnsavedChanges = activeDefinition
     ? paramsKey(currentParams) !== paramsKey(activeDefinition.params)
@@ -394,7 +337,6 @@ export function useMediaGenerationPresets<Params extends object>({
 
   return {
     activePreset,
-    isDefaultUnmodifiedRef,
     presets,
     hydrated,
     presetsReady,
@@ -402,6 +344,5 @@ export function useMediaGenerationPresets<Params extends object>({
     selectPreset,
     savePreset,
     deletePreset,
-    applyDynamicDefault,
   };
 }

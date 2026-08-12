@@ -84,8 +84,6 @@ import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   MediaGenerationPresetControl,
-  chainDynamicDefaultRollback,
-  type DynamicDefaultRollback,
   type VideoGenerationPresetParams,
   closestDurationIndex,
   closestResolutionIndex,
@@ -734,7 +732,11 @@ function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boole
 // label and the generation recipe move together at pick time, so they have to roll back together too.
 type PickRevert = {
   prev: string | null;
-  presetDefaultRollback?: DynamicDefaultRollback;
+  steps: number;
+  guidance: number;
+  // What the pick applied. A field the user changed after that is theirs, not ours to put back.
+  appliedSteps?: number;
+  appliedGuidance?: number;
 };
 // Resolved Advanced controls pinned across preflight, staging, and load.
 type VideoLoadAdvanced = Pick<
@@ -810,8 +812,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
-    r.presetDefaultRollback?.();
+    setPendingModelDefaults(null);
+    setSteps((cur) => (cur === r.appliedSteps ? r.steps : cur));
+    setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
   }, []);
+  // The recipe a pick optimistically claimed, until status confirms it or a failed load reverts
+  // it. Without this the Default preset would read as "modified" for the whole download.
+  const [pendingModelDefaults, setPendingModelDefaults] = useState<{
+    steps: number;
+    guidance: number;
+  } | null>(null);
   const [seed, setSeed] = useState("");
   // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
   const [resolutionIdx, setResolutionIdx] = useState(0);
@@ -1108,9 +1118,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
     const recommended =
-      defaultSteps != null && defaultGuidance != null
+      pendingModelDefaults ??
+      (defaultSteps != null && defaultGuidance != null
         ? { steps: defaultSteps, guidance: defaultGuidance }
-        : defaultsFor(presetRepoId);
+        : defaultsFor(presetRepoId));
     const defaultDuration = familyDefaultFrames
       ? durationOptions[
           closestDurationIndex(durationOptions, familyDefaultFrames / fps)
@@ -1128,7 +1139,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       flowShift: defaultFlowShift,
       audioFlowShift: defaultAudioFlowShift,
     };
-  }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const resolutionIndex = closestResolutionIndex(
@@ -1178,24 +1189,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     applyParams: applyVideoPresetParams,
     normalizeParams: normalizeVideoPresetParams,
   });
-  const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
-  const applyVideoModelDefaults = useCallback(
-    (repoId: string) => {
-      const recommended = defaultsFor(repoId);
-      const rollback = applyVideoDynamicDefault({
-        steps: recommended.steps,
-        guidance: recommended.guidance,
-      });
-      const revert = quantRevert.current;
-      if (rollback && revert) {
-        revert.presetDefaultRollback = chainDynamicDefaultRollback(
-          revert.presetDefaultRollback,
-          rollback,
-        );
-      }
-    },
-    [applyVideoDynamicDefault],
-  );
+  const applyVideoModelDefaults = useCallback((repoId: string) => {
+    const recommended = defaultsFor(repoId);
+    setPendingModelDefaults(recommended);
+    setSteps(recommended.steps);
+    setGuidance(recommended.guidance);
+    const revert = quantRevert.current;
+    if (revert) {
+      revert.appliedSteps = recommended.steps;
+      revert.appliedGuidance = recommended.guidance;
+    }
+  }, []);
 
   useEffect(() => {
     setResolutionIdx((current) => {
@@ -1232,32 +1236,29 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   useEffect(() => {
     const familyChanged = loadedFamily !== prevFamilyRef.current;
     prevFamilyRef.current = loadedFamily;
+    // A newly loaded family brings its own default clip length; without this the pre-load fallback
+    // sticks and every default run is a ~1s clip. Intent moves with it, so the recipe a preset is
+    // compared against and the frame count generation sends never disagree.
+    if (familyChanged && loadedFamily && familyDefaultFrames) {
+      const option =
+        durationOptions[
+          closestDurationIndex(durationOptions, familyDefaultFrames / fps)
+        ];
+      if (option) {
+        setDurationIntentSeconds(option.seconds);
+        setNumFrames(option.frames);
+        return;
+      }
+    }
     setNumFrames((cur) => {
-      // A newly loaded family brings its own default clip length; without this the pre-load fallback sticks and every default run is a ~1s clip.
-      if (
-        familyChanged &&
-        loadedFamily &&
-        familyDefaultFrames &&
-        videoPresets.isDefaultUnmodifiedRef.current
-      ) {
-        // The loaded-model effect below applies the complete dynamic Default recipe in one batch.
-        return cur;
-      }
-      if (familyChanged) {
-        return (
-          durationOptions[
-            closestDurationIndex(durationOptions, durationIntentSeconds)
-          ]?.frames ?? cur
-        );
-      }
-      if (durationOptions.some((o) => o.frames === cur)) return cur;
+      if (!familyChanged && durationOptions.some((o) => o.frames === cur)) return cur;
       return (
         durationOptions[
           closestDurationIndex(durationOptions, durationIntentSeconds)
         ]?.frames ?? cur
       );
     });
-  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, loadedFamily, videoPresets.isDefaultUnmodifiedRef]);
+  }, [durationIntentSeconds, durationOptions, familyDefaultFrames, fps, loadedFamily]);
 
   // Seed steps/guidance from the loaded model's backend defaults: on mount with a model already loaded only refreshStatus runs, so the
   // controls would stick at the pre-load DEFAULT_GEN and a base checkpoint wanting 40/4 generates a degraded clip. Keyed on the resolved
@@ -1270,17 +1271,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
     prevLoadedModelRef.current = loadedModelKey;
     if (modelChanged && loadedModelKey && defaultSteps != null && defaultGuidance != null) {
-      applyVideoDynamicDefault({
-        width: videoDefaultRecipe.width,
-        height: videoDefaultRecipe.height,
-        durationSeconds: videoDefaultRecipe.durationSeconds,
-        steps: videoDefaultRecipe.steps,
-        guidance: videoDefaultRecipe.guidance,
-        flowShift: videoDefaultRecipe.flowShift,
-        audioFlowShift: videoDefaultRecipe.audioFlowShift,
-      });
+      // Status is the authority now, so the recipe a pick claimed has served its purpose.
+      setPendingModelDefaults(null);
+      setSteps(defaultSteps);
+      setGuidance(defaultGuidance);
+      setFlowShift(defaultFlowShift);
+      setAudioFlowShift(defaultAudioFlowShift);
     }
-  }, [applyVideoDynamicDefault, defaultGuidance, defaultSteps, loadedModelKey, videoDefaultRecipe]);
+  }, [
+    defaultAudioFlowShift,
+    defaultFlowShift,
+    defaultGuidance,
+    defaultSteps,
+    loadedModelKey,
+  ]);
 
   const canPickAudioFlowShift = status?.defaults?.supports_audio_flow_shift === true;
 
@@ -2352,7 +2356,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const isCurrent = () => isMounted.current && pickGuard.holds(token);
-      const revert: PickRevert = quantRevert.current ?? { prev: quant };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
         resolve: () =>
@@ -2553,7 +2557,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // Registers its own rollback like every other branch. Leaving the previous pick's entry in
         // place would let that older staged download, on cancelling, revert to state from before it
         // -- over a selection this pick already replaced -- and leave this one with no rollback.
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(null);
         // The distilled variant lives in the checkpoint name, not the repo id, so include the filename when seeding defaults.
@@ -2583,7 +2587,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         // Include the picked filename: the variant (distilled vs dev) lives there, not in the repo id.
@@ -2619,7 +2623,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           );
           return;
         }
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         applyVideoModelDefaults(id);
@@ -2637,7 +2641,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const revert: PickRevert = quantRevert.current ?? { prev: quant };
+        const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
         quantRevert.current = revert;
         setQuant(filename);
         applyVideoModelDefaults(id);
@@ -2669,7 +2673,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
       // older staged download revert over a selection this pick already replaced.
-      const revert: PickRevert = quantRevert.current ?? { prev: quant };
+      const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
       applyVideoModelDefaults(id);
