@@ -11498,11 +11498,14 @@ def _check_signal_escape_patterns(code: str):
         if method_name in _HF_OPERATIONS_KWARG:
             # Both take the operation list as the 2nd positional param.
             ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
-            operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
-            # Scan every keyword before resolving: a `**kwargs` splat can smuggle
-            # the operations (or a token) in, and it may sit after `operations=`.
+            # Scan every argument before resolving: a `*args` / `**kwargs` splat can
+            # smuggle the operations (or a token) in, and either may sit after
+            # `operations=`, so a positional lookup alone would miss it.
+            if any(isinstance(a, ast.Starred) for a in node.args or []):
+                return _HF_UPLOAD_PATH_VIOLATION
             if any(kw.arg is None for kw in node.keywords or []):
                 return _HF_UPLOAD_PATH_VIOLATION
+            operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
             for kw in node.keywords or []:
                 if kw.arg == ops_kwarg:
                     operations_node = kw.value
@@ -11525,12 +11528,16 @@ def _check_signal_escape_patterns(code: str):
             # rebind, and they were refused before this gate existed anyway.
             # CommitOperationAdd(path_in_repo, path_or_fileobj) -- either can be
             # positional, so every positional arg must be a sandbox-local literal.
+            # Any other keyword must be a plain literal: a computed one still reads
+            # the file (path_in_repo=open('x').read()) and ships it to the Hub.
             path_nodes = list(node.args or [])
             for kw in node.keywords or []:
                 if kw.arg is None:
                     return _HF_UPLOAD_PATH_VIOLATION
                 if kw.arg == "path_or_fileobj":
                     path_nodes.append(kw.value)
+                elif not isinstance(kw.value, ast.Constant):
+                    return _HF_UPLOAD_PATH_VIOLATION
             if not path_nodes:
                 return _HF_UPLOAD_PATH_VIOLATION
             for p in path_nodes:

@@ -1727,6 +1727,30 @@ class TestHfUploadSandboxLocalPaths:
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
+    def test_create_commit_positional_args_splat_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "args = ['r', [CommitOperationAdd('x', '/etc/passwd')]]\n"
+            "huggingface_hub.HfApi().create_commit(*args)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_operation_computed_path_in_repo_blocked(self):
+        # The read path is safe, but path_in_repo is computed and its value is
+        # sent to the Hub, so the file contents leak through the repo path.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(\n"
+            "    path_or_fileobj='safe.bin',\n"
+            "    path_in_repo=open('/etc/machine-id').read().strip())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
     def test_shadowed_no_read_constructor_blocked(self):
         # A local def can rebind CommitOperationDelete to return an Add.
         _blocked(
