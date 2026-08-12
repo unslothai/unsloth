@@ -193,8 +193,7 @@ def test_commented_mention_is_not_a_host(tmp_path, mention):
         "jobs:\n"
         "  build:\n"
         "    runs-on: ubuntu-latest\n"
-        "    steps:\n" + mention +
-        "      - run: echo hi\n"
+        "    steps:\n" + mention + "      - run: echo hi\n"
     )
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
@@ -243,9 +242,7 @@ def _pattern_matches(pattern: str, path: str) -> bool:
         candidates.append(path)
     if not anchored:
         candidates += [
-            "/".join(segments[j:i])
-            for i in range(1, len(segments) + 1)
-            for j in range(1, i)
+            "/".join(segments[j:i]) for i in range(1, len(segments) + 1) for j in range(1, i)
         ]
     return any(fnmatch.fnmatch(c, body) for c in candidates)
 

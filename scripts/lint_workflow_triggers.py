@@ -199,12 +199,10 @@ def main() -> int:
                 for job, step in lint_steps
             ):
                 problems.append(
-                    "its lint step is continue-on-error, so findings cannot "
-                    "fail the run"
+                    "its lint step is continue-on-error, so findings cannot fail the run"
                 )
             if any(
-                job.get("if") is not None or step.get("if") is not None
-                for job, step in lint_steps
+                job.get("if") is not None or step.get("if") is not None for job, step in lint_steps
             ):
                 problems.append(
                     "its lint step is gated by an 'if:' condition, so the gate "
