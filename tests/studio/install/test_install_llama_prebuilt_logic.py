@@ -3993,7 +3993,7 @@ def test_setup_scripts_unexpected_exit_branch_never_sets_source_build():
     assert "setup_fail 1" in sh_else
     assert "prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS)" in sh_else
     # Only exit 2 under automatic selection may queue a source build. Exit 5 is
-    # a concrete unavailable request and fails closed in its dedicated branch.
+    # a concrete unavailable or failed request and fails closed.
     assert sh_block.count("_NEED_LLAMA_SOURCE_BUILD=true") == 1
     assert 'elif [ "$_PREBUILT_STATUS" -eq 5 ]; then' in sh_block
     assert 'elif [ "$_PREBUILT_STATUS" -eq 2 ]; then' in sh_block

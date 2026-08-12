@@ -5644,13 +5644,13 @@ if ($LocalLlamaCppLinked) {
                 Exit-SetupFailure "$explicitLlamaBackend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
             }
         } elseif ($prebuiltExit -eq 5) {
-            step "llama.cpp" "requested backend is unavailable" "Red"
+            step "llama.cpp" "selected backend could not be installed" "Red"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Choose a backend published for this machine or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
-            Exit-SetupFailure "The requested llama.cpp backend is unavailable, so the installer will not substitute a different source backend."
+            substep "Check the error above, choose another backend, or retry" "Yellow"
+            Exit-SetupFailure "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
         } elseif ($prebuiltExit -eq 2) {
             step "llama.cpp" "prebuilt install failed" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput

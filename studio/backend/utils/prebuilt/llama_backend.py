@@ -96,6 +96,29 @@ def environment_backend_override(primary: Any, legacy_vulkan: Any) -> Optional[s
     return None
 
 
+def marker_satisfies_backend_option(
+    marker: Optional[Mapping[str, Any]], backend_request: Any, option: Optional[Mapping[str, Any]]
+) -> bool:
+    """Whether a marker is one of the installable outcomes for an option."""
+    request = normalize_backend_request(backend_request)
+    if not marker or request is None or not option or not option.get("available"):
+        return False
+    resolved_backend = normalize_backend(option.get("resolved_backend"))
+    if resolved_backend is None:
+        return False
+    if marker_backend_request(marker) != request or marker_backend(marker) != resolved_backend:
+        return False
+
+    option_assets = option.get("acceptable_assets")
+    if not isinstance(option_assets, list):
+        option_assets = []
+    acceptable_assets = {asset for asset in option_assets if isinstance(asset, str) and asset}
+    asset = option.get("asset")
+    if isinstance(asset, str) and asset:
+        acceptable_assets.add(asset)
+    return marker.get("asset") in acceptable_assets
+
+
 def backend_from_asset_name(asset: Any) -> Optional[str]:
     """Infer the backend for a marker that predates the backend field."""
     if not isinstance(asset, str) or not asset:

@@ -274,6 +274,27 @@ def test_macos_backend_resolver_only_offers_automatic_metal(monkeypatch):
     assert payload["backends"][0]["resolved_backend"] == "metal"
 
 
+def test_selection_payload_reports_every_acceptable_candidate():
+    primary = _choice("linux-cuda", "cuda13.tar.gz")
+    fallback = _choice("linux-cuda", "cuda12.tar.gz")
+    selection = SimpleNamespace(
+        choice = primary,
+        published_repo = FORK,
+        release_plans = [
+            SimpleNamespace(
+                release_tag = "b9925",
+                llama_tag = "b9925",
+                attempts = [primary, fallback],
+            )
+        ],
+    )
+
+    payload = ilp._selection_payload(selection)
+
+    assert payload["asset"] == "cuda13.tar.gz"
+    assert payload["acceptable_assets"] == ["cuda13.tar.gz", "cuda12.tar.gz"]
+
+
 def test_explicit_rocm_reprobes_and_suppresses_cuda_on_a_mixed_host(monkeypatch):
     automatic_host = ilp.HostInfo(
         system = "Linux",
@@ -563,6 +584,31 @@ def test_a_named_backend_this_host_cannot_serve_fails_instead(monkeypatch, tmp_p
     # Both the UI and setup need a specific fail-closed result.
     assert raised.value.code == ilp.EXIT_BACKEND_UNAVAILABLE
     assert seen == ["vulkan"]
+
+
+@pytest.mark.parametrize(
+    "backend_request,expected_exit",
+    [("cpu", ilp.EXIT_BACKEND_UNAVAILABLE), ("auto", ilp.EXIT_FALLBACK)],
+)
+def test_only_automatic_selection_can_source_fallback_after_candidate_failure(
+    monkeypatch, tmp_path, backend_request, expected_exit
+):
+    _stub_selection(monkeypatch, available = {backend_request}, install_kind = "linux-cpu")
+    _marker(tmp_path, backend = "cpu", backend_request = backend_request)
+    monkeypatch.setattr(ilp, "existing_install_matches_plan", lambda *a, **k: False)
+    monkeypatch.setattr(ilp, "diffusion_visual_server_backfill_needed", lambda *a, **k: False)
+    monkeypatch.setattr(ilp, "resolve_validation_model", lambda probe: probe)
+    monkeypatch.setattr(
+        ilp,
+        "validate_prebuilt_attempts",
+        lambda *a, **k: (_ for _ in ()).throw(ilp.PrebuiltFallback("candidate failed")),
+    )
+    monkeypatch.setattr(ilp, "collect_system_report", lambda *a, **k: "report")
+
+    with pytest.raises(SystemExit) as raised:
+        ilp.install_prebuilt(tmp_path, "latest", FORK, "")
+
+    assert raised.value.code == expected_exit
 
 
 def test_backend_unavailable_uses_the_prebuilt_rollback_path():

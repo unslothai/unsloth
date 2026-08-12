@@ -55,6 +55,7 @@ from utils.prebuilt.llama_backend import (
     environment_backend_override,
     marker_backend,
     marker_backend_request,
+    marker_satisfies_backend_option,
     normalize_backend,
 )
 
@@ -64,7 +65,7 @@ DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
 # install_llama_prebuilt.py EXIT_NO_SPACE: out of disk, retrying will not help.
 _EXIT_NO_SPACE = 4
-# The requested backend has no bundle for this host.
+# A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
 
 
@@ -476,18 +477,8 @@ def _env_backend_override() -> Optional[str]:
 def _resolved_selection_applied(
     marker: Optional[dict], backend_request: Optional[str], option: Optional[dict]
 ) -> bool:
-    """Whether the installed bundle is the exact result of this resolution."""
-    if not marker or not option or not option.get("available"):
-        return False
-    resolved_backend = normalize_backend(option.get("resolved_backend"))
-    resolved_asset = option.get("asset")
-    return (
-        marker_backend_request(marker) == backend_request
-        and marker_backend(marker) == resolved_backend
-        and isinstance(resolved_asset, str)
-        and bool(resolved_asset)
-        and marker.get("asset") == resolved_asset
-    )
+    """Whether the installed bundle satisfies this resolved option."""
+    return marker_satisfies_backend_option(marker, backend_request, option)
 
 
 def _whisper_pairing_applied(
@@ -736,7 +727,7 @@ def _run_llama_phase(
             )
             logger.warning("llama update: backend unavailable", backend = failed_backend)
             raise _LlamaPhaseError(
-                f"No {backend_label} llama.cpp build is published for this machine. "
+                f"Could not install the {backend_label} llama.cpp build on this machine. "
                 "The installed backend was kept.",
                 reload_required = model_was_active,
             ) from exc

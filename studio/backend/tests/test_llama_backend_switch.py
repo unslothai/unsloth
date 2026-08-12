@@ -207,7 +207,7 @@ def test_a_backend_with_no_build_here_is_reported_by_name(monkeypatch, tmp_path)
     job = _await_job()
 
     assert job["state"] == "error"
-    assert "No rocm llama.cpp build is published for this machine" in job["error"]
+    assert "Could not install the rocm llama.cpp build on this machine" in job["error"]
 
 
 @pytest.mark.parametrize(
@@ -245,7 +245,7 @@ def test_update_failure_names_the_environment_pinned_backend(
     job = _await_job()
 
     assert job["state"] == "error"
-    assert f"No {expected} llama.cpp build is published for this machine" in job["error"]
+    assert f"Could not install the {expected} llama.cpp build on this machine" in job["error"]
 
 
 def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
@@ -540,6 +540,22 @@ def test_status_reports_when_the_resolved_asset_has_changed(monkeypatch, tmp_pat
     assert status["backend"] == "cuda"
     assert status["backend_request"] == "cuda"
     assert status["selection_applied"] is False
+
+
+def test_status_accepts_a_successfully_installed_fallback_candidate(monkeypatch, tmp_path):
+    fallback = "app-b9596-mix-abc-linux-x64-cuda12-fallback.tar.gz"
+    marker = {"asset": fallback, "backend": "cuda", "backend_request": "cuda"}
+    option = {
+        "available": True,
+        "resolved_backend": "cuda",
+        "asset": "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
+        "acceptable_assets": [
+            "app-b9596-mix-abc-linux-x64-cuda13.tar.gz",
+            fallback,
+        ],
+    }
+
+    assert upd._resolved_selection_applied(marker, "cuda", option) is True
 
 
 def test_status_reports_a_pending_slim_whisper_repair(monkeypatch, tmp_path):

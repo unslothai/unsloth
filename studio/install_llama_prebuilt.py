@@ -77,7 +77,7 @@ EXIT_FALLBACK = 2
 EXIT_ERROR = 1
 EXIT_BUSY = 3
 EXIT_NO_SPACE = 4
-# The requested backend has no published bundle for this host.
+# A concrete backend selection could not be satisfied.
 EXIT_BACKEND_UNAVAILABLE = 5
 
 # Every gfx a Windows AMD host can be served: ggml-org release.yml windows-hip GPU_TARGETS
@@ -7480,6 +7480,7 @@ def install_prebuilt(
             # alongside resolver bugs. ENOSPC still reaches EXIT_NO_SPACE via
             # _environment_fatal_reason in __main__.
             def _select(requested_backend: str | None) -> BackendSelection:
+                nonlocal host
                 # Routing is deliberately outside the conversion below: it makes no
                 # network call, so letting it be caught here would report a bug in
                 # host detection as a release-listing failure and source build over
@@ -7492,6 +7493,7 @@ def install_prebuilt(
                     override_rocm_gfx = override_rocm_gfx,
                     cpu_mechanism = force_cpu,
                 )
+                host = route.host
                 try:
                     return select_backend_install(
                         backend = route.backend,
@@ -7672,7 +7674,14 @@ def install_prebuilt(
             log(f"prebuilt install failed: {fatal}")
             _log_disk_space_help()
             raise SystemExit(EXIT_NO_SPACE) from exc
-        log("prebuilt install path failed; falling back to source build")
+        preserve_backend = (isinstance(exc, BackendUnavailable) and backend_mandatory) or (
+            backend in CONCRETE_BACKENDS and host is not None and not host.is_macos
+        )
+        log(
+            "prebuilt install failed; preserving the selected backend"
+            if preserve_backend
+            else "prebuilt install path failed; falling back to source build"
+        )
         log(f"prebuilt fallback reason: {exc}")
         # Diagnostics must never change the verdict: a probe that raises here
         # would replace the fallback with EXIT_ERROR, which never source builds.
@@ -7681,8 +7690,11 @@ def install_prebuilt(
                 print(collect_system_report(host, choice, install_dir))
         except Exception as report_exc:
             log(f"system report unavailable: {report_exc}")
-        if isinstance(exc, BackendUnavailable) and backend_mandatory:
-            # Setup must not replace a concrete request with an auto-detected build.
+        if preserve_backend:
+            # A concrete choice must not become a hardware-selected source build.
+            log(
+                f"the {backend} backend selection was preserved; source fallback was not started"
+            )
             raise SystemExit(EXIT_BACKEND_UNAVAILABLE) from exc
         raise SystemExit(EXIT_FALLBACK) from exc
 
@@ -7884,6 +7896,7 @@ def _selection_payload(selection: BackendSelection) -> dict[str, Any]:
         "asset": choice.name,
         "install_kind": choice.install_kind,
         "backend": backend_for_install_kind(choice.install_kind),
+        "acceptable_assets": [attempt.name for attempt in plan.attempts],
     }
 
 

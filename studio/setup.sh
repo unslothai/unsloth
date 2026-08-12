@@ -2218,14 +2218,14 @@ else
             setup_fail 1 "$_explicit_llama_backend was explicitly requested, so the installer will not keep an unverified existing llama.cpp backend."
         fi
     elif [ "$_PREBUILT_STATUS" -eq 5 ]; then
-        step "llama.cpp" "requested backend is unavailable" "$C_ERR"
+        step "llama.cpp" "selected backend could not be installed" "$C_ERR"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        substep "choose a backend published for this machine or unset UNSLOTH_LLAMA_CPP_BACKEND"
-        setup_fail 1 "The requested llama.cpp backend is unavailable, so the installer will not substitute a different source backend."
+        substep "check the error above, choose another backend, or retry"
+        setup_fail 1 "The selected llama.cpp backend could not be installed, so the installer will not substitute a different source backend."
     elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
