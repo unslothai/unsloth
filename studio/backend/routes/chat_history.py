@@ -63,7 +63,6 @@ logger = get_logger(__name__)
 def _chat_history_storage_disabled() -> bool:
     try:
         from utils.no_chat_history_settings import get_no_chat_history_enabled
-
         return get_no_chat_history_enabled()
     except Exception:
         return False

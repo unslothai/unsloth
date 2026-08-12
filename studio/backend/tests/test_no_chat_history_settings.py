@@ -19,14 +19,14 @@ from routes import chat_history, settings as settings_route
 from utils import no_chat_history_settings
 
 
-def _install_fake_studio_db(monkeypatch, *, stored=None):
+def _install_fake_studio_db(monkeypatch, *, stored = None):
     storage_pkg = types.ModuleType("storage")
     studio_db = types.ModuleType("storage.studio_db")
     values: dict[str, object] = {}
     if stored is not None:
         values[no_chat_history_settings.NO_CHAT_HISTORY_SETTING_KEY] = stored
 
-    def get_app_setting(key, fallback=None):
+    def get_app_setting(key, fallback = None):
         return values.get(key, fallback)
 
     def upsert_app_settings(settings):
@@ -41,14 +41,14 @@ def _install_fake_studio_db(monkeypatch, *, stored=None):
 
 
 def test_no_chat_history_defaults_off_when_setting_missing(monkeypatch):
-    monkeypatch.delenv(no_chat_history_settings.NO_CHAT_HISTORY_ENV, raising=False)
+    monkeypatch.delenv(no_chat_history_settings.NO_CHAT_HISTORY_ENV, raising = False)
     _install_fake_studio_db(monkeypatch)
 
     assert no_chat_history_settings.get_no_chat_history_enabled() is False
 
 
 def test_no_chat_history_env_forces_enabled(monkeypatch):
-    _install_fake_studio_db(monkeypatch, stored=False)
+    _install_fake_studio_db(monkeypatch, stored = False)
     monkeypatch.setenv(no_chat_history_settings.NO_CHAT_HISTORY_ENV, "true")
 
     assert no_chat_history_settings.get_no_chat_history_enabled() is True
@@ -57,11 +57,11 @@ def test_no_chat_history_env_forces_enabled(monkeypatch):
 
 def test_settings_route_persists_no_chat_history_toggle(monkeypatch):
     values = _install_fake_studio_db(monkeypatch)
-    monkeypatch.delenv(no_chat_history_settings.NO_CHAT_HISTORY_ENV, raising=False)
+    monkeypatch.delenv(no_chat_history_settings.NO_CHAT_HISTORY_ENV, raising = False)
 
     response = settings_route.update_no_chat_history(
-        settings_route.NoChatHistoryPayload(enabled=True),
-        current_subject="test-user",
+        settings_route.NoChatHistoryPayload(enabled = True),
+        current_subject = "test-user",
     )
 
     assert response.enabled is True
@@ -76,8 +76,8 @@ def test_settings_route_rejects_toggle_when_env_locked(monkeypatch):
 
     with pytest.raises(Exception):
         settings_route.update_no_chat_history(
-            settings_route.NoChatHistoryPayload(enabled=False),
-            current_subject="test-user",
+            settings_route.NoChatHistoryPayload(enabled = False),
+            current_subject = "test-user",
         )
 
 
@@ -88,7 +88,7 @@ def test_list_threads_returns_empty_when_history_disabled(monkeypatch):
         lambda: True,
     )
 
-    response = chat_history.list_threads(current_subject="test-user")
+    response = chat_history.list_threads(current_subject = "test-user")
 
     assert response.threads == []
 
@@ -103,11 +103,11 @@ def test_save_thread_rejects_when_history_disabled(monkeypatch):
     with pytest.raises(Exception) as exc:
         chat_history.save_thread(
             chat_history.ChatThread(
-                id="thread-1",
-                modelType="base",
-                createdAt=1,
+                id = "thread-1",
+                modelType = "base",
+                createdAt = 1,
             ),
-            current_subject="test-user",
+            current_subject = "test-user",
         )
 
     assert exc.value.status_code == 403

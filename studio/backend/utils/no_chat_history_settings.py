@@ -39,7 +39,6 @@ def get_no_chat_history_enabled() -> bool:
         return True
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(NO_CHAT_HISTORY_SETTING_KEY, None)
     except Exception:
         stored = None
