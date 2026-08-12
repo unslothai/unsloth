@@ -134,3 +134,27 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
     true,
   );
 });
+
+test("a custom OpenAI-compatible provider gets the family cap for a known model id", () => {
+  // A custom connection resolves to the legacy "custom" provider type, which
+  // matches no row in the cap table, so every model behind it used to fall back
+  // to the generic 32k even when the id names a family we have a cap for.
+  assert.equal(getExternalMaxOutputTokens("custom", "deepseek-v4-flash"), 384000);
+  assert.equal(getExternalMaxOutputTokens("custom", "deepseek-chat"), 384000);
+  assert.equal(getExternalMaxOutputTokens("custom", "gpt-5.5"), 128000);
+  assert.equal(getExternalMaxOutputTokens("custom", "claude-opus-5"), 128000);
+  assert.equal(getExternalMaxOutputTokens("custom", "gemini-3-pro"), 65536);
+});
+
+test("a custom provider serving an unknown model still gets the generic cap", () => {
+  assert.equal(getExternalMaxOutputTokens("custom", "my-finetune-v1"), 32768);
+  assert.equal(getExternalMaxOutputTokens("custom", ""), 32768);
+});
+
+test("first-party providers still gate on their own provider type", () => {
+  // deepseek's 384k row must not leak into another provider that happens to
+  // serve a similarly named model.
+  assert.equal(getExternalMaxOutputTokens("openai", "deepseek-v4-flash"), 32768);
+  assert.equal(getExternalMaxOutputTokens("anthropic", "gpt-5.5"), 32768);
+  assert.equal(getExternalMaxOutputTokens("gemini", "claude-opus-5"), 32768);
+});

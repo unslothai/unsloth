@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { providerModelSupportsStudioTools } from "./external-providers";
+import {
+  LEGACY_CUSTOM_PROVIDER_TYPE,
+  providerModelSupportsStudioTools,
+} from "./external-providers";
 
 /**
  * Per-provider sampling parameter capability matrix.
@@ -156,8 +159,15 @@ export function getExternalMaxOutputTokens(
         : providerType;
   if (effectiveProvider === "openai_codex") return 128000;
 
+  // A custom OpenAI-compatible connection has no provider of its own, so the
+  // model id is the only signal there is. Matching it against every family the
+  // way an OpenRouter id is mapped beats falling back to the generic cap for a
+  // model we do know: `deepseek-v4-flash` behind a custom endpoint is still a
+  // DeepSeek model.
+  const matchOnModelIdAlone = effectiveProvider === LEGACY_CUSTOM_PROVIDER_TYPE;
+
   for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
-    if (entry.providerType !== effectiveProvider) continue;
+    if (!matchOnModelIdAlone && entry.providerType !== effectiveProvider) continue;
     if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
       return entry.cap;
     }
