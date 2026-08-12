@@ -5720,6 +5720,150 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
+# What an unreadable remote drafter costs the guard. Sized to the largest drafter
+# class Studio knows of (a DSpark sidecar is about 11 GB) rather than a typical one,
+# since --spec-draft-hf names any repo and over-estimating is this guard's direction.
+# Only reached when the listing cannot be read, where llama-server may still open the
+# repo from the local HF cache and make every one of those bytes resident.
+_REMOTE_DRAFTER_RESERVE_BYTES = 12 * 1024**3
+
+
+def _split_hf_draft_spec(spec: str) -> tuple[Optional[str], str]:
+    """``<user>/<model>[:quant]`` -> (repo id, lowercased narrowing hint).
+
+    llama.cpp's common_download_split_repo_tag splits the value on ':', keeps the
+    tail as the quant tag and then requires the head to be exactly
+    ``<user>/<model>``, so that is the shape a listing can be asked for. A
+    trailing ``/<file>.gguf`` is not that shape and llama.cpp rejects it, but it
+    is a common way to write the flag, and reading the repo out of it prices a
+    real download instead of falling straight to the flat reserve. Repo None when
+    nothing repo-shaped is left, which the caller charges as the reserve.
+    """
+    repo, sep, tag = (spec or "").strip().partition(":")
+    parts = [p for p in repo.split("/") if p]
+    hint = tag.strip().lower() if sep else ""
+    if len(parts) > 2 and parts[-1].lower().endswith(".gguf"):
+        hint = parts[-1].lower()
+        parts = parts[:2]
+    if len(parts) != 2:
+        return None, ""
+    return "/".join(parts), hint
+
+
+def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
+    """Bytes to charge for a drafter named as an HF repo (--spec-draft-hf/-hfd).
+
+    llama-server downloads that repo and loads the drafter out of it exactly as
+    it does the target model, so it is resident VRAM, but there is no local file
+    to stat before the load and the target repository's own listing says nothing
+    about it. Bounded rather than picked, for the reason dflash_budget_bytes
+    documents and with its arithmetic: which file the fetch lands on is not
+    knowable from a listing, so the largest WHOLE shard set is the answer a
+    listing can give, and a split set is charged as the set because llama-server
+    maps every shard.
+
+    Any failure -- no network, gated repo, malformed id, a repo listing no GGUF
+    -- falls back to the flat reserve. This guard protects a running training
+    job, so an unreadable listing must not become a silent charge of zero for a
+    drafter the launch is certainly going to bring in.
+    """
+    repo, hint = _split_hf_draft_spec(spec)
+    if not repo:
+        return _REMOTE_DRAFTER_RESERVE_BYTES
+    try:
+        from core.inference.llama_cpp import _gguf_extra_shards
+        from huggingface_hub import model_info
+        from utils.models.drafters import dflash_budget_bytes, split_listing_is_complete
+
+        info = model_info(repo, token = hf_token, files_metadata = True)
+        sizes: dict[str, int] = {}
+        for sibling in info.siblings or []:
+            name = sibling.rfilename or ""
+            if not Path(name).name.lower().endswith(".gguf"):
+                continue
+            sizes[name] = getattr(sibling, "size", 0) or 0
+        if hint:
+            # llama.cpp's own narrowing: bounding over the rest of the repo would
+            # charge an F16 for a Q4 drafter. A tag matching nothing has told us
+            # nothing (repos label quants inconsistently), so every candidate returns.
+            # Matched on the full relative name, or the quant-subdirectory layout
+            # (Q4_K_M/model.gguf) restores every quant and charges the F16.
+            matched = {n: s for n, s in sizes.items() if hint in n.lower()}
+            sizes = matched or sizes
+        # require_full_sizes: a partially sized family would be charged its known
+        # shards, and the cache measurement then the reserve both beat a partial sum.
+        bounded = dflash_budget_bytes(sizes, _gguf_extra_shards, require_full_sizes = True)
+        if bounded:
+            return bounded
+        # Zero from a listing that named GGUFs means one of two things. Every family
+        # is an incomplete split, so the fetch can load none of them and zero is right.
+        # Otherwise a family does load and the listing did not say how big, which is
+        # the cache-then-reserve case below, not a free load.
+        if sizes and not any(split_listing_is_complete(sizes, name) for name in sizes):
+            return 0
+    except Exception as e:
+        logger.warning(f"Could not size remote drafter repo {spec}: {e}")
+    # An unreadable listing is usually a repo already in the local HF cache, which is
+    # what lets llama-server open it with the Hub down. Measure it: --spec-draft-hf
+    # takes any repo, so a 30 GB GGUF is a legal value and the flat reserve undercounts.
+    cached = _cached_repo_gguf_bytes(repo, hint)
+    if cached:
+        return cached
+    # Neither listable nor cached: llama-server would download it over the Hub that
+    # just refused us, so the reserve is a cushion, not a bound on resident bytes.
+    return _REMOTE_DRAFTER_RESERVE_BYTES
+
+
+def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
+    """Largest whole GGUF shard set already on disk for ``repo``, else 0.
+
+    Same bound as the listing path, taken from the local Hugging Face cache, so a
+    drafter llama-server can open offline is charged at its real size rather than
+    a class-based guess. ``hint`` narrows exactly as it does there: a repo holding
+    several quants would otherwise be charged its F16 for a :Q4_K_M request.
+    """
+    try:
+        from huggingface_hub import scan_cache_dir
+
+        from core.inference.llama_cpp import _gguf_extra_shards
+        from utils.models.drafters import dflash_budget_bytes
+
+        # The cache Studio is pointed at now, not the one huggingface_hub resolved at
+        # import: a moved cache is where the drafter that will load actually is.
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+            _cache_dir: Optional[str] = active_hf_hub_cache()
+        except Exception:
+            _cache_dir = None
+
+        sizes: dict[str, int] = {}
+        for cached_repo in scan_cache_dir(cache_dir = _cache_dir).repos:
+            if (cached_repo.repo_id or "").lower() != repo.lower():
+                continue
+            # One revision, not every snapshot on disk: llama-server resolves the ref
+            # it was asked for, so merging stale ones charges a quant replaced months
+            # ago and 409s a load that fits. Prefer the ref, else the newest.
+            revisions = list(cached_repo.revisions)
+            chosen = next(
+                (
+                    r
+                    for r in revisions
+                    if "main" in {str(x) for x in (getattr(r, "refs", None) or ())}
+                ),
+                None,
+            ) or max(revisions, key = lambda r: getattr(r, "last_modified", 0) or 0, default = None)
+            for f in getattr(chosen, "files", ()) or ():
+                name = str(f.file_name)
+                if name.lower().endswith(".gguf"):
+                    sizes[name] = max(sizes.get(name, 0), int(f.size_on_disk or 0))
+        if hint:
+            sizes = {n: b for n, b in sizes.items() if hint in n.lower()} or sizes
+        return dflash_budget_bytes(sizes, _gguf_extra_shards)
+    except Exception as e:
+        logger.warning(f"Could not measure the cached drafter repo {repo}: {e}")
+        return 0
+
+
 # Upper bound on any current tokenizer, used to rebuild the compute buffer when a
 # truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
 _ASSUMED_MAX_VOCAB = 262144
@@ -5902,19 +6046,37 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_draft_offloaded_to_cpu,
             _extra_args_mtp_draft_path,
+            _extra_args_mtp_draft_source,
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
+        # Extras owning --spec-type end _build_speculative_flags before any mode
+        # branch. On its own that keeps the conservative charge, since a drafter can
+        # still arrive by a route this cannot see.
+        _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        # An extras draft path wins whether or not they own --spec-type: the launch
+        # appends the caller's flags after Studio's, so last-wins leaves exactly one
+        # --model-draft resident. It is charged as _extras_bytes below, so charging
+        # the repository's sidecar too is a double count that 409s a load that fits.
+        _extras_own_drafter = bool(_extras_own_draft_path)
+        # -ngld 0 / --spec-draft-device cpu applies to whichever separate drafter
+        # launches, Studio's included, so none of them belongs in a VRAM budget. An
+        # embedded head ignores draft-only flags and is inside the weights anyway.
+        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
         _forced_dspark = bool(
-            _spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {})
+            (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
+            and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = _spec_mode == "auto"
+        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -5938,15 +6100,23 @@ def _estimate_gguf_required_gb(
         # DFlash: same shape as DSpark above, and Auto sizes it for the same
         # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
         # protects a running training job still has to charge for it.
-        # Extra args owning --spec-type end _build_speculative_flags before any mode
-        # branch, so neither forced nor Auto reaches the sidecar and charging it refuses
-        # a load for nothing. Extras asking for draft-dflash themselves still pay.
-        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
         _forced_dflash = bool(
-            _extra_args_requests_dflash(llama_extra_args, env = {})
-            or (_spec_mode == "dflash" and not _extra_args_own_spec)
+            (
+                _extra_args_requests_dflash(llama_extra_args, env = {})
+                or (_spec_mode == "dflash" and not _extra_args_own_spec)
+            )
+            and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
         )
-        _auto_dflash = _spec_mode == "auto" and not _extra_args_own_spec
+        # Two independent ways Auto never reaches DFlash: extras owning --spec-type
+        # return before any mode branch, and extras naming their own drafter are the
+        # drafter the loader uses instead of a discovered sidecar.
+        _auto_dflash = (
+            _spec_mode == "auto"
+            and not _extra_args_own_spec
+            and not _extras_own_drafter
+            and not _draft_pinned_to_cpu
+        )
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
@@ -5965,8 +6135,11 @@ def _estimate_gguf_required_gb(
         # which loads no drafter at all, so charging the MTP one would refuse a load
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
-        _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
-            _forced_dflash and not _dflash_capable
+        _charge_no_drafter = (
+            _draft_pinned_to_cpu
+            or _extras_own_drafter
+            or (_forced_dspark and not _dspark_capable)
+            or (_forced_dflash and not _dflash_capable)
         )
 
         def _same_file_key(p: str) -> str:
@@ -6033,14 +6206,28 @@ def _estimate_gguf_required_gb(
         # a remote repo with a local --model-draft still has to price its weights
         # through the listing, and returning the drafter alone under-estimated a
         # load by the whole target model.
+        # A remote one (--spec-draft-hf / -hfd names a repo, never a file) is charged
+        # from its OWN listing: the target's companion scan never sees it, so a target
+        # shipping no sidecar left a multi-GB drafter billed nowhere.
         _extras_bytes = 0
-        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-        if (
-            _extras_draft
-            and Path(_extras_draft).is_file()
-            and _same_file_key(str(_extras_draft)) not in _sized_keys
-        ):
-            _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
+        # The value AND which flag carried it. Draft flags are last-wins, so a repo
+        # id followed by a path leaves a path as the drafter, and pricing that path
+        # as a repository would charge a reserve for something that never loads.
+        _extras_draft, _extras_draft_is_remote = _extra_args_mtp_draft_source(
+            llama_extra_args, env = {}
+        )
+        # A host-memory drafter competes for RAM, not for the training job's VRAM.
+        # Charging it is not a safe over-estimate, it is the wrong resource, and it
+        # 409s a load that takes no VRAM for the drafter at all.
+        if _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ):
+            _extras_bytes = 0
+        elif _extras_draft and Path(_extras_draft).is_file():
+            if _same_file_key(str(_extras_draft)) not in _sized_keys:
+                _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
+        elif _extras_draft and _extras_draft_is_remote:
+            _extras_bytes = _remote_drafter_repo_bytes(str(_extras_draft), hf_token = hf_token)
+        # else: a local --model-draft that is not on disk, so no drafter loads and
+        # none is charged. A repository reserve there 409s a load over a typo.
 
         if total_bytes > 0:
             return (total_bytes + _extras_bytes) / (1024**3) + _estimate_gguf_kv_gb(
@@ -6089,8 +6276,9 @@ def _estimate_gguf_required_gb(
                 # refusal for bytes that never become resident.
                 dspark_first = _auto_dspark,
             )
-            # Plus the local --model-draft, if the caller named one: the repo
-            # listing cannot see it, and it is resident next to these weights.
+            # Plus the caller's own --model-draft / --spec-draft-hf, if they named
+            # one: this repo's listing cannot see it, local or remote, and it is
+            # resident next to these weights.
             total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
             # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
             from core.inference.llama_server_args import parse_ctx_override
