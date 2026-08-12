@@ -18,7 +18,6 @@ export const hi = {
     modelSourceAriaLabel: "मॉडल स्रोत",
     hubSectionAriaLabel: "Hub सेक्शन",
     pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
-    ejectLoadedModel: "लोड किया गया मॉडल इजेक्ट करें",
     multipleMatches:
       "एक से अधिक मेल खाते {noun} मिले। सूची में से एक चुनें।",
     rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
@@ -422,11 +421,6 @@ export const hi = {
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
-      gettingStarted: "शुरुआत करें",
-      startOnboarding: "ऑनबोर्डिंग शुरू करें",
-      startOnboardingDescription:
-        "अपना खाता बदले बिना सेटअप विज़ार्ड फिर से खोलें।",
-      startOnboardingAction: "ऑनबोर्डिंग शुरू करें",
       uploads: {
         sectionTitle: "अपलोड",
         maxUploadSize: "ट्रेनिंग डेटासेट अपलोड सीमा",
@@ -1208,24 +1202,8 @@ export const hi = {
       modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
       methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
       datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
-      hfTokenLabel: "Hugging Face टोकन",
       hfTokenDescription:
         "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
-      hfTokenGet: "टोकन प्राप्त करें",
-      hfTokenChecking: "टोकन की जाँच हो रही है…",
-      modelPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
-      trainingMethod: "ट्रेनिंग विधि",
-      trainingMethodDescription: "{model} को फ़ाइन-ट्यून करने का तरीका चुनें",
-      trainingMethodTooltip:
-        "QLoRA न्यूनतम VRAM उपयोग के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट वेट का उपयोग करता है, जबकि पूर्ण फ़ाइन-ट्यूनिंग हर वेट को अपडेट करती है।",
-      datasetPickerDescription:
-        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद डेटासेट चुनें।",
-      uploadDataset: "डेटासेट अपलोड करें",
-      uploadDatasetDescription: "CSV, JSONL, JSON और Parquet समर्थित हैं।",
-      chooseFile: "फ़ाइल चुनें",
-      format: "फ़ॉर्मैट",
-      autoDetect: "स्वतः पहचान",
       uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
       sourceBrowse: "ब्राउज़ करें",
       releaseToUpload: "अपलोड करने के लिए छोड़ें",
@@ -1392,23 +1370,6 @@ export const hi = {
     loadingRuntime: "ट्रेनिंग रनटाइम लोड हो रहा है...",
     checkingSupport: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
     backToHistory: "इतिहास पर वापस जाएं",
-    sections: {
-      model: "मॉडल",
-      dataset: "डेटासेट",
-      params: "पैरामीटर",
-      training: "ट्रेनिंग",
-      charts: "चार्ट",
-      progress: "ट्रेनिंग प्रगति",
-    },
-    configure: {
-      title: "कॉन्फ़िगर करें",
-      description: "एक मॉडल, डेटासेट, और ट्रेनिंग सेटिंग्स चुनें।",
-      startTraining: "ट्रेनिंग शुरू करें",
-      starting: "शुरू हो रहा है...",
-      loadingModel: "मॉडल लोड हो रहा है...",
-      checkingDataset: "डेटासेट जांचा जा रहा है...",
-      trainingConfig: "ट्रेनिंग कॉन्फ़िग",
-    },
     dataset: {
       selectors: {
         subset: "सबसेट",
@@ -1430,7 +1391,6 @@ export const hi = {
         manualTooLong: "128 या उससे कम वर्णों का उपयोग करें।",
         manualInvalid: "इस मान में असमर्थित वर्ण हैं।",
       },
-      source: "डेटासेट स्रोत",
       sourceAriaLabel: "डेटासेट स्रोत",
       localDataset: "स्थानीय डेटासेट",
       localDatasetRows: " / {count} पंक्तियां",
@@ -1447,8 +1407,6 @@ export const hi = {
       fileTooLarge: "फ़ाइल बहुत बड़ी है",
       fileTooLargeDescription:
         "{file} का आकार {size} है। ट्रेनिंग अपलोड की अधिकतम सीमा {limit} है।",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · अधिकतम {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "इस फ़ाइल को पहले रूपांतरित करना होगा",
         genericFile: "यह फ़ाइल",
@@ -1533,7 +1491,6 @@ export const hi = {
       uploadOneFileAtATime: "एक बार में एक फ़ाइल अपलोड करें",
       uploadSingleFileDescription:
         "ट्रेनिंग डेटासेट अपलोड एक ही फ़ाइल स्वीकार करता है।",
-      preview: "डेटासेट का पूर्वावलोकन करें",
       previewLoadingHuggingFace:
         "Hugging Face से डेटासेट पूर्वावलोकन प्राप्त किया जा रहा है...",
       previewLoading: "पूर्वावलोकन लोड हो रहा है...",
@@ -1554,8 +1511,6 @@ export const hi = {
         requiredDescription:
           "हेडर के ड्रॉपडाउन का उपयोग करके कॉलम को भूमिकाएँ दें। कम से कम {required} असाइन करें।",
       },
-      split: "स्प्लिट",
-      subset: "उपसमूह",
       s3: {
         title: "S3 कॉन्फ़िगरेशन",
         description:
@@ -1566,20 +1521,11 @@ export const hi = {
         regionPlaceholder: "us-east-1",
         prefix: "पथ प्रीफ़िक्स",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "बकेट में आपकी डेटासेट फ़ाइलों का वैकल्पिक पथ",
         accessKeyId: "एक्सेस Key ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "सीक्रेट एक्सेस Key",
         secretAccessKeyPlaceholder: "आपकी AWS सीक्रेट एक्सेस key",
         useIamRole: "IAM Role का उपयोग करें",
-        useIamRoleTooltip:
-          "एक्सेस keys के बजाय IAM role क्रेडेंशियल का उपयोग करें (EC2/SageMaker के लिए अनुशंसित)",
-        testConnection: "कनेक्शन जांचें",
-        connectionSuccess: "S3 बकेट से सफलतापूर्वक कनेक्ट हुआ",
-        connectionFailed: "S3 बकेट से कनेक्ट करने में विफल",
-        comingSoon: "S3 एकीकरण जल्द आ रहा है",
-        comingSoonDescription:
-          "S3 डेटासेट लोडिंग के लिए boto3 आवश्यक है। यह सुविधा विकासाधीन है।",
       },
     },
     params: {
@@ -1776,7 +1722,6 @@ export const hi = {
         "रन हटा दिया गया, लेकिन उसकी फ़ाइलें नहीं हटाई जा सकीं।",
       deleteArtifactsRetainedError:
         "अडैप्टर फ़ाइलें नहीं हटाई जा सकीं, इसलिए ट्रेनिंग रन को इतिहास में रखा गया है।",
-      emptyTitle: "अभी तक कोई ट्रेनिंग रन नहीं",
       emptyDescription:
         "अभी तक कोई ट्रेनिंग रन नहीं। कॉन्फ़िगर टैब में अपना पहला ट्रेनिंग रन शुरू करें।",
       loadError: "ट्रेनिंग रन लोड करने में विफल",
@@ -1789,9 +1734,6 @@ export const hi = {
       deleteTitle: "ट्रेनिंग रन हटाएं?",
       deleteDescription:
         "यह इस ट्रेनिंग रन और इसके सभी मेट्रिक्स को स्थायी रूप से हटा देगा। इस कार्रवाई को पूर्ववत नहीं किया जा सकता।",
-      runCount: "{count} रन",
-      oneRun: "1 रन",
-      resume: "फिर से शुरू करें",
       resumeTraining: "ट्रेनिंग फिर से शुरू करें",
       resuming: "फिर से शुरू हो रहा है...",
       deleteRun: "रन हटाएं",
@@ -1924,9 +1866,6 @@ export const hi = {
       dataset: "डेटासेट",
       datasetStreaming: "डेटासेट: स्ट्रीमिंग (कोई पूर्ण डाउनलोड नहीं)",
       modelWeights: "मॉडल वेट्स",
-    },
-    tour: {
-      guidedTour: "गाइडेड टूर",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

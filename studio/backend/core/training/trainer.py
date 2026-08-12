@@ -48,17 +48,14 @@ from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
-from unsloth.chat_templates import get_chat_template
 
 import json
 import threading
 import math
-import structlog
 from loggers import get_logger
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
-import pandas as pd
 from datasets import Dataset
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
@@ -239,12 +236,6 @@ class UnslothTrainer:
         self.gradient_accumulation_steps: Optional[int] = None
 
         self._lock = threading.Lock()
-
-        self.training_context = {
-            "base_model_name": None,
-            "output_dir": None,
-            "is_lora": True,
-        }
 
     def pre_detect_and_load_tokenizer(
         self,

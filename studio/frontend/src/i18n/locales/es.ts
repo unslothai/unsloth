@@ -18,7 +18,6 @@ export const es = {
     modelSourceAriaLabel: "Origen del modelo",
     hubSectionAriaLabel: "Sección del Hub",
     pickModelFile: "Elegir un archivo de modelo del disco",
-    ejectLoadedModel: "Expulsar el modelo cargado",
     multipleMatches:
       "Hay varios {noun} coincidentes. Elige uno de la lista.",
     rateLimitedTitle: "Se alcanzó el límite de solicitudes de Hugging Face",
@@ -432,11 +431,6 @@ export const es = {
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
-      gettingStarted: "Primeros pasos",
-      startOnboarding: "Iniciar la configuración inicial",
-      startOnboardingDescription:
-        "Reabre el asistente de configuración sin cambiar tu cuenta.",
-      startOnboardingAction: "Iniciar la configuración inicial",
       uploads: {
         sectionTitle: "Subidas",
         maxUploadSize: "Límite de subida del conjunto de datos de entrenamiento",
@@ -1234,25 +1228,8 @@ export const es = {
       modelTooltip: "El modelo base que quieres ajustar.",
       methodTooltip: "Cómo se entrena el modelo. LoRA y QLoRA actualizan adaptadores pequeños en lugar de todos los pesos.",
       datasetTooltip: "Los datos de entrenamiento usados para ajustar el modelo.",
-      hfTokenLabel: "Token de Hugging Face",
       hfTokenDescription:
         "Necesario para modelos y conjuntos de datos restringidos o privados.",
-      hfTokenGet: "Obtener token",
-      hfTokenChecking: "Comprobando token…",
-      modelPickerDescription:
-        "Busca en Hugging Face o elige un modelo entrenable que ya esté en este dispositivo.",
-      trainingMethod: "Método de entrenamiento",
-      trainingMethodDescription: "Elige cómo ajustar {model}",
-      trainingMethodTooltip:
-        "QLoRA utiliza cuantización de 4 bits para minimizar el uso de VRAM. LoRA utiliza pesos de 16 bits, mientras que el ajuste completo actualiza todos los pesos.",
-      datasetPickerDescription:
-        "Busca en Hugging Face o elige un conjunto de datos que ya esté en este dispositivo.",
-      uploadDataset: "Subir un conjunto de datos",
-      uploadDatasetDescription:
-        "Compatible con CSV, JSONL, JSON y Parquet.",
-      chooseFile: "Elegir un archivo",
-      format: "Formato",
-      autoDetect: "Detección automática",
       uploadLocalLabel: "O sube un archivo local",
       sourceBrowse: "Explorar",
       releaseToUpload: "Suelta para subir",
@@ -1421,24 +1398,6 @@ export const es = {
     loadingRuntime: "Cargando entorno de entrenamiento...",
     checkingSupport: "Comprobando si este equipo admite entrenamiento...",
     backToHistory: "Volver al historial",
-    sections: {
-      model: "Modelo",
-      dataset: "Conjunto de datos",
-      params: "Parámetros",
-      training: "Entrenamiento",
-      charts: "Gráficas",
-      progress: "Progreso del entrenamiento",
-    },
-    configure: {
-      title: "Configurar",
-      description:
-        "Elige un modelo, un conjunto de datos y la configuración de entrenamiento.",
-      startTraining: "Iniciar entrenamiento",
-      starting: "Iniciando...",
-      loadingModel: "Cargando modelo...",
-      checkingDataset: "Comprobando conjunto de datos...",
-      trainingConfig: "Configuración de entrenamiento",
-    },
     dataset: {
       selectors: {
         subset: "Subconjunto",
@@ -1463,7 +1422,6 @@ export const es = {
         manualTooLong: "Usa 128 caracteres o menos.",
         manualInvalid: "Este valor contiene caracteres no compatibles.",
       },
-      source: "Origen del conjunto de datos",
       sourceAriaLabel: "Origen del conjunto de datos",
       localDataset: "Conjunto de datos local",
       localDatasetRows: " / {count} filas",
@@ -1480,8 +1438,6 @@ export const es = {
       fileTooLarge: "El archivo es demasiado grande",
       fileTooLargeDescription:
         "{file} ocupa {size}. Las cargas de entrenamiento admiten hasta {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · hasta {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Este archivo debe convertirse primero",
         genericFile: "Este archivo",
@@ -1569,7 +1525,6 @@ export const es = {
       uploadOneFileAtATime: "Sube un archivo a la vez",
       uploadSingleFileDescription:
         "La subida del conjunto de datos de entrenamiento acepta un solo archivo.",
-      preview: "Vista previa del conjunto de datos",
       previewLoadingHuggingFace:
         "Obteniendo la vista previa del conjunto de datos desde Hugging Face...",
       previewLoading: "Cargando vista previa...",
@@ -1591,8 +1546,6 @@ export const es = {
         requiredDescription:
           "Asigna roles a las columnas con los menús desplegables de los encabezados. Como mínimo, asigna {required}.",
       },
-      split: "Partición",
-      subset: "Subconjunto",
       s3: {
         title: "Configuración de S3",
         description:
@@ -1603,21 +1556,11 @@ export const es = {
         regionPlaceholder: "us-east-1",
         prefix: "Prefijo de ruta",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Ruta opcional dentro del bucket hacia los archivos de tu conjunto de datos",
         accessKeyId: "ID de clave de acceso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Clave de acceso secreta",
         secretAccessKeyPlaceholder: "Tu clave de acceso secreta de AWS",
         useIamRole: "Usar rol de IAM",
-        useIamRoleTooltip:
-          "Usa credenciales de rol de IAM en lugar de claves de acceso (recomendado para EC2/SageMaker)",
-        testConnection: "Probar conexión",
-        connectionSuccess: "Conexión al bucket de S3 exitosa",
-        connectionFailed: "No se pudo conectar al bucket de S3",
-        comingSoon: "Integración con S3 próximamente",
-        comingSoonDescription:
-          "La carga de conjuntos de datos desde S3 requiere boto3. Esta función está en desarrollo.",
       },
     },
     params: {
@@ -1825,7 +1768,6 @@ export const es = {
         "Se eliminó la ejecución, pero no se pudieron borrar sus archivos.",
       deleteArtifactsRetainedError:
         "No se pudieron eliminar los archivos del adaptador, por lo que la ejecución se conservó en el historial.",
-      emptyTitle: "Aún no hay ejecuciones de entrenamiento",
       emptyDescription:
         "Aún no hay ejecuciones de entrenamiento. Inicia tu primera ejecución en la pestaña Configurar.",
       loadError: "No se pudieron cargar las ejecuciones de entrenamiento",
@@ -1839,9 +1781,6 @@ export const es = {
       deleteTitle: "¿Eliminar ejecución de entrenamiento?",
       deleteDescription:
         "Esto eliminará permanentemente esta ejecución de entrenamiento y todas sus métricas. Esta acción no se puede deshacer.",
-      runCount: "{count} ejecuciones",
-      oneRun: "1 ejecución",
-      resume: "Reanudar",
       resumeTraining: "Reanudar entrenamiento",
       resuming: "Reanudando...",
       deleteRun: "Eliminar ejecución",
@@ -1981,9 +1920,6 @@ export const es = {
       datasetStreaming:
         "Conjunto de datos: streaming (sin descarga completa)",
       modelWeights: "Pesos del modelo",
-    },
-    tour: {
-      guidedTour: "Recorrido guiado",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

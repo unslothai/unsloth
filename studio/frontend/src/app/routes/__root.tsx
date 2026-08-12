@@ -191,7 +191,7 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
+const HIDDEN_NAVBAR_ROUTES = ["/login", "/change-password"];
 
 // Fallback when no matched route declares a `staticData.title`.
 const DEFAULT_DOCUMENT_TITLE = "Unsloth";
@@ -474,7 +474,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute || pathname === "/onboarding" ? (
+      {!isAuthFlowRoute ? (
         <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
       ) : (
         content

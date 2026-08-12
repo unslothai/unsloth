@@ -237,11 +237,7 @@ def test_active_model_config_round_trips_gpu_fields():
     ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
-    for rel in (
-        "features/chat/chat-page.tsx",
-        "features/hub/catalog/sampling-settings-dialog.tsx",
-    ):
-        assert "useActiveModelConfig(" in _read(rel), rel
+    assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared

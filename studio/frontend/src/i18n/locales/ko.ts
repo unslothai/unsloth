@@ -17,7 +17,6 @@ export const ko = {
     modelSourceAriaLabel: "모델 소스",
     hubSectionAriaLabel: "Hub 섹션",
     pickModelFile: "디스크에서 모델 파일 선택",
-    ejectLoadedModel: "로드된 모델 꺼내기",
     multipleMatches:
       "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
     rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
@@ -416,11 +415,6 @@ export const ko = {
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
-      gettingStarted: "시작하기",
-      startOnboarding: "온보딩 시작",
-      startOnboardingDescription:
-        "계정을 변경하지 않고 설정 마법사를 다시 엽니다.",
-      startOnboardingAction: "온보딩 시작",
       uploads: {
         sectionTitle: "업로드",
         maxUploadSize: "학습 데이터셋 업로드 상한",
@@ -1199,25 +1193,8 @@ export const ko = {
       modelTooltip: "파인튜닝할 기본 모델입니다.",
       methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
       datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
-      hfTokenLabel: "Hugging Face 토큰",
       hfTokenDescription:
         "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
-      hfTokenGet: "토큰 받기",
-      hfTokenChecking: "토큰 확인 중…",
-      modelPickerDescription:
-        "Hugging Face를 검색하거나 이 기기에 이미 있는 학습 가능한 모델을 선택하세요.",
-      trainingMethod: "학습 방법",
-      trainingMethodDescription: "{model}을 미세 조정할 방법을 선택하세요",
-      trainingMethodTooltip:
-        "QLoRA는 VRAM 사용량을 최소화하기 위해 4비트 양자화를 사용합니다. LoRA는 16비트 가중치를 사용하며, 전체 미세 조정은 모든 가중치를 업데이트합니다.",
-      datasetPickerDescription:
-        "Hugging Face를 검색하거나 이 기기에 이미 있는 데이터셋을 선택하세요.",
-      uploadDataset: "데이터셋 업로드",
-      uploadDatasetDescription:
-        "CSV, JSONL, JSON 및 Parquet를 지원합니다.",
-      chooseFile: "파일 선택",
-      format: "형식",
-      autoDetect: "자동 감지",
       uploadLocalLabel: "또는 로컬 파일 업로드",
       sourceBrowse: "찾아보기",
       releaseToUpload: "놓으면 업로드됩니다",
@@ -1384,23 +1361,6 @@ export const ko = {
     loadingRuntime: "학습 런타임을 로딩하는 중...",
     checkingSupport: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
     backToHistory: "기록으로 돌아가기",
-    sections: {
-      model: "모델",
-      dataset: "데이터셋",
-      params: "매개변수",
-      training: "학습",
-      charts: "차트",
-      progress: "학습 진행률",
-    },
-    configure: {
-      title: "구성",
-      description: "모델, 데이터셋 및 학습 설정을 선택합니다.",
-      startTraining: "학습 시작",
-      starting: "시작 중...",
-      loadingModel: "모델을 로딩하는 중...",
-      checkingDataset: "데이터셋을 확인하는 중...",
-      trainingConfig: "학습 구성",
-    },
     dataset: {
       selectors: {
         subset: "하위 집합",
@@ -1422,7 +1382,6 @@ export const ko = {
         manualTooLong: "128자 이하로 입력하세요.",
         manualInvalid: "이 값에 지원되지 않는 문자가 포함되어 있습니다.",
       },
-      source: "데이터셋 소스",
       sourceAriaLabel: "데이터셋 소스",
       localDataset: "로컬 데이터셋",
       localDatasetRows: " / {count}행",
@@ -1439,8 +1398,6 @@ export const ko = {
       fileTooLarge: "파일이 너무 큽니다",
       fileTooLargeDescription:
         "{file}의 크기는 {size}입니다. 학습용 업로드는 최대 {limit}까지 지원합니다.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · 최대 {limit}; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "이 파일은 먼저 변환해야 합니다",
         genericFile: "이 파일",
@@ -1525,7 +1482,6 @@ export const ko = {
       uploadOneFileAtATime: "한 번에 하나의 파일만 업로드하세요",
       uploadSingleFileDescription:
         "학습 데이터셋 업로드는 단일 파일만 받습니다.",
-      preview: "데이터셋 미리보기",
       previewLoadingHuggingFace:
         "Hugging Face에서 데이터셋 미리보기를 가져오는 중...",
       previewLoading: "미리보기를 불러오는 중...",
@@ -1546,8 +1502,6 @@ export const ko = {
         requiredDescription:
           "머리글의 드롭다운을 사용해 열에 역할을 할당하세요. 최소한 {required}을(를) 할당해야 합니다.",
       },
-      split: "분할",
-      subset: "서브셋",
       s3: {
         title: "S3 구성",
         description:
@@ -1558,20 +1512,11 @@ export const ko = {
         regionPlaceholder: "us-east-1",
         prefix: "경로 접두사",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "버킷 내 데이터셋 파일에 대한 선택적 경로",
         accessKeyId: "액세스 키 ID",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "시크릿 액세스 키",
         secretAccessKeyPlaceholder: "AWS 시크릿 액세스 키",
         useIamRole: "IAM 역할 사용",
-        useIamRoleTooltip:
-          "액세스 키 대신 IAM 역할 자격 증명을 사용합니다(EC2/SageMaker에 권장).",
-        testConnection: "연결 테스트",
-        connectionSuccess: "S3 버킷에 성공적으로 연결되었습니다",
-        connectionFailed: "S3 버킷에 연결하지 못했습니다",
-        comingSoon: "S3 통합 출시 예정",
-        comingSoonDescription:
-          "S3 데이터셋 로딩에는 boto3가 필요합니다. 이 기능은 개발 중입니다.",
       },
     },
     params: {
@@ -1769,7 +1714,6 @@ export const ko = {
         "실행은 삭제되었지만 관련 파일을 제거하지 못했습니다.",
       deleteArtifactsRetainedError:
         "어댑터 파일을 삭제할 수 없어 학습 실행이 기록에 유지되었습니다.",
-      emptyTitle: "아직 학습 실행이 없습니다",
       emptyDescription:
         "아직 학습 실행이 없습니다. 구성 탭에서 첫 학습 실행을 시작하세요.",
       loadError: "학습 실행을 불러오지 못했습니다",
@@ -1782,9 +1726,6 @@ export const ko = {
       deleteTitle: "학습 실행을 삭제하시겠습니까?",
       deleteDescription:
         "이 학습 실행과 모든 지표가 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
-      runCount: "{count}개의 실행",
-      oneRun: "1개의 실행",
-      resume: "재개",
       resumeTraining: "학습 재개",
       resuming: "재개 중...",
       deleteRun: "실행 삭제",
@@ -1917,9 +1858,6 @@ export const ko = {
       dataset: "데이터셋",
       datasetStreaming: "데이터셋: 스트리밍(전체 다운로드 없음)",
       modelWeights: "모델 가중치",
-    },
-    tour: {
-      guidedTour: "가이드 투어",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

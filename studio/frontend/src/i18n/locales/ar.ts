@@ -18,7 +18,6 @@ export const ar = {
     modelSourceAriaLabel: "مصدر النموذج",
     hubSectionAriaLabel: "قسم Hub",
     pickModelFile: "اختيار ملف نموذج من القرص",
-    ejectLoadedModel: "إخراج النموذج المحمّل",
     multipleMatches:
       "توجد عدة نتائج مطابقة ضمن {noun}. اختر نتيجة من القائمة.",
     rateLimitedTitle: "تم بلوغ حد طلبات Hugging Face",
@@ -419,11 +418,6 @@ export const ar = {
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
-      gettingStarted: "البدء",
-      startOnboarding: "بدء الإعداد التمهيدي",
-      startOnboardingDescription:
-        "إعادة فتح معالج الإعداد دون تغيير حسابك.",
-      startOnboardingAction: "بدء الإعداد التمهيدي",
       uploads: {
         sectionTitle: "عمليات الرفع",
         maxUploadSize: "الحد الأقصى لحجم رفع مجموعة بيانات التدريب",
@@ -1200,24 +1194,8 @@ export const ar = {
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
       datasetTooltip: "بيانات التدريب المستخدمة لضبط النموذج.",
-      hfTokenLabel: "رمز Hugging Face",
       hfTokenDescription:
         "مطلوب للنماذج ومجموعات البيانات المقيّدة أو الخاصة.",
-      hfTokenGet: "الحصول على رمز",
-      hfTokenChecking: "جارٍ التحقق من الرمز…",
-      modelPickerDescription:
-        "ابحث في Hugging Face أو اختر نموذجًا قابلًا للتدريب موجودًا على هذا الجهاز.",
-      trainingMethod: "طريقة التدريب",
-      trainingMethodDescription: "اختر كيفية الضبط الدقيق لـ {model}",
-      trainingMethodTooltip:
-        "يستخدم QLoRA تكميم 4 بت لتقليل استخدام VRAM إلى الحد الأدنى. يستخدم LoRA أوزان 16 بت، بينما يحدّث الضبط الدقيق الكامل جميع الأوزان.",
-      datasetPickerDescription:
-        "ابحث في Hugging Face أو اختر مجموعة بيانات موجودة على هذا الجهاز.",
-      uploadDataset: "تحميل مجموعة بيانات",
-      uploadDatasetDescription: "يدعم CSV وJSONL وJSON وParquet.",
-      chooseFile: "اختيار ملف",
-      format: "التنسيق",
-      autoDetect: "اكتشاف تلقائي",
       uploadLocalLabel: "أو حمّل ملفًا محليًا",
       sourceBrowse: "استعراض",
       releaseToUpload: "أفلت للتحميل",
@@ -1383,23 +1361,6 @@ export const ar = {
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
     checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
-    sections: {
-      model: "النموذج",
-      dataset: "مجموعة البيانات",
-      params: "المعلمات",
-      training: "التدريب",
-      charts: "الرسوم البيانية",
-      progress: "تقدم التدريب",
-    },
-    configure: {
-      title: "الإعداد",
-      description: "اختر نموذجًا ومجموعة بيانات وإعدادات التدريب.",
-      startTraining: "بدء التدريب",
-      starting: "جارٍ البدء...",
-      loadingModel: "جارٍ تحميل النموذج...",
-      checkingDataset: "جارٍ التحقق من مجموعة البيانات...",
-      trainingConfig: "تكوين التدريب",
-    },
     dataset: {
       selectors: {
         subset: "المجموعة الفرعية",
@@ -1422,7 +1383,6 @@ export const ar = {
         manualTooLong: "استخدم 128 حرفًا أو أقل.",
         manualInvalid: "تحتوي هذه القيمة على أحرف غير مدعومة.",
       },
-      source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
       localDataset: "مجموعة بيانات محلية",
       localDatasetRows: " / عدد الصفوف: {count}",
@@ -1439,8 +1399,6 @@ export const ar = {
       fileTooLarge: "الملف كبير جدًا",
       fileTooLargeDescription:
         "حجم {file} هو {size}. تدعم عمليات تحميل بيانات التدريب حجمًا يصل إلى {limit}.",
-      uploadLimitsHint:
-        "CSV وJSONL وJSON وParquet · بحد أقصى {limit}؛ PDF/DOCX/TXT ← Learning Recipes",
       documentRedirect: {
         title: "يجب تحويل هذا الملف أولًا",
         genericFile: "هذا الملف",
@@ -1525,7 +1483,6 @@ export const ar = {
       uploadOneFileAtATime: "ارفع ملفًا واحدًا في كل مرة",
       uploadSingleFileDescription:
         "لا يمكن رفع أكثر من ملف واحد لمجموعة بيانات التدريب.",
-      preview: "معاينة مجموعة البيانات",
       previewLoadingHuggingFace:
         "جارٍ جلب معاينة مجموعة البيانات من Hugging Face...",
       previewLoading: "جارٍ تحميل المعاينة...",
@@ -1547,8 +1504,6 @@ export const ar = {
         requiredDescription:
           "عيّن أدوارًا للأعمدة باستخدام القوائم المنسدلة في الرؤوس. يجب تعيين {required} على الأقل.",
       },
-      split: "التقسيم",
-      subset: "المجموعة الفرعية",
       s3: {
         title: "تكوين S3",
         description:
@@ -1559,20 +1514,11 @@ export const ar = {
         regionPlaceholder: "us-east-1",
         prefix: "بادئة المسار",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "مسار اختياري داخل الحاوية إلى ملفات مجموعة البيانات",
         accessKeyId: "معرّف مفتاح الوصول",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "مفتاح الوصول السري",
         secretAccessKeyPlaceholder: "مفتاح الوصول السري لـ AWS الخاص بك",
         useIamRole: "استخدام دور IAM",
-        useIamRoleTooltip:
-          "استخدم بيانات اعتماد دور IAM بدلاً من مفاتيح الوصول (موصى به لـ EC2/SageMaker)",
-        testConnection: "اختبار الاتصال",
-        connectionSuccess: "تم الاتصال بحاوية S3 بنجاح",
-        connectionFailed: "فشل الاتصال بحاوية S3",
-        comingSoon: "تكامل S3 قريبًا",
-        comingSoonDescription:
-          "يتطلب تحميل مجموعات بيانات S3 مكتبة boto3. هذه الميزة قيد التطوير.",
       },
     },
     params: {
@@ -1769,7 +1715,6 @@ export const ar = {
         "تم حذف العملية، لكن تعذّرت إزالة ملفاتها.",
       deleteArtifactsRetainedError:
         "تعذّرت إزالة ملفات المحوّل، لذلك تم الاحتفاظ بعملية التدريب في السجل.",
-      emptyTitle: "لا توجد عمليات تدريب بعد",
       emptyDescription:
         "لا توجد عمليات تدريب بعد. ابدأ أول عملية تدريب في علامة تبويب الإعداد.",
       loadError: "فشل تحميل عمليات التدريب",
@@ -1782,9 +1727,6 @@ export const ar = {
       deleteTitle: "حذف عملية التدريب؟",
       deleteDescription:
         "سيؤدي هذا إلى حذف عملية التدريب هذه وجميع مقاييسها نهائيًا. لا يمكن التراجع عن هذا الإجراء.",
-      runCount: "{count} عملية",
-      oneRun: "عملية واحدة",
-      resume: "استئناف",
       resumeTraining: "استئناف التدريب",
       resuming: "جارٍ الاستئناف...",
       deleteRun: "حذف العملية",
@@ -1917,9 +1859,6 @@ export const ar = {
       dataset: "مجموعة البيانات",
       datasetStreaming: "مجموعة البيانات: تُقرأ بالتدفّق (من دون تنزيل كامل)",
       modelWeights: "أوزان النموذج",
-    },
-    tour: {
-      guidedTour: "جولة إرشادية",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
