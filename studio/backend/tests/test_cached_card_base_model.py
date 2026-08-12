@@ -110,3 +110,24 @@ def test_gguf_scan_emits_the_card_base_model(tmp_path, monkeypatch):
 
     assert [row["repo_id"] for row in rows] == ["unsloth/Muse-Glimmer-30B-GGUF"]
     assert rows[0]["base_model"] == "meta-models/Muse-Glimmer-30B"
+
+
+def test_response_schemas_keep_the_base_model():
+    """The routes serialize through these models, so an undeclared field is dropped."""
+    from hub.schemas.inventory import CachedGgufResponse, CachedModelsResponse
+
+    row = {"repo_id": "unsloth/Muse-Glimmer-30B-GGUF", "base_model": "meta-models/Muse-Glimmer-30B"}
+    for response_model in (CachedGgufResponse, CachedModelsResponse):
+        payload = response_model.model_validate({"cached": [row]}).model_dump()
+        assert payload["cached"][0]["base_model"] == "meta-models/Muse-Glimmer-30B", response_model
+
+
+def test_managed_gguf_download_keeps_the_card():
+    """The card is the only on-disk source of base_model, so the GGUF fetch must allow it."""
+    from hub.workers.hf_download import _gguf_allow_patterns
+
+    targets = ["Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "mmproj-F16.gguf"]
+    patterns = _gguf_allow_patterns(targets)
+
+    assert patterns[: len(targets)] == targets, "shards must still be fetched"
+    assert "README.md" in patterns

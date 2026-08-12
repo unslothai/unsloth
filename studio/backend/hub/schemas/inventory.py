@@ -219,6 +219,9 @@ class CachedRepoBase(BaseModel):
     # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
     # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
+    # `base_model` off the cached card. Names the upstream provider for a re-upload
+    # whose own repo name matches no known family, so the row keeps its logo offline.
+    base_model: Optional[str] = None
 
 
 class CachedGgufRepo(CachedRepoBase):

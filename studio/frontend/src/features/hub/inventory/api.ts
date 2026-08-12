@@ -54,6 +54,8 @@ export interface CachedGgufRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
+  /** `base_model` off the cached card; the Hub's synthesized tags are not on disk. */
+  base_model?: string | null;
   library_name?: string | null;
 }
 
@@ -73,6 +75,8 @@ export interface CachedModelRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   tags?: string[];
+  /** `base_model` off the cached card; the Hub's synthesized tags are not on disk. */
+  base_model?: string | null;
   library_name?: string | null;
   quant_method?: string | null;
 }

@@ -243,6 +243,13 @@ def _format_path_list(paths: tuple[str, ...], cap: int = _VERIFY_PATH_LIST_CAP) 
     return f"{head}, ... and {len(paths) - cap} more"
 
 
+def _gguf_allow_patterns(targets: list[str]) -> list[str]:
+    """Shards plus the card. The card is the only on-disk source of `base_model`, which
+    names the provider for a repo whose own name matches no known family. Verification is
+    manifest-driven and reclaim only touches .gguf, so the extra file is inert."""
+    return [*targets, "README.md"]
+
+
 def _verify_completed_download(
     repo_type: RepoType,
     repo_id: str,
@@ -720,7 +727,7 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
     snapshot_path = snapshot_download(
         repo_id = repo_id,
         token = _hf_token_arg(hf_token),
-        allow_patterns = targets,
+        allow_patterns = _gguf_allow_patterns(targets),
         max_workers = 1,
     )
     _verify_completed_download(

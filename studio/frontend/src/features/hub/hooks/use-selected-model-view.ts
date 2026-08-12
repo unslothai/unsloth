@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
-import { detectCapabilities, detectLicense } from "../lib/model-capabilities";
+import {
+  detectBaseModel,
+  detectCapabilities,
+  detectLicense,
+} from "../lib/model-capabilities";
 import {
   buildSummary,
   localSourceLabel,
@@ -253,7 +257,13 @@ export function useSelectedModelView({
         selectedHfResult?.quantMethod ??
         selectedCachedRow.quantMethod ??
         undefined;
-      const mergedBaseModel = selectedHfResult?.baseModel ?? null;
+      // Offline the Hub result is gone, so fall back to what the cache itself knows:
+      // the card's `base_model`, then the synthesized tags a full snapshot carries.
+      const mergedBaseModel =
+        selectedHfResult?.baseModel ??
+        selectedCachedRow.baseModel ??
+        detectBaseModel(mergedTags) ??
+        null;
       return {
         id: selectedCachedRow.repoId,
         kind: "cache",
@@ -272,7 +282,11 @@ export function useSelectedModelView({
         requiresVariant: selectedCachedRow.capabilities.requiresVariant,
         modelFormat: selectedCachedRow.modelFormat,
         baseModel: mergedBaseModel,
-        baseModelSource: mergedBaseModel ? "huggingface" : null,
+        baseModelSource: mergedBaseModel
+          ? selectedHfResult?.baseModel
+            ? "huggingface"
+            : "local"
+          : null,
         baseModelHubId: mergedBaseModel,
         isDownloaded: !selectedCachedRow.partial,
         isPartial: selectedCachedRow.partial ?? false,
