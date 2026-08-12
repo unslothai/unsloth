@@ -87,14 +87,26 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-def _runs_lint(path: Path) -> bool:
-    """True when the workflow invokes this script from a `run:` step.
+def _runs_lint(yaml_doc) -> bool:
+    """True when a job step actually runs this script.
 
-    Matched on `run:` rather than anywhere in the file so a workflow that
-    merely mentions the script in a comment is not mistaken for a host.
+    Reads the parsed steps rather than the raw text: a commented-out
+    `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
+    counting it as a host would let a deleted gate look wired.
     """
-    text = path.read_text(encoding = "utf-8")
-    return re.search(rf"run:[^\n]*{re.escape(LINT_SCRIPT_NAME)}", text) is not None
+    jobs = yaml_doc.get("jobs") if isinstance(yaml_doc, dict) else None
+    if not isinstance(jobs, dict):
+        return False
+    for job in jobs.values():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            if LINT_SCRIPT_NAME in str(step.get("run") or ""):
+                return True
+    return False
 
 
 def _pull_request_path_filters(yaml_doc) -> list[str]:
@@ -169,7 +181,7 @@ def main() -> int:
                         "comment somewhere in the file, with a justification."
                     )
 
-        if _runs_lint(path):
+        if _runs_lint(doc):
             filters = _pull_request_path_filters(doc)
             if filters:
                 findings.append(

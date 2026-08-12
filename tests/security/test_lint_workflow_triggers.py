@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 import subprocess
 import sys
@@ -130,25 +131,35 @@ def test_lint_rejects_missing_host(tmp_path):
     assert "does not cover every PR" in proc.stderr
 
 
-def test_comment_mention_is_not_a_host(tmp_path):
-    """Naming the script in a comment must not count as running it."""
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "      # scripts/lint_workflow_triggers.py needs PyYAML\n",
+        "      # - run: python3 scripts/lint_workflow_triggers.py\n",
+    ],
+    ids = ["prose", "commented-run-step"],
+)
+def test_commented_mention_is_not_a_host(tmp_path, mention):
+    """A mention that executes nothing must not register as a host.
+
+    The commented-out `run:` line is the dangerous one: it would let a repo
+    with the real host workflow deleted still satisfy `--require-host`.
+    """
     wf = tmp_path / "wf"
     wf.mkdir()
     (wf / "mentions.yml").write_text(
         "name: mentions\n"
         "on:\n"
         "  pull_request:\n"
-        "    paths:\n"
-        "      - 'studio/**'\n"
         "jobs:\n"
         "  build:\n"
         "    runs-on: ubuntu-latest\n"
-        "    steps:\n"
-        "      # scripts/lint_workflow_triggers.py needs PyYAML\n"
+        "    steps:\n" + mention +
         "      - run: echo hi\n"
     )
-    proc = _run(wf)
-    assert proc.returncode == 0, proc.stderr
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
 
 
 def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
@@ -159,22 +170,68 @@ def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
     ), f"live tree failed lint:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
 
 
+def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
+    rules = []
+    for line in text.splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) > 1:
+            rules.append((fields[0], fields[1:]))
+    return rules
+
+
+def _pattern_matches(pattern: str, path: str) -> bool:
+    if pattern == "*":
+        return True
+    anchored = pattern.startswith("/")
+    body = pattern.lstrip("/")
+    if body.endswith("/"):
+        return path.startswith(body) if anchored else f"/{path}".find(f"/{body}") >= 0
+    if anchored:
+        return fnmatch.fnmatch(path, body) or path.startswith(f"{body}/")
+    return fnmatch.fnmatch(path, body) or fnmatch.fnmatch(path.rsplit("/", 1)[-1], body)
+
+
+def _effective_owners(text: str, path: str) -> list[str]:
+    """Owners GitHub would require, i.e. the LAST matching rule wins."""
+    owners: list[str] = []
+    for pattern, people in _codeowners_rules(text):
+        if _pattern_matches(pattern, path):
+            owners = people
+    return owners
+
+
+CODEOWNERS_PROBES = (
+    ".github/workflows/workflow-trigger-lint.yml",
+    ".github/CODEOWNERS",
+)
+
+
 def test_workflow_changes_require_code_owner_review():
-    """CODEOWNERS must cover `.github/workflows/`.
+    """CODEOWNERS must give @danielhanchen the EFFECTIVE ownership.
 
     The lint cannot stop a PR that disables the lint's own host workflow, so
-    the merge-time control is owner review on workflow changes.
+    owner review is the merge-time control. GitHub applies only the last
+    matching pattern, so checking that a rule exists somewhere is not enough:
+    a broader rule appended below would silently take over.
     """
-    owners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
-    rules = [
-        line.split("#", 1)[0].strip()
-        for line in owners.splitlines()
-        if line.split("#", 1)[0].strip()
-    ]
-    for pattern in ("/.github/workflows/", "/.github/CODEOWNERS"):
-        assert any(
-            r.split()[0] == pattern and len(r.split()) > 1 for r in rules
-        ), f"CODEOWNERS has no owner rule for {pattern}"
+    text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
+    for probe in CODEOWNERS_PROBES:
+        owners = _effective_owners(text, probe)
+        assert "@danielhanchen" in owners, (
+            f"CODEOWNERS gives {probe} effective owners {owners or '(none)'}; "
+            "a later pattern overrode the workflow rule."
+        )
+
+
+def test_codeowners_guard_catches_a_later_broader_rule():
+    """The guard itself must fail when a trailing rule takes precedence."""
+    text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
+    for override in ("* @someone-else", "/.github/ @someone-else"):
+        for probe in CODEOWNERS_PROBES:
+            owners = _effective_owners(f"{text}\n{override}\n", probe)
+            assert owners == ["@someone-else"], (
+                f"{override!r} should win for {probe}, got {owners}"
+            )
 
 
 def test_lint_rejects_unjustified_workflow_run(tmp_path):
