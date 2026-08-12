@@ -171,8 +171,19 @@ def test_lint_rejects_a_host_that_only_mentions_the_script(tmp_path):
             "python3 scripts/lint_workflow_triggers.py --no-require-host",
             "--no-require-host",
         ),
+        # -c / -m run something else and treat the path as a bare argument.
+        ("python3 -c 'pass' scripts/lint_workflow_triggers.py", "does not cover"),
+        ("python3 -m json.tool scripts/lint_workflow_triggers.py", "does not cover"),
     ],
-    ids = ["or-true", "semi-true", "set-plus-e", "elsewhere-dir", "self-check-off"],
+    ids = [
+        "or-true",
+        "semi-true",
+        "set-plus-e",
+        "elsewhere-dir",
+        "self-check-off",
+        "dash-c",
+        "dash-m",
+    ],
 )
 def test_lint_rejects_a_defanged_invocation(tmp_path, command, expected):
     """Running the script is not enough; it has to be able to gate.
@@ -214,6 +225,29 @@ def test_lint_rejects_a_host_job_with_needs(tmp_path):
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
     assert "needs:" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 scripts/lint_workflow_triggers.py",
+        "python3 -u scripts/lint_workflow_triggers.py",
+        "python scripts/lint_workflow_triggers.py",
+        "python3 -X utf8 scripts/lint_workflow_triggers.py",
+    ],
+    ids = ["plain", "dash-u", "python", "dash-X-with-value"],
+)
+def test_lint_accepts_ordinary_invocations(tmp_path, command):
+    """Tightening host detection must not reject normal ways to run it."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py", f"run: {command}"
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_lint_accepts_unfiltered_host(tmp_path):
@@ -338,14 +372,19 @@ def _pattern_matches(pattern: str, path: str) -> bool:
     A pattern that NAMES a directory owns everything beneath it, so directory
     prefixes of the path are candidates. A pattern with a wildcard in it does
     not: GitHub documents `docs/*` as matching `docs/getting-started.md` but
-    not `docs/build-app/troubleshooting.md`. An unanchored pattern may start
-    at any depth.
+    not `docs/build-app/troubleshooting.md`.
+
+    Only a pattern with no internal separator floats to any depth, gitignore
+    style. A leading slash anchors, and so does an internal one, so
+    `workflows/lint.yml` is root-relative and does NOT match
+    `.github/workflows/lint.yml`; a bare `workflows/` still matches at any
+    depth.
     """
     if pattern == "*":
         return True
-    anchored = pattern.startswith("/")
     is_dir = pattern.endswith("/")
     body = pattern.strip("/")
+    anchored = pattern.startswith("/") or "/" in body
     rx = _pattern_regex(body)
     segments = path.split("/")
 
@@ -427,6 +466,10 @@ def test_workflow_changes_require_code_owner_review():
         # Unanchored patterns may start at any depth.
         ("workflows/", ".github/workflows/lint.yml", True),
         ("**/workflows/", ".github/workflows/lint.yml", True),
+        # An internal slash anchors at the root, gitignore style, so this
+        # names a top-level workflows/ and not the one under .github/.
+        ("workflows/lint.yml", ".github/workflows/lint.yml", False),
+        ("workflows/lint.yml", "workflows/lint.yml", True),
         # Non-matches.
         ("/unsloth/", ".github/workflows/lint.yml", False),
         ("/unsloth", "unsloth_zoo/x.py", False),

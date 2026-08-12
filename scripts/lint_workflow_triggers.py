@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -87,12 +88,52 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
-# The script named as the argument of a python interpreter, at the start of a
-# command. `echo scripts/lint_workflow_triggers.py` mentions the script without
-# running it, and would otherwise pass for a host.
-_INVOCATION = re.compile(
-    rf"(?:^|[;&|]|\n)\s*[\w./-]*python[\w.]*\s+[^\n;&|]*{re.escape(LINT_SCRIPT_NAME)}"
-)
+# Host detection. `echo scripts/lint_workflow_triggers.py` mentions the script
+# without running it, so a real python invocation of the file is required.
+_PYTHON = re.compile(r"[\w./-]*python[\w.]*")
+_SEPARATORS = re.compile(r"\|\||&&|[;&|\n]")
+# Options that consume the next token, so the script path cannot be confused
+# with their value.
+_OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
+
+
+def _commands(run: str) -> list[list[str]]:
+    """Argv-ish token lists for each command in a `run` block."""
+    out = []
+    for segment in _SEPARATORS.split(run):
+        segment = segment.strip()
+        if not segment:
+            continue
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            tokens = segment.split()
+        if tokens:
+            out.append(tokens)
+    return out
+
+
+def _invokes_lint(run: str) -> bool:
+    """True when python is asked to EXECUTE this script.
+
+    `python3 -c 'pass' scripts/lint_workflow_triggers.py` names the script but
+    runs the `-c` program and exits 0, so the script has to be the executed
+    file rather than any later argument.
+    """
+    for tokens in _commands(run):
+        if not _PYTHON.fullmatch(tokens[0]):
+            continue
+        args, i = tokens[1:], 0
+        while i < len(args) and args[i].startswith("-"):
+            # -c / -m hand the rest to a program that is not this file.
+            if args[i].startswith(("-c", "-m")):
+                break
+            i += 2 if args[i] in _OPTS_WITH_VALUE else 1
+        else:
+            if i < len(args) and args[i].endswith(LINT_SCRIPT_NAME):
+                return True
+    return False
+
 
 # Shell that swallows a non-zero exit, so the step goes green on findings.
 _MASKED = re.compile(
@@ -135,7 +176,7 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if isinstance(step, dict) and _INVOCATION.search(str(step.get("run") or "")):
+            if isinstance(step, dict) and _invokes_lint(str(step.get("run") or "")):
                 found.append((job, step))
     return found
 
