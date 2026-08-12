@@ -3709,7 +3709,9 @@ exit 0
         # all, which is what studio/setup.sh tells its other CPU-torch hosts.
         # The Vulkan setter below is single-quoted PowerShell syntax: the shell must
         # print $env:... rather than expand it, and a pasted VAR=value resolves as a
-        # command name here, so the user would set nothing.
+        # command name here, so the user would set nothing. Keep this block above the
+        # arm, not between the substeps: the tests read a fixed window from the first
+        # one, and comment lines inside it push the later substeps out of view.
         substep "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch, so torch stays" "Yellow"
         substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
         substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
