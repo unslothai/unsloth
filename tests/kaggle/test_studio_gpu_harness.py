@@ -118,12 +118,16 @@ def test_a_cuda_bundle_is_recognised_from_its_marker(tmp_path):
     was green for all six.
     """
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps({
-        "tag": "b10360",
-        "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
-        "runtime_line": "cuda13",
-        "coverage_class": "older",
-    }))
+    marker.write_text(
+        json.dumps(
+            {
+                "tag": "b10360",
+                "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
+                "runtime_line": "cuda13",
+                "coverage_class": "older",
+            }
+        )
+    )
     assert gpu_assert.install_kind(marker) == "cuda13"
     assert gpu_assert.is_cuda_install(gpu_assert.install_kind(marker))
 
@@ -1293,15 +1297,19 @@ def test_the_marker_never_carried_an_install_kind(tmp_path):
     module = _load_payload()
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     # Exactly the shape the installer writes: no install_kind anywhere.
-    marker.write_text(json.dumps({
-        "requested_tag": "b10360",
-        "tag": "b10360",
-        "release_tag": "b10360-mix-87da1a2",
-        "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
-        "runtime_line": "cuda13",
-        "coverage_class": "older",
-        "bundle_profile": "mix",
-    }))
+    marker.write_text(
+        json.dumps(
+            {
+                "requested_tag": "b10360",
+                "tag": "b10360",
+                "release_tag": "b10360-mix-87da1a2",
+                "asset": "app-b10360-mix-87da1a2-linux-x64-cuda13-older.tar.gz",
+                "runtime_line": "cuda13",
+                "coverage_class": "older",
+                "bundle_profile": "mix",
+            }
+        )
+    )
     kind = module.install_kind(marker)
     assert kind is not None, (
         "a marker with no install_kind key must still say what was installed; "
