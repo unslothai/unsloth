@@ -219,6 +219,10 @@ class TestLoadModelEmitsTheFlag:
             "override rerank (RANK) and mean-pooled models"
         )
 
+    def test_inherited_pooling_cannot_override_the_header_probe(self):
+        src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+        assert 'env.pop("LLAMA_ARG_POOLING", None)' in src
+
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):

@@ -12520,6 +12520,9 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # Pooling is derived from the GGUF header and is a managed setting.
+                # An inherited env default would otherwise override that decision.
+                env.pop("LLAMA_ARG_POOLING", None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
