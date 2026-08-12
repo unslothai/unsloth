@@ -3136,6 +3136,21 @@ def _llama_lib_dir(binary: str) -> Path:
     return _resolve_llama_binary(binary).parent
 
 
+def _loader_path_var() -> str:
+    """The platform's shared-library search env var.
+
+    dyld ignores LD_LIBRARY_PATH entirely, so a macOS child launched with only
+    that variable set has no search path at all. Same mapping as the sibling
+    engines (sd_cpp_engine._lib_path_var, stt_ggml_sidecar) and as the
+    installer's own staged-binary validation.
+    """
+    if sys.platform == "darwin":
+        return "DYLD_LIBRARY_PATH"
+    if sys.platform == "win32":
+        return "PATH"
+    return "LD_LIBRARY_PATH"
+
+
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
@@ -5554,9 +5569,12 @@ class LlamaCppBackend:
         # Let ggml apply GGML_VK_VISIBLE_DEVICES; Python sees compact ordinals.
         if sys.platform != "win32":
             # Let the loader resolve sibling ggml libs next to the binary.
-            existing_ld = env.get("LD_LIBRARY_PATH", "")
-            env["LD_LIBRARY_PATH"] = (
-                f"{binary_dir}:{existing_ld}" if existing_ld else str(binary_dir)
+            # _loader_path_var keeps macOS off LD_LIBRARY_PATH, which dyld
+            # ignores (#8566).
+            _loader_var = _loader_path_var()
+            existing_ld = env.get(_loader_var, "")
+            env[_loader_var] = (
+                f"{binary_dir}{os.pathsep}{existing_ld}" if existing_ld else str(binary_dir)
             )
         probe_script = Path(__file__).with_name("_vulkan_probe.py")
         try:
@@ -5925,6 +5943,19 @@ class LlamaCppBackend:
                 _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
                 if os.path.isdir(_rocblas_lib):
                     env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        elif sys.platform == "darwin":
+            # macOS: DYLD_LIBRARY_PATH for the dylibs next to the binary
+            # (libllama, libggml*, libmtmd). dyld ignores LD_LIBRARY_PATH, so
+            # falling into the Linux branch below left the child with no search
+            # path at all -- while the installer's own staged-binary validation
+            # does set DYLD_LIBRARY_PATH, so that check passes on a path the
+            # real launch never takes (#8566). A healthy prebuilt resolves via
+            # @loader_path and does not need this; a bundle whose install names
+            # or runpaths are off dies in dyld before main() without it.
+            # No CUDA/ROCm/WSL discovery: none of it exists on macOS.
+            _dyld = _loader_path_var()
+            _inherited = [p for p in env.get(_dyld, "").split(os.pathsep) if p]
+            env[_dyld] = os.pathsep.join(dict.fromkeys([binary_dir, *_inherited]))
         else:
             # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
             # CUDA runtime libs (libcudart, libcublas, etc.)
@@ -8840,7 +8871,8 @@ class LlamaCppBackend:
 
     # Shared objects Unsloth ships itself, next to llama-server in build/bin
     # (see runtime_payload_health_groups in install_llama_prebuilt.py, and
-    # _llama_server_env_for_binary which puts that dir on LD_LIBRARY_PATH). No
+    # _llama_server_env_for_binary which puts that dir on the platform's
+    # loader search path -- DYLD_LIBRARY_PATH on macOS). No
     # distro packages these, so a loader failure naming one means the managed
     # runtime is incomplete or mismatched, not that something must be installed.
     _BUNDLED_LIB_PREFIXES = ("libllama", "libggml", "libmtmd")
@@ -8952,12 +8984,107 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _runtime_remedy(binary: Optional[str]) -> str:
+        """The repair advice for ``binary``, by provenance.
+
+        `unsloth studio update` cannot touch a pinned LLAMA_SERVER_PATH or a
+        llama-server found on PATH, so those owners get told to rebuild theirs.
+        """
+        return (
+            "run `unsloth studio update` to reinstall the llama.cpp runtime"
+            if LlamaCppBackend._is_unsloth_managed_binary(binary)
+            else "reinstall or rebuild that custom llama.cpp"
+        )
+
+    @staticmethod
+    def _classify_macos_loader_failure(output: str, binary: Optional[str]) -> Optional[str]:
+        """dyld / Mach-O startup failures, or None when the output has none.
+
+        Pure text matching on captured llama-server output, so this runs (and
+        is tested) on any host, not only Darwin. Kept ahead of the returncode
+        heuristics in the caller: a dyld diagnostic is a fact, while signal 9
+        is a guess that would otherwise blame memory (#8566).
+        """
+        if not output:
+            return None
+        lowered = output.lower()
+
+        # The prebuilt was built for a newer macOS than the host. Same two
+        # markers install_llama_prebuilt.looks_like_macos_incompatibility uses
+        # (the MTLResidency symbol is what a Tahoe-built libggml-metal drags
+        # in), so the installer and the runtime agree on the wording.
+        if ("built for macos" in lowered and "newer than running os" in lowered) or (
+            "symbol not found" in lowered and "mtlresidency" in lowered
+        ):
+            return (
+                "llama-server could not start: the installed llama.cpp runtime "
+                "was built for a newer version of macOS than this Mac is "
+                f"running. Update macOS, or {LlamaCppBackend._runtime_remedy(binary)} "
+                "to get a build that matches this OS."
+            )
+
+        # "Library not loaded: <path>" plus the "Reason:" that follows it.
+        # dyld wraps the reason over several lines, so read to the end of the
+        # output rather than to the end of the line.
+        not_loaded = re.search(
+            r"library not loaded:[ \t]*([^\r\n]+)",
+            output,
+            re.IGNORECASE,
+        )
+        lib = not_loaded.group(1).strip() if not_loaded else ""
+        reason = ""
+        reason_match = re.search(r"reason:\s*(.+)", output, re.IGNORECASE | re.DOTALL)
+        if reason_match:
+            reason = " ".join(reason_match.group(1).split())
+        reason_l = reason.lower()
+
+        if lib or reason:
+            # macOS refused the Mach-O itself. Unsigned or altered code is a
+            # hard SIGKILL on Apple Silicon, so never send the user hunting for
+            # a corrupt GGUF or for free memory.
+            if "code signature" in reason_l or "not valid for use in process" in reason_l:
+                return (
+                    "llama-server could not start: macOS rejected the code "
+                    f"signature of {lib or 'part of the llama.cpp runtime'}. The "
+                    "file was modified or is incompletely signed, so "
+                    f"{LlamaCppBackend._runtime_remedy(binary)}."
+                )
+            if "incompatible architecture" in reason_l:
+                return (
+                    "llama-server could not start: "
+                    f"{lib or 'part of the llama.cpp runtime'} was built for a "
+                    "different CPU architecture than this Mac. Its install is "
+                    f"for the wrong platform, so {LlamaCppBackend._runtime_remedy(binary)}."
+                )
+            if not lib:
+                return None
+            # "no such file" (the modern per-path "tried:" list) and the older
+            # bare "image not found" both mean absent; anything else means dyld
+            # found it and refused it, where reinstalling a package is wrong.
+            if not reason_l or "no such file" in reason_l or "image not found" in reason_l:
+                return LlamaCppBackend._missing_library_message(lib, binary)
+            return LlamaCppBackend._unloadable_library_message(lib, reason, binary)
+
+        # A symbol mismatch with no missing file: llama-server and its dylibs
+        # come from different builds (a half-applied update, or a stale custom
+        # install shadowing the managed one).
+        if "symbol not found" in lowered:
+            return (
+                "llama-server could not start: its llama.cpp libraries are from "
+                "a different build than the llama-server binary (a symbol it "
+                "needs is missing). The install is mismatched, so "
+                f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
+        return None
+
+    @staticmethod
     def _classify_llama_start_failure(
         output: str,
         gguf_path: Optional[str],
         model_identifier: Optional[str],
         returncode: Optional[int] = None,
         binary: Optional[str] = None,
+        log_path: "Optional[Path | str]" = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -9013,6 +9140,17 @@ class LlamaCppBackend:
             ):
                 return LlamaCppBackend._missing_library_message(_lib, binary)
             return LlamaCppBackend._unloadable_library_message(_lib, _reason, binary)
+
+        # macOS. dyld shares no wording with glibc, so every loader failure on
+        # Apple Silicon fell past the branch above into the generic
+        # GGUF/memory message (#8566). dyld prints "Library not loaded: <path>"
+        # and then a "Reason:" that carries the real cause -- "tried: ... (no
+        # such file)", "(code signature ... not valid ...)", "(mach-o file, but
+        # is an incompatible architecture ...)" -- or, on older macOS, a bare
+        # "image not found". None of these are about the GGUF or about memory.
+        macos_detail = LlamaCppBackend._classify_macos_loader_failure(output or "", binary)
+        if macos_detail:
+            return macos_detail
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -9098,6 +9236,18 @@ class LlamaCppBackend:
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
         # large for the WSL VM's RAM cap); name it actionably.
         if returncode == -9:
+            # On macOS the same signal is also how the kernel kills a binary
+            # whose code signature is invalid, before it can print anything, so
+            # do not present memory as the only reading there (#8566).
+            if sys.platform == "darwin":
+                return (
+                    "llama-server was stopped by macOS (signal 9) before it "
+                    "started. That is either out of memory -- try a smaller or "
+                    "more quantized GGUF, or lower the context length -- or "
+                    "macOS refusing the binary's code signature, which "
+                    "`unsloth studio update` repairs. The llama-server log "
+                    "shows which."
+                )
             return (
                 "llama-server was stopped by the operating system (signal 9), "
                 "most likely out of memory. Try a smaller or more quantized "
@@ -9124,11 +9274,45 @@ class LlamaCppBackend:
                 "localhost bypasses it (NO_PROXY=127.0.0.1,localhost)."
             )
 
-        # Fallback: genuinely unknown failure (OOM, missing binary ...).
-        return (
+        # Fallback: genuinely unknown failure (OOM, missing binary ...). By
+        # definition nothing above recognised the output, so carry the evidence
+        # instead of dropping it: the tail llama-server actually printed, and
+        # the log holding all of it. Without this a report of this message is
+        # unactionable and costs a round trip to ask for the log (#8566).
+        return LlamaCppBackend._with_startup_diagnostics(
             "llama-server failed to start. "
-            "Check that the GGUF file is valid and you have enough memory."
+            "Check that the GGUF file is valid and you have enough memory.",
+            output,
+            log_path,
         )
+
+    # Enough of the tail to carry a stack trace or a ggml assert, bounded so a
+    # chatty server cannot push an unreadable wall of text into an API error.
+    _STARTUP_TAIL_CHARS = 2000
+
+    @staticmethod
+    def _with_startup_diagnostics(
+        message: str,
+        output: Optional[str],
+        log_path: "Optional[Path | str]",
+    ) -> str:
+        """Append llama-server's output tail and log path to ``message``.
+
+        Returns ``message`` unchanged when there is neither, so the classified
+        messages and the no-output case keep their exact existing text.
+        """
+        parts = [message]
+        # Control characters (progress bars, colour codes) would corrupt the
+        # API error; keep newlines and tabs, which carry the structure.
+        tail = "".join(
+            ch for ch in (output or "") if ch in "\n\t" or (ch.isprintable() and ch != "\x7f")
+        ).strip()
+        if tail:
+            tail = tail[-LlamaCppBackend._STARTUP_TAIL_CHARS :].lstrip()
+            parts.append(f"llama-server output:\n{tail}")
+        if log_path:
+            parts.append(f"Full log: {log_path}")
+        return "\n\n".join(parts)
 
     def _plan_tensor_parallel(
         self,
@@ -9793,7 +9977,7 @@ class LlamaCppBackend:
         if cpu_binary is None:
             return None
         loader_env = self._llama_server_env_for_binary(cpu_binary)
-        loader_path = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
+        loader_path = _loader_path_var()
         env[loader_path] = loader_env[loader_path]
         replay[0] = cpu_binary
         # Staging covers only the executable and libraries, so keep Studio's working
@@ -12935,6 +13119,7 @@ class LlamaCppBackend:
                             self._model_identifier,
                             cpu_rc,
                             binary,
+                            self._llama_log_path,
                         )
                         self._cleanup_failed_cpu_fallback()
                         raise RuntimeError(detail)
@@ -13326,6 +13511,7 @@ class LlamaCppBackend:
                                     self._model_identifier,
                                     _retry_rc,
                                     binary,
+                                    self._llama_log_path,
                                 )
                                 _raise_terminal_load_failure(
                                     self._mmproj_retry_failure_message(
@@ -13360,6 +13546,7 @@ class LlamaCppBackend:
                                     self._model_identifier,
                                     _crash_rc,
                                     binary,
+                                    self._llama_log_path,
                                 )
                             )
 
