@@ -39,6 +39,7 @@ import {
   type PropsWithChildren,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useShallow } from "zustand/shallow";
@@ -250,7 +251,15 @@ const PastedTextAttachmentUI: FC<{
   name: string;
 }> = ({ attachment, isComposer, name }) => {
   const aui = useAui();
+  const attachmentId = useAuiState(({ attachment: state }) => state.id);
   const [inlining, setInlining] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -258,14 +267,26 @@ const PastedTextAttachmentUI: FC<{
     setInlining(true);
     void readPastedText(attachment)
       .then((text) => {
-        if (text.length === 0) return;
+        // Reading a big file is slow enough to outlive the send that cleared
+        // the composer, which would leave the text behind as a stray draft.
+        if (!mountedRef.current || text.length === 0) return;
         const composer = aui.composer();
+        if (
+          !composer
+            .getState()
+            .attachments.some((item) => item.id === attachmentId)
+        ) {
+          return;
+        }
         const current = composer.getState().text;
         composer.setText(current.length > 0 ? `${current}\n\n${text}` : text);
         aui.attachment().remove();
       })
-      .finally(() => setInlining(false));
-  }, [attachment, aui, inlining]);
+      .catch(() => undefined)
+      .finally(() => {
+        if (mountedRef.current) setInlining(false);
+      });
+  }, [attachment, attachmentId, aui, inlining]);
 
   const chip = (
     <button

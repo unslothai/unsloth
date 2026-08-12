@@ -18,14 +18,21 @@ import {
 type ClipboardStub = {
   readonly files: readonly File[];
   readonly items: readonly { kind: string }[];
+  readonly types: readonly string[];
   getData: (type: string) => string;
 };
 
-function clipboard(text: string, files: readonly File[] = []): ClipboardStub {
+function clipboard(
+  text: string,
+  files: readonly File[] = [],
+  extra: { types?: readonly string[]; data?: Record<string, string> } = {},
+): ClipboardStub {
   return {
     files,
     items: files.map(() => ({ kind: "file" })),
-    getData: (type) => (type === "text/plain" ? text : ""),
+    types: extra.types ?? ["text/plain"],
+    getData: (type) =>
+      type === "text/plain" ? text : (extra.data?.[type] ?? ""),
   };
 }
 
@@ -125,6 +132,54 @@ test("normal pastes and file pastes fall through untouched", () => {
   assert.equal(
     pasteLongTextAsFile(pasteEvent(null), () => {}),
     false,
+  );
+});
+
+test("a paste too big to hold inline still attaches", () => {
+  // Anything the old cap rejected fell back to pasting inline, which is the
+  // one case the input cannot survive.
+  const huge = "a".repeat(20 * 1024 * 1024 + 1);
+  assert.equal(shouldAttachPastedText(huge), true);
+});
+
+test("a .txt the user named like a paste keeps the normal tile", () => {
+  const lookalike = new File(["hi"], "Pasted_Text_1786400000.txt", {
+    type: "text/plain",
+  });
+  assert.equal(isPastedTextFile(lookalike), false);
+  assert.equal(isPastedTextFile(lookalike, lookalike.name), false);
+});
+
+test("native image and file payloads stay on the file paste path", () => {
+  const text = "a".repeat(PASTED_TEXT_MIN_CHARS);
+  // Tauri advertises native payloads by type only, with nothing in files.
+  const svg = pasteEvent(
+    clipboard(text, [], { types: ["text/plain", "image/svg+xml"] }),
+  );
+  assert.equal(
+    pasteLongTextAsFile(svg, () => {}),
+    false,
+  );
+  assert.equal(svg.defaultPrevented, false);
+
+  const copiedFiles = pasteEvent(
+    clipboard(text, [], {
+      types: ["text/plain", "text/uri-list"],
+      data: { "text/uri-list": "file:///tmp/notes.txt" },
+    }),
+  );
+  assert.equal(
+    pasteLongTextAsFile(copiedFiles, () => {}),
+    false,
+  );
+
+  // A plain text/html copy is still text, not a file payload.
+  const richText = pasteEvent(
+    clipboard(text, [], { types: ["text/plain", "text/html"] }),
+  );
+  assert.equal(
+    pasteLongTextAsFile(richText, () => {}),
+    true,
   );
 });
 

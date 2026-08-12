@@ -7,8 +7,6 @@
 const PASTED_TEXT_MIME = "text/plain";
 export const PASTED_TEXT_MIN_CHARS = 2000;
 export const PASTED_TEXT_MIN_LINES = 40;
-// Past this the paste is too big to hold in memory twice.
-const PASTED_TEXT_MAX_CHARS = 20 * 1024 * 1024;
 const PASTED_TEXT_NAME_RE = /^Pasted_Text_\d+\.txt$/;
 
 type ClipboardTextPasteEvent = {
@@ -29,8 +27,8 @@ function countLines(text: string): number {
   return lines;
 }
 
+// No upper bound: the bigger the paste, the worse it is inline.
 export function shouldAttachPastedText(text: string): boolean {
-  if (text.length > PASTED_TEXT_MAX_CHARS) return false;
   if (text.trim().length === 0) return false;
   return (
     text.length >= PASTED_TEXT_MIN_CHARS ||
@@ -58,14 +56,46 @@ export function isPastedTextFile(
   file: File | undefined,
   name?: string,
 ): boolean {
-  if (file && pastedTextFiles.has(file)) return true;
-  return PASTED_TEXT_NAME_RE.test(name ?? file?.name ?? "");
+  // A live File must match by identity, or a .txt the user named this way
+  // would be mistaken for a paste.
+  if (file) return pastedTextFiles.has(file);
+  return PASTED_TEXT_NAME_RE.test(name ?? "");
 }
 
 function clipboardHasFiles(clipboardData: DataTransfer): boolean {
   if (Array.from(clipboardData.files).some((file) => file.size > 0))
     return true;
   return Array.from(clipboardData.items).some((item) => item.kind === "file");
+}
+
+function clipboardHasLocalFileUri(
+  clipboardData: DataTransfer,
+  types: readonly string[],
+): boolean {
+  return types
+    .filter((type) => type.includes("uri-list") || type.includes("urilist"))
+    .some((type) => {
+      try {
+        return clipboardData
+          .getData(type)
+          .split(/\r?\n/)
+          .some((line) => line.trim().toLowerCase().startsWith("file:"));
+      } catch {
+        return false;
+      }
+    });
+}
+
+// Native (Tauri) images and copied files are advertised by type only, with no
+// entry in files or items, and pasteClipboardFiles reads them itself.
+function clipboardAdvertisesFiles(clipboardData: DataTransfer): boolean {
+  const types = Array.from(clipboardData.types, (type) => type.toLowerCase());
+  return (
+    types.some((type) => type.startsWith("image/")) ||
+    types.includes("files") ||
+    types.some((type) => type.includes("copied-files")) ||
+    clipboardHasLocalFileUri(clipboardData, types)
+  );
 }
 
 function clipboardText(clipboardData: DataTransfer): string {
@@ -87,6 +117,7 @@ export function pasteLongTextAsFile(
   if (!clipboardData) return false;
   // Images and files keep the existing paste path.
   if (clipboardHasFiles(clipboardData)) return false;
+  if (clipboardAdvertisesFiles(clipboardData)) return false;
 
   const text = clipboardText(clipboardData);
   if (!shouldAttachPastedText(text)) return false;
