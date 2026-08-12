@@ -33,6 +33,7 @@ from core.inference.tool_call_parser import (
     NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    StreamingMarkupStripper,
     TOOL_XML_SIGNALS,
     is_reprompt_repeat,
     is_short_intent_without_action,
@@ -84,14 +85,9 @@ _MAX_BARE_JSON_BUFFER = 16384
 # exact-duplicate calls and cap the count so a runaway turn cannot fan out.
 _MAX_TOOL_CALLS_PER_TURN = 8
 
-
-def _active_tool_names(active_tools: list[dict]) -> list[str]:
-    names = [
-        (tool.get("function") or {}).get("name")
-        for tool in active_tools
-        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
-    ]
-    return [name for name in names if name]
+# Enough settled text to catch a protocol literal split across two cumulative snapshots.
+# ``_rehearsal_name_start`` still walks back through the candidate when the split is ``[ARGS]``.
+_TOOL_SIGNAL_OVERLAP = max(map(len, TOOL_XML_SIGNALS)) - 1
 
 
 def _active_tool_names(active_tools: list[dict]) -> list[str]:
@@ -175,6 +171,7 @@ def _earliest_tool_signal(
     active_tools: list[dict],
     *,
     unrestricted: bool = False,
+    start: int = 0,
 ) -> int:
     """Index where the turn's first genuine tool-call boundary begins, or -1.
 
@@ -185,11 +182,11 @@ def _earliest_tool_signal(
     best = -1
     for sig in signals:
         if sig != "[ARGS]":
-            p = candidate.find(sig)
+            p = candidate.find(sig, start)
             if p >= 0 and (best < 0 or p < best):
                 best = p
             continue
-        from_idx = 0
+        from_idx = start
         while True:
             p = candidate.find("[ARGS]", from_idx)
             if p < 0:
@@ -347,8 +344,8 @@ _MISTRAL_RENDER_NAME_RE = re.compile(
 _REHEARSAL_RENDER_NAME_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 
 
-def _detect_render_html_tool_start(content: str) -> bool:
-    """Return True when the FIRST tool call in ``content`` is clearly render_html.
+def _first_detected_tool_name(content: str) -> Optional[str]:
+    """Return the first clearly resolved tool name, or None while incomplete.
 
     Covers every serialization the loop executes (XML ``<function=>`` / ``<tool_call>``,
     Mistral ``[TOOL_CALLS]``, rehearsal ``NAME[ARGS]``); the earliest marker wins so a
@@ -396,9 +393,14 @@ def _detect_render_html_tool_start(content: str) -> bool:
             break
 
     if not candidates:
-        return False
+        return None
     _pos, name = min(candidates, key = lambda c: c[0])
-    return name == "render_html"
+    return name or None
+
+
+def _detect_render_html_tool_start(content: str) -> bool:
+    """Return True when the FIRST tool call in ``content`` is clearly render_html."""
+    return _first_detected_tool_name(content) == "render_html"
 
 
 def _coerce_arguments_with_provenance(
@@ -615,6 +617,18 @@ def run_safetensors_tool_loop(
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
+        # This loop receives cumulative snapshots, so keep both whole-prefix scans
+        # incremental: the stripper settles safe prefixes, the signal detector resumes
+        # with enough overlap for a literal split across snapshots.
+        _streaming_stripper = StreamingMarkupStripper(_enabled_names_gate)
+        _tool_signal_scanned_upto = 0
+
+        def _strip_streaming_display(text: str) -> str:
+            if not (auto_heal_tool_calls or tool_protocol_active):
+                return text
+            # Safetensors-only Magistral leading-reasoning removal first, then the shared strip.
+            return _streaming_stripper.strip(_strip_mistral_reasoning(text))
+
         detect_state = _state_buffering
         content_buffer = ""
         content_accum = ""
@@ -641,6 +655,29 @@ def run_safetensors_tool_loop(
             and not bypass_permissions
             and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
         )
+
+        def _should_start_provisional_render_html(content: str) -> bool:
+            # Every part of this is re-resolved per chunk, exactly as before. The gates
+            # are a dict lookup and a scan of a handful of tools, so hoisting them saves
+            # nothing measurable and would bake in an invariant nothing enforces:
+            # active_tools is handed to the injectable single_turn callback, which is
+            # free to append to it while generating.
+            #
+            # The name lookup is likewise not cached. The first call's name is not final
+            # until its marker completes: a truncated ``<function=rende`` ahead of a
+            # finished ``<function=get_weather>`` reads as get_weather until it closes,
+            # then as render_html, so caching the first answer would drop the panel.
+            if (
+                _tool_succeeded("render_html")
+                or _provisional_confirm_gated
+                or provisional_render_html_started
+            ):
+                return False
+            if not any(
+                ((tool.get("function") or {}).get("name") == "render_html") for tool in active_tools
+            ):
+                return False
+            return _first_detected_tool_name(content) == "render_html"
 
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
@@ -679,16 +716,7 @@ def run_safetensors_tool_loop(
             content_accum += delta
 
             if detect_state == _state_draining:
-                if (
-                    not _tool_succeeded("render_html")
-                    and not _provisional_confirm_gated
-                    and any(
-                        ((tool.get("function") or {}).get("name") == "render_html")
-                        for tool in active_tools
-                    )
-                    and not provisional_render_html_started
-                    and _detect_render_html_tool_start(content_accum)
-                ):
+                if _should_start_provisional_render_html(content_accum):
                     provisional_render_html_started = True
                     yield {
                         "type": "tool_start",
@@ -728,31 +756,21 @@ def run_safetensors_tool_loop(
                 # Earliest genuine boundary: bare [ARGS] in prose is skipped; a real NAME[ARGS] is
                 # pulled back to NAME so the name is not flushed.
                 signal_pos = _earliest_tool_signal(
-                    candidate, tool_xml_signals, _detect_tools, unrestricted = unrestricted_tools
+                    candidate,
+                    tool_xml_signals,
+                    _detect_tools,
+                    unrestricted = unrestricted_tools,
+                    start = max(0, _tool_signal_scanned_upto - _TOOL_SIGNAL_OVERLAP),
                 )
                 if signal_pos >= 0:
                     before_tool = candidate[:signal_pos]
-                    cleaned_before = strip_tool_markup_streaming(
-                        before_tool,
-                        auto_heal_tool_calls = auto_heal_tool_calls,
-                        tool_protocol_active = tool_protocol_active,
-                        enabled_tool_names = _enabled_names_gate,
-                    )
+                    cleaned_before = _strip_streaming_display(before_tool)
                     if len(cleaned_before) > len(last_emitted):
                         last_emitted = cleaned_before
                         yield {"type": "content", "text": cleaned_before}
                     cumulative_display = candidate
                     detect_state = _state_draining
-                    if (
-                        not _tool_succeeded("render_html")
-                        and not _provisional_confirm_gated
-                        and any(
-                            ((tool.get("function") or {}).get("name") == "render_html")
-                            for tool in active_tools
-                        )
-                        and not provisional_render_html_started
-                        and _detect_render_html_tool_start(content_accum)
-                    ):
+                    if _should_start_provisional_render_html(content_accum):
                         provisional_render_html_started = True
                         yield {
                             "type": "tool_start",
@@ -769,13 +787,9 @@ def run_safetensors_tool_loop(
                         }
                         _live_args_streamed_upto = len(content_accum)
                     continue
+                _tool_signal_scanned_upto = len(candidate)
                 cumulative_display = candidate
-                cleaned = strip_tool_markup_streaming(
-                    cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
-                    enabled_tool_names = _enabled_names_gate,
-                )
+                cleaned = _strip_streaming_display(cumulative_display)
                 # Hold a trailing bare active-tool-name (split rehearsal) until its [ARGS] arrives;
                 # released by later prose or the end-of-stream flush.
                 if tool_protocol_active:
@@ -896,26 +910,12 @@ def run_safetensors_tool_loop(
                 # Tool signal -- flush any visible prefix before DRAINING
                 # so the route sends it before tool_start.
                 cumulative_display += content_buffer
-                cleaned = strip_tool_markup_streaming(
-                    cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
-                    enabled_tool_names = _enabled_names_gate,
-                )
+                cleaned = _strip_streaming_display(cumulative_display)
                 if len(cleaned) > len(last_emitted):
                     last_emitted = cleaned
                     yield {"type": "content", "text": cleaned}
                 detect_state = _state_draining
-                if (
-                    not _tool_succeeded("render_html")
-                    and not _provisional_confirm_gated
-                    and any(
-                        ((tool.get("function") or {}).get("name") == "render_html")
-                        for tool in active_tools
-                    )
-                    and not provisional_render_html_started
-                    and _detect_render_html_tool_start(content_accum)
-                ):
+                if _should_start_provisional_render_html(content_accum):
                     provisional_render_html_started = True
                     yield {
                         "type": "tool_start",
@@ -937,12 +937,7 @@ def run_safetensors_tool_loop(
             else:
                 detect_state = _state_streaming
                 cumulative_display += content_buffer
-                cleaned = strip_tool_markup_streaming(
-                    cumulative_display,
-                    auto_heal_tool_calls = auto_heal_tool_calls,
-                    tool_protocol_active = tool_protocol_active,
-                    enabled_tool_names = _enabled_names_gate,
-                )
+                cleaned = _strip_streaming_display(cumulative_display)
                 # Same trailing-name hold as STREAMING for this first flush out of BUFFERING.
                 if tool_protocol_active:
                     _hold = _held_rehearsal_tail_len(
@@ -1060,12 +1055,7 @@ def run_safetensors_tool_loop(
                 else:
                     # Turn ended as a plain answer (no [ARGS] followed): the held rehearsal tail is real
                     # prose, release it.
-                    final_clean = strip_tool_markup_streaming(
-                        cumulative_display,
-                        auto_heal_tool_calls = auto_heal_tool_calls,
-                        tool_protocol_active = tool_protocol_active,
-                        enabled_tool_names = _enabled_names_gate,
-                    )
+                    final_clean = _strip_streaming_display(cumulative_display)
                     if len(final_clean) > len(last_emitted):
                         yield {"type": "content", "text": final_clean}
                 yield {"type": "status", "text": ""}

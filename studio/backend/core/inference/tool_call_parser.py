@@ -697,8 +697,40 @@ def strip_segment(
     # data. Qwen <tool_call>{json} is left to the regex arms.
     seg = _strip_glm_calls(seg, final = seg_final)
     pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
-    for pat in pats:
-        seg = pat.sub("", seg)
+    required_pairs = (
+        ("</tool_call>", "<tool_call>"),
+        ("</function>", "<function"),
+        ("<tool_call|>", "<|tool_call>"),
+        ("]", "[TOOL_CALLS]"),
+        ("}", "[TOOL_CALLS]"),
+        ("<｜tool▁calls▁end｜>", "<｜"),
+        ("<|tool_calls_section_end|>", "<|tool_calls_section_begin|>"),
+        ("<|tool_call_end|>", "<|tool_call_begin|>"),
+    )
+    for pat_idx, pat in enumerate(pats):
+        if pat_idx < len(required_pairs):
+            token, opener = required_pairs[pat_idx]
+            first_opener = seg.find(opener)
+            if first_opener < 0:
+                continue
+            last_close = seg.rfind(token)
+            if last_close < 0:
+                continue
+            scan_end = last_close + len(token)
+            if pat_idx == 3:
+                # The Mistral array arm keeps consuming an optional ``\s*</s>`` PAST
+                # the ``]`` the bound is taken from; without this the EOS survives.
+                eos = scan_end
+                while eos < len(seg) and seg[eos].isspace():
+                    eos += 1
+                if seg.startswith("</s>", eos):
+                    scan_end = eos + 4
+            if scan_end == len(seg):
+                seg = pat.sub("", seg)
+            else:
+                seg = pat.sub("", seg[:scan_end]) + seg[scan_end:]
+        else:
+            seg = pat.sub("", seg)
     if seg_final:
         # Trailing partial rehearsal the balanced scan cannot close; gated so prose
         # ``foo[ARGS] ...`` survives.
@@ -1229,13 +1261,34 @@ def _marker_inside_leading_envelope(content: str, enabled_tool_names: Optional[s
             return True
     # A closed outer call PRECEDING the first marker owns the turn; the pre-pass must
     # not steal a trailing example or argument data.
-    for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
-        m = _pat.search(content)
+    required_pairs = (
+        ("</tool_call>", "<tool_call>"),
+        ("</function>", "<function"),
+        ("<tool_call|>", "<|tool_call>"),
+    )
+    for _pat, (token, opener) in zip(_OUTER_ENVELOPE_CLOSED_PATS, required_pairs):
+        first_opener = content.find(opener)
+        if first_opener < 0:
+            continue
+        last_close = content.rfind(token)
+        if last_close < 0:
+            continue
+        m = _pat.search(content, 0, last_close + len(token))
         if m is not None and m.start() < first_marker.start():
             return True
     residue = content
-    for _pat in _OUTER_ENVELOPE_CLOSED_PATS:
-        residue = _pat.sub("", residue)
+    for _pat, (token, opener) in zip(_OUTER_ENVELOPE_CLOSED_PATS, required_pairs):
+        first_opener = residue.find(opener)
+        if first_opener < 0:
+            continue
+        last_close = residue.rfind(token)
+        if last_close < 0:
+            continue
+        scan_end = last_close + len(token)
+        if scan_end == len(residue):
+            residue = _pat.sub("", residue)
+        else:
+            residue = _pat.sub("", residue[:scan_end]) + residue[scan_end:]
     marker = _EMBEDDED_MARKER_RE.search(residue)
     if marker is None:
         return True
@@ -1764,7 +1817,9 @@ def _parse_function_xml(
         # Strict mode: an unclosed function call is truncated -- do not heal it.
         if not allow_incomplete and not has_close:
             continue
-        body = _TC_FUNC_CLOSE_RE.sub("", content[body_start:body_end])
+        body = content[body_start:body_end]
+        if body.rstrip().endswith("</function>"):
+            body = _TC_FUNC_CLOSE_RE.sub("", body)
 
         args: dict = {}
         param_unclosed = False
@@ -1777,9 +1832,10 @@ def _parse_function_xml(
         if len(param_starts) == 1:
             pm = param_starts[0]
             raw_val = body[pm.end() :]
-            if not _TC_PARAM_CLOSE_RE.search(raw_val):
+            param_closed = raw_val.rstrip().endswith(("</parameter>", "</param>"))
+            if not param_closed:
                 param_unclosed = True
-            val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
+            val = _TC_PARAM_CLOSE_RE.sub("", raw_val) if param_closed else raw_val
             args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
         else:
             for pidx, pm in enumerate(param_starts):
@@ -1788,9 +1844,10 @@ def _parse_function_xml(
                     param_starts[pidx + 1].start() if pidx + 1 < len(param_starts) else len(body)
                 )
                 raw_val = body[val_start:next_param]
-                if not _TC_PARAM_CLOSE_RE.search(raw_val):
+                param_closed = raw_val.rstrip().endswith(("</parameter>", "</param>"))
+                if not param_closed:
                     param_unclosed = True
-                val = _TC_PARAM_CLOSE_RE.sub("", raw_val)
+                val = _TC_PARAM_CLOSE_RE.sub("", raw_val) if param_closed else raw_val
                 args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
 
         # Strict mode: a dangling parameter means the call was cut off; a closed
