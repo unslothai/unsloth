@@ -39,6 +39,33 @@ fn generic_failure_message(code: i32) -> String {
     )
 }
 
+/// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
+/// product's verdict arrives as a parse error over the entire file before the installer's first
+/// line runs: no `[TAURI:ERROR]` marker, no phase log, and a stderr tail that reads as an
+/// unexplained failure ("+ FullyQualifiedErrorId : ScriptContainedMaliciousContent"). Match the
+/// stable error id, never the message text, which is localized. The id also arrives suffixed with
+/// the reporting cmdlet, so this is a substring test.
+const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
+const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
+
+const AMSI_MALWARE_GUIDANCE: &str = "Security software blocked the installer before it started, \
+     so no installation steps ran and nothing was changed on this machine. This is a false \
+     positive: update your security product's definitions and retry, or report it to your \
+     vendor. Do not disable endpoint protection.";
+const AMSI_ADMIN_BLOCK_GUIDANCE: &str = "This machine's security policy blocked the installer \
+     before it started, so no installation steps ran and nothing was changed. Ask whoever \
+     manages the device to allow it.";
+
+fn security_block_guidance(text: &str) -> Option<&'static str> {
+    if text.contains(AMSI_MALWARE_ERROR_ID) {
+        return Some(AMSI_MALWARE_GUIDANCE);
+    }
+    if text.contains(AMSI_ADMIN_BLOCK_ERROR_ID) {
+        return Some(AMSI_ADMIN_BLOCK_GUIDANCE);
+    }
+    None
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InstallOutputStream {
     Stdout,
@@ -55,11 +82,13 @@ struct InstallFailureContext {
     explicit_error: Option<String>,
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
+    security_block: Option<&'static str>,
     output_tail: VecDeque<InstallOutputLine>,
 }
 
 impl InstallFailureContext {
     fn observe_stdout(&mut self, text: &str) -> bool {
+        self.note_security_block(text);
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
             self.clear_failure(InstallOutputStream::Stdout);
             return true;
@@ -94,6 +123,7 @@ impl InstallFailureContext {
     }
 
     fn observe_stderr(&mut self, text: &str) -> bool {
+        self.note_security_block(text);
         if text.starts_with("[TAURI:ERROR_CLEAR] ") {
             self.clear_failure(InstallOutputStream::Stderr);
             return true;
@@ -130,7 +160,18 @@ impl InstallFailureContext {
         }
     }
 
+    /// Set from BOTH streams and before any marker handling: PowerShell writes the parse error to
+    /// stderr, but a wrapper that folded the streams together would otherwise lose it.
+    fn note_security_block(&mut self, text: &str) {
+        if self.security_block.is_none() {
+            self.security_block = security_block_guidance(text);
+        }
+    }
+
     fn clear_failure(&mut self, stream: InstallOutputStream) {
+        // A run that got far enough to clear its own failure state was never blocked at parse
+        // time, so a stale verdict here would be from a previous attempt.
+        self.security_block = None;
         if self.explicit_error_stream == Some(stream) {
             self.explicit_error = None;
             self.explicit_error_stream = None;
@@ -172,9 +213,15 @@ impl InstallFailureContext {
             .as_deref()
             .or(self.default_error.as_deref())
             .or_else(|| self.output_tail.back().map(|line| line.text.as_str()));
-        match detail {
+        let base = match detail {
             Some(detail) => format!("Installation failed: {}", detail),
             None => generic_failure_message(code),
+        };
+        // Appended, not substituted: the raw error id is what a support diagnostics report and a
+        // vendor false-positive submission both need, and the guidance is what the user needs.
+        match self.security_block {
+            Some(guidance) => format!("{} {}", base, guidance),
+            None => base,
         }
     }
 }
@@ -1317,6 +1364,76 @@ mod tests {
         assert!(!is_elevation_request(2, &[]));
         assert!(is_elevation_request(2, &["cmake".to_string()]));
         assert!(!is_elevation_request(1, &["cmake".to_string()]));
+    }
+
+    /// The exact stderr an AMSI provider produced in unsloth#8523. PowerShell scans the whole
+    /// script block while compiling it, so the parse error points at line 1 char 1 and the
+    /// installer never runs a statement -- there is no [TAURI:ERROR] marker to fall back on.
+    const AMSI_BLOCK_STDERR: [&str; 6] = [
+        r"At C:\Program Files\Unsloth\install.ps1:1 char:1",
+        "+ # Unsloth Studio Installer for Windows PowerShell",
+        "+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        "This script contains malicious content and has been blocked by your antivirus software.",
+        "    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException",
+        "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
+    ];
+
+    #[test]
+    fn amsi_block_explains_itself_without_losing_the_error_id() {
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = context.message(1);
+        // The raw id survives: diagnostics reports and vendor submissions both need it.
+        assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
+        assert!(message.starts_with("Installation failed: "), "{message}");
+        assert!(message.contains("blocked the installer before it started"), "{message}");
+        assert!(message.contains("nothing was changed on this machine"), "{message}");
+    }
+
+    #[test]
+    fn amsi_block_is_recognised_on_stdout_and_when_the_id_carries_a_cmdlet_suffix() {
+        // A wrapper that folds stderr into stdout, and the Invoke-Expression form of the id.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout(
+            "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent,\
+             Microsoft.PowerShell.Commands.InvokeExpressionCommand",
+        );
+        assert!(context
+            .message(1)
+            .contains("blocked the installer before it started"));
+    }
+
+    #[test]
+    fn admin_policy_block_gets_its_own_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptHasAdminBlockedContent");
+        let message = context.message(1);
+        assert!(message.contains("security policy blocked the installer"), "{message}");
+        assert!(!message.contains("report it to your vendor"), "{message}");
+    }
+
+    #[test]
+    fn an_ordinary_failure_gains_no_security_guidance() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
+    }
+
+    #[test]
+    fn a_run_that_clears_its_failure_state_drops_a_stale_verdict() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("    + FullyQualifiedErrorId : ScriptContainedMaliciousContent");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] retrying");
+        context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");
+        assert_eq!(
+            context.message(7),
+            "Installation failed: Failed to install PyTorch"
+        );
     }
 
     #[test]
