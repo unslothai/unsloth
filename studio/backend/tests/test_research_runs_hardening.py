@@ -1308,8 +1308,11 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
     real_discard = research_runs.ResearchSupervisor._discard_task
 
     async def _counting_discard(self, run_id, task, what):
-        discards.append(what)
-        return await real_discard(self, run_id, task, what)
+        started = time.monotonic()
+        try:
+            return await real_discard(self, run_id, task, what)
+        finally:
+            discards.append((what, time.monotonic() - started))
 
     monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
 
@@ -1345,12 +1348,15 @@ def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
 
     supervisor._check_active = _cancelled
 
-    started = time.monotonic()
     with pytest.raises(research_runs.RunCancelled):
         asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
-    elapsed = time.monotonic() - started
-    assert [w for w in discards if w == "send"] == ["send"], f"discards: {discards}"
-    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+    assert [w for w, _ in discards if w == "send"] == ["send"], f"discards: {discards}"
+    # Measured over the cleanup itself rather than over the test's wall clock. The bound is a
+    # TIMER, so a second one shows up as time spent waiting; everything before the cancellation
+    # is fixed setup that has nothing to do with this guarantee, and on a shared two-core runner
+    # that setup alone reached 0.9s and failed the old whole-test budget on machine speed.
+    waited = sum(seconds for _w, seconds in discards)
+    assert waited < 2 * research_runs._STREAM_CLEANUP_TIMEOUT_SECONDS, f"discards: {discards}"
 
 
 def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
@@ -1364,8 +1370,11 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
     real_discard = research_runs.ResearchSupervisor._discard_task
 
     async def _counting_discard(self, run_id, task, what):
-        discards.append(what)
-        return await real_discard(self, run_id, task, what)
+        started = time.monotonic()
+        try:
+            return await real_discard(self, run_id, task, what)
+        finally:
+            discards.append((what, time.monotonic() - started))
 
     monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
 
@@ -1400,13 +1409,13 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
 
     supervisor._check_active = _cancelled
 
-    started = time.monotonic()
     with pytest.raises(research_runs.RunCancelled):
         asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
-    elapsed = time.monotonic() - started
-    iterator_discards = [w for w in discards if w == "stream_iterator"]
+    iterator_discards = [w for w, _ in discards if w == "stream_iterator"]
     assert len(iterator_discards) == 1, f"discarded {len(iterator_discards)} times: {discards}"
-    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+    # The time spent WAITING on cleanup, not the test's wall clock: see the send-side test above.
+    waited = sum(seconds for _w, seconds in discards)
+    assert waited < 2 * research_runs._STREAM_CLEANUP_TIMEOUT_SECONDS, f"discards: {discards}"
 
 
 def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):

@@ -290,9 +290,18 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
 
-    _run_hook("unsloth/B-GGUF")
+    # The refresh proves B is gone, so the request is refused rather than answered as whatever
+    # is resident (#8389). The refusal is the point of the two probes below, not a side effect:
+    # without the rebuild the stale positive hit would have switched to a path that no longer
+    # exists.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
 
-    assert calls == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
+    assert excinfo.value.status_code == 404
+    # The expired hit costs exactly one rebuild, then re-asks without another scan. The trailing
+    # probe belongs to the refusal, which asks about the RESIDENT model, and never rescans.
+    assert calls[:2] == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
+    assert all(kwargs.get("allow_scan") is False for _name, kwargs in calls[2:]), calls
     assert scans == [1]
     assert rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"
