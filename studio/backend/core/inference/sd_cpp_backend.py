@@ -71,7 +71,6 @@ from core.inference.sd_cpp_engine import (
     SdCppEngine,
     find_sd_cpp_binary,
     find_sd_server_binary,
-    in_tree_install_root,
     is_managed_binary,
     legacy_sibling_install_root,
     managed_install_root,
@@ -329,8 +328,15 @@ def _h3_replacement_hint(binary: str) -> str:
     binary that PATH or one of the env vars named is somewhere else entirely, and Studio has no
     business suggesting that directory be removed. The refusal used to end with "or remove that
     directory" unconditionally, which for the ``/usr/bin/sd`` that PATH discovery picks up reads as
-    "remove /usr/bin"."""
-    roots = [managed_install_root(), legacy_sibling_install_root(), in_tree_install_root()]
+    "remove /usr/bin".
+
+    ``in_tree_install_root`` is deliberately NOT one of them. It is ``<repo_root>/stable-diffusion.cpp``,
+    the developer build the finder falls back to, and the installer never writes there, so the
+    hint would be aimed at the user's own source checkout -- which is exactly what a ``git clone``
+    of leejet's repo leaves at that path. ``legacy_sibling_install_root`` is included because it
+    returns a tree only when it carries the ownership marker, i.e. one an older build really did
+    install."""
+    roots = [managed_install_root(), legacy_sibling_install_root()]
     for root in roots:
         if root is None:
             continue

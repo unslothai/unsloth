@@ -1063,6 +1063,27 @@ def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatc
     assert own.exists()
 
 
+def test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build(monkeypatch, tmp_path):
+    # <repo_root>/stable-diffusion.cpp is the developer-build fallback, not a layout the installer
+    # writes to, and a git clone of leejet's repo lands exactly there. Deleting it would take the
+    # user's source checkout, and no reinstall would follow, so it is never offered.
+    root = tmp_path / "repo" / "stable-diffusion.cpp"
+    own = root / "build" / "bin" / "sd-cli"
+    own.parent.mkdir(parents = True)
+    own.write_text("binary")
+    # raising = False because the hint does not import it at all. The patch is what makes this a
+    # regression guard: re-add the root to _h3_replacement_hint and it resolves to this tree.
+    monkeypatch.setattr(bk, "in_tree_install_root", lambda: root, raising = False)
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
+        bk.ensure_h3_sd_cpp_binary()
+    assert "remove" not in str(excinfo.value)
+    assert own.exists()
+
+
 def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
     # An unreadable --help is "cannot tell", not "no H3": the load's own version() gate already
     # refuses a binary that will not run, and guessing here would strand a working build.
