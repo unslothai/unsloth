@@ -157,11 +157,16 @@ class TestOsKillReturncode:
     stays neutral; a recognized output still wins; a hard fault (-11) keeps the
     generic fallback."""
 
-    def test_sigkill_with_no_output_names_oom(self):
+    def test_sigkill_with_no_output_names_oom(self, monkeypatch):
+        # Pin the platform: macOS SIGKILLs an invalid code signature the same
+        # way, so the message there names both readings (see
+        # TestMacOSLoaderFailures) and this wording is the non-Darwin one.
+        monkeypatch.setattr(sys, "platform", "linux")
         msg = _classify("", "/models/big-bf16.gguf", "local/big", -9)
         assert "signal 9" in msg
         assert "out of memory" in msg.lower()
         assert ".wslconfig" in msg
+        assert "code signature" not in msg.lower()
         assert "GGUF file is valid" not in msg
 
     def test_sigterm_is_neutral_not_oom(self):
@@ -573,12 +578,6 @@ class TestMacOSLoaderFailures:
         msg = _classify("", "/models/x.gguf", "local/x", -9)
         assert "code signature" in msg.lower()
         assert "out of memory" in msg.lower()
-
-    def test_signal_9_elsewhere_keeps_the_oom_wording(self, monkeypatch):
-        monkeypatch.setattr(sys, "platform", "linux")
-        msg = _classify("", "/models/x.gguf", "local/x", -9)
-        assert "most likely out of memory" in msg
-        assert "code signature" not in msg.lower()
 
     def test_ordinary_output_mentioning_reason_is_not_a_loader_failure(self):
         out = "llama_model_load: error loading model: Reason: something went wrong"
