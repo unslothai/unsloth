@@ -125,21 +125,21 @@ def installed_versions(dist_name: str) -> List[str]:
     found: List[str] = []
     for dist in distributions(**kwargs):
         try:
-            name = getattr(dist, "name", None) or dist.metadata["Name"]
-            if name and _canonical(name) == wanted:
-                found.append(dist.version or "")
+            name = dist.metadata.get("Name")
+            if name:
+                if _canonical(name) == wanted:
+                    found.append(dist.version or "")
+                continue
         except Exception:
-            # A malformed unrelated record is irrelevant, but an unreadable
-            # record for the requested package is itself a conflict. Wheel
-            # metadata directory names escape distribution-name separators as
-            # underscores, so splitting off the final version is unambiguous.
-            path = getattr(dist, "_path", None)
-            stem = os.path.basename(os.fspath(path)) if path is not None else ""
-            if stem.endswith(".dist-info"):
-                stem = stem[: -len(".dist-info")]
-                path_name, separator, _version = stem.rpartition("-")
-                if separator and _canonical(path_name) == wanted:
-                    found.append("")
+            pass
+        # A nameless or unreadable matching record is itself a conflict. Wheel
+        # metadata directory names escape name separators as underscores, so
+        # splitting off the final version is unambiguous.
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
+            found.append("")
     return sorted(found)
 
 

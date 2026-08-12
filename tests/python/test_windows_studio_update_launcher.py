@@ -86,7 +86,7 @@ def _configure_windows(
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
     monkeypatch.setattr(studio, "_windows_hidden_subprocess_kwargs", lambda: {})
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: None)
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_args: None)
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio_home")
     for name in (
         "SKIP_STUDIO_BASE",
@@ -140,6 +140,26 @@ def test_a_recoverable_copy_exists_while_setup_runs(monkeypatch, studio, tmp_pat
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
 
     _update(studio)
+
+
+def test_installer_setup_frees_the_running_launcher_for_metadata_repair(
+    monkeypatch, studio, tmp_path
+):
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    replacement = b"MZ-reinstalled-launcher"
+
+    def setup(**_kwargs):
+        assert not launcher.exists()
+        assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
+        launcher.write_bytes(replacement)
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    studio.setup(verbose = False)
+
+    assert launcher.read_bytes() == replacement
+    assert not (scripts / "unsloth.exe.update-backup").exists()
 
 
 def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp_path):
@@ -211,7 +231,9 @@ def test_no_verify_still_checks_launcher_but_skips_integrity_scan(monkeypatch, s
     calls = []
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
     integrity_calls = []
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: integrity_calls.append(True))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda *_args: integrity_calls.append(True)
+    )
 
     _update(studio, verify = False)
 
@@ -270,7 +292,7 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
     calls = []
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: calls.append("verify"))
+    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda *_args: calls.append("verify"))
     monkeypatch.setattr(
         studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
     )

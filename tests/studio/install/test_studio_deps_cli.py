@@ -139,6 +139,7 @@ def cross_venv(tmp_path, monkeypatch):
         unresolved_active_paths = False,
         malformed_unrelated_metadata = False,
         malformed_core_metadata = False,
+        nameless_core_metadata = False,
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -180,6 +181,12 @@ def cross_venv(tmp_path, monkeypatch):
             malformed = managed_site / "unsloth-2.0.dist-info"
             malformed.mkdir()
             (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        if nameless_core_metadata:
+            nameless = managed_site / "unsloth-2.0.dist-info"
+            nameless.mkdir()
+            (nameless / "METADATA").write_text(
+                "Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8"
+            )
 
         (caller_site / "unsloth_cli").mkdir(parents = True)
         shutil.copy(DEPS_PATH, caller_site / "unsloth_cli" / "_studio_deps.py")
@@ -267,6 +274,14 @@ def test_malformed_unrelated_foreign_metadata_does_not_hide_valid_records(cross_
 
 def test_malformed_core_metadata_is_a_foreign_conflict(cross_venv):
     state = cross_venv(malformed_core_metadata = True)
+
+    assert state["ok"] is False
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_nameless_core_metadata_is_a_foreign_conflict(cross_venv):
+    state = cross_venv(nameless_core_metadata = True)
 
     assert state["ok"] is False
     assert state["manifest_ok"] is False

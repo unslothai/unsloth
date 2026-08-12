@@ -4908,11 +4908,9 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
-# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
-# running launcher only ever failed (WinError 32) and printed a scary warning. It's
-# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
-# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
-# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# The CLI's launcher transaction moves unsloth.exe aside before setup starts and
+# restores it if this pass does not publish a replacement. This lets duplicate
+# metadata repair reinstall unsloth without touching the running Windows image.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."

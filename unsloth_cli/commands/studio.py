@@ -3381,7 +3381,12 @@ def setup(
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
         _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
-        _run_setup_script(verbose = verbose)
+        # Duplicate-metadata repair can reinstall unsloth even when the
+        # installer set SKIP_STUDIO_BASE. Free and preserve the running Windows
+        # launcher exactly as the direct update path does.
+        with _WindowsLauncherUpdateTransaction() as launcher_update:
+            _run_setup_script(verbose = verbose)
+            launcher_update.validate_launcher()
 
 
 def _fail_if_install_damaged(package_name: str = "unsloth") -> None:

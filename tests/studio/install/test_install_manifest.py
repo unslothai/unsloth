@@ -130,6 +130,22 @@ def test_single_malformed_matching_metadata_is_a_conflict(tmp_path, monkeypatch)
     assert im.metadata_conflict(versions) is True
 
 
+def test_nameless_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    nameless = site / "demo-2.0.dist-info"
+    nameless.mkdir()
+    (nameless / "METADATA").write_text(
+        "Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.metadata_conflict(versions) is True
+
+
 def test_malformed_matching_metadata_invalidates_the_manifest(
     tmp_path, monkeypatch, install_root, req_root
 ):

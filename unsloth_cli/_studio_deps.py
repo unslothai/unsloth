@@ -219,24 +219,22 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
     conflicts: set[str] = set()
     for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
         try:
-            name = getattr(dist, "name", None) or dist.metadata["Name"]
+            name = dist.metadata.get("Name")
             if name:
                 canonical = _canonical(name)
                 if canonical in found:
                     conflicts.add(canonical)
                 else:
                     found[canonical] = dist.version or ""
+                continue
         except Exception:
-            # An unrelated malformed record does not make every otherwise
-            # readable distribution in the foreign environment disappear. A
-            # malformed matching directory is still an inconsistent record.
-            path = getattr(dist, "_path", None)
-            stem = os.path.basename(os.fspath(path)) if path is not None else ""
-            if stem.endswith(".dist-info"):
-                stem = stem[: -len(".dist-info")]
-                path_name, separator, _version = stem.rpartition("-")
-                if separator:
-                    conflicts.add(_canonical(path_name))
+            pass
+        # A nameless or unreadable record must not hide a foreign conflict.
+        path = getattr(dist, "_path", None)
+        stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator:
+            conflicts.add(_canonical(path_name))
     return found, conflicts
 
 
@@ -403,7 +401,7 @@ def _installed_distribution_groups():
     groups: Dict[str, list] = {}
     for dist in distributions(**_scan_paths()):
         try:
-            name = getattr(dist, "name", None) or dist.metadata["Name"]
+            name = dist.metadata.get("Name")
         except Exception:
             continue
         if name:
