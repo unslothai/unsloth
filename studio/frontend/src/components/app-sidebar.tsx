@@ -71,6 +71,7 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
+  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   DownloadSquare01Icon,
@@ -1132,6 +1133,18 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    audio: {
+      icon: AudioWave01Icon,
+      label: t("shell.navigation.audio"),
+      active: pathname === "/audio" || pathname.startsWith("/audio/"),
+      onClick: () => {
+        navigate({ to: "/audio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/audio" }));
       },
     },
     recipes: {
@@ -2644,7 +2657,7 @@ export function AppSidebar() {
                 side="top"
                 align="center"
                 sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-white/[0.05]"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem

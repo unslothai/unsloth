@@ -27,6 +27,13 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = "Opaque client attempt ID for scoped in-flight cancellation",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -106,13 +113,15 @@ class LoadRequest(BaseModel):
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
             "'auto' (platform-aware: DSpark when the model ships a sidecar, "
-            "else MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "
+            "else DFlash when it ships one, else MTP on MTP GGUFs, ngram-mod "
+            "fallback for sub-3B), "
             "'mtp' (force draft-mtp only on both GPU and CPU), "
             "'dspark' (force a draft-dspark sidecar), "
+            "'dflash' (force a draft-dflash sidecar), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
-            "'draft-dspark' (-> dspark), "
+            "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. Ignored for non-GGUF models."
         ),
@@ -122,11 +131,12 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP or DSpark speculative decoding "
-            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
-            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
-            "quants). Only applied when speculative_type resolves to "
-            "'mtp', 'mtp+ngram', or 'dspark'."
+            "Max draft tokens per step for MTP, DSpark or DFlash speculative "
+            "decoding (--spec-draft-n-max). Defaults to 2 on GPU and 3 on "
+            "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
+            "MTP quants, and the measured sweet spot for DFlash too). Only "
+            "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
+            "'dspark' or 'dflash'."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -273,6 +283,13 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    cancel_load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = ("Cancel only this in-flight load attempt; never unload a resident model"),
+    )
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -842,7 +859,8 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spec_drafter_kind: Optional[str] = Field(
         None,
         description = (
-            "Which drafter the resolution was about, 'mtp' or 'dspark'. Needed "
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash'. Needed "
             "because Auto resolves the kind itself, so speculative_type still "
             "reads 'auto', and a fallback leaves the engaged type at 'default': "
             "neither still says which file the UI should tell the user to fix."
@@ -2497,7 +2515,7 @@ class DiffusionLoadRequest(BaseModel):
         "scheme. Loads the already-quantized weights with the dense bf16 never on the "
         "GPU (~half the load VRAM and a smaller download). null uses the family's hosted "
         "checkpoint if configured, else quantises the dense transformer at load time. "
-        "Loading a local path unpickles the file (arbitrary code execution), so it is "
+        "A local path installs arbitrary weights into the served model, so it is "
         "ignored unless the path resolves inside a directory the operator allowlisted "
         "via UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH (one or more directories, separated by "
         "the OS path separator). A bare on/off value such as '1' is deliberately not "
@@ -2881,6 +2899,16 @@ class GalleryImage(BaseModel):
         None, description = "How many reference images the reference workflow used"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
+    # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
+
+
+class GalleryFlagsPatch(BaseModel):
+    """Partial update of one gallery item's pin/archive flags; omitted fields are left alone."""
+
+    pinned: Optional[bool] = Field(None, description = "Pin (True) or unpin (False) the item")
+    archived: Optional[bool] = Field(None, description = "Archive (True) or restore (False) the item")
 
 
 class DiffusionGenerateResponse(BaseModel):
@@ -3161,6 +3189,54 @@ class ImageGenerationResponse(BaseModel):
 
     created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
     data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+
+
+# ── OpenAI-compatible audio API (POST /v1/audio/speech) ──
+
+
+class AudioSpeechRequest(BaseModel):
+    """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
+
+    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
+    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+
+    input: str = Field(..., min_length = 1, description = "The text to synthesize.")
+    model: Optional[str] = Field(
+        None, description = "Model id (informational; the loaded audio model is used)."
+    )
+    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
+    response_format: Optional[str] = Field(
+        "wav", description = "Output container. Only 'wav' is supported."
+    )
+    speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+
+    @field_validator("response_format", mode = "before")
+    @classmethod
+    def _null_format_means_default(cls, value):
+        # openai marks response_format nullable with a default, so an explicit null means wav
+        return "wav" if value is None else value
+
+
+class AudioGalleryItem(BaseModel):
+    """One persisted TTS clip. ``url`` serves the WAV bytes (auth required)."""
+
+    id: str
+    url: str
+    prompt: str
+    model: str
+    audio_type: str
+    sample_rate: int
+    duration_s: float
+    created_at: str
+
+
+class AudioGalleryListResponse(BaseModel):
+    """A newest-first window of the audio gallery for infinite scroll."""
+
+    audio: List[AudioGalleryItem] = Field(default_factory = list)
+    has_more: bool = False
+    next_before_mtime: Optional[float] = None
+    next_before_id: Optional[str] = None
 
 
 # ── Video (local text-to-video) ──
@@ -3522,6 +3598,9 @@ class GalleryVideo(BaseModel):
         None, description = "Offload policy actually engaged: none | group | model | sequential"
     )
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
+    # Library state, not recipe: stored beside the clip, so older sidecars simply read as unset.
+    pinned: bool = Field(False, description = "Pinned to the front of the gallery")
+    archived: bool = Field(False, description = "Moved to the archived shelf, hidden from the strip")
 
 
 class VideoGenerateResponse(BaseModel):

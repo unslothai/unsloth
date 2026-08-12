@@ -2521,9 +2521,35 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "read_pickle",
     }
 )
-# Pickle-backed loaders that can execute code embedded in the file; gated by
-# receiver module (torch.load, joblib.load) since bare `load` is too common.
-_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# Loaders that can execute code embedded in the data they deserialize; gated by
+# receiver module (torch.load, yaml.load) since bare `load` is too common.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# The load entry points on those modules. yaml.load runs whatever its Loader=
+# builds, and !!python/object/apply in the data is a call, so it asks like the
+# pickle-backed ones do. yaml.safe_load is untouched.
+_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
+# Loader classes: the same deserialize one level down (yaml.Loader(s).get_data())
+# and what a custom loader subclasses. Ordinary words, so matched by receiver.
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "Constructor"})
+# Names no other library uses, so they are matched wherever they appear rather
+# than by receiver: an alias, a subclass, a loop, a helper or a factory all name
+# one of these somewhere, and following the value through every binding form is
+# a game without an end.
+_AUTO_UNSAFE_YAML_LOADERS = frozenset(
+    {
+        "unsafe_load",
+        "unsafe_load_all",
+        "full_load",
+        "full_load_all",
+        "UnsafeLoader",
+        "CUnsafeLoader",
+        "FullLoader",
+        "CFullLoader",
+        "CLoader",
+        "UnsafeConstructor",
+        "FullConstructor",
+    }
+)
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3922,6 +3948,58 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     and _wraps_write_callable(_default.args[0])
                 ):
                     dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
+    # Naming a code-executing loader asks, wherever the name appears. Presence
+    # rather than dataflow: a loader can be aliased, subclassed, packed into a
+    # container, returned from a helper or picked by a conditional, and following
+    # it through all of those is a game without an end. A safe read names none of
+    # these, so yaml.safe_load and json.load are unaffected.
+    _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
+    _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
+    _imported_modules = set()  # only the module itself, for the return rule
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _root = alias.name.split(".")[0]
+                if _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _imported_modules.add(alias.asname or _root)
+        elif isinstance(node, ast.ImportFrom):
+            _root = (node.module or "").split(".")[0]
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_YAML_LOADERS or (
+                    _root in _AUTO_UNSAFE_PY_LOAD_MODULES
+                    and (
+                        alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                        or alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                    )
+                ):
+                    _bare_names.add(alias.asname or alias.name)
+                elif _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    # from yaml import loader as yl, so yl.Loader still reads as one.
+                    _module_names.add(alias.asname or alias.name)
+    _module_names |= _imported_modules
+
+    def _loader_receiver(node) -> bool:
+        # yaml, a submodule of it (yaml.loader.Loader), or an import alias.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in _module_names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
+                return True
+            if (
+                node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or node.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+            ) and _loader_receiver(node.value):
+                return True
+        elif isinstance(node, ast.Name) and node.id in _bare_names:
+            return True
+        # Handing the module out of a function hands out every loader on it, and
+        # the caller's name for it cannot be seen from here.
+        elif isinstance(node, (ast.Return, ast.Lambda)):
+            _out = node.value if isinstance(node, ast.Return) else node.body
+            if isinstance(_out, ast.Name) and _out.id in _imported_modules:
+                return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -9829,6 +9907,30 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         return _PinnedHTTPSConnection(host, sni_hostname = self._sni_hostname, **kwargs)
 
 
+def _explicit_proxy_applies(scheme: str, host: str) -> bool:
+    """Whether urllib routes a *scheme* request for *host* through a proxy.
+
+    Only a proxied fetch may keep the hostname in the request URL: the proxy
+    resolves it, so this host never looks it up again. A direct one would, which
+    is the DNS-rebinding window, so it stays pinned to the validated IP.
+
+    *host* must be the ``host[:port]`` form ``Request.host`` carries, since that
+    is what ``ProxyHandler`` passes to ``proxy_bypass``; probing the bare hostname
+    instead would disagree with it on a port-qualified NO_PROXY entry.
+    """
+    from urllib.request import getproxies, proxy_bypass
+
+    # ProxyHandler lowercases every mapping key, and the Windows registry can hand
+    # back "HTTPS=...", so normalize before testing or a proxy-only host goes direct.
+    if scheme not in {key.lower() for key in getproxies()}:
+        return False
+    try:
+        return not proxy_bypass(host)
+    except (OSError, ValueError):
+        # proxy_bypass reads system config on macOS/Windows; failure falls back to pinning.
+        return False
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str]:
     """Resolve *hostname*, reject non-public IPs, return a pinned IP string.
 
@@ -10182,8 +10284,13 @@ def _fetch_url_raw(
             validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
             if cp.port:
                 validated_netloc = f"{validated_netloc}:{cp.port}"
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
-                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
+            # Decide routing once, on the netloc urllib tests: a pinned request
+            # carries an IP, which no NO_PROXY entry matches, so the opener below
+            # has to carry the decision rather than re-derive it.
+            proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
+                # Enterprise proxies need the hostname in CONNECT for policy and TLS
+                # interception, and they resolve it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
@@ -10191,10 +10298,11 @@ def _fetch_url_raw(
                 ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
                 request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
-            opener = urllib.request.build_opener(
-                _NoRedirect,
-                _SNIHTTPSHandler(current_host),
-            )
+            handlers = [_NoRedirect, _SNIHTTPSHandler(current_host)]
+            if not proxied:
+                # An empty ProxyHandler is the documented way to opt a request out.
+                handlers.append(urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(*handlers)
 
             headers = {
                 "User-Agent": ua,

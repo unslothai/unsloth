@@ -7,7 +7,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import threading
@@ -18,7 +17,6 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, NamedTuple, Optional
-import structlog
 from loggers import get_logger
 
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
@@ -135,11 +133,9 @@ try:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
@@ -169,11 +165,9 @@ except ImportError:
         is_vision_model,
         is_embedding_model,
         scan_checkpoints,
-        list_gguf_variants,
         ModelConfig,
     )
     from utils.models.model_config import (
-        _pick_best_gguf,
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
@@ -2163,7 +2157,7 @@ async def get_model_config(
                 model_name = resolved
 
             logger.info(f"Getting model config for: {model_name}")
-            from utils.models.model_config import detect_audio_type
+            from utils.models.model_config import detect_audio_type_checked
 
             inspection_target = _model_config_inspection_target(
                 model_name,
@@ -2178,8 +2172,8 @@ async def get_model_config(
                 local_files_only = prefer_local_cache,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-            audio_type = detect_audio_type(
-                inspection_target,
+            audio_type, audio_type_definitive = detect_audio_type_checked(
+                _audio_probe_target(inspection_target),
                 hf_token = hf_token,
                 local_files_only = prefer_local_cache,
             )
@@ -2217,7 +2211,7 @@ async def get_model_config(
                     pass
 
             logger.info(
-                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
             return ModelDetails(
                 id = model_name,
@@ -2228,6 +2222,7 @@ async def get_model_config(
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
+                audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,
@@ -2548,6 +2543,59 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
+def _audio_probe_target(inspection_target: str) -> str:
+    """Repo to ask about audio capability, resolving a registry alias first.
+
+    A curated entry like "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so
+    the probe fetched a repo that does not exist, got a 404 on every path, and read that
+    as "definitely not an audio model" rather than "not a repo id". Spark-TTS then looked
+    like a text model, and picking it with an audio dataset hit the modality gate. Same
+    resolution routes/training.py already uses for the trainer's own preflight.
+    """
+    if is_local_path(inspection_target):
+        return inspection_target
+    try:
+        from utils.security import load_scan_target
+        repo_id, _load_subdirs = load_scan_target(canonical_model_repo_id(inspection_target), ())
+        return repo_id or inspection_target
+    except Exception:  # noqa: BLE001 - a probe target must never fail the handler
+        return inspection_target
+
+
+def _audio_type_of_checkpoint(
+    model_path: str,
+    base_model: Optional[str],
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Codec a trained checkpoint speaks, or None for a text one.
+
+    A scan row carries no modality, so without this every trained audio model reads
+    as text: the Audio page filters it out and chat routes it to the GGUF auto-switch,
+    which cannot resolve a local adapter directory. Detection reads the checkpoint
+    itself first (a merged export has its own tokenizer) and falls back to the base
+    repo an adapter names. Cached per model, so the scan stays one pass.
+    """
+    from utils.models.model_config import detect_audio_type
+
+    for candidate in (model_path, base_model):
+        if not candidate:
+            continue
+        try:
+            # local_files_only: this route was a filesystem scan. A trained checkpoint's
+            # base is already cached, and a non-definitive miss is deliberately not cached,
+            # so a gated or offline base would re-fetch on every poll.
+            # hf_token even under local_files_only: a gated base resolves through the same
+            # hub helpers, and the capability caches are keyed by token fingerprint, so a
+            # token-less probe would both misclassify and poison the cache for the rest.
+            audio_type = detect_audio_type(candidate, hf_token = hf_token, local_files_only = True)
+        except Exception as exc:  # never let a scan row fail the whole listing
+            logger.debug("audio detection failed for %r: %s", candidate, exc)
+            continue
+        if audio_type:
+            return audio_type
+    return None
+
+
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
@@ -2556,6 +2604,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -2566,33 +2615,12 @@ async def scan_loras(
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
-        lora_list = []
-
-        trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
-        for display_name, model_path, model_type in trained_models:
-            base_model = get_base_model_from_checkpoint(model_path)
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "training",
-                    export_type = model_type,
-                )
-            )
-
-        # Scan exported models (merged, LoRA, base — skips GGUF)
-        exported = scan_exported_models(exports_dir = resolved_exports_dir)
-        for display_name, model_path, export_type, base_model in exported:
-            lora_list.append(
-                LoRAInfo(
-                    display_name = display_name,
-                    adapter_path = model_path,
-                    base_model = base_model,
-                    source = "exported",
-                    export_type = export_type,
-                )
-            )
+        # Off the event loop: this is a directory walk plus, per checkpoint, a tokenizer
+        # read. It was already blocking before the audio probe was added; the probe made
+        # the block long enough to delay unrelated requests, streamed tokens included.
+        lora_list = await asyncio.to_thread(
+            _scan_loras_sync, resolved_outputs_dir, resolved_exports_dir, hf_token
+        )
 
         return LoRAScanResponse(loras = lora_list, outputs_dir = resolved_outputs_dir)
 
@@ -2604,6 +2632,43 @@ async def scan_loras(
             event = "models.scan_loras_failed",
             log = logger,
         )
+
+
+def _scan_loras_sync(
+    resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
+) -> List[LoRAInfo]:
+    """The filesystem half of scan_loras, so it can run in a worker thread."""
+    lora_list: List[LoRAInfo] = []
+
+    trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
+    for display_name, model_path, model_type in trained_models:
+        base_model = get_base_model_from_checkpoint(model_path)
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "training",
+                export_type = model_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    # Scan exported models (merged, LoRA, base — skips GGUF)
+    exported = scan_exported_models(exports_dir = resolved_exports_dir)
+    for display_name, model_path, export_type, base_model in exported:
+        lora_list.append(
+            LoRAInfo(
+                display_name = display_name,
+                adapter_path = model_path,
+                base_model = base_model,
+                source = "exported",
+                export_type = export_type,
+                audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+            )
+        )
+
+    return lora_list
 
 
 @router.get("/diffusion-loras")

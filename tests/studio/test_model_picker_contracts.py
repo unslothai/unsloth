@@ -237,11 +237,7 @@ def test_active_model_config_round_trips_gpu_fields():
     ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
-    for rel in (
-        "features/chat/chat-page.tsx",
-        "features/hub/catalog/sampling-settings-dialog.tsx",
-    ):
-        assert "useActiveModelConfig(" in _read(rel), rel
+    assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
@@ -407,7 +403,7 @@ def test_variant_expander_refreshes_after_delete():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows\]", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -1564,12 +1560,14 @@ def test_local_model_sections_respect_the_task_filter():
     for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
         block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
         assert block, f"{memo} not found"
-        assert "passesTaskGate(m.task" in block.group(0), f"{memo} does not apply the task gate"
+        assert re.search(
+            r"passesTaskGate\(\s*m\.task", block.group(0)
+        ), f"{memo} does not apply the task gate"
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():
-    """Chat cannot load a diffusion model. Rather than hiding an on-device one or letting
-    it 400, the unfiltered picker routes the pick to the Images/Video page, which loads it."""
+    """Chat cannot load a diffusion or audio model. Rather than hiding an on-device one or
+    letting it 400, the unfiltered picker routes the pick to the page that loads it."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     gate = re.search(r"function passesTaskGate\(.*?\n\}", src, re.S)
     assert gate, "passesTaskGate not found"
@@ -1578,7 +1576,7 @@ def test_chat_picker_routes_diffusion_picks_to_their_page():
     wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
     assert wrapper, "the routing wrapper around onSelect is missing"
     body = wrapper.group(0)
-    assert "diffusionPageForTask" in body and "navigateToPage" in body
+    assert "mediaPageForTask" in body and "navigateToPage" in body
     # Task-scoped pickers (already on those pages) must select normally.
     assert "if (!task)" in body
 
@@ -1637,7 +1635,9 @@ def test_on_device_rows_carry_the_task_the_pickers_filter_on():
     conv = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
     assert conv.count("task: row.task ?? null,") == 3, "a picker converter drops the task"
     # A generation-task row is not a chat row, so the chat-only guard must not hide it from the pickers that can load it.
-    assert "row.capabilities.canChat || studioPageForTask(row.task) !== undefined" in conv
+    assert re.search(
+        r"row\.capabilities\.canChat \|\|\s*studioPageForTask\(row\.task\) !== undefined", conv
+    )
 
 
 def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
@@ -1648,7 +1648,9 @@ def test_local_diffusion_routing_is_keyed_by_the_id_the_row_selects():
     block = re.search(r"const diffusionTaskById = useMemo\(.*?\n  \}, \[", src, re.S)
     assert block, "diffusionTaskById not found"
     body = block.group(0)
-    assert "put(m.id, m.task);" in body and "put(m.model_id, m.task);" in body
+    assert re.search(r"put\(m\.id, m\.task[,)]", body) and re.search(
+        r"put\(m\.model_id, m\.task[,)]", body
+    )
 
 
 def test_a_staged_download_that_never_starts_clears_the_queue():

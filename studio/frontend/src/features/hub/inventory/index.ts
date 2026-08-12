@@ -11,7 +11,6 @@ export {
 } from "./constants";
 export {
   addScanFolder,
-  browseFolders,
   listCachedDatasets,
   listCachedGguf,
   listCachedModels,
@@ -25,7 +24,6 @@ export {
   listLocalModels,
   listScanFolders,
   removeScanFolder,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -71,6 +69,7 @@ export {
   type DeviceInventorySource,
   type DeviceInventorySourceState,
 } from "./use-device-inventory";
+export { INVENTORY_FRESHNESS_WINDOW_MS } from "./inventory-freshness";
 export {
   useHubInventory,
   type HubInventoryKind,

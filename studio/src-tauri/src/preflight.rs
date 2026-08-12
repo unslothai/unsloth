@@ -1,5 +1,6 @@
 mod backend;
 mod managed;
+mod pid_records;
 mod types;
 mod version;
 
@@ -7,7 +8,7 @@ use crate::desktop_backend_owner::{
     OwnedBackendProbe, OwnedBackendReadiness, VerifiedOwnedBackend,
 };
 use backend::probe_existing_backends;
-use log::warn;
+use log::{info, warn};
 pub use managed::managed_install_ready;
 use managed::probe_managed_install;
 use std::path::PathBuf;
@@ -163,11 +164,30 @@ fn choose_ownerless_spawned_preflight(
     }
 }
 
-fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
+fn mutation_blocker_from_probe(
+    probe: BackendProbe,
+    live_local_backend: &dyn Fn(u16) -> Option<u32>,
+) -> Option<ExternalBackendConflict> {
     match probe {
         BackendProbe::ExternalConflict { port, reason } => {
             Some(ExternalBackendConflict { port, reason })
         }
+        // An id-less backend may be this install serving from a terminal, in
+        // which case rewriting the venv underneath it would break it. It may
+        // equally be a remote Studio behind a port forward, and refusing on
+        // that leaves a stale install with no way to repair itself, since
+        // repair is what the app runs automatically. The local per-port record
+        // is what tells the two apart, so it, not the port, decides.
+        BackendProbe::Unrelated { port, reason } => match live_local_backend(port) {
+            Some(pid) => {
+                info!("Desktop preflight: mutation blocked by local backend {pid} on port {port}");
+                Some(ExternalBackendConflict { port, reason })
+            }
+            None => {
+                info!("Desktop preflight: mutation may proceed past port {port} ({reason}): no live backend of this install is recorded there");
+                None
+            }
+        },
         BackendProbe::Ready { port } => Some(ExternalBackendConflict {
             port,
             reason: "same_root_external_backend_active".to_string(),
@@ -179,7 +199,12 @@ fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendCon
 pub async fn mutation_blocking_backend_ignoring(
     ignored_ports: &[u16],
 ) -> Option<ExternalBackendConflict> {
-    mutation_blocker_from_probe(probe_existing_backends(ignored_ports).await)
+    backend::probe_backend_ports(ignored_ports)
+        .await
+        .into_iter()
+        .find_map(|probe| {
+            mutation_blocker_from_probe(probe, &pid_records::live_backend_pid_on_port)
+        })
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
@@ -425,7 +450,7 @@ mod tests {
     #[test]
     fn mutation_blocker_blocks_ready_external_backends() {
         assert_eq!(
-            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }),
+            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }, &|_| None),
             Some(ExternalBackendConflict {
                 port: 8890,
                 reason: "same_root_external_backend_active".to_string(),
@@ -913,7 +938,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_missing_root_id_is_external_conflict_before_auth_probe() {
+    async fn backend_missing_root_id_is_unrelated_before_auth_probe() {
         let probe = probe_test_backend(
             r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
             "401 Unauthorized",
@@ -922,7 +947,7 @@ exit 1
 
         assert!(matches!(
             probe,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
@@ -930,7 +955,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
+    async fn backend_expected_root_id_missing_is_unrelated_before_auth_probe() {
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
@@ -938,11 +963,87 @@ exit 1
 
         assert!(matches!(
             backend_desktop_auth_status(&client, port, &health, None).await,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
         ));
+    }
+
+    /// The report this came from: an id-less Studio answered on a candidate
+    /// port, and a perfectly healthy install refused to launch at all.
+    #[test]
+    fn an_unrelated_backend_does_not_block_a_launch() {
+        let result = choose_preflight(
+            ManagedProbe::Ready {
+                bin: PathBuf::from("/bin/unsloth"),
+            },
+            BackendProbe::Unrelated {
+                port: 8888,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.disposition,
+            DesktopPreflightDisposition::ManagedReady
+        );
+        assert_eq!(result.port, None);
+    }
+
+    /// ...and a venv rewrite is still refused while a local backend of this
+    /// install is recorded on the port, because it would break that backend.
+    #[test]
+    fn an_unrelated_backend_blocks_mutations_when_it_is_recorded_locally() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8899,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|port| (port == 8899).then_some(4242)
+            ),
+            Some(ExternalBackendConflict {
+                port: 8899,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            })
+        );
+    }
+
+    /// The follow-up report: a stale install auto-runs a repair, and an id-less
+    /// backend reached over a port forward left it erroring on every attempt
+    /// with nothing the user could stop locally.
+    #[test]
+    fn an_unrecorded_unrelated_backend_does_not_block_a_repair() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8888,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|_| None
+            ),
+            None
+        );
+    }
+
+    /// A local record is only consulted for the unattributable case: a backend
+    /// that identified itself as a conflict blocks either way.
+    #[test]
+    fn an_external_conflict_blocks_mutations_without_a_local_record() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::ExternalConflict {
+                    port: 8890,
+                    reason: "desktop_backend_version_too_old".to_string(),
+                },
+                &|_| None
+            ),
+            Some(ExternalBackendConflict {
+                port: 8890,
+                reason: "desktop_backend_version_too_old".to_string(),
+            })
+        );
     }
 
     #[tokio::test]

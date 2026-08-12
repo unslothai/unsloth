@@ -302,7 +302,9 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("and (_spec_requested_mtp or _spec_requested_dspark)")
+    fallback = src.find(
+        "and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)"
+    )
     assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
 
 

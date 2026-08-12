@@ -18,6 +18,7 @@ test("unsloth is the owner whose prefix rows hide", () => {
   );
   // Case as the Hub listing returns it.
   assert.equal(isUnslothOwner("Unsloth"), true);
+  assert.equal(isUnslothOwner("unslothai"), true);
 });
 
 test("other owners keep their prefix", () => {
