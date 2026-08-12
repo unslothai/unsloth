@@ -638,10 +638,9 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
 
 
 def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
-    """The type lives in the SSE ``event:`` line and the data object need not repeat
-    it. Read from the JSON alone the frame looks type-less, and since such a frame is
-    skipped rather than fatal, response.completed usage would silently never surface.
-    Written raw, since _openai_sse always repeats the type in data."""
+    """Only the SSE ``event:`` line carries the type here, and a type-less frame is
+    skipped rather than fatal, so the usage would vanish silently. Built raw, since
+    _openai_sse always repeats the type in data."""
     body = (
         b"event: response.completed\n"
         b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
@@ -672,9 +671,8 @@ def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
 
 
 def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
-    """A name applies to its own event only. Held across the blank line, a stale
-    ``response.failed`` would claim the next type-less frame, emit a 502 and break
-    the loop, so the real usage that follows would never be sent."""
+    """Held past its blank line, a stale ``response.failed`` would claim the next
+    type-less frame, emit a 502 and break the loop before the real usage."""
     body = (
         b"event: response.failed\n"
         b"data:\n"

@@ -5453,8 +5453,7 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
-                    # The Responses API carries the event type in the SSE `event:` field and
-                    # the data object need not repeat it, so the name must reach the data line.
+                    # The type may live only in the SSE `event:` field, not in the data object.
                     sse_event_name = ""
                     try:
                         while True:
