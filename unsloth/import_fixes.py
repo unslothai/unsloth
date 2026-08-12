@@ -2150,7 +2150,6 @@ def disable_torchaudio_if_cuda_mismatched():
 
         try:
             import transformers.utils.import_utils as tf_import_utils
-
             try:
                 tf_import_utils._torchaudio_available = False
             except AttributeError:
