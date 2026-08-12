@@ -119,6 +119,14 @@ MIN_FREE_GB = 25.0
 # once per session before anything needs it. Generous, because the cost of
 # being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
+# How long to let VRAM fall after an unload before calling it the baseline.
+# 12 x 2.5s bounds the wait at 30s, which is well past the ~3s a llama-server
+# takes to exit on the models this harness loads, without stalling the run if
+# something else on the card is holding memory.
+VRAM_SETTLE_POLL_S = 2.5
+VRAM_SETTLE_SAMPLES = 12
+# Driver readings jitter by a few MiB between samples; only a real drop counts.
+VRAM_SETTLE_TOLERANCE_MIB = 16.0
 
 CANARY = "__UNSLOTH_STUDIO__!!!"
 
@@ -428,9 +436,52 @@ class Payload:
 
     # ----------------------------------------------------------- assertion A
 
+    def settled_baseline(self) -> float | None:
+        """VRAM after anything already loaded has been evicted and freed.
+
+        `POST /load` with `force` unloads the previous model as its first act,
+        so sampling the baseline just before the request puts that release
+        INSIDE the measured window. Run 7 read `device_vram_delta_mib: -1866.0`
+        for the GGUF export probe: a 531 MB model loading while a 3004 MiB chat
+        model left, reported as negative growth and scored as a failure to
+        reach the GPU. The load was fine; the ruler was wrong.
+
+        Unloading first and waiting for the number to stop falling makes the
+        delta measure one thing. Best-effort throughout: an unload that fails
+        leaves the old baseline behaviour rather than aborting the probe, and
+        the delta is only ever evidence, never the sole assertion.
+        """
+        code, body = self.studio.get("/api/inference/status")
+        active = None
+        if code == 200 and isinstance(body, dict):
+            active = (body.get("model_path") or body.get("model")
+                      or body.get("active_model_name"))
+        if isinstance(active, str) and active:
+            try:
+                self.studio.post(
+                    "/api/inference/unload",
+                    {"model_path": active, "force_cancel_active": True},
+                    timeout = self.args.load_timeout,
+                )
+            except StudioError:
+                pass
+        # Freeing is asynchronous: llama-server exits and the driver reclaims
+        # afterwards, so an immediate read still sees the old model resident.
+        # Settle on two consecutive samples that did not drop.
+        previous = nvidia_used_mib()
+        for _ in range(VRAM_SETTLE_SAMPLES):
+            time.sleep(VRAM_SETTLE_POLL_S)
+            current = nvidia_used_mib()
+            if previous is None or current is None:
+                return current
+            if current >= previous - VRAM_SETTLE_TOLERANCE_MIB:
+                return current
+            previous = current
+        return previous
+
     def load_model(self, model_path: str, *, variant: str | None, label: str) -> dict:
         """Load a GGUF with an explicit GPU pin and judge whether it landed there."""
-        before = nvidia_used_mib()
+        before = self.settled_baseline()
         body = {
             "model_path": model_path,
             "is_lora": False,

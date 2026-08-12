@@ -1334,3 +1334,113 @@ def test_a_future_cuda_major_is_recognised():
     assert module.is_cuda_install("app-bX-linux-x64-cuda99-portable.tar.gz")
     # And not on a word that merely contains "cuda".
     assert not module.is_cuda_install("cudart")
+
+
+class _FakeStudio:
+    """Records calls and answers /api/inference/status from a script."""
+
+    def __init__(self, status_body, *, unload_raises = False):
+        self.status_body = status_body
+        self.unload_raises = unload_raises
+        self.posts = []
+
+    def get(self, path, **kw):
+        if path == "/api/inference/status":
+            return 200, self.status_body
+        return 404, {}
+
+    def post(self, path, body, **kw):
+        self.posts.append((path, body))
+        if self.unload_raises:
+            raise studio_client.StudioError("unload refused")
+        return 200, {}
+
+
+def _baseline_session(module, tmp_path, status_body, readings,
+                      *, unload_raises = False):
+    session = _session(module, tmp_path, load_timeout = 30.0)
+    session.studio = _FakeStudio(status_body, unload_raises = unload_raises)
+    seq = list(readings)
+    session._readings = seq
+    return session
+
+
+def test_the_baseline_waits_for_the_old_model_to_actually_leave(
+        tmp_path, monkeypatch):
+    """The run-7 shape, in miniature.
+
+    A 3004 MiB chat model is resident; the probe about to run loads a 531 MB
+    GGUF. Sampling before the unload gave -1866.0 and scored the load as
+    never reaching the GPU. The baseline must be taken after the fall.
+    """
+    module = _load_payload()
+    session = _baseline_session(
+        module, tmp_path, {"model_path": "chat.gguf"},
+        [4000.0, 2600.0, 1000.0, 996.0, 996.0])
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    assert session.settled_baseline() == 996.0
+    assert session.studio.posts[0][0] == "/api/inference/unload"
+    assert session.studio.posts[0][1]["model_path"] == "chat.gguf"
+    assert session.studio.posts[0][1]["force_cancel_active"] is True
+
+
+def test_nothing_loaded_means_nothing_to_unload(tmp_path, monkeypatch):
+    module = _load_payload()
+    session = _baseline_session(module, tmp_path, {}, [500.0, 500.0])
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    assert session.settled_baseline() == 500.0
+    assert session.studio.posts == []
+
+
+def test_a_refused_unload_does_not_abort_the_probe(tmp_path, monkeypatch):
+    """The delta is evidence, not the assertion. Losing it must not lose the
+    load result that the probe is actually there to record."""
+    module = _load_payload()
+    session = _baseline_session(
+        module, tmp_path, {"model_path": "chat.gguf"}, [900.0, 900.0],
+        unload_raises = True)
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    assert session.settled_baseline() == 900.0
+
+
+def test_driver_jitter_is_not_mistaken_for_a_release(tmp_path, monkeypatch):
+    """A few MiB of wobble must settle immediately, not burn the full budget
+    and return whatever the last sample happened to be."""
+    module = _load_payload()
+    session = _baseline_session(
+        module, tmp_path, {}, [1000.0, 995.0, 1000.0])
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    assert session.settled_baseline() == 995.0
+
+
+def test_a_card_that_never_settles_is_bounded(tmp_path, monkeypatch):
+    """Something else holding the card must not hang the run forever."""
+    module = _load_payload()
+    session = _session(module, tmp_path, load_timeout = 30.0)
+    session.studio = _FakeStudio({})
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    calls = [0]
+
+    def _falling():
+        calls[0] += 1
+        return 10000.0 - calls[0] * 100.0
+    monkeypatch.setattr(module, "nvidia_used_mib", _falling)
+    session.settled_baseline()
+    assert calls[0] <= module.VRAM_SETTLE_SAMPLES + 1
+
+
+def test_no_nvidia_smi_at_all_is_not_a_crash(tmp_path, monkeypatch):
+    module = _load_payload()
+    session = _session(module, tmp_path, load_timeout = 30.0)
+    session.studio = _FakeStudio({})
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
+    assert session.settled_baseline() is None
