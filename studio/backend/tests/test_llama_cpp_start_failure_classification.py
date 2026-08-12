@@ -62,13 +62,31 @@ class TestDiffusionArchitectures:
         assert "enough memory" not in msg.lower()
 
     # Parametrize over the production set so new arches are auto-covered.
-    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._DIFFUSION_ARCHES))
-    def test_every_diffusion_arch_is_recognised(self, arch):
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._IMAGE_ARCHES))
+    def test_every_image_arch_is_recognised(self, arch):
         out = f"error loading model: unknown model architecture: '{arch}'"
         msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
         assert "diffusion" in msg.lower()
         assert "Images page" in msg
         assert arch in msg
+
+    # A video arch must name the VIDEO page: Images cannot run it either, so routing
+    # there just costs the user a second dead end.
+    @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
+    def test_every_video_arch_routes_to_the_video_page(self, arch):
+        out = f"error loading model: unknown model architecture: '{arch}'"
+        msg = _classify(out, f"/models/{arch}.gguf", f"local/{arch}")
+        assert "text-to-video" in msg.lower()
+        assert "Video page" in msg
+        assert "Images page" not in msg
+        assert arch in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_image_and_video_sets_are_disjoint_and_cover_the_union(self):
+        assert not (LlamaCppBackend._IMAGE_ARCHES & LlamaCppBackend._VIDEO_ARCHES)
+        assert (
+            LlamaCppBackend._IMAGE_ARCHES | LlamaCppBackend._VIDEO_ARCHES
+        ) == LlamaCppBackend._DIFFUSION_ARCHES
 
 
 class TestUnsupportedNonDiffusionArchitecture:

@@ -3324,6 +3324,9 @@ class LlamaCppBackend:
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
         self._is_diffusion: bool = False
+        # Whether the last _read_gguf_metadata walked the whole header without failing.
+        # Separates "declares no architecture" from "could not be read" (see the preflight).
+        self._gguf_header_parsed: bool = False
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
@@ -7187,6 +7190,7 @@ class LlamaCppBackend:
         self._nextn_predict_layers = None
         self._architecture = None
         self._is_diffusion = False
+        self._gguf_header_parsed = False
 
         try:
             canvas_seen = False
@@ -7222,6 +7226,9 @@ class LlamaCppBackend:
                 _version = struct.unpack("<I", f.read(4))[0]
                 _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
 
+                # Set by the loop's `else` below: True only when every declared KV pair was
+                # walked, i.e. no truncation `break` fired.
+                kv_complete = False
                 for _ in range(kv_count):
                     # Tolerate truncated input (e.g. a partial header from an
                     # HTTP byte-range fetch): bail out so the resolver
@@ -7326,6 +7333,8 @@ class LlamaCppBackend:
                         # fetch); break so the resolver fallback runs on
                         # what we have.
                         break
+                else:
+                    kv_complete = True
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -7381,6 +7390,11 @@ class LlamaCppBackend:
                     self._n_layers,
                     hf_repo_candidates,
                 )
+
+            # Every declared KV pair was walked. Only now does ``_architecture is None``
+            # mean "this GGUF declares no architecture" rather than "the read stopped
+            # early", which is the distinction the non-chat preflight below is built on.
+            self._gguf_header_parsed = kv_complete
 
             if self._context_length:
                 logger.info(f"GGUF metadata: context_length={self._context_length}")
@@ -8829,7 +8843,7 @@ class LlamaCppBackend:
     # https://huggingface.co/collections/unsloth/unsloth-diffusion-ggufs.
     # Matched exactly (not a substring) so a chat arch containing "wan"/"sd1"
     # (e.g. "taiwan") isn't misrouted to Images.
-    _DIFFUSION_ARCHES = frozenset(
+    _IMAGE_ARCHES = frozenset(
         (
             "qwen_image",
             "flux",
@@ -8838,13 +8852,92 @@ class LlamaCppBackend:
             "sd3",
             "aura",
             "hidream",
+            "lumina2",
+        )
+    )
+    # Text-to-video architectures. Split from the image set so the refusal names the
+    # Video page: sending someone with a Wan / LTX-2 GGUF to Images is a second dead end.
+    _VIDEO_ARCHES = frozenset(
+        (
             "cosmos",
             "ltxv",
             "hyvid",
             "wan",
-            "lumina2",
         )
     )
+    _DIFFUSION_ARCHES = _IMAGE_ARCHES | _VIDEO_ARCHES
+
+    def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
+        """Why this GGUF cannot be a chat model, decided from its own header BEFORE
+        llama-server is launched; None when there is no such verdict.
+
+        Two things go wrong without it. A media GGUF opened in a chat spends the whole
+        download-and-launch path only to die in llama-server's loader, and what the user
+        sees is "llama-server failed to start" with no hint that the file was never a chat
+        model and no pointer to the page that does run it (the reported Video-model case:
+        loaded from the Model Hub into a chat, failed opaquely, no log in the UI).
+
+        The header alone is enough to be certain, in two ways:
+
+        * A declared architecture in the image / video sets. llama.cpp has no such
+          architectures, so this is exactly the failure it would hit, one launch earlier.
+        * NO ``general.architecture`` at all. That key is mandatory for anything
+          llama.cpp can load, and the video GGUFs Unsloth publishes (MiniMax-H3) carry a
+          bare tensor header with zero KV pairs, so they never reach the arch test above.
+          Gated on ``_gguf_header_parsed`` so a read that FAILED -- truncated download,
+          I/O error, a format this parser does not understand -- is never mistaken for a
+          file that declares nothing, and still gets its chance in llama-server.
+
+        Naming the destination page is the point, so when the architecture does not say
+        which it is, the family detectors are asked about the repo id and the filename."""
+        if not getattr(self, "_gguf_header_parsed", False):
+            return None
+        arch = (self._architecture or "").strip().lower()
+        if arch:
+            if arch in self._VIDEO_ARCHES:
+                return (
+                    f"This is a text-to-video GGUF (architecture '{arch}'), which cannot "
+                    "run as a chat model. Open it from the Video page instead."
+                )
+            if arch in self._IMAGE_ARCHES:
+                return (
+                    f"This is an image-generation GGUF (architecture '{arch}'), which "
+                    "cannot run as a chat model. Open it from the Images page instead."
+                )
+            return None
+
+        # No architecture declared: not loadable by llama-server whatever it is. Say which
+        # page runs it when the identifiers make that clear.
+        needles = [
+            n for n in (self._model_identifier, os.path.basename(gguf_path or "")) if n
+        ]
+        try:
+            from core.inference.video_families import detect_video_family
+
+            if any(detect_video_family(n) is not None for n in needles):
+                return (
+                    "This is a text-to-video model, not a chat model: its GGUF carries no "
+                    "llama.cpp model metadata, so llama-server cannot load it. Open it "
+                    "from the Video page instead."
+                )
+        except Exception as e:  # noqa: BLE001 -- naming the page is a nicety, never a gate
+            logger.debug("Video family probe failed during non-chat GGUF preflight: %s", e)
+        try:
+            from core.inference.diffusion_families import detect_family
+
+            if any(detect_family(n) is not None for n in needles):
+                return (
+                    "This is an image-generation model, not a chat model: its GGUF carries "
+                    "no llama.cpp model metadata, so llama-server cannot load it. Open it "
+                    "from the Images page instead."
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Image family probe failed during non-chat GGUF preflight: %s", e)
+        return (
+            "This GGUF carries no llama.cpp model metadata (no general.architecture), so "
+            "llama-server cannot load it as a chat model. Image and video GGUFs are "
+            "packaged this way -- try the Images or Video page, or pick a chat GGUF."
+        )
 
     # Distro package names for the shared libraries the Linux prebuilt links,
     # so the loader failure below can say what to install.
@@ -9054,7 +9147,13 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
-            if arch in LlamaCppBackend._DIFFUSION_ARCHES:
+            if arch in LlamaCppBackend._VIDEO_ARCHES:
+                return (
+                    f"'{arch}' is a text-to-video GGUF, which llama-server "
+                    "cannot run as a chat/completion model. Open it from "
+                    "Unsloth's Video page instead of a chat."
+                )
+            if arch in LlamaCppBackend._IMAGE_ARCHES:
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
                     "llama-server cannot run as a chat/completion model. Use "
@@ -10480,6 +10579,14 @@ class LlamaCppBackend:
             if _load_cancelled():
                 logger.info("Load cancelled after download phase")
                 return False
+
+            # An image / video GGUF cannot be a chat model. Refuse from the header rather
+            # than launching llama-server to watch it die as "llama-server failed to
+            # start", and name the page that does run it.
+            non_chat = self._non_chat_gguf_refusal(model_path)
+            if non_chat:
+                logger.error("Refusing non-chat GGUF: %s (%s)", non_chat, model_path)
+                raise ValueError(non_chat)
 
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).

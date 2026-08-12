@@ -25,6 +25,7 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
@@ -107,6 +108,7 @@ import {
   matchesModelType,
 } from "./lib/model-type-filter";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
+import { studioPageForTask } from "./lib/unsloth-support";
 import { fingerprintToken } from "./lib/token-fingerprint";
 import {
   buildDiscoverRows,
@@ -1277,6 +1279,21 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // An image / video model is run by its own page, not by chat. Loading it here started
+      // a llama.cpp load that could only fail ("llama-server failed to start") after evicting
+      // whatever chat had resident, and dropped the user in a chat that could never answer.
+      // Same destination and params the chat picker already routes its media picks to.
+      const mediaPage = studioPageForTask(selectedModel.pipelineTag);
+      if (mediaPage) {
+        void navigate({
+          to: `/${mediaPage}`,
+          // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
+          search: diffusionRouteSearch(runId, {
+            ggufVariant: opts.ggufVariant ?? null,
+          }),
+        });
+        return;
+      }
       const configIdentity = modelConfigIdentity(
         selectedModel.kind,
         selectedModel.resource,
@@ -1313,7 +1330,7 @@ export function ModelsPage() {
         .catch(() => undefined);
       openNewChat();
     },
-    [openNewChat, selectModel, selectedModel],
+    [navigate, openNewChat, selectModel, selectedModel],
   );
   const handleLoad = useCallback(
     (opts: ModelLoadOptions) =>
