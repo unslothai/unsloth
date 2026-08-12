@@ -682,6 +682,24 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
         assert calls == [], f"an unnarrowed host was masked anyway: {calls}"
 
+    def test_a_uuid_mask_leaves_the_inherited_mask_in_place(self, monkeypatch):
+        """A ROCr mask may name UUIDs, not indices ("a list of device indices or
+        UUIDs", e.g. ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEFDEADBEEF"). The gate's
+        ids are then torch ordinals with no known physical mapping, and pinning
+        them would replace that mask with numbers ROCr resolves against the
+        whole host -- exposing cards the parent hid, the dropped one included."""
+        self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        calls = self._spy_visibility(monkeypatch)
+        monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "GPU-DEADBEEFDEADBEEF")
+        from core.rag.embed_llama_server import LlamaServerBackend
+
+        env = LlamaServerBackend()._build_env("/fake/llama-server", use_gpu = True)
+        assert calls == [], f"an unmappable mask was rewritten with ordinals: {calls}"
+        assert env["ROCR_VISIBLE_DEVICES"] == "GPU-DEADBEEFDEADBEEF"
+
     def test_the_cpu_path_hides_devices_at_both_layers(self, monkeypatch):
         """CPU has to mean CPU on ROCm too. HIP consults CUDA_VISIBLE_DEVICES
         only when HIP_VISIBLE_DEVICES is unset, so a blank CUDA mask alone leaves
@@ -700,3 +718,74 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         # ROCR hides agents BELOW HIP, so clearing it would expose more of them
         # to the enumeration that dies on an uncovered arch. Left as inherited.
         assert env["ROCR_VISIBLE_DEVICES"] == "0"
+
+
+class TestTheGateNeverRewritesAnUnmappableMask:
+    """ROCr and CUDA both accept UUID device tokens, and CUDA also MIG ids.
+    ``_resolve_visible_physical_ids`` answers None for those, so the probe's
+    ids fall back to torch ordinals -- fine for RANKING (the arch map falls
+    back the same way), unusable as a PIN: the runtime would resolve those
+    numbers against the whole host. The survivor pin fails open there, so the
+    inherited mask (and the launch it describes) is exactly what it was."""
+
+    @staticmethod
+    def _rocm_host(monkeypatch, *, gated, everything):
+        seen: list[bool] = []
+
+        def _probe(binary = None, *, for_llama_server = False):
+            seen.append(for_llama_server)
+            rows = gated if for_llama_server else everything
+            return [(idx, free, 0) for idx, free in rows]
+
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_installed_llama_gfx_archs",
+            staticmethod(lambda _b = None: frozenset({"gfx1030"})),
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory", staticmethod(_probe))
+        for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_var, raising = False)
+        return seen
+
+    def test_an_unmappable_mask_stops_the_pin_before_either_probe(self, monkeypatch):
+        seen = self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-deadbeefdeadbeef")
+
+        assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == []
+        assert seen == [], f"the host paid for the probes it cannot use: {seen}"
+
+    def test_an_index_mask_still_narrows(self, monkeypatch):
+        # The fail-open must key on "set but unparseable", not on "unset": an
+        # ordinary numeric mask still maps back, so the gate keeps working.
+        self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+        assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == [1]
+
+    def test_no_mask_at_all_still_narrows(self, monkeypatch):
+        self._rocm_host(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
+
+        assert LlamaCppBackend._arch_gate_survivors("/fake/llama-server") == [1]
+
+    @pytest.mark.parametrize(
+        "mask, unmappable",
+        [
+            (None, False),  # no mask: nothing inherited to lose
+            ("", False),  # empty mask: resolves to "no devices", not unknown
+            ("0,1", False),
+            (" 2 ", False),
+            ("GPU-DEADBEEFDEADBEEF", True),
+            ("0,GPU-DEADBEEFDEADBEEF", True),  # the mixed form ROCm documents
+            ("MIG-GPU-4a2b/1/0", True),
+        ],
+    )
+    def test_which_masks_count_as_unmappable(self, monkeypatch, mask, unmappable):
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        if mask is None:
+            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        else:
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+
+        assert LlamaCppBackend._visibility_mask_is_unmappable() is unmappable

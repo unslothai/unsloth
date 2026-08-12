@@ -4866,11 +4866,12 @@ class LlamaCppBackend:
         return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
 
     @staticmethod
-    def _resolve_visible_physical_ids() -> Optional[list[int]]:
-        """Physical GPU ids behind the active visibility mask (HIP/ROCR/CUDA on
-        ROCm, CUDA otherwise). None when no mask is set; empty list for an empty
-        mask. Shared by the APU / datacenter / free-memory probes so they agree
-        on the ordinal->physical mapping."""
+    def _active_gpu_visibility_mask() -> Optional[str]:
+        """The raw visibility mask in force (HIP, then ROCR, then CUDA on ROCm;
+        CUDA otherwise), or None when none is set.
+
+        The string ``_resolve_visible_physical_ids`` parses, split out so a
+        caller can tell "no mask" from "a mask I cannot map to physical ids"."""
         try:
             import torch
 
@@ -4898,12 +4899,41 @@ class LlamaCppBackend:
             )
         else:
             cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        return cvd
+
+    @staticmethod
+    def _resolve_visible_physical_ids() -> Optional[list[int]]:
+        """Physical GPU ids behind the active visibility mask (HIP/ROCR/CUDA on
+        ROCm, CUDA otherwise). None when no mask is set; empty list for an empty
+        mask. Shared by the APU / datacenter / free-memory probes so they agree
+        on the ordinal->physical mapping."""
+        cvd = LlamaCppBackend._active_gpu_visibility_mask()
         if cvd is None:
             return None
         try:
             return [int(x.strip()) for x in cvd.split(",") if x.strip()]
         except ValueError:
             return None
+
+    @staticmethod
+    def _visibility_mask_is_unmappable() -> bool:
+        """True when a mask IS set but does not resolve to physical ids: ROCr and
+        CUDA both accept UUID tokens ("a list of device indices or UUIDs",
+        e.g. ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEFDEADBEEF"), and CUDA also MIG
+        ids.
+
+        Torch ordinals cannot be mapped back to devices then, so re-emitting
+        them as a numeric mask would REPLACE the inherited one with ids the
+        runtime resolves against the whole host -- handing the child cards the
+        parent hid, including the very one a gate just dropped. Callers that
+        would pin fail open instead, the same reason
+        ``_pin_visible_gpu_order_for_split`` leaves such a mask alone. False
+        when no mask is set (nothing to lose) and for an empty mask (which
+        resolves to "no devices")."""
+        return (
+            LlamaCppBackend._active_gpu_visibility_mask() is not None
+            and LlamaCppBackend._resolve_visible_physical_ids() is None
+        )
 
     @staticmethod
     def _emit_child_gpu_visibility(
@@ -5468,7 +5498,8 @@ class LlamaCppBackend:
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
         """Physical ids the ROCm arch gate leaves, or [] when there is nothing to
-        mask: unknown coverage, a non-ROCm host, or a build covering every card.
+        mask: unknown coverage, a non-ROCm host, a build covering every card, or
+        an inherited mask whose ids we cannot name back to the child.
 
         For callers that must PIN the gate's answer rather than only rank by it.
         Knowing a supported device exists is not enough -- the child enumerates
@@ -5483,6 +5514,17 @@ class LlamaCppBackend:
                 return []
             if cls._installed_llama_gfx_archs(binary) is None:
                 return []  # unknown coverage: fail open, same as the probe
+            if cls._visibility_mask_is_unmappable():
+                # A UUID/MIG mask leaves the torch ordinals unmapped, so the pin
+                # would swap the inherited mask for numbers the runtime resolves
+                # against the whole host -- possibly onto the card the gate just
+                # dropped. Fail open: the inherited mask stands, as before #7624.
+                logger.info(
+                    "Not pinning the arch gate's survivors: the inherited GPU "
+                    "visibility mask is not index based, so they cannot be named "
+                    "to the child."
+                )
+                return []
             gated = [
                 idx for idx, _free, _total in cls._get_gpu_memory(binary, for_llama_server = True)
             ]
