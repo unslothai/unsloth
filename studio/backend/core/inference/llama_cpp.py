@@ -13482,14 +13482,23 @@ class LlamaCppBackend:
                         # _amd_apu_wants_unified_memory's own docstring calls
                         # harmful. Withdraw it for the respawn -- but only the
                         # value this launch set, so a deliberate user one stands.
-                        if _unified_env_applied and not self._amd_apu_wants_unified_memory(
-                            _remaining
-                        ):
+                        # Both directions: a markerless mixed host can just as easily
+                        # crash on the dGPU and land on the APU, which needs the
+                        # setting the first launch correctly left unset.
+                        _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        if _unified_env_applied and not _retry_wants_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
                             logger.info(
                                 "Arch-crash retry targets discrete GPU(s); dropped "
                                 "GGML_CUDA_ENABLE_UNIFIED_MEMORY for the respawn."
+                            )
+                        elif _retry_wants_unified and "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in env:
+                            env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+                            _unified_env_applied = True
+                            logger.info(
+                                "Arch-crash retry targets a unified-memory APU; set "
+                                "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 for the respawn."
                             )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
@@ -13507,6 +13516,19 @@ class LlamaCppBackend:
                             )
                             cmd = _arch_retry_cmd
                             self._tensor_split = None
+                        # A tensor split needs at least two devices, so narrowing to
+                        # one makes --split-mode tensor a no-op that is still
+                        # REPORTED as active: the tensor_parallel property drives the
+                        # UI and the MTP tensor crash watchdog. Strip the mode too.
+                        if len(_remaining) < 2 and self._tensor_parallel:
+                            _no_tensor_mode = self._without_flags(cmd, ("--split-mode", "-sm"))
+                            if _no_tensor_mode is not None:
+                                cmd = _no_tensor_mode
+                            self._tensor_parallel = False
+                            logger.info(
+                                "Arch-crash retry leaves one GPU; dropped tensor "
+                                "parallelism, which needs at least two."
+                            )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU

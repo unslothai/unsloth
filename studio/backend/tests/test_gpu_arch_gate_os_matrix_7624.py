@@ -1385,3 +1385,88 @@ class TestGatedNarrowingDropsUnifiedMemory:
         _cmd, env = launches[0]
         assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
         assert env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+
+
+class TestArchCrashRetryOntoAnApu:
+    """The mirror of TestArchCrashRetryEnv (#7624). A markerless mixed host can
+    just as easily crash on the DISCRETE card and land on the APU, where the
+    first launch correctly left GGML_CUDA_ENABLE_UNIFIED_MEMORY unset. Handling
+    only the withdrawal direction respawns onto a shared-memory pool without the
+    setting _amd_apu_wants_unified_memory says it needs. Mock-based, no ROCm here.
+    """
+
+    def _dgpu_then_apu(self, monkeypatch):
+        # Device 1 is the APU, so the free-VRAM rank pins the dGPU first and the
+        # retry's prefer-never-selected branch hands back exactly the APU.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1030", free_mib = 40000),
+                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+
+    def test_retry_onto_an_apu_sets_unified_memory_env(self, tmp_path, monkeypatch, probe_env):
+        torch = self._dgpu_then_apu(monkeypatch)
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+        )
+        assert "GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in launches[0][1]
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
+
+
+class TestArchCrashRetryDropsDeadTensorMode:
+    """Narrowing to one device makes --split-mode tensor a no-op, but it is still
+    REPORTED as active: the tensor_parallel property drives the UI and the MTP
+    tensor crash watchdog. Dropping --tensor-split alone left both behind (#7624).
+    """
+
+    def test_a_single_gpu_retry_drops_split_mode_tensor(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        # Both cards are selected for the tensor split, so the retry cannot prefer
+        # an unselected device and falls back to dropping the unified-memory one.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        torch = _fake_torch(
+            [
+                _device("gfx1151", free_mib = 40000, is_integrated = 1),
+                _device("gfx1030", free_mib = 30000),
+            ],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            intent_kwargs = {"tensor_parallel": True},
+        )
+        _retry = [cmd for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        for cmd in _retry:
+            _modes = [
+                cmd[i + 1]
+                for i, tok in enumerate(cmd)
+                if tok in ("--split-mode", "-sm") and i + 1 < len(cmd)
+            ]
+            assert "tensor" not in _modes, f"the narrowed respawn kept tensor mode: {cmd}"
