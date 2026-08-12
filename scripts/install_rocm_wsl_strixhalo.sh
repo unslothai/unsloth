@@ -217,7 +217,14 @@ else
     fi
     (
         cd "$_src"
-        git checkout "$LIBROCDXG_REF" 2>/dev/null || true
+        _co_failed=0
+        git checkout "$LIBROCDXG_REF" 2>/dev/null || _co_failed=1
+        # A failed checkout leaves the default branch in place. With a SHA the check below
+        # catches that; without one (a deliberate ref-only override) nothing else would, and
+        # building whatever HEAD happens to be is not what was asked for.
+        if [ "$_co_failed" = "1" ] && [ -z "$LIBROCDXG_SHA" ]; then
+            die "could not check out librocdxg ref '${LIBROCDXG_REF}'. Refusing to build the repository's default branch instead."
+        fi
         # Verify the pin BEFORE cmake/make/`sudo make install` run anything from this
         # tree: a moved tag or a mirror serving something else stops here.
         if [ -n "$LIBROCDXG_SHA" ]; then

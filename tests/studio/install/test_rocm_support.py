@@ -6472,6 +6472,10 @@ class TestRocmWslSupplyChainPins:
         assert ref is not None, "the helper fetch must pin a full commit SHA"
         assert len(ref.group(1)) == 40
         assert "${_ROCM_WSL_HELPER_REF}/scripts/install_rocm_wsl_strixhalo.sh" in body
+        # And whatever that pin (or a user's older checkout) supplies, a helper without the
+        # pinned-source check is refused rather than trusted.
+        assert 'grep -q "LIBROCDXG_SHA" "$_rw_helper"' in body
+        assert "predates the pinned-source check" in body
 
     def test_librocdxg_ref_is_pinned_and_verified_before_build(self):
         source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
@@ -6485,6 +6489,9 @@ class TestRocmWslSupplyChainPins:
         ref = re.search(r'LIBROCDXG_REF="\$\{UNSLOTH_LIBROCDXG_REF:-([0-9a-f]{40})\}"', source)
         assert ref is not None and ref.group(1) == sha.group(1)
         # The SHA check must run before anything from the clone is built or installed.
+        # A failed checkout must not fall through to the default branch.
+        assert '_co_failed=1' in source
+        assert "Refusing to build the repository's default branch instead" in source
         idx_check = source.find("git rev-parse HEAD")
         idx_cmake = source.find("cmake .. -DWIN_SDK")
         idx_install = source.find("$SUDO make install")
