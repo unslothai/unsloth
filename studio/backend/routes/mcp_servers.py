@@ -227,6 +227,15 @@ async def update_mcp_server(
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
+        # That await hands the event loop to other requests, so re-read and
+        # re-gate before writing: a UI conversion of this row to stdio landing
+        # in the window would otherwise let an API key's headers become a local
+        # command's environment (PATH, LD_PRELOAD) after the first check passed.
+        current = mcp_servers_db.get_server(server_id)
+        if current is not None and (
+            is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
+        ):
+            require_ui_session_for_local_commands(via_api_key)
     mcp_servers_db.update_server(server_id, changes)
     # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
     # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the

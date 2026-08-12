@@ -186,6 +186,36 @@ def test_update_refuses_any_edit_of_a_stdio_row_from_api_key(
     assert mcp_servers_db.get_server("s1")["display_name"] == "Local"
 
 
+def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio_on):
+    """clear_oauth_tokens_async awaits, which hands the event loop to other
+    requests. If the owner converts this row to stdio in that window, the write
+    that follows must not land the API key's headers as the command's env."""
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpServerUpdate
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "Remote", url = "https://a/mcp", is_enabled = True, use_oauth = True
+    )
+
+    async def _clear_then_convert(url):
+        await asyncio.sleep(0)
+        mcp_servers_db.update_server("s1", {"url": STDIO_CMD, "use_oauth": False})
+
+    monkeypatch.setattr(routes_mcp, "clear_oauth_tokens_async", _clear_then_convert)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.update_mcp_server(
+                "s1",
+                McpServerUpdate(headers = {"LD_PRELOAD": "/tmp/evil.so"}, use_oauth = False),
+                current_subject = "api-key-user",
+                via_api_key = True,
+            )
+        )
+    assert exc.value.status_code == 403
+    assert mcp_servers_db.get_server("s1")["headers_json"] is None
+
+
 def test_update_allows_http_row_from_api_key(tmp_path, monkeypatch, stdio_on):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
