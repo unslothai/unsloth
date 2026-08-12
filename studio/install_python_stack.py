@@ -980,8 +980,8 @@ def _detect_windows_gfx_arch() -> str | None:
 # (callers then fall back cleanly to CPU).
 _WIN_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700).
-    # R9700 is spelled out because the workstation card's name carries neither 9070 nor
-    # 9080, so it used to match nothing and fall through to CPU torch (#7624, #7307).
+    # R9700 is listed separately: its name holds neither 9070 nor 9080, so it matched
+    # nothing and fell through to CPU torch (#7624, #7307).
     (r"9070|9080|R9700", "gfx1201"),
     (r"9060", "gfx1200"),  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
     # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)

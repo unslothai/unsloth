@@ -292,10 +292,9 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
-    # The workstation Navi 48. Its name carries neither "9070" nor "9080", so every copy of
-    # the table returned None and a host without the HIP SDK, where name inference is the
-    # only path left, was told it had no GPU and got CPU torch. Hardware-confirmed as
-    # gfx1201 in #7624 and #7307; reported as "not detected" on PR #8398.
+    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307. Its name holds neither
+    # "9070" nor "9080", so every table returned None and a host without the HIP SDK, where
+    # name inference is the only path left, got CPU torch ("not detected", PR #8398).
     ("AMD Radeon AI PRO R9700", "gfx120X-all"),
     ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
@@ -339,8 +338,8 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 9070": "gfx1201",
     "AMD Radeon RX 9060 XT": "gfx1200",
     "AMD Radeon RX 9060": "gfx1200",
-    # Navi 48 again, as the Radeon AI PRO R9000 series workstation card. Sourced from the
-    # two reporters' own rocminfo output (#7624, #7307) rather than from these tables.
+    # Navi 48 again, as the R9000 series workstation card. Sourced from the reporters'
+    # own rocminfo output (#7624, #7307), not from these tables.
     "AMD Radeon AI PRO R9700": "gfx1201",
     # RDNA 3 -- Navi 31 / 32 / 33.
     "AMD Radeon RX 7900 XTX": "gfx1100",
@@ -488,9 +487,9 @@ class TestGpuNameArchParity:
         ],
     )
     def test_the_r9700_arm_does_not_swallow_older_cards(self, gpu_name):
-        """The Radeon AI PRO R9700 arm is spelled "R9700", not a bare "9700", because ATI
-        shipped a Radeon 9700 PRO in 2002 and the loose token would hand that card RDNA 4
-        wheels. None of these pre-RDNA names may resolve to anything."""
+        """The arm is spelled "R9700", not a bare "9700": ATI shipped a Radeon 9700 PRO in
+        2002 and the loose token would hand that card RDNA 4 wheels. None of these pre-RDNA
+        names may resolve to anything."""
         for where, rows in _name_tables().items():
             got = _resolve(where, rows, gpu_name)
             assert got is None, f"{where}: {gpu_name!r} matched {got!r}"

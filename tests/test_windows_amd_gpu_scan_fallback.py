@@ -501,10 +501,9 @@ def test_the_installer_keeps_a_parked_adapter_when_it_is_the_only_one(tmp_path):
 
 @requires_pwsh
 def test_a_lone_r9700_is_detected_by_both_scans(tmp_path):
-    """The report on PR #8398: "New install on windows 11 machine, R9700 Pro single GPU, not
-    detected". One healthy adapter and no HIP SDK, so the marketing name is the only evidence
-    left, and "AMD Radeon AI PRO R9700" holds neither "9070" nor "9080". Both scans have to
-    reach gfx1201 (#7624, #7307) or the install lands on CPU torch with no GPU reported."""
+    """Reported on PR #8398: single R9700 on Windows 11, not detected. One healthy adapter
+    and no HIP SDK, so the name is the only evidence left, and it holds neither "9070" nor
+    "9080". Both scans must reach gfx1201 (#7624, #7307) or the install lands on CPU torch."""
     assert _run(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
     assert _run_installer_scan(tmp_path, [(_R9700, 0)])["arch"] == "gfx1201"
 

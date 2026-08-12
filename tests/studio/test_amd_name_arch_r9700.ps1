@@ -3,11 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Behavioural test for the $nameArchTable GPU-name -> gfx inference in install.ps1 and
 # studio/setup.ps1, on the Radeon AI PRO R9700 (Navi 48, gfx1201; issues #7624 and #7307).
-# The card's name carries neither "9070" nor "9080", so the first-match-wins table used to
-# return nothing on a host with no HIP SDK and the installer fell back to CPU torch, which
-# surfaces as "GPU not detected" on a single-R9700 Windows box.
+# Its name holds neither "9070" nor "9080", so on a host with no HIP SDK the table returned
+# nothing and the installer fell back to CPU torch ("GPU not detected").
 # The Python parity suite evaluates these rows with Python's re; this runs them through
-# PowerShell's own -match, which is the engine that actually ships.
+# PowerShell's own -match, the engine that actually ships.
 # Run: pwsh -NoProfile -File tests/studio/test_amd_name_arch_r9700.ps1
 
 $ErrorActionPreference = "Stop"
@@ -22,8 +21,8 @@ function Check($name, $cond) {
 # Returns the shipped `$nameArchTable = @( ... )` literal, sliced on balanced parens so the
 # rows under test are the ones in the file rather than a copy pasted into this test.
 function Get-NameArchTableSource($path) {
-    # CRLF normalised: these installers ship with Windows line endings and every source-text
-    # match below would silently miss otherwise.
+    # CRLF normalised: these installers ship with Windows line endings, else every
+    # source-text match below silently misses.
     $src = (Get-Content -Raw $path) -replace "`r`n", "`n"
     $start = $src.IndexOf('$nameArchTable = @(')
     if ($start -lt 0) { throw "$path : `$nameArchTable = @( was not found (renamed or restructured?)" }
@@ -52,9 +51,9 @@ $r9700Names = @(
 )
 
 # Every other name the table already answers for, so the new alternation is shown not to
-# steal a row from a neighbour, plus names that must keep resolving to nothing. The ATI
-# Radeon 9700 PRO is the reason the pattern is "R9700" and not a bare "9700": that 2002
-# card would match a loose token and be handed RDNA 4 wheels.
+# steal a neighbour's row, plus names that must keep resolving to nothing. The ATI Radeon
+# 9700 PRO is why the pattern is "R9700" and not a bare "9700": that 2002 card would match
+# a loose token and be handed RDNA 4 wheels.
 $otherNames = @(
     @{ N = "AMD Radeon RX 9070 XT";        A = "gfx1201" },
     @{ N = "AMD Radeon RX 9070 GRE";       A = "gfx1201" },
@@ -90,8 +89,8 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     $tableSrc = Get-NameArchTableSource $path
     $nameArchTable = $null
     Invoke-Expression ("`$nameArchTable = " + $tableSrc.Substring($tableSrc.IndexOf("@(")))
-    # Guard against a vacuous pass: an empty or truncated slice would resolve everything to
-    # $null and every negative case below would "pass".
+    # Guard against a vacuous pass: an empty or truncated slice resolves everything to
+    # $null, so every negative case below would "pass".
     Check "the shipped nameArchTable was found and parsed" ($nameArchTable -and $nameArchTable.Count -ge 12)
     Check "every parsed row has a pattern and an arch" (@($nameArchTable | Where-Object { -not $_.P -or -not $_.A }).Count -eq 0)
 
@@ -104,9 +103,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
         else { Check "'$($row.N)' -> $($row.A)" ($got -eq $row.A) }
     }
 
-    # The R9700 alternation must live on the gfx1201 arm specifically. Resolving correctly
-    # would also be satisfied by an arm added anywhere, and a later arm would be shadowed
-    # the day another row grows a pattern that matches first.
+    # The alternation must live on the gfx1201 arm specifically: an arm added anywhere would
+    # also resolve correctly today, but a later one gets shadowed the day another row grows
+    # a pattern that matches first.
     $gfx1201Rows = @($nameArchTable | Where-Object { $_.A -eq "gfx1201" })
     Check "exactly one gfx1201 arm" ($gfx1201Rows.Count -eq 1)
     Check "the gfx1201 arm carries R9700" ($gfx1201Rows[0].P -match "R9700")
