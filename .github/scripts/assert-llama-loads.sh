@@ -52,6 +52,41 @@ if ! "$SERVER" --version >/tmp/llama-server-version.txt 2>&1; then
   fail "llama-server failed to launch on macOS $HOST_VER (dyld load / symbol error)"
 fi
 
+# The launch above uses this shell's environment, which says nothing about the
+# one Studio builds for its own child. That environment was Linux-shaped on
+# macOS for a long time (LD_LIBRARY_PATH, which dyld ignores), and the
+# installer's own validation set DYLD_LIBRARY_PATH, so the defect could not
+# show up at install time (#8566). Assert the launch environment here, where a
+# real runtime is installed, since a monkeypatched sys.platform unit test
+# cannot. Runs under the interpreter the `unsloth` shim points at, so the
+# backend's imports resolve without reinstalling anything.
+UNSLOTH_SHIM="$(command -v unsloth || true)"
+if [ -n "$UNSLOTH_SHIM" ]; then
+  STUDIO_PY="$(head -1 "$UNSLOTH_SHIM" | sed 's/^#!//' | awk '{print $1}')"
+fi
+if [ -n "${STUDIO_PY:-}" ] && [ -x "$STUDIO_PY" ]; then
+  if ! PYTHONPATH=studio/backend "$STUDIO_PY" - "$SERVER" <<'PY'
+import os, sys
+from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
+
+binary = sys.argv[1]
+lib_dir = str(_llama_lib_dir(binary))
+env = LlamaCppBackend._llama_server_env_for_binary(binary)
+got = env.get("DYLD_LIBRARY_PATH", "")
+print(f"DYLD_LIBRARY_PATH: {got or '<unset>'}")
+if not got:
+    sys.exit("Studio would launch llama-server with no DYLD_LIBRARY_PATH; dyld ignores LD_LIBRARY_PATH")
+if got.split(os.pathsep)[0] != lib_dir:
+    sys.exit(f"expected {lib_dir} first on DYLD_LIBRARY_PATH, got {got}")
+print("child launch environment is correct for dyld")
+PY
+  then
+    fail "Studio's llama-server launch environment is wrong for macOS (see above)"
+  fi
+else
+  echo "note: no unsloth shim on PATH, skipping the launch-environment assertion"
+fi
+
 echo "llama.cpp load validation passed on macOS $HOST_VER"
 echo "  server: $SERVER"
 sed -n '1,4p' /tmp/llama-server-version.txt 2>/dev/null || true
