@@ -65,6 +65,10 @@ interface DesktopPreflightResult {
 
 const MANAGED_STARTUP_POLL_MS = 500;
 
+// sessionStorage outlives webview reloads but not the app process, so an
+// explicit stop holds across Reload while a fresh launch still auto-starts.
+const USER_STOPPED_KEY = "unsloth_server_user_stopped";
+
 type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
   | { status: "ready"; port: number }
@@ -266,6 +270,10 @@ export function useTauriBackend() {
         case "managed_ready":
           setIsExternalServer(false);
           stopExternalServerPoll();
+          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
+            setBackendStatus("stopped");
+            return;
+          }
           setBackendStatus("starting");
           await startManagedServer();
           return;
@@ -301,6 +309,7 @@ export function useTauriBackend() {
       return;
     }
     startingRef.current = true;
+    sessionStorage.removeItem(USER_STOPPED_KEY);
     setStartupMessage(INITIAL_STARTUP_MESSAGE);
     portRef.current = null;
     startTimedOutRef.current = false;
@@ -385,6 +394,7 @@ export function useTauriBackend() {
     }
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("stop_server");
+    sessionStorage.setItem(USER_STOPPED_KEY, "1");
     startingRef.current = false;
     setBackendStatus("stopped");
   }
@@ -419,6 +429,7 @@ export function useTauriBackend() {
 
   const retry = useCallback(() => {
     clearAuthFailure();
+    sessionStorage.removeItem(USER_STOPPED_KEY);
     setError(null);
     setLogs([]);
     startingRef.current = false;
