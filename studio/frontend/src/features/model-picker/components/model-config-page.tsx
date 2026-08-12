@@ -343,32 +343,25 @@ function AdvancedGpuSlider({
   );
 }
 
-// How much of each card a load may claim. Unlike everything else in this panel this
-// is a SERVER-WIDE setting, not a per-model override: it replaces two constants the
-// fit reads, so there is nothing per-model to attach it to. The label says so.
-//
-// Driven in whole percent so a dragged value round-trips exactly and reuses
-// AdvancedGpuSlider's step of 1; the fraction is rebuilt at the API boundary.
+// How much of each card a load may claim. SERVER-WIDE, not a per-model override:
+// it replaces two constants the fit reads, so there is nothing per-model to attach
+// it to, and the label says so. Driven in whole percent so a dragged value
+// round-trips exactly; the fraction is rebuilt at the API boundary.
 function VramBudgetRow() {
-  // Every branch that reads the budget is gated on a discrete GPU, so the caller
-  // renders this only when one exists and the mode is not Manual. macOS is gated
-  // here as well: it reports no discrete GPUs (_get_gpu_memory returns [] there),
-  // so the Metal path sizes itself from _APPLE_UNIFIED_MEMORY_FRACTION and calls
-  // the context fitter with budget_frac = 1.0. Showing the slider anyway would
-  // promise "applies on the next load" for a setting those paths ignore, and the
-  // reload hint would fire for a reload that changes nothing.
+  // The caller already gates on a discrete GPU and non-Manual mode. macOS is gated
+  // here too: it reports no discrete GPUs, so the Metal path sizes itself from
+  // _APPLE_UNIFIED_MEMORY_FRACTION and fits with budget_frac = 1.0. Showing the
+  // slider would promise "applies on the next load" for a setting it ignores.
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const adviceId = useId();
 
-  // Adopt whatever the last save or read published. Without this the row is
-  // initialised from its own GET, which races the PUT that the previous unmount
-  // fired: close and reopen Advanced settings straight after a drag and the GET
-  // can win, leaving the control showing a value the server no longer holds. A
-  // queued edit wins over the publish, or a save landing mid-drag would drag the
-  // slider back out from under the pointer.
+  // Adopt what the last save or read published: the row's own GET races the PUT a
+  // previous unmount fired, so reopening Advanced straight after a drag could show
+  // a value the server no longer holds. A queued edit outranks the publish, or a
+  // save landing mid-drag would pull the slider out from under the pointer.
   useEffect(() => {
     if (isMac) {
       return;
@@ -401,12 +394,10 @@ function VramBudgetRow() {
     // deviceType settles once /api/health answers, so re-run if the seed guess flips.
   }, [isMac]);
 
-  // Flush, don't drop. The timer is cleared so nothing fires against a torn-down
-  // view, but the pending fraction is still sent: this is a server-wide setting
-  // held nowhere else, so a drag followed within the debounce window by Run, by
-  // the Advanced toggle, or by closing the panel would otherwise be discarded with
-  // no way to get it back. The view is gone, so the response only reaches the
-  // subscribers, not this component's state.
+  // Flush, don't drop: the timer is cleared so nothing fires against a torn-down
+  // view, but the fraction is still sent. It is held nowhere else, so a drag
+  // followed within the debounce by Run, the Advanced toggle or closing the panel
+  // would be lost. The view is gone, so the response only reaches subscribers.
   useEffect(
     () => () => {
       if (saveTimer.current) {
@@ -422,8 +413,7 @@ function VramBudgetRow() {
     [],
   );
 
-  // A null response means the backend predates this endpoint; hide rather than
-  // render a control that cannot save.
+  // A null response means an older backend; hide rather than render a dead control.
   if (isMac || !settings || percent === null) {
     return null;
   }
@@ -431,8 +421,8 @@ function VramBudgetRow() {
   const defaultPercent = vramFractionToPercent(settings.defaultFraction);
   const commit = (next: number) => {
     setPercent(next);
-    // The slider fires on every pointer move, so debounce: otherwise one drag is
-    // dozens of writes, each invalidating the read cache.
+    // Debounced: the slider fires per pointer move, so a drag would be dozens of
+    // writes, each invalidating the read cache.
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
     }
@@ -590,11 +580,9 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {/* The budget drives the auto-fit, which is exactly what Manual mode opts
-          out of: both manual branches plan with an empty device list, so the
-          fraction reaches nothing. It also needs a discrete GPU to act on, and
-          gpuDevices is empty on CPU-only hosts. Promising "applies on the next
-          load" in either case would be false. */}
+      {/* Manual mode opts out of the auto-fit the budget drives (both branches
+          plan with an empty device list), and a CPU-only host has no GPU to act
+          on, so promising "applies on the next load" would be false. */}
       {!isDiffusion && !isManual && gpuDevices.length > 0 && <VramBudgetRow />}
       {!isDiffusion && isManual && (
         <>
@@ -1542,17 +1530,14 @@ export function ModelConfigPage({
     const effectiveLoadConfig = target.isGguf
       ? effectiveRuntimeConfig
       : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
-    // Same reason as the numeric commits at the top of this handler, one layer
-    // out: the budget row debounces its PUT and flushes on unmount, which for
-    // this very click happens after onRun has staged the load, so the load would
-    // be sized against the old fraction. That is exactly the load the control
-    // promises the new value applies to. A failed save must not swallow the
-    // load, hence finally, and a click with nothing staged stays synchronous.
+    // Same reason as the numeric commits above: the budget row flushes on unmount,
+    // which for this click lands after onRun has staged the load, so that load (the
+    // very one the control promises) would use the old fraction. A failed save must
+    // not swallow the load, hence finally; nothing staged stays synchronous.
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
-      // Caught, not voided: finally would re-reject and the browser would log an
-      // unhandled rejection, and the load would otherwise proceed on the old
-      // fraction with nothing said, unlike the debounced and unmount saves.
+      // Caught, not voided: finally alone re-rejects into an unhandled rejection,
+      // and the load would proceed on the old fraction with nothing said.
       void stagedBudget
         .catch((error: unknown) => {
           toast.error(

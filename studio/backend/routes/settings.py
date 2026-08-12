@@ -226,20 +226,17 @@ class ModelMemoryResponse(BaseModel):
 
 
 class VramBudgetPayload(BaseModel):
-    # None clears the stored budget, so the environment default (or the built-in
-    # one) applies again. The route cannot use None for "leave untouched" as the
-    # model-memory switches do, because there is only one field to write. Which is
-    # why the field is required rather than defaulted: with a default, {} would be
-    # a valid body meaning "clear it", so a client that dropped an undefined field
-    # would silently discard the stored budget instead of being told it was wrong.
+    # None clears the stored budget so env/default applies again; it cannot also
+    # mean "leave untouched" as the model-memory switches do, since there is one
+    # field. Hence required, not defaulted: with a default, {} would mean "clear it"
+    # and a client that dropped the field would silently discard the stored budget.
     fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
 
     @field_validator("fraction", mode = "before")
     @classmethod
     def _reject_bool(cls, value: object) -> object:
-        # bool is a subclass of int, so non-strict parsing turns True into 1.0
-        # and stores the maximum budget instead of returning 422. The util's own
-        # guard never sees the bool, because pydantic has already coerced it.
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
         if isinstance(value, bool):
             raise ValueError("fraction must be a number, not a boolean")
         return value
@@ -247,14 +244,13 @@ class VramBudgetPayload(BaseModel):
 
 class VramBudgetResponse(BaseModel):
     fraction: float
-    # False when the value is inherited from UNSLOTH_VRAM_FRACTION or the built-in
-    # default, so the UI knows whether clearing it would change anything.
+    # False when inherited from UNSLOTH_VRAM_FRACTION or the default, so the UI
+    # knows whether clearing it would change anything.
     is_stored: bool
     default_fraction: float = VRAM_FRACTION_DEFAULT
     min_fraction: float = VRAM_FRACTION_MIN
     max_fraction: float = VRAM_FRACTION_MAX
-    # The budget is read when a load sizes itself, so a change cannot reach a
-    # child that is already running.
+    # Read when a load sizes itself, so a change cannot reach a running child.
     reload_required: bool
 
 
@@ -504,18 +500,17 @@ def _vram_budget_reload_required(fraction: float) -> bool:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        # A load that has planned but not yet spawned has no _process, so
-        # is_active is still False while the child is already committed to the
-        # fraction it captured. Answer from the pending value in that window,
-        # as _active_launch_placement does for the Model Memory path.
+        # A planned-but-unspawned load has no _process, so is_active is False while
+        # the child is already committed to its captured fraction; answer from the
+        # pending value there, as _active_launch_placement does for Model Memory.
         pending = getattr(backend, "_vram_fraction_pending", None)
         if pending is not None:
             return float(pending) != float(fraction)
         if not backend.is_active:
             return False
         launched = getattr(backend, "_vram_fraction_launched", None)
-        # A child from before this field existed, or from a path that never set
-        # it, cannot be compared; say no rather than nagging on every save.
+        # A child predating this field, or from a path that never set it, cannot be
+        # compared; say no rather than nagging on every save.
         if launched is None:
             return False
         return float(launched) != float(fraction)

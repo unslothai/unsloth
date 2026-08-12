@@ -38,9 +38,8 @@ test("percent and fraction round-trip exactly across the whole range", () => {
 });
 
 test("the default fraction is exactly 0.97, not a float-drifted neighbour", () => {
-  // A drifted 0.9700000000000001 would never equal the backend default, so the
-  // UI would show the budget as changed the moment the slider was dragged and
-  // put back.
+  // A drifted 0.9700000000000001 never equals the backend default, so the UI would
+  // show the budget as changed after a drag that ended where it began.
   assert.equal(vramPercentToFraction(VRAM_BUDGET_PERCENT_DEFAULT), 0.97);
   assert.equal(vramFractionToPercent(0.97), VRAM_BUDGET_PERCENT_DEFAULT);
 });
@@ -63,13 +62,11 @@ test("percentToFraction tolerates a non-integer slider value", () => {
   assert.equal(vramPercentToFraction(90.6), 0.91);
 });
 
-// The debounced save lives in a component this suite cannot mount (no DOM in the
-// node runner, and renderToStaticMarkup never runs effects or their cleanup), so
-// the unmount contract is asserted against the source, as the chat-adapter tests
-// do. The bug it guards: clearing the timer without sending the pending fraction
-// silently discarded a slider drag that was followed within 400ms by Run, by the
-// Advanced toggle, or by closing the panel. The budget is server-wide and is not
-// carried in the per-model config, so nothing else could recover it.
+// The component cannot be mounted here (no DOM, and renderToStaticMarkup never
+// runs effects), so the unmount contract is asserted against the source, as the
+// chat-adapter tests do. The bug it guards: clearing the timer without sending the
+// pending fraction discarded a drag followed within 400ms by Run, the Advanced
+// toggle or closing the panel, and the server-wide budget lives nowhere else.
 const pageSource = readFileSync(
   fileURLToPath(
     new URL(
@@ -100,8 +97,7 @@ test("unmount flushes the pending budget save instead of dropping it", () => {
   assert.match(cleanup, /clearTimeout\(saveTimer\.current\)/);
   // ...but the value the user set is sent rather than discarded.
   assert.match(cleanup, /flushVramBudgetSave\(\)/);
-  // Fire-and-forget: the component is gone, so the response must not be routed
-  // back into its state.
+  // Fire-and-forget: the component is gone, so no response may reach its state.
   assert.doesNotMatch(cleanup, /\.then\(setSettings\)/);
 });
 
@@ -110,23 +106,21 @@ test("commit stages the fraction before arming the debounce", () => {
   const commitStart = row.indexOf("const commit = (next: number) => {");
   assert.ok(commitStart >= 0, "commit is gone");
   const commit = row.slice(commitStart);
-  // Staged before the timer is armed, so a drag that never reaches the timeout
-  // still has a value for unmount, or for Run, to flush.
+  // Staged before the timer, so an unfinished drag still has a value to flush.
   assert.ok(
     commit.indexOf("stageVramBudgetSave(vramPercentToFraction(next))") <
       commit.indexOf("setTimeout("),
     "the fraction must be staged before the debounce is armed",
   );
-  // The debounced save goes through the same flush, which clears the staged
-  // value as it sends, so unmount cannot re-send a save that already happened.
+  // The debounced save uses the same flush, which clears the staged value as it
+  // sends, so unmount cannot re-send a save that already happened.
   const timer = commit.slice(commit.indexOf("setTimeout("));
   assert.match(timer, /flushVramBudgetSave\(\)/);
   assert.doesNotMatch(timer, /updateVramBudgetSettings\(/);
 });
 
 test("the staged fraction is held outside the component that unmounts", () => {
-  // The row unmounts on Run and on the Advanced toggle, so a ref inside it
-  // cannot be read by the load that is about to start.
+  // The row unmounts on Run, so a ref inside it cannot be read by the load.
   const client = readFileSync(
     fileURLToPath(
       new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
@@ -149,9 +143,8 @@ test("the staged fraction is held outside the component that unmounts", () => {
 });
 
 test("Run waits for a staged budget save before starting the load", () => {
-  // The control promises the budget applies on the next load. If Run stages the
-  // load while the PUT is still in flight, that next load is sized against the
-  // old fraction and the save merely earns the user another reload.
+  // The control promises the budget applies on the next load, but if Run stages
+  // the load while the PUT is open, that load uses the old fraction.
   const handlerStart = pageSource.indexOf("const handleRun = () => {");
   assert.ok(handlerStart >= 0, "handleRun is gone");
   const handler = pageSource.slice(
@@ -171,8 +164,7 @@ test("Run waits for a staged budget save before starting the load", () => {
 test("the row adopts published settings instead of only its own read", () => {
   const row = vramBudgetRowSource();
   assert.match(row, /subscribeVramBudgetSettings\(/);
-  // A queued edit outranks the publish, or a save landing mid-drag would pull
-  // the slider back out from under the pointer.
+  // A queued edit outranks the publish, or a mid-drag save moves the slider.
   const subscribeAt = row.indexOf("subscribeVramBudgetSettings(");
   const guard = row.slice(subscribeAt, subscribeAt + 260);
   assert.match(guard, /if \(saveTimer\.current\) \{\s*return;/);
@@ -185,8 +177,8 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
     pageSource.indexOf("\n  };", handlerStart),
   );
   const flush = handler.slice(handler.indexOf("settleVramBudgetSave()"));
-  // finally alone re-rejects, so the browser logs an unhandled rejection and the
-  // load proceeds on the old fraction with nothing said.
+  // finally alone re-rejects into an unhandled rejection, and the load proceeds
+  // on the old fraction with nothing said.
   assert.ok(
     flush.indexOf(".catch(") < flush.indexOf(".finally("),
     "the rejection must be handled before finally starts the load",

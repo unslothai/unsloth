@@ -30,25 +30,22 @@ VRAM_BUDGET_SETTING_KEY = "vram_budget_fraction"
 
 VRAM_FRACTION_ENV_VAR = "UNSLOTH_VRAM_FRACTION"
 
-# Mirrored by VRAM_FRACTION_MIN/MAX/DEFAULT in per-model-config.ts, which drives the
-# slider in whole percent; test_vram_budget_settings.py pins the pair together.
-# The default is the historical _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
+# Mirrored in per-model-config.ts as whole percent for the slider, a pair
+# test_vram_budget_settings.py pins together. The default is the historical
+# _CTX_FIT_VRAM_FRACTION / _GPU_PIN_VRAM_FRACTION.
 VRAM_FRACTION_MIN = 0.80
 VRAM_FRACTION_MAX = 1.00
 VRAM_FRACTION_DEFAULT = 0.97
 
-# Read on the load path, so memo briefly to spare SQLite. Matches
-# model_memory_settings / openai_auto_switch_settings.
+# Read on the load path, so memo briefly to spare SQLite, as model_memory_settings.
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}
-# Bumped on every write. A read that began before a write must not fill the cache
-# with the value it already fetched, or the new budget would appear to revert for
-# the rest of the TTL and a load could size itself against the old one.
+# Bumped on every write: a read that began before it must not cache its stale
+# value, or the new budget would appear to revert for the rest of the TTL.
 _generation: dict[str, int] = {}
 
-# A write racing a read is rare, so a couple of retries always converges. The bound
-# only exists so a pathological write storm cannot spin here forever.
+# Retries converge; the bound only stops a write storm spinning here forever.
 _MAX_REREADS = 3
 
 
@@ -69,8 +66,7 @@ def _cached_setting(key: str) -> Any:
             if _generation.get(key, 0) == generation:
                 _cache[key] = (time.monotonic(), stored)
                 return stored
-        # A write committed while this read was in flight, so `stored` predates it.
-        # Reading it would size the fit against a budget that was just replaced.
+        # A write landed mid-read, so `stored` predates it and must not be cached.
     return stored
 
 
@@ -93,9 +89,9 @@ def coerce_fraction(value: Any) -> Optional[float]:
         fraction = float(value)  # None -> TypeError, "" / "  " -> ValueError
     except (TypeError, ValueError):
         return None
-    # Two-sided on purpose: NaN loses every comparison, so this rejects it. A
-    # one-sided `fraction < MIN or fraction > MAX` would let NaN reach the fit and
-    # turn every per-GPU budget into NaN. Mirrors _parse_mem_fraction_env.
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it; the
+    # one-sided form would let NaN through and NaN every per-GPU budget. Mirrors
+    # _parse_mem_fraction_env.
     return fraction if VRAM_FRACTION_MIN <= fraction <= VRAM_FRACTION_MAX else None
 
 

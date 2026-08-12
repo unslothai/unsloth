@@ -55,8 +55,7 @@ class TestCoerceFraction:
         assert vb.coerce_fraction(value) is None
 
     def test_rejects_bool(self):
-        # bool subclasses int, so True would otherwise coerce to 1.0 and read as
-        # a legitimate "claim the whole card".
+        # bool subclasses int, so True would coerce to a legitimate-looking 1.0.
         assert vb.coerce_fraction(True) is None
         assert vb.coerce_fraction(False) is None
 
@@ -70,9 +69,8 @@ class TestPrecedence:
         assert vb.get_vram_budget_fraction() == vb.VRAM_FRACTION_DEFAULT
 
     def test_default_matches_the_constant_it_replaced(self):
-        # The whole change is a no-op when nobody sets a budget, so this must
-        # track _CTX_FIT_VRAM_FRACTION. Imported lazily: the inference package is
-        # heavy and this is the only place the pair has to agree.
+        # A no-op when nobody sets a budget, so this must track
+        # _CTX_FIT_VRAM_FRACTION. Imported lazily: the inference package is heavy.
         from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION
         assert vb.VRAM_FRACTION_DEFAULT == _CTX_FIT_VRAM_FRACTION
 
@@ -96,8 +94,7 @@ class TestPrecedence:
         assert vb.get_vram_budget_fraction() == pytest.approx(0.90)
 
     def test_out_of_range_stored_value_is_ignored(self, monkeypatch):
-        # A row written by a future build with a wider range must not widen the
-        # budget on this one.
+        # A future build's wider range must not widen the budget on this one.
         monkeypatch.setattr(vb, "_cached_setting", lambda _key: 4.0)
         assert vb.get_vram_budget_fraction() == vb.VRAM_FRACTION_DEFAULT
 
@@ -108,8 +105,7 @@ class TestPrecedence:
         monkeypatch.setattr(vb, "_cached_setting", _boom)
         with pytest.raises(RuntimeError):
             vb.get_vram_budget_fraction()
-        # ...but the caller in llama_cpp swallows it, which is what actually
-        # protects the load.
+        # ...but the llama_cpp caller swallows it, which is what protects the load.
         from core.inference.llama_cpp import _active_vram_fraction, _CTX_FIT_VRAM_FRACTION
 
         assert _active_vram_fraction() == _CTX_FIT_VRAM_FRACTION
@@ -159,8 +155,7 @@ class TestWrite:
             type("_M", (), {"upsert_app_settings": staticmethod(written.update)}),
         )
         assert vb.set_vram_budget_fraction(None) == vb.VRAM_FRACTION_DEFAULT
-        # Stored as a null row, which reads back as "no value" and lets the env
-        # or the built-in default apply again.
+        # A null row reads back as "no value", so env/default applies again.
         assert written == {vb.VRAM_BUDGET_SETTING_KEY: None}
 
 
@@ -205,8 +200,7 @@ class TestLaunchedMarker:
         backend._audio_probed = True
 
         assert backend.load_model(lc.GgufLoadIntent(model_identifier = "owner/repo"))
-        # Nothing relaunched, so the child is still sized against 0.97 and the
-        # route must keep asking for a reload.
+        # Nothing relaunched, so the child is still on 0.97 and needs a reload.
         assert backend._vram_fraction_launched == pytest.approx(0.97)
 
     @staticmethod
@@ -224,9 +218,8 @@ class TestLaunchedMarker:
         return backend, lc
 
     def test_adopt_is_refused_when_the_budget_changed(self, monkeypatch):
-        # The intent is identical, because the budget is server-wide and carried
-        # on no request field. Without this check the route answers
-        # already_loaded and the slider silently does nothing.
+        # The budget is server-wide and on no request field, so the intent is
+        # identical; without this check the slider silently does nothing.
         backend, lc = self._adoptable(monkeypatch, launched = 0.97)
         monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.85)
 
@@ -243,8 +236,8 @@ class TestLaunchedMarker:
         )
 
     def test_adopt_is_allowed_when_placement_never_used_the_budget(self, monkeypatch):
-        # Manual mode and hosts with no discrete GPU plan with an empty device
-        # list, so the marker is None and a reload could not change placement.
+        # Manual mode and GPU-less hosts plan with no devices, so a reload changes
+        # nothing.
         backend, lc = self._adoptable(monkeypatch, launched = None)
         monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.85)
 
@@ -253,9 +246,8 @@ class TestLaunchedMarker:
         )
 
     def test_marker_is_committed_with_the_rest_of_the_launch_state(self):
-        # Guards the placement: next to _requested_n_batch, inside the block that
-        # only a launch which reached _healthy=True executes, not at the top of
-        # load_model where no child exists yet.
+        # Guards the placement: next to _requested_n_batch, inside the block only a
+        # _healthy=True launch runs, not at the top of load_model with no child yet.
         import inspect
 
         import core.inference.llama_cpp as lc
@@ -267,10 +259,9 @@ class TestLaunchedMarker:
         )
 
     def test_marker_is_none_when_placement_had_no_devices(self):
-        # gpus is emptied by both manual branches and is empty on a host with no
-        # discrete GPU, and every consumer of the fraction is gated on it, so a
-        # value there would be a budget the child never applied. Both the pending
-        # value and the committed marker go through the one predicate.
+        # gpus is empty in manual mode and on GPU-less hosts, and every consumer of
+        # the fraction is gated on it, so a value there is a budget the child never
+        # applied. Pending value and committed marker share the one predicate.
         import inspect
 
         import core.inference.llama_cpp as lc
@@ -289,9 +280,8 @@ class TestRouteContract:
         return rs
 
     def test_payload_rejects_a_boolean_fraction(self):
-        # bool subclasses int, so non-strict parsing turns True into 1.0 and
-        # stores the maximum budget instead of returning 422. The util's own
-        # bool guard never sees it, because pydantic coerced it first.
+        # bool subclasses int, so non-strict parsing turns True into 1.0 and stores
+        # the max budget instead of 422; pydantic coerces before the util's guard.
         import pydantic
         import pytest as _pytest
 
@@ -304,9 +294,8 @@ class TestRouteContract:
         assert rs.VramBudgetPayload.model_validate({"fraction": None}).fraction is None
 
     def test_reload_required_answers_from_a_load_that_has_not_spawned(self, monkeypatch):
-        # The window this covers: load_model has captured its fraction and fixed
-        # the placement, but _process is still None, so is_active would report no
-        # reload while the child is already committed to the pre-save value.
+        # The window: load_model captured its fraction but _process is still None,
+        # so is_active would report no reload while the child is already committed.
         rs = self._settings_module()
 
         class _Backend:
@@ -340,11 +329,8 @@ class TestRouteContract:
 class TestDiffusionPath:
     def test_the_diffusion_launch_clears_the_marker(self):
         # The diffusion branch returns before the launch block that commits the
-        # marker, so a fraction left by a previous llama-server would survive into
-        # a running diffusion server. The dedupe compares the marker, so that
-        # stale value would tear down and relaunch a healthy diffusion runner on
-        # every Apply, which is the failure its neighbours in that same block
-        # (_mtp_draft_path, _spec_fallback_reason) already exist to prevent.
+        # marker, so a previous llama-server's fraction would survive and, since the
+        # dedupe compares it, relaunch a healthy diffusion runner on every Apply.
         import inspect
 
         import core.inference.llama_cpp as lc
@@ -367,10 +353,9 @@ class TestLaunchFinalization:
         return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
 
     def test_the_fraction_is_resolved_under_the_load_lock(self):
-        # A request queued behind another load would otherwise plan with the
-        # fraction as it stood when it arrived, while the duplicate check reads
-        # the live one and can evict the resident child for a budget the queued
-        # load then fails to apply.
+        # A queued request would otherwise plan with the fraction as it stood on
+        # arrival while the duplicate check reads the live one, evicting the
+        # resident child for a budget the queued load then fails to apply.
         compact = self._load_model_source()
         lock_at = compact.index("withself._serial_load_scope():")
         resolve_at = compact.index("_vram_frac=_active_vram_fraction()")
@@ -378,10 +363,9 @@ class TestLaunchFinalization:
         assert lock_at < resolve_at < dedupe_at
 
     def test_a_healthy_spawn_keeps_the_pending_value_until_the_commit(self):
-        # The decode probe and the no-flash, drafter and projector retries all run
-        # after the first spawn returns, and the marker is committed after them.
-        # Releasing the pending value at the spawn would answer a save landing in
-        # that gap from the PREVIOUS child's marker.
+        # The decode probe and the no-flash, drafter and projector retries run after
+        # the first spawn and the marker is committed after them, so releasing the
+        # pending value at the spawn would answer from the PREVIOUS child's marker.
         compact = self._load_model_source()
         assert "ifnothealthy:self._vram_fraction_pending=None" in compact
         assert (
@@ -390,9 +374,9 @@ class TestLaunchFinalization:
         )
 
     def test_a_cpu_fallback_child_is_not_stamped_with_a_budget(self):
-        # An auto Vulkan crash that recovers on CPU rewrites the intent to CPU
-        # placement but leaves gpus populated from the attempt that failed, so
-        # gpus alone would stamp a CPU-only child.
+        # An auto Vulkan crash that recovers on CPU rewrites the intent but leaves
+        # gpus populated from the failed attempt, so gpus alone would stamp a
+        # CPU-only child.
         import inspect
 
         import core.inference.llama_cpp as lc
@@ -413,9 +397,9 @@ class TestPreLaunchWindow:
         return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
 
     def test_the_pending_value_is_armed_before_the_download(self):
-        # The download and planning ahead of the spawn can take minutes, and the
-        # old child is gone for part of it, so a save landing there would be told
-        # no reload is needed while the eventual child carries the old fraction.
+        # The download and planning before the spawn take minutes with the old child
+        # gone, so a save there would be told no reload is needed while the eventual
+        # child carries the old fraction.
         compact = self._compact()
         armed = compact.index("self._vram_fraction_pending=_vram_frac\n".strip())
         cancel = compact.index("self._cancel_event.clear()")
@@ -441,12 +425,10 @@ class TestPreLaunchWindow:
 
 class TestPendingOwnership:
     def test_the_pending_value_is_released_with_the_load_lock(self):
-        # Armed before the download, so every exit ahead of the spawn (a cancelled
-        # download, the diffusion runner's own return, a failed preflight) has to
-        # give it back, and the settings route reads it before is_active. The
-        # release belongs to the lock, not the call: two overlapping /load calls
-        # hand the lock over before the first one has returned, so a clear on the
-        # way out of the call would discard the queued load's own marker.
+        # Armed before the download, so every exit ahead of the spawn must give it
+        # back and the route reads it before is_active. The release belongs to the
+        # lock, not the call: overlapping /load calls hand the lock over before the
+        # first returns, so clearing on the way out would discard the queued marker.
         import inspect
 
         import core.inference.llama_cpp as lc

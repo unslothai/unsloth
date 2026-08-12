@@ -626,13 +626,11 @@ class TestExtraArgsMtpDetection:
         # Auto/cap subset ranking uses the active budget fraction (lowered by the
         # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
         # the fit budget that is then tested (Finding G4). _vram_frac is that
-        # fraction resolved once per load: the user's VRAM budget when they set
-        # one, else _CTX_FIT_VRAM_FRACTION.
+        # fraction resolved once per load: the user's budget, else the constant.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_gpu_usable(g,pin_fraction)" in compact
         assert "_gpu_usable(g,_vram_frac-_flat_mtp_reserve)" in compact
-        # Resolved once, so ranking and fitting cannot price against different
-        # budgets if a save lands mid-load.
+        # Resolved once, so a mid-load save cannot split ranking from fitting.
         assert "_vram_frac=_active_vram_fraction()" in compact
 
     @pytest.mark.parametrize(

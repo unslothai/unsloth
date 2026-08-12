@@ -3354,13 +3354,11 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
-        # VRAM budget fraction the running child was sized against; None before any
-        # load. Lets the settings route report a stale budget rather than assuming
-        # every save needs a reload.
+        # Budget the running child was sized against; None before any load, so the
+        # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
-        # The budget a load has already committed to but not yet published,
-        # covering the window between planning and Popen the same way
-        # _memory_launch_pending does for the Model Memory placement.
+        # Budget a load has committed to but not published, covering planning ->
+        # Popen as _memory_launch_pending does for Model Memory placement.
         self._vram_fraction_pending: Optional[float] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
@@ -9218,10 +9216,9 @@ class LlamaCppBackend:
         # Per-GPU usable budget: free - (1-frac)*total, else (unknown total, e.g. a
         # two-column probe) the legacy free*frac. Mirrors _select_gpus and
         # _gpu_usable so the 5% cushion is kept on every path, not dropped here.
-        # The caller's already-resolved budget when it has one, so a load prices
-        # placement and ranking against the SAME fraction even if a save lands
-        # mid-load. Resolved here only for the direct callers (tests) that have
-        # no load to inherit from, and once, not per GPU.
+        # Prefer the caller's resolved budget, so placement and ranking price the
+        # SAME fraction even if a save lands mid-load; resolved here only for the
+        # direct callers (tests) with no load to inherit from, and once, not per GPU.
         _tp_frac = vram_fraction if vram_fraction is not None else _active_vram_fraction()
 
         def _usable(idx: int, free_mib: int) -> float:
@@ -10205,15 +10202,12 @@ class LlamaCppBackend:
                     tensor_split = None,
                 )
 
-            # Fraction of each card this load may claim, resolved ONCE so every
-            # budget below is priced against the same number: ranking against one
-            # fraction and fitting against another mis-orders mixed-total setups.
-            # Defaults to _CTX_FIT_VRAM_FRACTION, so an unset budget is the
-            # historical behaviour. Resolved under the lock and ahead of the
-            # duplicate check, or a request that queued behind another load would
-            # plan with the fraction as it stood when it arrived while the check
-            # below reads the live one, and could evict the resident child for a
-            # budget it then fails to apply.
+            # Fraction of each card this load may claim, resolved ONCE so ranking
+            # and fitting price the same number (mixed totals mis-order otherwise);
+            # unset means _CTX_FIT_VRAM_FRACTION, the historical behaviour. Under
+            # the lock and ahead of the duplicate check, or a queued load would plan
+            # with a stale fraction while the check reads the live one, and could
+            # evict the resident child for a budget it then fails to apply.
             _vram_frac = _active_vram_fraction()
 
             def _budget_priced_placement() -> Optional[float]:
@@ -10232,16 +10226,12 @@ class LlamaCppBackend:
                     return None
                 return _vram_frac
 
-            # Nothing is committed yet, so drop any value a previous load left
-            # behind; the launch site below re-arms it once placement is fixed.
+            # Nothing is committed yet; the launch site re-arms it after placement.
             self._vram_fraction_pending = None
-            # _vram_fraction_launched is NOT set here: it records what the running
-            # child was sized against, and this far up nothing has launched yet.
-            # The duplicate-load fast path below, a cancellation and every failed
-            # preflight all return with the previous child still serving, so
-            # writing the marker here would tell the settings route that a stale
-            # child already carries the new budget and hide the reload it needs.
-            # Committed at the launch site.
+            # _vram_fraction_launched is committed at the launch site instead: the
+            # duplicate-load fast path, a cancellation and every failed preflight
+            # return with the previous child still serving, so setting it here would
+            # claim that stale child carries the new budget and hide its reload.
 
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
@@ -10264,15 +10254,12 @@ class LlamaCppBackend:
                     return False
                 return True
 
-            # From here the load is going to replace the running child, and the
-            # download and planning ahead of it can take minutes. A save landing
-            # in that stretch would otherwise find no active backend and be told
-            # no reload is needed, while the child that eventually starts is
-            # already committed to the fraction captured above. Placement is not
-            # decided yet, so this claims the load is budget-priced and the spawn
-            # site narrows it once gpus and the effective intent are known; an
-            # unnecessary reload prompt for those few seconds beats sizing a
-            # child against a budget the user has already replaced.
+            # The download and planning before the spawn can take minutes, and a
+            # save landing there would find no active backend and be told no reload
+            # is needed while the eventual child carries the fraction captured above.
+            # Placement is undecided, so claim budget-priced now and let the spawn
+            # site narrow it: a needless reload prompt beats sizing a child against
+            # a budget the user has already replaced.
             self._vram_fraction_pending = _vram_frac
 
             self._cancel_event.clear()
@@ -10606,11 +10593,9 @@ class LlamaCppBackend:
                 # Discovery runs before the metadata read that says diffusion, so a
                 # transient sidecar failure can set this for a drafterless server.
                 self._dflash_retry_needed = False
-                # And the VRAM budget marker, for the reason given twice above: this
-                # path returns before the launch block that would overwrite it, the
-                # diffusion runner does not size itself from the budget, and the
-                # dedupe now compares it, so a previous llama-server's fraction would
-                # relaunch a healthy diffusion server on every Apply.
+                # Same reason: this path returns before the launch block, and the
+                # diffusion runner ignores the budget, so a previous llama-server's
+                # fraction would relaunch a healthy diffusion server on every Apply.
                 self._vram_fraction_launched = None
                 with self._lock:
                     if _load_cancelled():
@@ -11439,8 +11424,8 @@ class LlamaCppBackend:
 
                         def _probe_frac(drafter: bool) -> float:
                             # The flat fraction is the reserve whenever _mtp_bytes is 0.
-                            # Same budget the fit below uses, or the probe would answer
-                            # for a card size the fit never tests.
+                            # Same budget the fit uses, else the probe answers for a
+                            # card size the fit never tests.
                             return _vram_frac - (
                                 _MTP_VRAM_RESERVE_FRAC
                                 if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
@@ -11773,11 +11758,9 @@ class LlamaCppBackend:
                             swa_full = swa_full,
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
-                            # The budget this load already resolved, not a second
-                            # read: a save landing mid-load would otherwise size
-                            # placement against a different fraction from the
-                            # ranking above, and _vram_fraction_launched would
-                            # record neither.
+                            # Already resolved, not a second read: a mid-load save
+                            # would otherwise size placement against a fraction the
+                            # ranking above never used.
                             vram_fraction = _vram_frac,
                         )
                         use_fit = False
@@ -13270,9 +13253,8 @@ class LlamaCppBackend:
                 def _raise_terminal_load_failure(detail: str) -> NoReturn:
                     if intent.cpu_fallback:
                         self._cleanup_failed_cpu_fallback()
-                    # No child is going to carry this budget now. Left set, the
-                    # settings route would answer from it ahead of its is_active
-                    # check and ask for a reload with nothing loaded.
+                    # No child will carry this budget; left set, the route reads it
+                    # ahead of is_active and asks for a reload with nothing loaded.
                     self._vram_fraction_pending = None
                     raise RuntimeError(detail)
 
@@ -13447,12 +13429,10 @@ class LlamaCppBackend:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
-                    # Only a spawn that never came up releases the pending value
-                    # here. A healthy child still has the decode probe and the
-                    # no-flash, drafter and projector retries to get through
-                    # before the marker is committed, and a save landing in that
-                    # gap would otherwise be answered from the PREVIOUS child's
-                    # marker, which describes a process that is already gone.
+                    # Only a failed spawn releases it here: a healthy child still has
+                    # the decode probe and the no-flash, drafter and projector retries
+                    # before the marker is committed, and a save in that gap would be
+                    # answered from the PREVIOUS child's marker, which is already gone.
                     if not healthy:
                         self._vram_fraction_pending = None
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
@@ -13843,11 +13823,10 @@ class LlamaCppBackend:
                 # marker intact, and the diffusion runner returns well before it without
                 # consuming, or paying for, any llama-server capability.
                 self._capability_probe_inconclusive = _launch_probe_inconclusive
-                # The VRAM budget this child was actually sized against. Committed
-                # here with the rest of the known-good state, so a duplicate-load
-                # fast path or a failed launch leaves the previous child's marker
-                # intact and the settings route keeps asking for the reload. None
-                # when placement never consulted it; see _budget_priced_placement.
+                # The budget this child was sized against, committed with the rest of
+                # the known-good state so a duplicate-load fast path or failed launch
+                # leaves the previous marker intact and the route keeps asking for the
+                # reload. None when placement never used it (_budget_priced_placement).
                 self._vram_fraction_launched = _budget_priced_placement()
                 self._vram_fraction_pending = None
                 self._requested_n_batch = intent.n_batch
@@ -14479,11 +14458,10 @@ class LlamaCppBackend:
         ):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
-        # Same shape as the Model Memory check above: the budget is server-wide,
-        # so a save leaves the intent identical and this would report
-        # already-loaded with the child still sized against the old fraction.
-        # None means placement never used it (manual, or no discrete GPU), where
-        # a reload would change nothing.
+        # Same shape as the Model Memory check above: the budget is server-wide, so
+        # a save leaves the intent identical and this would report already-loaded with
+        # the child still on the old fraction. None means placement never used it
+        # (manual, or no discrete GPU), where a reload would change nothing.
         _launched_frac = self._vram_fraction_launched
         if _launched_frac is not None and float(_launched_frac) != _active_vram_fraction():
             logger.info("VRAM budget changed since launch; forcing a reload")

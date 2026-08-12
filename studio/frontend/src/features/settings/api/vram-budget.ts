@@ -34,9 +34,8 @@ type ApiVramBudgetSettings = {
 
 let inFlightVramBudget: Promise<VramBudgetSettings> | null = null;
 
-// Held here rather than in the row, because the row unmounts on Run and on the
-// Advanced toggle, and the load has to be able to flush the edit that unmount
-// would otherwise carry away with it.
+// Held here, not in the row: the row unmounts on Run and on the Advanced toggle,
+// and the load must still be able to flush that edit.
 let stagedVramBudgetFraction: number | null = null;
 
 /** Record a fraction a debounced save has not sent yet. */
@@ -45,10 +44,8 @@ export function stageVramBudgetSave(fraction: number | null) {
 }
 
 /**
- * Send a staged fraction now, ahead of whatever the caller does next.
- *
- * Returns null when nothing is staged, so a caller that only has to wait in the
- * rare case can keep its synchronous path in the common one.
+ * Send a staged fraction now. Returns null when nothing is staged, so callers keep
+ * their synchronous path in the common case.
  */
 export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
   const fraction = stagedVramBudgetFraction;
@@ -57,14 +54,10 @@ export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
 }
 
 /**
- * Everything the next load has to wait for: a staged fraction, or a save the
- * debounce already sent and that has not come back.
- *
- * An open write counts as much as a staged one. The debounce fires 400 ms after
- * the last pointer move, so a user who pauses and then clicks Load has nothing
- * staged and a PUT still in flight, and the load would otherwise be sized against
- * the fraction that request is replacing. The chain swallows its own rejections,
- * which the debounced save has already reported.
+ * Everything the next load must wait for: a staged fraction, or a debounced save
+ * still in flight. A user who pauses past the 400 ms debounce and clicks Load has
+ * nothing staged but an open PUT, and the load would otherwise use the fraction
+ * that request replaces. The chain swallows rejections the debounced save reported.
  */
 export function settleVramBudgetSave(): Promise<unknown> | null {
   return (
@@ -95,8 +88,7 @@ function fromApi(settings: ApiVramBudgetSettings): VramBudgetSettings {
 }
 
 // No read-through cache: reloadRequired describes the running process and goes
-// stale as soon as a model is loaded or swapped. This only fans the latest value
-// out to subscribers.
+// stale on any load or swap. This only fans the latest value out to subscribers.
 function publishVramBudget(settings: VramBudgetSettings) {
   window.dispatchEvent(
     new CustomEvent(VRAM_BUDGET_EVENT, { detail: settings }),
@@ -113,18 +105,15 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
 }
 
 /**
- * Always refetches, since `reloadRequired` describes the currently loaded
- * process. Concurrent calls still share one request.
- *
- * Returns null rather than throwing when the endpoint is absent, so a newer UI
- * talking to an older backend hides the control instead of erroring.
+ * Always refetches, since `reloadRequired` describes the loaded process;
+ * concurrent calls share one request. Returns null rather than throwing when the
+ * endpoint is absent, so a newer UI on an older backend hides the control.
  */
 export async function loadVramBudgetSettings(): Promise<VramBudgetSettings | null> {
-  // Read behind any open write. A row that remounts right after a drag was
-  // flushed can otherwise issue a GET that reads the old fraction before the PUT
-  // commits and answers after it, repainting the control with the value the
-  // server has just replaced. The subscription cannot untangle that on its own,
-  // because both events are legitimate and only their order is wrong.
+  // Read behind any open write: a row remounting right after a flushed drag can
+  // otherwise GET the old fraction before the PUT commits and answer after it,
+  // repainting the control with the value the server just replaced. The
+  // subscription cannot untangle that, since only the order is wrong.
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
   inFlightVramBudget ??= pendingWrites
@@ -156,16 +145,13 @@ async function putVramBudget(
   return fromApi(await res.json());
 }
 
-// One drag can outrun its own saves: the debounce fires 400 ms after the last
-// move, so on a slow link a second PUT starts while the first is still open.
-// Concurrent writes can be applied in either order, and their responses can come
-// back in either order, so the older edit could win both the database row and
-// the published value. Chaining serialises the writes; the generation makes only
-// the newest publish, so a late response cannot repaint the control.
+// One drag can outrun its own saves: on a slow link a second PUT starts while the
+// first is open, and either order of apply or response could let the older edit win
+// the database row and the published value. Chaining serialises the writes; the
+// generation lets only the newest publish, so a late response cannot repaint.
 let vramBudgetWriteChain: Promise<unknown> = Promise.resolve();
 let vramBudgetWriteGeneration = 0;
-// Writes that have been issued and not yet settled, so a load can tell whether
-// there is anything to wait for.
+// Issued but unsettled writes, so a load can tell whether to wait.
 let vramBudgetWritesOpen = 0;
 
 /** `null` clears the stored budget so the env var or the default applies again. */
@@ -183,8 +169,7 @@ export function updateVramBudgetSettings(
     .finally(() => {
       vramBudgetWritesOpen -= 1;
     });
-  // The chain must survive a rejection, or one failed save would strand every
-  // later one behind it.
+  // The chain must survive a rejection, or one failed save strands all later ones.
   vramBudgetWriteChain = write.catch(() => undefined);
   return write.then((settings) =>
     generation === vramBudgetWriteGeneration
