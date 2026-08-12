@@ -1865,6 +1865,7 @@ def save_to_gguf(
     is_gpt_oss: bool = False,
     imatrix = None,
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
+    merge_is_disposable: bool = False,
 ):
     """
     Orchestrates the complete GGUF conversion process.
@@ -1872,6 +1873,9 @@ def save_to_gguf(
     `imatrix` is a local importance-matrix path (already resolved); it is forwarded to
     llama-quantize and is required for the IQ low-bit quant types.
     `gguf_directory` can place outputs separately from the model input directory.
+    `merge_is_disposable` says `model_directory` was written by this export purely to
+    feed the converter, so its weights may be reclaimed if the quants would not
+    otherwise fit. Off by default: a caller pointing this at a real checkpoint keeps it.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -2072,6 +2076,12 @@ def save_to_gguf(
     if not is_gpt_oss:
         base_gguf = initial_files[0]
 
+        # Deduplicate while keeping order; methods equal to the base conversion already
+        # exist on disk and need no quantize pass.
+        methods_to_quantize = [
+            m for m in dict.fromkeys(quantization_method) if m != first_conversion
+        ]
+
         # The 16-bit safetensors merge that this conversion read from is not
         # read again: llama-quantize takes the GGUF, and the GGUF is already
         # written and moved. On a disk that has to hold all three at once --
@@ -2090,14 +2100,10 @@ def save_to_gguf(
             model_directory,
             gguf_directory,
             initial_files,
-            n_quants = len([m for m in dict.fromkeys(quantization_method) if m != first_conversion]),
+            quant_methods = methods_to_quantize,
+            first_conversion = first_conversion,
+            merge_is_disposable = merge_is_disposable,
         )
-
-        # Deduplicate while keeping order; methods equal to the base conversion already
-        # exist on disk and need no quantize pass.
-        methods_to_quantize = [
-            m for m in dict.fromkeys(quantization_method) if m != first_conversion
-        ]
 
         def _quantize_one(quant_method, n_threads = None):
             output_location = os.path.join(
@@ -3006,6 +3012,7 @@ def unsloth_save_pretrained_gguf(
     maximum_memory_usage: float = 0.85,
     save_method: str = None,
     imatrix_file = None,
+    merge_is_disposable: bool = True,
 ):
     """
     Same as .save_pretrained(...) except 4bit weights are auto
@@ -3014,6 +3021,11 @@ def unsloth_save_pretrained_gguf(
     imatrix_file: importance matrix for llama-quantize. None = off; a path = use that file
     (a *.gguf_file is renamed to *.gguf); True = download the upstream unsloth/<base>-GGUF
     imatrix. Required for the IQ low-bit quants (iq2_xxs, iq4_xs, ...).
+
+    merge_is_disposable: the 16-bit merge written into `save_directory` exists only to feed
+    the converter, so it may be reclaimed if the quants would otherwise not fit. Pass False
+    when `save_directory` is also part of the caller's own deliverable (the
+    SentenceTransformer export writes its module directory there), and the weights stay.
 
     Choose for `quantization_method` to be:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
@@ -3127,6 +3139,7 @@ def unsloth_save_pretrained_gguf(
     del arguments["base_model_name"]
     del arguments["is_processor"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
+    del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
     gguf_directory = f"{save_directory}_gguf"
@@ -3145,6 +3158,10 @@ def unsloth_save_pretrained_gguf(
     # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
+    # `merge_is_disposable` says `save_directory` ends up holding weights this call
+    # wrote purely to feed the converter. That holds for both branches that write it;
+    # the middle branch below reuses the checkpoint the model was loaded from instead,
+    # and that one belongs to the user, so it clears the flag whatever the caller asked.
     if is_peft_model:
         print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
@@ -3162,6 +3179,10 @@ def unsloth_save_pretrained_gguf(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
             save_directory = original_path
+            # The user's own checkpoint, not an intermediate. Nothing here may
+            # be reclaimed for disk space: an ordinary save_pretrained_gguf on a
+            # tight disk would otherwise delete the model it was handed.
+            merge_is_disposable = False
             # Persist tokenizer fixes (e.g. BOS token stripping) to disk
             # so the GGUF converter picks up the corrected chat template.
             if tokenizer is not None:
@@ -3260,6 +3281,7 @@ def unsloth_save_pretrained_gguf(
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
             imatrix = imatrix_path,
             gguf_directory = gguf_directory,
+            merge_is_disposable = merge_is_disposable,
         )
     except Exception as e:
         if _gguf_child_was_oom_killed(e):
@@ -3432,34 +3454,74 @@ def _gguf_failure_looks_like_disk(exc, save_directory = None):
         return True
     if getattr(exc, "errno", None) == 28:
         return True
+    # The output directory is the filesystem that has to hold the file, so the
+    # first path that answers decides. The working directory is only a fallback
+    # for when there is no output directory or it cannot be probed: a roomy
+    # output disk must not be called full because some unrelated filesystem the
+    # process happens to be sitting on is short, which would blame disk for a
+    # quantizer failure and hide the advice that would have fixed it.
     for path in (save_directory, os.getcwd()):
         if not path:
             continue
         try:
-            if shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES:
-                return True
+            return shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES
         except OSError:
             # Never let the diagnostic be the thing that raises.
             continue
     return False
 
 
+# Bytes per weight of the dtypes the converter and llama-quantize can emit as
+# a full-precision output. Every other method is a quantized type, which is
+# smaller than the 16-bit source it reads.
+_GGUF_BYTES_PER_WEIGHT = {"f32": 4.0, "f16": 2.0, "bf16": 2.0}
+
+
+def _gguf_output_size_ratio(quant_method, first_conversion):
+    """Upper bound on one output's size as a multiple of the base GGUF's.
+
+    A quantized output is smaller than the GGUF it is quantized from, so 1.0
+    bounds it. `f32` is the exception the ratio exists for: asking for f32 off
+    an f16 or bf16 base writes four bytes a weight, twice the input, so a
+    per-pass bound of 1.0 would call a disk roomy that is about to fill.
+    """
+    base = _GGUF_BYTES_PER_WEIGHT.get(str(first_conversion).lower(), 2.0)
+    target = _GGUF_BYTES_PER_WEIGHT.get(str(quant_method).lower(), 0.0)
+    if base <= 0:
+        return 1.0
+    return max(1.0, target / base)
+
+
 def _free_merge_if_disk_is_tight(
     model_directory,
     gguf_directory,
     initial_files,
-    n_quants = 1,
+    quant_methods = (),
+    first_conversion = None,
+    merge_is_disposable = False,
 ):
     """Reclaim the intermediate 16-bit merge when the quants will not fit.
 
     Returns the bytes freed, 0 if nothing was touched. Never raises: this runs
     to make an export succeed, and it must not be the thing that fails it.
 
+    `merge_is_disposable` is the whole safety story and defaults to off. It is
+    true only when this export wrote `model_directory` itself as a throwaway
+    step on the way to the GGUF. A non-PEFT `save_pretrained_gguf` instead
+    points the converter at the checkpoint the model was loaded from, and
+    deleting weights there would destroy the user's input model rather than an
+    intermediate.
+
     Only the weight files go. config.json and the tokenizer are small, and
     later steps (the Modelfile, a push) may still want them, so deleting the
     directory outright would trade one failure for another.
     """
-    if n_quants < 1 or not model_directory or not os.path.isdir(model_directory):
+    if not merge_is_disposable:
+        return 0
+    if not model_directory or not os.path.isdir(model_directory):
+        return 0
+    quant_methods = list(quant_methods)
+    if not quant_methods:
         return 0
     try:
         base_bytes = sum(os.path.getsize(f) for f in initial_files if os.path.isfile(f))
@@ -3468,20 +3530,38 @@ def _free_merge_if_disk_is_tight(
     if base_bytes <= 0:
         return 0
 
-    # A quantized output is never larger than the source it quantizes, so the
-    # base size is an upper bound per pass. Passes may run concurrently, hence
-    # the multiple. Overestimating costs a deletion that was not strictly
-    # required; underestimating costs the export.
-    needed = base_bytes * n_quants + _DISK_HEADROOM_BYTES
+    target_directory = gguf_directory or model_directory
+    # Freeing bytes on one filesystem does nothing for a quantize pass writing
+    # to another. `gguf_directory` is a supported argument and can point
+    # anywhere, so without this the merge could be deleted for a destination it
+    # cannot help -- data gone and the export still out of space.
     try:
-        free = shutil.disk_usage(gguf_directory or model_directory).free
+        if os.stat(model_directory).st_dev != os.stat(target_directory).st_dev:
+            return 0
+    except OSError:
+        return 0
+
+    # Every output lands on disk and stays there, so the passes add up.
+    # Overestimating costs a deletion that was not strictly required;
+    # underestimating costs the export.
+    needed = base_bytes * sum(
+        _gguf_output_size_ratio(m, first_conversion) for m in quant_methods
+    ) + _DISK_HEADROOM_BYTES
+    try:
+        free = shutil.disk_usage(target_directory).free
     except OSError:
         return 0
     if free >= needed:
         return 0
 
     weights = []
-    for name in os.listdir(model_directory):
+    try:
+        names = os.listdir(model_directory)
+    except OSError:
+        # Unreadable is not a reason to fail an export that no longer needs
+        # this directory at all.
+        return 0
+    for name in names:
         if name.endswith((".safetensors", ".bin", ".pth", ".pt")):
             path = os.path.join(model_directory, name)
             if os.path.isfile(path):
