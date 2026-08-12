@@ -1660,6 +1660,7 @@ export async function buildLocalTokenCountExtras(
     ragMode,
     ragTopK,
     autoHealToolCalls,
+    bypassPermissions,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1677,13 +1678,21 @@ export async function buildLocalTokenCountExtras(
   ) {
     // Explicit false, not an omitted field: the server defaults tools on for a
     // request that never mentions them, so every pill being off has to say so.
-    return { enable_tools: false };
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
   return {
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Full access swaps the python/terminal descriptions and adds a nudge
+    // sentence, so the count needs the flag to price the same prompt.
+    bypass_permissions: bypassPermissions,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
