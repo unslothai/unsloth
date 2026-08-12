@@ -111,6 +111,28 @@ def _plain_tracebacks_enabled() -> bool:
     )
 
 
+# Prefix on every echoed traceback line. Deliberately NOT whitespace: RFC 8259 lets a
+# parser skip leading space/tab, so json.loads('  {"event": ...}') SUCCEEDS, and an
+# exception message carrying a newline plus a JSON object would produce a line that
+# reads as a genuine record (CWE-117 log injection). Exception messages carry
+# request-derived text -- the cap above exists because a rejected upload embedded a
+# whole request body in one -- so that payload is reachable, not theoretical. "| "
+# cannot begin a JSON value, so no echoed line can be mistaken for a record, and a
+# reader that wants records only can drop these lines on the prefix alone.
+_TRACEBACK_ECHO_PREFIX = "| "
+
+
+def _echoable(exception: str) -> str:
+    """The traceback as lines that can never be read as a log record.
+
+    ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
+    \\n normalises every separator a message could smuggle in, including the \\r the
+    export worker's log reader treats as a line break."""
+    return "\n".join(
+        f"{_TRACEBACK_ECHO_PREFIX}{part}" for part in exception.rstrip().splitlines()
+    )
+
+
 def with_readable_traceback(renderer):
     """Wrap the JSON renderer so an exception is ALSO written as a real multi-line
     traceback, on the lines after the record.
@@ -123,10 +145,17 @@ def with_readable_traceback(renderer):
     the state the log is in for every crash anyone is ever asked to send in.
 
     The JSON record is emitted UNCHANGED, escaped exception field and all, so anything
-    parsing the file record-by-record is unaffected; the readable copy follows it. That
-    the file also carries non-JSON lines already is not an accident this relies on by
-    chance -- faulthandler dumps native stacks straight to the same handle, and uvicorn
-    and third-party stderr land there too.
+    parsing the file record-by-record still reads every record it read before, and every
+    line the echo adds is prefixed so it can neither parse as a record nor be confused
+    for one. That the file already carries non-JSON lines is not something this relies on
+    by chance -- faulthandler dumps native stacks straight to the same handle.
+
+    Emitted as part of the SAME return value rather than written to another stream, so
+    one ``print`` under ``PrintLogger``'s lock keeps the record and its traceback both
+    adjacent and correctly ordered. A processor runs BEFORE that print, so a side-channel
+    write here would put the traceback above the record it belongs to, and the export
+    worker reads stdout and stderr on two separate pipes, which would let them reorder
+    again in the dialog.
 
     Only for the JSON renderer. ConsoleRenderer (development) already prints tracebacks
     as tracebacks, and wrapping it would print each one twice."""
@@ -140,7 +169,7 @@ def with_readable_traceback(renderer):
             and isinstance(line, str)
             and _plain_tracebacks_enabled()
         ):
-            return f"{line}\n{exception.rstrip()}"
+            return f"{line}\n{_echoable(exception)}"
         return line
 
     return _render

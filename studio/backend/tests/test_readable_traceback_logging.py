@@ -54,10 +54,13 @@ def test_traceback_is_echoed_as_real_lines_after_the_record():
     # escaped exception, so a record-by-record reader sees exactly what it saw before.
     record = json.loads(first)
     assert record["exception"] == _TRACEBACK
-    # ...and the human-readable copy follows, as separate physical lines.
-    assert rest == _TRACEBACK
-    assert rest.splitlines()[0] == "Traceback (most recent call last):"
-    assert rest.splitlines()[-1].startswith("RuntimeError: Input type (float)")
+    # ...and the human-readable copy follows, as separate physical lines, each behind a
+    # prefix that keeps it from ever reading as a record of its own.
+    prefix = log_config._TRACEBACK_ECHO_PREFIX
+    lines = rest.splitlines()
+    assert [line.removeprefix(prefix) for line in lines] == _TRACEBACK.splitlines()
+    assert lines[0] == f"{prefix}Traceback (most recent call last):"
+    assert lines[-1].startswith(f"{prefix}RuntimeError: Input type (float)")
 
 
 def test_echo_can_be_turned_off(monkeypatch):
@@ -91,3 +94,37 @@ def test_echoed_copy_is_the_redacted_truncated_one():
     out = _render({"event": "request_failed", "exception": capped})
     assert len(out) < 2 * (log_config._MAX_EXC_CHARS + 500)
     assert out.endswith("ValueError: nope")
+
+
+def test_an_exception_message_cannot_forge_a_log_record():
+    # CWE-117. Exception messages carry request-derived text (the truncation cap above
+    # exists because a rejected upload embedded a whole request body in one), so a
+    # message holding a newline plus a JSON object is reachable. Every echoed line must
+    # be one json.loads() REJECTS. Indenting would not be enough: RFC 8259 lets a parser
+    # skip leading whitespace, so '  {"a": 1}' parses.
+    forged = json.dumps({"level": "info", "event": "admin_login", "user": "attacker"})
+    out = _render(
+        {
+            "event": "request_failed",
+            "exception": f"Traceback (most recent call last):\nValueError: bad prompt: \n{forged}",
+        }
+    )
+    head, _, echoed = out.partition("\n")
+    json.loads(head)  # the real record still parses, unchanged
+    for line in echoed.split("\n"):
+        assert not line[:1].isspace(), line
+        try:
+            json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        raise AssertionError(f"echoed line parses as a record: {line!r}")
+
+
+def test_every_echoed_line_carries_the_prefix_including_exotic_separators():
+    # splitlines() also breaks on \r, \x0b, \x0c, \x85 and U+2028/9, so a message cannot
+    # smuggle an unprefixed line in on a separator the echo did not rejoin.
+    exception = 'Traceback:\r\n  frame\rValueError: x\u2028{"event": "fake"}'
+    echoed = _render({"event": "e", "exception": exception}).split("\n")[1:]
+    assert echoed
+    assert all(line.startswith(log_config._TRACEBACK_ECHO_PREFIX) for line in echoed)
+    assert not any("\r" in line for line in echoed)
