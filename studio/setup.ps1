@@ -39,9 +39,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 #   The 'Get-ExecutionPolicy' command was found in the module
 #   'Microsoft.PowerShell.Security', but the module could not be loaded.
 #
-# astral's uv installer calls Get-ExecutionPolicy, and the run ends there with
-# exit 1 and no further output. The try/catch around that call does not help,
-# because Invoke-Expression runs the installer in this process.
+# Any Security cmdlet reached during the run ends it there with exit 1 and no
+# further output -- Get-AuthenticodeSignature, which verifies the VC++ runtime
+# download, sits on this path. A try/catch does not help, because the failure is
+# module loading in this process rather than an error the caller can catch.
 #
 # Prepended, not appended: the problem is precedence, not absence. Clearing the
 # variable so 5.1 rebuilds its default does not help either, because the

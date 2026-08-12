@@ -1361,11 +1361,15 @@ try {
     # Single-quote the path in the child -Command so `$` / backtick in custom
     # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
     `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -p " + `$launchPort
+    # RemoteSigned, not Bypass: the child runs an inline -Command that invokes an executable, so
+    # no script file is loaded and the two policies behave identically here -- but "Bypass" is a
+    # token AV heuristics weight, and there is no reason to spend it on a launch that needs no
+    # policy relief at all.
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
         '-ExecutionPolicy',
-        'Bypass',
+        'RemoteSigned',
         '-Command',
         `$studioCommand
     )
@@ -1516,9 +1520,15 @@ exit 0
             # launch-studio.ps1 with a hidden window. We deliberately avoid a
             # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
             # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            #
+            # RemoteSigned, not Bypass: a hidden window next to a bypassed execution policy is the
+            # pair Microsoft's own detections key on (studio/src-tauri/src/install.rs makes the
+            # same call for the app's own launch). Nothing is lost by dropping it -- the installer
+            # writes launch-studio.ps1 locally, so it carries no mark-of-the-web and RemoteSigned
+            # loads it. The hidden window stays, so the shortcut behaves exactly as before.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
-            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
