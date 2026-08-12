@@ -185,7 +185,9 @@ def test_passes_over_session_events_and_a_half_written_line(tmp_path):
 
 
 def test_titles_a_conversation_from_its_first_prompt(tmp_path):
-    path = write_transcript(tmp_path, "slug", "s1", [turn("user", "Fix the header\nand the footer")])
+    path = write_transcript(
+        tmp_path, "slug", "s1", [turn("user", "Fix the header\nand the footer")]
+    )
 
     assert read_transcript(path, "thread-1").title == "Fix the header"
 
@@ -289,9 +291,7 @@ def test_an_empty_conversation_is_left_out(cursor_home):
     assert summary.skipped == 1
 
 
-def test_a_project_whose_only_conversation_is_empty_leaves_nothing_behind(
-    tmp_path, monkeypatch
-):
+def test_a_project_whose_only_conversation_is_empty_leaves_nothing_behind(tmp_path, monkeypatch):
     home = tmp_path / "cursor"
     write_transcript(home, "Users-me-blank", "blank-session", [{"type": "turn_ended"}])
     monkeypatch.setenv(discovery.CURSOR_HOME_ENV, str(home))
