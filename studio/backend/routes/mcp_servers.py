@@ -4,12 +4,17 @@
 import asyncio
 import json
 import uuid
+from typing import Annotated
 from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.authentication import get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    require_ui_session_for_local_commands,
+)
 from core.inference.mcp_client import (
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
@@ -40,6 +45,12 @@ from utils.utils import safe_curated_detail, log_and_http_error
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# A stdio MCP server runs a local command, so only a UI session may define one (an
+# sk-unsloth API key keeps full http(s) access). Annotated rather than a Depends
+# default: the routes are also called directly by the unit tests, where a Depends
+# object as the default would be truthy and read as "API key".
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _looks_like_command(value: str) -> bool:
@@ -128,12 +139,16 @@ async def list_mcp_servers(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
 async def create_mcp_server(
-    payload: McpServerCreate, current_subject: str = Depends(get_current_subject)
+    payload: McpServerCreate,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
 ):
     display_name = (payload.display_name or "").strip()
     if not display_name:
         raise HTTPException(status_code = 400, detail = "display_name must not be empty")
     url = _validate_url(payload.url)
+    if is_stdio(url):
+        require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
@@ -184,6 +199,7 @@ async def update_mcp_server(
     server_id: str,
     payload: McpServerUpdate,
     current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
 ):
     old = mcp_servers_db.get_server(server_id)
     if not old:
@@ -191,6 +207,11 @@ async def update_mcp_server(
     changes = _changes_from_payload(payload)
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
+    # Both directions: an API key may neither point a row at a local command nor
+    # edit an existing stdio row (its env, name or enabled flag). Before any write,
+    # OAuth cleanup, cache eviction or session close, so a refusal changes nothing.
+    if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
+        require_ui_session_for_local_commands(via_api_key)
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
     # switch with no new headers, drop the old ones so env secrets aren't
     # re-sent as HTTP headers (or vice versa).
@@ -234,15 +255,21 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
 async def refresh_mcp_server_tools(
-    server_id: str, current_subject: str = Depends(get_current_subject)
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
 ):
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
     # Refresh uses the stored address, so re-check the stdio gate here too: a
     # stdio row from a desktop DB must not spawn on a hosted/network host.
-    if is_stdio(server["url"]) and not stdio_mcp_enabled():
-        raise HTTPException(status_code = 400, detail = "stdio MCP servers are disabled on this host")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+        if not stdio_mcp_enabled():
+            raise HTTPException(
+                status_code = 400, detail = "stdio MCP servers are disabled on this host"
+            )
 
     use_oauth = bool(server.get("use_oauth"))
     try:
@@ -281,7 +308,9 @@ async def refresh_mcp_server_tools(
 
 @router.post("/import", response_model = McpServerImportResult)
 async def import_mcp_servers(
-    payload: McpServerImportRequest, current_subject: str = Depends(get_current_subject)
+    payload: McpServerImportRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
 ):
     """Bulk-register servers from a standard mcpServers JSON config (issue
     #5936). Each entry rides the existing create path: _validate_url applies
@@ -297,6 +326,10 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
+            # Per entry, inside the same boundary: an API-key import of a mixed
+            # config still creates its http entries and reports the stdio ones.
+            if is_stdio(url):
+                require_ui_session_for_local_commands(via_api_key)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
@@ -321,12 +354,18 @@ async def import_mcp_servers(
 
 @router.post("/test", response_model = McpServerProbeResult)
 async def test_mcp_server(
-    payload: McpServerTestRequest, current_subject: str = Depends(get_current_subject)
+    payload: McpServerTestRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
 ):
     # URL/header validation must surface as 400 like create/update so the
     # frontend's create-form pre-flight gets the same error semantics as the
     # save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
+    # This probes an unstored, caller-supplied address, so the gate must land
+    # before list_tools_async -- after it, the process has already started.
+    if is_stdio(url):
+        require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
     try:
         tools = await list_tools_async(

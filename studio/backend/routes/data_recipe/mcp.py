@@ -6,10 +6,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Annotated
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from core.data_recipe.service import build_mcp_providers
+from auth.authentication import (
+    authenticated_via_api_key,
+    require_ui_session_for_local_commands,
+)
+from core.data_recipe.service import build_mcp_providers, recipe_has_stdio_mcp
 from loggers import get_logger
 from models.data_recipe import (
     McpToolsListRequest,
@@ -21,9 +26,19 @@ from utils.utils import safe_error_detail
 logger = get_logger(__name__)
 router = APIRouter()
 
+# A stdio provider is a command this host runs, so only a UI session may supply
+# one. Annotated rather than a Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
+
 
 @router.post("/mcp/tools", response_model = McpToolsListResponse)
-def list_mcp_tools(payload: McpToolsListRequest) -> McpToolsListResponse:
+def list_mcp_tools(
+    payload: McpToolsListRequest, via_api_key: ViaApiKey = False
+) -> McpToolsListResponse:
+    # The providers here are caller-supplied and probed immediately, so gate
+    # before any of them is built or spawned.
+    if recipe_has_stdio_mcp({"mcp_providers": payload.mcp_providers}):
+        require_ui_session_for_local_commands(via_api_key)
     try:
         from data_designer.engine.mcp import io as mcp_io
     except ImportError as exc:

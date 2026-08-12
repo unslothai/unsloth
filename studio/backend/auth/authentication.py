@@ -186,6 +186,22 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
+def require_ui_session_for_local_commands(via_api_key: bool) -> None:
+    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command.
+
+    A stdio MCP server runs a command on this machine as the backend user, outside
+    the python/terminal sandbox, so only an interactive UI session -- the person at
+    the keyboard -- may choose what runs. API keys keep full access to http(s) MCP
+    servers, and to stdio servers the owner already configured.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
+            "not with an API key. Use an http:// or https:// MCP server instead.",
+        )
+
+
 async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
     """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
 
