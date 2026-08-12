@@ -780,7 +780,7 @@ exit 1
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -866,7 +866,7 @@ exit 1
         // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -905,10 +905,27 @@ exit 1
     }
 
     #[tokio::test]
+    async fn same_root_backend_without_native_path_leases_is_an_external_conflict() {
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "native_path_leases_unsupported"
+        ));
+    }
+
+    #[tokio::test]
     async fn stale_same_root_without_desktop_owner_is_external_conflict() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
             ),
             "401 Unauthorized",
         )

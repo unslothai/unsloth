@@ -20,6 +20,7 @@ pub(super) struct BackendHealth {
     desktop_manageability_version: Option<u16>,
     supports_desktop_auth: Option<bool>,
     supports_desktop_backend_ownership: Option<bool>,
+    native_path_leases_supported: Option<bool>,
     studio_root_id: Option<String>,
     desktop_owner: Option<DesktopOwnerHealth>,
     version: Option<String>,
@@ -68,6 +69,9 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
     let supports_desktop_backend_ownership = json
         .get("supports_desktop_backend_ownership")
         .and_then(|v| v.as_bool());
+    let native_path_leases_supported = json
+        .get("native_path_leases_supported")
+        .and_then(|v| v.as_bool());
     let studio_root_id = json
         .get("studio_root_id")
         .and_then(|v| v.as_str())
@@ -91,6 +95,7 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
         desktop_manageability_version,
         supports_desktop_auth,
         supports_desktop_backend_ownership,
+        native_path_leases_supported,
         studio_root_id,
         desktop_owner,
         version,
@@ -154,6 +159,9 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     }
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
+    }
+    if health.native_path_leases_supported != Some(true) {
+        return Some("native_path_leases_unsupported".to_string());
     }
     // Unauthenticated /api/health gates `version` behind a bearer, and the bits
     // above predate the floor, so no version means "auth-gated", not "old".
@@ -378,6 +386,7 @@ mod tests {
             desktop_manageability_version: None,
             supports_desktop_auth: None,
             supports_desktop_backend_ownership: None,
+            native_path_leases_supported: None,
             studio_root_id: studio_root_id.map(str::to_string),
             desktop_owner: None,
             version: None,
