@@ -492,20 +492,6 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
-def _warm_rag_embedder() -> None:
-    """Warm RAG embeddings without blocking backend readiness."""
-    try:
-        from storage import rag_db
-
-        if not rag_db.RAG_AVAILABLE:
-            return
-        from core.rag import embeddings
-
-        embeddings.warm()
-    except Exception:
-        pass
-
-
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped by every start and stop. A worker captures the value it started with and stops once
@@ -555,9 +541,9 @@ def _stop_post_warm_thread() -> None:
 def _post_warm_retired(generation: Optional[int]) -> bool:
     """True when this post-warm worker's lifespan has ended. Logs once when it has.
 
-    A mismatch means the application that wanted this work has stopped. Everything the
-    worker does imports or loads something, and the RAG warm can spawn a llama-server, so
-    none of it may start for a stopped lifespan.
+    A mismatch means the application that wanted this work has stopped. The remaining
+    work imports optional platform or RAG scheduling modules, so none of it may start for
+    a stopped lifespan.
     """
     if generation is None or _post_warm_current_generation() == generation:
         return False
@@ -590,14 +576,11 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
 
 
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
-    """Stack-dependent startup work, run after the coordinated warm.
+    """Platform repair and linked-folder lifecycle work after the coordinated warm.
 
-    Both import the ML stack, and both used to do it their own way before the socket bound:
-    the MLX check inline on the lifespan thread (a healthy Mac waited on mlx.core/mlx_lm/
-    mlx_vlm before uvicorn could bind), the RAG embedder early enough to race the warm for
-    the GIL and the import locks, outside its hardware-first order and purge-on-failure.
-
-    Joining the warm first means the stack is imported once, in the intended order.
+    MLX repair used to probe the runtime before the socket bound. Joining first keeps that
+    optional probe out of the login-screen critical path. Linked-folder startup only loads
+    embeddings when a queued sync has real ingestion work; an idle scheduler stays cold.
     """
     # No-op when the warm never started, so this is safe under the kill switch.
     join_background_warm()
@@ -621,15 +604,6 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
     _start_linked_folder_auto_sync(generation)
-
-    # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair and linked-folder scheduling have their own lifecycles.
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return
-
-    if _post_warm_retired(generation):
-        return
-    _warm_rag_embedder()
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
@@ -710,7 +684,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
-    # The RAG embedder warm moved to _post_warm_background_work: here it raced for the GIL.
+    # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
     from core.research_runs import ResearchSupervisor
@@ -766,6 +740,13 @@ async def lifespan(app: FastAPI):
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
 
+    # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats
+    # this after cleanup, but its awaits would otherwise let startup imports continue for
+    # a lifespan that has already stopped.
+    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
+    if _invalidate_detection is not None:
+        _invalidate_detection()
+
     from core.inference.openai_codex_auth import shutdown_flows
 
     await shutdown_flows()
@@ -774,13 +755,6 @@ async def lifespan(app: FastAPI):
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
-
-    # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
-    # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
-    # warm keeps importing for a stopped lifespan. Retiring twice is harmless; getattr for tests.
-    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
-    if _invalidate_detection is not None:
-        _invalidate_detection()
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
@@ -1576,8 +1550,8 @@ def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
     A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
-    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
-    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, and datasets
+    run after it, and those C-extension imports can hold the GIL
     for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
     alone ends it with the expensive half of the warm still ahead of it, which is the window
     the grace exists for. But that marker also means "this hardware verdict is provisional,
@@ -1617,8 +1591,8 @@ async def liveness_check():
     # are the point of the route: it probes liveness every 15s and holds its startup grace
     # period open until a reply says the warm-up is over, because the warm thread's
     # `import torch` holds the GIL and can stall the next probes on a healthy process.
-    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
-    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: later
+    # transformers and datasets stages can also hold the GIL after detection settles.
     # Both are non-blocking reads of module-level state, so unlike health this neither starts
     # detection nor waits on it and the route stays cheap.
     if _torch_warm_in_progress():
