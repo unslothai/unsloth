@@ -6,62 +6,18 @@ from typing import Literal
 
 
 MediaGenerationKind = Literal["image", "video"]
-PresetWriteOrder = tuple[int | None, str | None]
 _settings_lock = RLock()
-_WRITE_VERSIONS = "_writeVersions"
-_MAX_WRITE_VERSIONS = 1024
+_MAX_PRESETS = 100
 
 
 def _setting_key(kind: MediaGenerationKind) -> str:
     return f"{kind}_generation_presets"
 
 
-def _version(write: PresetWriteOrder) -> tuple[int, str] | None:
-    timestamp, writer = write
-    if timestamp is None or writer is None:
-        return None
-    return timestamp, writer
-
-
 def _stored_settings(kind: MediaGenerationKind) -> dict:
     from storage.studio_db import get_app_setting
     stored = get_app_setting(_setting_key(kind), {})
     return dict(stored) if isinstance(stored, dict) else {}
-
-
-def _public_settings(stored: dict) -> dict:
-    public = dict(stored)
-    public.pop(_WRITE_VERSIONS, None)
-    public.pop("activePresetSource", None)
-    return public
-
-
-def _is_newer(stored: dict, scope: str, write: PresetWriteOrder) -> bool:
-    version = _version(write)
-    if version is None:
-        return True
-    versions = stored.get(_WRITE_VERSIONS, {})
-    current = versions.get(scope) if isinstance(versions, dict) else None
-    if not isinstance(current, list) or len(current) != 2:
-        return True
-    try:
-        current_version = int(current[0]), str(current[1])
-    except (TypeError, ValueError):
-        return True
-    return version > current_version
-
-
-def _record_write(stored: dict, scope: str, write: PresetWriteOrder) -> None:
-    version = _version(write)
-    if version is None:
-        return
-    raw = stored.get(_WRITE_VERSIONS, {})
-    versions = dict(raw) if isinstance(raw, dict) else {}
-    versions.pop(scope, None)
-    versions[scope] = list(version)
-    while len(versions) > _MAX_WRITE_VERSIONS:
-        versions.pop(next(iter(versions)))
-    stored[_WRITE_VERSIONS] = versions
 
 
 def _with_unknown_preserved(stored, updated):
@@ -82,68 +38,51 @@ def _with_unknown_preserved(stored, updated):
     return merged
 
 
+def _custom_presets(stored: dict) -> list:
+    presets = stored.get("customPresets", [])
+    return [item for item in presets if isinstance(item, dict)] if isinstance(presets, list) else []
+
+
 def get_media_generation_preset_settings(kind: MediaGenerationKind) -> dict:
     with _settings_lock:
-        return _public_settings(_stored_settings(kind))
+        return _stored_settings(kind)
 
 
-def set_media_generation_preset_settings(
-    kind: MediaGenerationKind,
-    settings: dict,
-    write: PresetWriteOrder = (None, None),
-) -> bool:
+def set_media_generation_preset_settings(kind: MediaGenerationKind, settings: dict) -> None:
+    """Write the page's current recipe and selection, never the named presets.
+
+    Those have their own endpoints so a debounced state write can never race a save or a delete
+    into clobbering the list.
+    """
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)
-        if not _is_newer(stored, "settings", write):
-            return False
         updated = _with_unknown_preserved(
             stored,
             {**settings, "customPresets": stored.get("customPresets", [])},
         )
-        _record_write(updated, "settings", write)
         upsert_app_settings({_setting_key(kind): updated})
-        return True
 
 
-def upsert_media_generation_preset(
-    kind: MediaGenerationKind,
-    preset: dict,
-    write: PresetWriteOrder = (None, None),
-) -> bool:
+def upsert_media_generation_preset(kind: MediaGenerationKind, preset: dict) -> None:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)
-        scope = f"custom:{preset['name']}"
-        if not _is_newer(stored, scope, write):
-            return False
-        presets = stored.get("customPresets", [])
-        presets = presets if isinstance(presets, list) else []
+        presets = _custom_presets(stored)
         replacing = any(item.get("name") == preset["name"] for item in presets)
-        if not replacing and len(presets) >= 100:
+        if not replacing and len(presets) >= _MAX_PRESETS:
             raise ValueError("Delete a preset before saving another one")
         stored["customPresets"] = [
             item for item in presets if item.get("name") != preset["name"]
         ] + [preset]
-        _record_write(stored, scope, write)
         upsert_app_settings({_setting_key(kind): stored})
-        return True
 
 
-def delete_media_generation_preset(
-    kind: MediaGenerationKind,
-    name: str,
-    write: PresetWriteOrder = (None, None),
-) -> bool:
+def delete_media_generation_preset(kind: MediaGenerationKind, name: str) -> None:
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)
-        scope = f"custom:{name}"
-        if not _is_newer(stored, scope, write):
-            return False
-        presets = stored.get("customPresets", [])
-        presets = presets if isinstance(presets, list) else []
-        stored["customPresets"] = [item for item in presets if item.get("name") != name]
-        _record_write(stored, scope, write)
+        stored["customPresets"] = [
+            item for item in _custom_presets(stored) if item.get("name") != name
+        ]
         upsert_app_settings({_setting_key(kind): stored})
-        return True

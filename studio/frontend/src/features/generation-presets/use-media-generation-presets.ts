@@ -30,43 +30,6 @@ import type {
   MediaGenerationPresetState,
 } from "./types";
 
-const presetMutationQueues = new Map<MediaGenerationKind, Promise<unknown>>();
-const presetWriter =
-  globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
-const writeClockKey = "unsloth_media_generation_preset_write_clock";
-let lastWriteTimestamp = 0;
-
-function nextWrite() {
-  let sharedTimestamp = 0;
-  try {
-    const storedTimestamp = Number(
-      globalThis.localStorage?.getItem(writeClockKey),
-    );
-    sharedTimestamp =
-      Number.isSafeInteger(storedTimestamp) &&
-      storedTimestamp >= 0 &&
-      storedTimestamp < Number.MAX_SAFE_INTEGER
-        ? storedTimestamp
-        : 0;
-  } catch {
-    // Storage can be unavailable in a restricted webview. The page-local clock still orders writes.
-  }
-  lastWriteTimestamp = Math.max(
-    Date.now(),
-    lastWriteTimestamp + 1,
-    sharedTimestamp + 1,
-  );
-  try {
-    globalThis.localStorage?.setItem(writeClockKey, String(lastWriteTimestamp));
-  } catch {
-    // Best effort only. The timestamp and writer still form a total order without storage.
-  }
-  return {
-    timestamp: lastWriteTimestamp,
-    writer: presetWriter,
-  };
-}
-
 function refusalMessage(error: unknown, fallback: string) {
   return error instanceof PresetWriteRefused ? error.message : fallback;
 }
@@ -74,28 +37,6 @@ function refusalMessage(error: unknown, fallback: string) {
 function claimForm(claim: { current: number }) {
   claim.current += 1;
   return claim.current;
-}
-
-function saveState<Params>(
-  kind: MediaGenerationKind,
-  settings: MediaGenerationPresetState<Params>,
-  keepalive = false,
-) {
-  return saveMediaGenerationPresetSettings(kind, settings, {
-    ...nextWrite(),
-    keepalive,
-  });
-}
-
-function enqueuePresetMutation<Result>(
-  kind: MediaGenerationKind,
-  operation: (write: ReturnType<typeof nextWrite>) => Promise<Result>,
-) {
-  const write = nextWrite();
-  const previous = presetMutationQueues.get(kind) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(() => operation(write));
-  presetMutationQueues.set(kind, next);
-  return next;
 }
 
 export interface MediaGenerationPresetsOptions<Params extends object> {
@@ -249,7 +190,7 @@ export function useMediaGenerationPresets<Params extends object>({
       return;
     }
     const timer = window.setTimeout(() => {
-      saveState(kind, settings).catch(() => {
+      saveMediaGenerationPresetSettings(kind, settings).catch(() => {
         toast.error(`Could not save ${kind} presets`);
       });
     }, 400);
@@ -263,7 +204,9 @@ export function useMediaGenerationPresets<Params extends object>({
     const flush = () => {
       const latest = latestSettingsRef.current;
       if (latest) {
-        saveState(kind, latest, true).catch(() => undefined);
+        saveMediaGenerationPresetSettings(kind, latest, true).catch(
+          () => undefined,
+        );
       }
     };
     window.addEventListener("beforeunload", flush);
@@ -321,9 +264,7 @@ export function useMediaGenerationPresets<Params extends object>({
       };
       const claim = claimForm(formClaim);
       try {
-        await enqueuePresetMutation(kind, (write) =>
-          upsertMediaGenerationPreset(kind, preset, write),
-        );
+        await upsertMediaGenerationPreset(kind, preset);
       } catch (error) {
         toast.error(refusalMessage(error, `Could not save ${kind} preset`));
         return null;
@@ -368,9 +309,7 @@ export function useMediaGenerationPresets<Params extends object>({
     const paramsBeforeDelete = currentParamsRef.current;
     const claim = claimForm(formClaim);
     try {
-      await enqueuePresetMutation(kind, (write) =>
-        deleteMediaGenerationPreset(kind, deletedName, write),
-      );
+      await deleteMediaGenerationPreset(kind, deletedName);
     } catch (error) {
       toast.error(refusalMessage(error, `Could not delete ${kind} preset`));
       return false;

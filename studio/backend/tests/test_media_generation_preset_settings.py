@@ -152,104 +152,29 @@ def test_custom_preset_names_are_canonical_and_cannot_replace_default(monkeypatc
     assert [preset["name"] for preset in saved["customPresets"]] == ["Landscape"]
 
 
-def test_out_of_order_writes_keep_the_latest_browser_operation(monkeypatch):
+def test_the_preset_list_is_capped_and_says_why(monkeypatch):
     client = _client(monkeypatch)
-    settings = {
-        "currentParams": {"steps": 9},
-        "activePreset": "Default",
-    }
-
-    def ordered(timestamp: int, writer: str) -> dict[str, str]:
-        return {
-            "Preset-Timestamp": str(timestamp),
-            "Preset-Writer": writer,
-        }
-
-    assert (
-        client.put(
-            "/api/settings/generation-presets/image",
-            json = {**settings, "currentParams": {"steps": 24}},
-            headers = ordered(200, "newer-tab"),
-        ).status_code
-        == 200
-    )
-    stale = client.put(
-        "/api/settings/generation-presets/image",
-        json = settings,
-        headers = ordered(100, "older-tab"),
-    )
-    assert stale.status_code == 200
-    assert stale.json() == {"saved": False}
-    saved = client.get("/api/settings/generation-presets/image").json()
-    assert saved["currentParams"]["steps"] == 24
-
-    preset = {"name": "Transient", "params": {}}
-    assert (
-        client.put(
-            "/api/settings/generation-presets/image/custom",
-            json = preset,
-            headers = ordered(250, "older-tab"),
-        ).status_code
-        == 200
-    )
-    assert (
-        client.delete(
-            "/api/settings/generation-presets/image/custom",
-            params = {"name": "Transient"},
-            headers = ordered(400, "newer-tab"),
-        ).status_code
-        == 200
-    )
-    assert (
-        client.put(
-            "/api/settings/generation-presets/image/custom",
-            json = preset,
-            headers = ordered(300, "older-tab"),
-        ).status_code
-        == 409
-    )
-    saved = client.get("/api/settings/generation-presets/image").json()
-    assert saved["customPresets"] == []
-
-
-def test_rejected_capacity_write_does_not_consume_its_version(monkeypatch):
-    client = _client(monkeypatch)
-
-    def ordered(timestamp: int) -> dict[str, str]:
-        return {
-            "Preset-Timestamp": str(timestamp),
-            "Preset-Writer": "capacity-test",
-        }
-
     for index in range(100):
-        response = client.put(
-            "/api/settings/generation-presets/image/custom",
-            json = {"name": f"Preset {index}", "params": {}},
+        assert (
+            client.put(
+                "/api/settings/generation-presets/image/custom",
+                json = {"name": f"P{index}", "params": {}},
+            ).status_code
+            == 200
         )
-        assert response.status_code == 200
 
-    new_preset = {"name": "New", "params": {}}
+    refused = client.put(
+        "/api/settings/generation-presets/image/custom",
+        json = {"name": "P100", "params": {}},
+    )
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Delete a preset before saving another one"
+
+    # Overwriting one of the existing entries is not a new entry, so it still goes through.
     assert (
         client.put(
             "/api/settings/generation-presets/image/custom",
-            json = new_preset,
-            headers = ordered(500),
-        ).status_code
-        == 409
-    )
-    assert (
-        client.delete(
-            "/api/settings/generation-presets/image/custom",
-            params = {"name": "Preset 0"},
-            headers = ordered(400),
-        ).status_code
-        == 200
-    )
-    assert (
-        client.put(
-            "/api/settings/generation-presets/image/custom",
-            json = new_preset,
-            headers = ordered(500),
+            json = {"name": "P0", "params": {"steps": 24}},
         ).status_code
         == 200
     )

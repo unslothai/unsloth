@@ -7,7 +7,7 @@ import threading
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
 from auth.authentication import (
@@ -101,7 +101,6 @@ from utils.embedding_model_settings import (
 )
 from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 from utils.media_generation_preset_settings import (
-    PresetWriteOrder,
     delete_media_generation_preset,
     get_media_generation_preset_settings,
     set_media_generation_preset_settings,
@@ -111,15 +110,6 @@ from utils.media_generation_preset_settings import (
 router = APIRouter()
 
 logger = get_logger(__name__)
-
-
-def _preset_write_order(
-    preset_timestamp: Optional[int] = Header(default = None, ge = 0, le = 9_007_199_254_740_991),
-    preset_writer: Optional[str] = Header(default = None, min_length = 1, max_length = 80),
-) -> PresetWriteOrder:
-    if (preset_timestamp is None) != (preset_writer is None):
-        raise HTTPException(status_code = 422, detail = "Incomplete preset write order")
-    return preset_timestamp, preset_writer
 
 
 class ImageGenerationPresetParams(BaseModel):
@@ -269,15 +259,10 @@ def get_image_generation_preset_settings(
 @router.put("/generation-presets/image")
 def update_image_generation_preset_settings(
     payload: ImageGenerationPresetState,
-    write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    saved = set_media_generation_preset_settings(
-        "image",
-        payload.model_dump(),
-        write,
-    )
-    return {"saved": saved}
+    set_media_generation_preset_settings("image", payload.model_dump())
+    return {"saved": True}
 
 
 @router.get(
@@ -293,61 +278,49 @@ def get_video_generation_preset_settings(
 @router.put("/generation-presets/video")
 def update_video_generation_preset_settings(
     payload: VideoGenerationPresetState,
-    write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    saved = set_media_generation_preset_settings(
-        "video",
-        payload.model_dump(),
-        write,
-    )
-    return {"saved": saved}
+    set_media_generation_preset_settings("video", payload.model_dump())
+    return {"saved": True}
 
 
 def _upsert_custom_generation_preset(
     kind: Literal["image", "video"],
     payload: ImageGenerationPreset | VideoGenerationPreset,
-    write: PresetWriteOrder,
 ) -> dict[str, bool]:
     try:
-        saved = upsert_media_generation_preset(kind, payload.model_dump(), write)
+        upsert_media_generation_preset(kind, payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    if not saved:
-        raise HTTPException(status_code = 409, detail = "A newer preset change was already saved")
-    return {"saved": saved}
+    return {"saved": True}
 
 
 @router.put("/generation-presets/image/custom")
 def upsert_custom_image_generation_preset(
     payload: ImageGenerationPreset,
-    write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    return _upsert_custom_generation_preset("image", payload, write)
+    return _upsert_custom_generation_preset("image", payload)
 
 
 @router.put("/generation-presets/video/custom")
 def upsert_custom_video_generation_preset(
     payload: VideoGenerationPreset,
-    write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
-    return _upsert_custom_generation_preset("video", payload, write)
+    return _upsert_custom_generation_preset("video", payload)
 
 
 @router.delete("/generation-presets/{kind}/custom")
 def delete_custom_generation_preset(
     kind: Literal["image", "video"],
     name: str,
-    write: PresetWriteOrder = Depends(_preset_write_order),
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
     name = name.strip()
     if not name or name == "Default" or len(name) > 80:
         raise HTTPException(status_code = 422, detail = "Invalid preset name")
-    if not delete_media_generation_preset(kind, name, write):
-        raise HTTPException(status_code = 409, detail = "A newer preset change was already saved")
+    delete_media_generation_preset(kind, name)
     return {"deleted": True}
 
 

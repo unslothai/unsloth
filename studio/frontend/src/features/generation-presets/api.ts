@@ -9,19 +9,6 @@ import type {
   MediaGenerationPresetState,
 } from "./types";
 
-type OrderedWrite = {
-  timestamp: number;
-  writer: string;
-  keepalive?: boolean;
-};
-
-function orderedWriteHeaders({ timestamp, writer }: OrderedWrite) {
-  return {
-    "Preset-Timestamp": String(timestamp),
-    "Preset-Writer": writer,
-  };
-}
-
 /** A refusal the server explained in words, so the caller can show it instead of a generic toast. */
 export class PresetWriteRefused extends Error {}
 
@@ -51,17 +38,14 @@ export async function getMediaGenerationPresetSettings<Params>(
 export async function saveMediaGenerationPresetSettings<Params>(
   kind: MediaGenerationKind,
   settings: MediaGenerationPresetState<Params>,
-  options: OrderedWrite,
+  keepalive = false,
 ) {
   return parseResponse<{ saved: boolean }>(
     await authFetch(`/api/settings/generation-presets/${kind}`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        ...orderedWriteHeaders(options),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(settings),
-      keepalive: options.keepalive,
+      keepalive,
     }),
   );
 }
@@ -69,15 +53,11 @@ export async function saveMediaGenerationPresetSettings<Params>(
 export async function upsertMediaGenerationPreset<Params>(
   kind: MediaGenerationKind,
   preset: MediaGenerationPreset<Params>,
-  options: OrderedWrite,
 ) {
   return parseResponse<{ saved: boolean }>(
     await authFetch(`/api/settings/generation-presets/${kind}/custom`, {
       method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        ...orderedWriteHeaders(options),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(preset),
       keepalive: true,
     }),
@@ -87,17 +67,12 @@ export async function upsertMediaGenerationPreset<Params>(
 export async function deleteMediaGenerationPreset(
   kind: MediaGenerationKind,
   name: string,
-  options: OrderedWrite,
 ) {
   const query = new URLSearchParams({ name });
   return parseResponse<{ deleted: boolean }>(
     await authFetch(
       `/api/settings/generation-presets/${kind}/custom?${query}`,
-      {
-        method: "DELETE",
-        headers: orderedWriteHeaders(options),
-        keepalive: true,
-      },
+      { method: "DELETE", keepalive: true },
     ),
   );
 }
