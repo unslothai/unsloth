@@ -103,18 +103,33 @@ _OPTS_WITH_VALUE = ("-X", "-W", "--check-hash-based-pycs")
 _SHELL_OPERATORS = ("|", "&", ";", ">", "<", "`", "$(")
 
 
+def _is_trusted_python(token: str) -> bool:
+    """A bare `python3`, or an absolute system path to one.
+
+    A relative `./python3` would resolve inside the checkout, where a PR can
+    add an executable of that name.
+    """
+    path = PurePosixPath(token)
+    if not _PYTHON_BASENAME.fullmatch(path.name):
+        return False
+    return token == path.name or token.startswith(("/usr/", "/bin/", "/opt/"))
+
+
 def _classify_lint_line(line: str) -> tuple[bool, str | None]:
     """(is an enforcing invocation, problem) for one line naming the script."""
     try:
         tokens = shlex.split(line.strip())
     except ValueError:
         return False, None
-    if not tokens or not _PYTHON_BASENAME.fullmatch(PurePosixPath(tokens[0]).name):
-        return False, None  # `echo <script>`, or not python at all
+    if not tokens or not _is_trusted_python(tokens[0]):
+        return False, None  # `echo <script>`, a decoy interpreter, or not python
 
     args, i = tokens[1:], 0
     while i < len(args) and args[i].startswith("-"):
         if args[i] in _OPTS_WITH_VALUE:
+            value = args[i + 1] if i + 1 < len(args) else ""
+            if any(op in value for op in _SHELL_OPERATORS):
+                return False, None      # a substitution runs before python
             i += 2
         elif args[i] in _SAFE_OPTS:
             i += 1
@@ -170,7 +185,15 @@ SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
 
 # Redirect execution without changing the command: bash sources BASH_ENV
 # before the step script, and PATH picks the interpreter.
-UNSAFE_ENV_KEYS: tuple[str, ...] = ("BASH_ENV", "ENV", "PATH")
+UNSAFE_ENV_KEYS: tuple[str, ...] = (
+    "BASH_ENV",
+    "ENV",
+    "PATH",
+    # `sitecustomize.py` on PYTHONPATH is imported before the script runs.
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+)
 
 
 def _effective_run_setting(yaml_doc, job: dict, step: dict, key: str) -> str | None:

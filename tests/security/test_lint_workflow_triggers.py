@@ -442,6 +442,60 @@ def test_lint_rejects_a_non_mapping_pull_request_value(tmp_path, value):
     assert "not a valid event configuration" in proc.stderr
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A repo-root `./python3` can be added by the PR itself.
+        "./python3 scripts/lint_workflow_triggers.py",
+        "bin/python3 scripts/lint_workflow_triggers.py",
+        # A substitution in an option value runs before python does.
+        "python3 -W \"$(touch pwned)\" scripts/lint_workflow_triggers.py",
+    ],
+    ids = ["relative-interpreter", "repo-path-interpreter", "expansion-in-value"],
+)
+def test_lint_rejects_pr_controlled_interpreters(tmp_path, command):
+    """The interpreter and its option values must not come from the checkout."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py", f"run: {command}"
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+@pytest.mark.parametrize("interpreter", ["python3", "python", "/usr/bin/python3"])
+def test_lint_accepts_trusted_interpreters(tmp_path, interpreter):
+    """A bare command or a system path stays acceptable."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            f"run: {interpreter} scripts/lint_workflow_triggers.py",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("key", ["PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"])
+def test_lint_rejects_python_startup_env(tmp_path, key):
+    """`sitecustomize.py` on PYTHONPATH runs before the lint and can exit 0."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "      - run: python3 scripts/lint_workflow_triggers.py\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n"
+            f"        env:\n          {key}: ./pr-controlled\n",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert key in proc.stderr
+
+
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
     """A skipped prerequisite skips the lint job without failing the run."""
     wf = tmp_path / "wf"
