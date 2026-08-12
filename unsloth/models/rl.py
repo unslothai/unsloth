@@ -1823,6 +1823,11 @@ def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
         bound = forward_signature.bind_partial(*args, **forward_kwargs)
     except TypeError:
         return None
+    # A forward given `labels` positionally lands it in `bound.arguments` and
+    # never in `forward_kwargs`, so the lookup above cannot see it, and the loss
+    # the model then computes for itself would be one position wide.
+    if bound.arguments.get("labels") is not None:
+        return None
     accepts_var_keyword = any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in forward_signature.parameters.values()
@@ -1929,25 +1934,38 @@ def _install_grpo_hidden_states_forward_wrapper(model):
             args,
             forward_kwargs,
         )
+        def rejected_hidden_states(message):
+            return "output_hidden_states" in message or "return_dict" in message
+
+        def forward_without_hidden_states():
+            _warn_grpo_hidden_states_fallback_once(
+                target_model,
+                f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
+            )
+            return original_forward(*args, **kwargs)
+
         try:
             outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
             message = str(error)
-            if logits_kwarg is not None and logits_kwarg in message:
-                # The signature advertised the parameter but the forward refuses
-                # the value. Retry without our minimisation rather than losing
-                # hidden states entirely over an optimisation.
-                forward_kwargs.pop(logits_kwarg, None)
-                logits_kwarg = None
+            if logits_kwarg is None or logits_kwarg not in message:
+                if not rejected_hidden_states(message):
+                    raise
+                return forward_without_hidden_states()
+            # The signature advertised the parameter but the forward refuses
+            # the value. Retry without our minimisation rather than losing
+            # hidden states entirely over an optimisation -- and send the retry
+            # through the same fallback, since a forward that splats **kwargs
+            # into a sub-module can refuse the logits limiter and the hidden
+            # states one after the other.
+            forward_kwargs.pop(logits_kwarg, None)
+            logits_kwarg = None
+            try:
                 outputs = original_forward(*args, **forward_kwargs)
-            elif "output_hidden_states" not in message and "return_dict" not in message:
-                raise
-            else:
-                _warn_grpo_hidden_states_fallback_once(
-                    target_model,
-                    f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
-                )
-                return original_forward(*args, **kwargs)
+            except TypeError as retry_error:
+                if not rejected_hidden_states(str(retry_error)):
+                    raise
+                return forward_without_hidden_states()
 
         hidden_states = getattr(outputs, "hidden_states", None)
         if hidden_states is None or len(hidden_states) == 0:
@@ -1955,7 +1973,13 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                 target_model,
                 f"Unsloth: GRPO fallback did not receive hidden states for unsupported model {model_name}; using logits directly.",
             )
-            return outputs
+            if logits_kwarg is None:
+                return outputs
+            # `outputs.logits` is the return value now, and we asked for a single
+            # position because we meant to throw the logits away. GRPO drops the
+            # last one and slices the completion window out of what is left, so
+            # one position leaves it nothing. Re-run on the caller's arguments.
+            return original_forward(*args, **kwargs)
 
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:

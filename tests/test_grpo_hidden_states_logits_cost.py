@@ -44,6 +44,7 @@ These tests drive the real helpers, lifted from `unsloth/models/rl.py` with
 from __future__ import annotations
 
 import collections
+import inspect
 import os
 import sys
 from dataclasses import dataclass, fields
@@ -425,3 +426,81 @@ def test_an_unrelated_type_error_still_propagates(hidden_states_on):
     _install(model)
     with pytest.raises(TypeError, match = "something else entirely"):
         model.forward(input_ids = "x")
+
+
+def test_a_retry_that_is_then_refused_hidden_states_still_falls_back(hidden_states_on):
+    """A forward can refuse the logits limiter and the hidden states one after
+    the other -- a wrapper that splats **kwargs into a sub-module does exactly
+    that. The second refusal must reach the same raw-logits fallback, not
+    escape the wrapper and take the GRPO step down with it."""
+    seen = []
+
+    class Splatter:
+        def forward(self, input_ids = None, logits_to_keep = 0, **kwargs):
+            seen.append((logits_to_keep, kwargs.get("output_hidden_states", False)))
+            if logits_to_keep:
+                raise TypeError("sub_forward() got an unexpected keyword argument 'logits_to_keep'")
+            if kwargs.get("output_hidden_states"):
+                raise TypeError(
+                    "sub_forward() got an unexpected keyword argument 'output_hidden_states'"
+                )
+            return FakeModelOutput(logits = "raw", hidden_states = None)
+
+    model = Splatter()
+    _install(model)
+    out = model.forward(input_ids = "x")
+    assert seen == [(1, True), (0, True), (0, False)], seen
+    assert out.logits == "raw"
+
+
+def test_a_forward_that_ignores_output_hidden_states_gets_its_logits_back(hidden_states_on):
+    """`logits_to_keep = 1` is only safe because the logits get overwritten. If
+    no hidden states come back they ARE the return value, and one position is
+    not the completion window GRPO asked for."""
+    seen = []
+
+    class Deaf:
+        def forward(
+            self,
+            input_ids = None,
+            logits_to_keep = 0,
+            output_hidden_states = False,
+            return_dict = False,
+        ):
+            seen.append(logits_to_keep)
+            kept = 4 if not logits_to_keep else logits_to_keep
+            return FakeModelOutput(logits = ["logit"] * kept, hidden_states = None)
+
+    model = Deaf()
+    _install(model)
+    out = model.forward(input_ids = "x", logits_to_keep = 4)
+    assert seen == [1, 4], f"expected a re-run on the caller's own value, got {seen}"
+    assert len(out.logits) == 4, "GRPO slices the completion window out of these"
+
+
+def test_labels_passed_positionally_still_keep_their_logits():
+    """The keyword lookup misses a positional `labels`, but the model's own loss
+    needs every position just the same."""
+
+    def forward(
+        input_ids = None,
+        attention_mask = None,
+        position_ids = None,
+        past_key_values = None,
+        inputs_embeds = None,
+        labels = None,
+        logits_to_keep = 0,
+        output_hidden_states = False,
+        return_dict = True,
+    ):
+        pass
+
+    signature = inspect.signature(forward)
+    forward_kwargs = {"output_hidden_states": True, "return_dict": True}
+    used = _minimise_logits_kwarg(
+        signature,
+        ("ids", None, None, None, None, "labels"),
+        forward_kwargs,
+    )
+    assert used is None, "a one-position logits tensor cannot serve a labels loss"
+    assert "logits_to_keep" not in forward_kwargs
