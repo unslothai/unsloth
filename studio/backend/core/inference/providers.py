@@ -420,8 +420,30 @@ _METADATA_HOST_PREFIXES = ("169.254.",)
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
 
+# A host made only of numeric parts is an IPv4 literal to the resolver, in
+# decimal, octal or hex. `ipaddress` accepts only the dotted-quad spelling, so
+# 2852039166, 0xA9FEA9FE and 0251.0376.0251.0376 would otherwise read as ordinary
+# names while getaddrinfo returns 169.254.169.254.
+_NUMERIC_HOST_PART = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)")
+
+
+def _canonical_host(hostname: str) -> str:
+    """Return the dotted-quad form of a numeric host, else ``hostname``."""
+    parts = hostname.split(".")
+    if len(parts) > 4 or not all(_NUMERIC_HOST_PART.fullmatch(part) for part in parts):
+        return hostname
+    import socket
+
+    try:
+        # inet_aton parses every legacy spelling and never touches DNS.
+        return socket.inet_ntoa(socket.inet_aton(hostname))
+    except OSError:
+        return hostname
+
+
 def _metadata_host(hostname: str) -> bool:
     """True when ``hostname`` names a cloud metadata service."""
+    hostname = _canonical_host(hostname)
     if hostname in _METADATA_HOST_LITERALS or hostname.startswith(_METADATA_HOST_PREFIXES):
         return True
     try:

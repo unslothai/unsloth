@@ -42,6 +42,8 @@ _SUPPORTED = [
     "https://my-vllm-server.com/v1",
     "https://my-resource.openai.azure.com/openai/v1",
     "https://gw.example/v1?tenant=a",
+    # A numeric host that canonicalizes to a public address is untouched.
+    "http://1681207502/v1",
     "https://[2606:4700:4700::1111]/v1",
     # Self-hosted gateways behind basic auth keep working.
     "https://user:pass@gw.example/v1",
@@ -110,6 +112,11 @@ def test_rejected_url_shapes(url, error):
         "http://100.100.100.200/latest/meta-data/",
         # Userinfo does not disguise the real host.
         "http://api.openai.com@169.254.169.254/latest/meta-data/",
+        # Legacy numeric spellings the resolver maps to 169.254.169.254.
+        "http://2852039166/latest/meta-data/",
+        "http://0xA9FEA9FE/latest/meta-data/",
+        "http://0251.0376.0251.0376/latest/meta-data/",
+        "http://169.254.43518/latest/meta-data/",
     ],
 )
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):
