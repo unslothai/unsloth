@@ -3871,9 +3871,21 @@ _maybe_bootstrap_rocm_wsl() {
     # PINNED, never a branch: this runs unattended and the helper installs with sudo, so
     # fetching it from a moving ref (main) would make any rewrite of that branch arbitrary
     # root code on every affected WSL box. A raw URL with a full commit SHA is immutable.
-    # When the helper changes, bump this to the merge commit that carries the change (a
-    # stale pin only means an older helper, never a broken install).
-    _ROCM_WSL_HELPER_REF="6d8c18cd1a630a231cb282799be13f8bb0b5ff3b"
+    # Bump this to the merge commit whenever the helper changes, so WSL users keep getting
+    # the current helper. A lagging pin only means an older helper, never a broken install,
+    # and the librocdxg pin below is forwarded so it applies to an older helper too.
+    _ROCM_WSL_HELPER_REF="a23951b72698f2bf6e12f4f4f954b6562e3a1c1d"
+    # librocdxg pin, forwarded to the helper so the third-party source is pinned even when
+    # the fetched helper predates this change. Kept equal to the helper's own defaults
+    # (tests/studio/install/test_rocm_support.py enforces that they never drift). A user-set
+    # UNSLOTH_LIBROCDXG_REF wins and, with no SHA of its own, turns the helper's check off
+    # rather than failing it against our pin.
+    _rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"
+    _rw_dxg_sha="${UNSLOTH_LIBROCDXG_SHA:-}"
+    if [ -z "$_rw_dxg_ref" ]; then
+        _rw_dxg_ref="v1.2.2"
+        [ -n "$_rw_dxg_sha" ] || _rw_dxg_sha="4955d12888a3ec57057f1cf8660c2485e415e74c"
+    fi
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
@@ -3902,7 +3914,9 @@ _maybe_bootstrap_rocm_wsl() {
     if [ "$_rw_go" = "1" ]; then
         # Helper does its own sudo + is idempotent. SMOKE_TEST=0: install.sh
         # installs torch itself right after, into the real venv.
-        if UNSLOTH_WSL_SMOKE_TEST=0 bash "$_rw_helper"; then
+        if UNSLOTH_WSL_SMOKE_TEST=0 \
+           UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
+           bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection
             # (rocminfo) now enumerates the GPU and routes to gfx1151.
             if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
