@@ -11496,15 +11496,14 @@ def _check_signal_escape_patterns(code: str):
                     "env reads; secrets and tokens must not be exfiltrated"
                 )
         if method_name in _HF_OPERATIONS_KWARG:
-            # Both take the operation list as the 2nd positional param.
             ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
-            # Scan every argument before resolving: a `*args` / `**kwargs` splat can
-            # smuggle the operations (or a token) in, and either may sit after
-            # `operations=`, so a positional lookup alone would miss it.
+            # A `*args` / `**kwargs` splat can smuggle in the operations or a token,
+            # and either may sit after `operations=`, so scan before resolving.
             if any(isinstance(a, ast.Starred) for a in node.args or []):
                 return _HF_UPLOAD_PATH_VIOLATION
             if any(kw.arg is None for kw in node.keywords or []):
                 return _HF_UPLOAD_PATH_VIOLATION
+            # Both methods take the operation list as their 2nd positional param.
             operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
             for kw in node.keywords or []:
                 if kw.arg == ops_kwarg:
@@ -11522,14 +11521,10 @@ def _check_signal_escape_patterns(code: str):
                     return inner
             return None
         if method_name == "commit_operation":
-            # A CommitOperation* constructor inside the operation list above. Every
-            # operation is held to the path rule, delete and copy included: exempting
-            # those by constructor name would trust a name the sandboxed code can
-            # rebind, and they were refused before this gate existed anyway.
-            # CommitOperationAdd(path_in_repo, path_or_fileobj) -- either can be
-            # positional, so every positional arg must be a sandbox-local literal.
-            # Any other keyword must be a plain literal: a computed one still reads
-            # the file (path_in_repo=open('x').read()) and ships it to the Hub.
+            # A CommitOperation* constructor from the list above. Delete and copy get
+            # no exemption: a by-name one would trust a name sandboxed code can rebind.
+            # Add is (path_in_repo, path_or_fileobj) so both positionals are checked,
+            # and other keywords must be literals -- a computed one reads the file.
             path_nodes = list(node.args or [])
             for kw in node.keywords or []:
                 if kw.arg is None:
