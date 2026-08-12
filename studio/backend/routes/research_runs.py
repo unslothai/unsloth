@@ -199,7 +199,9 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     provider_type = request.get("providerType")
     provider_id = request.get("providerId")
     external_model = request.get("externalModel")
-    external_requested = any(value is not None for value in (provider_type, provider_id, external_model))
+    external_requested = any(
+        value is not None for value in (provider_type, provider_id, external_model)
+    )
     if external_requested:
         if (
             provider_type != "openai_codex"

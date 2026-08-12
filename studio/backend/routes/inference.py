@@ -10988,10 +10988,8 @@ async def _proxy_to_external_provider(
             resolve_access,
         )
         from core.inference.openai_codex_client import (
-
             OpenAICodexClient,
             CodexTransportError,
-
             CodexQuotaError,
             CodexReauthorizationError,
         )
@@ -11003,11 +11001,15 @@ async def _proxy_to_external_provider(
                 detail = "ChatGPT subscriptions are available only to Studio UI and internal workflows.",
             )
         if not payload.provider_id or payload.encrypted_api_key:
-            raise HTTPException(status_code = 400, detail = "A saved ChatGPT subscription connection is required.")
+            raise HTTPException(
+                status_code = 400, detail = "A saved ChatGPT subscription connection is required."
+            )
         if base_url != OPENAI_CODEX_API_BASE:
             raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
         if payload.stream is not True:
-            raise HTTPException(status_code = 400, detail = "ChatGPT subscription chat requires stream=true.")
+            raise HTTPException(
+                status_code = 400, detail = "ChatGPT subscription chat requires stream=true."
+            )
         model = payload.external_model or payload.model
         from core.inference.providers import get_provider_info as _get_codex_provider_info
 
@@ -11059,15 +11061,14 @@ async def _proxy_to_external_provider(
             async def _refresh_codex_access() -> tuple[str, str]:
                 return await resolve_access(
                     payload.provider_id,
-                    force_refresh=True,
-                    expected_access_token=access_token,
+                    force_refresh = True,
+                    expected_access_token = access_token,
                 )
 
             from core.inference.openai_codex_tool_loop import (
                 CodexRunContext,
                 CodexToolPolicy,
                 stream_codex_with_studio_tools,
-
             )
 
             run = CodexRunContext(
@@ -11078,19 +11079,23 @@ async def _proxy_to_external_provider(
                 model = model,
                 reasoning_effort = payload.reasoning_effort,
             )
-            policy = CodexToolPolicy(
-                tools = studio_tool_payloads,
-                max_calls = (
-                    payload.max_tool_calls_per_message
-                    if payload.max_tool_calls_per_message is not None
-                    else 25
-                ),
-                timeout = payload.tool_call_timeout or 300,
-                permission_mode = payload.permission_mode or "auto",
-                confirm_calls = _permission_mode_confirm(payload),
-                bypass_permissions = bool(payload.bypass_permissions),
-                rag_scope = payload.rag_scope,
-            ) if studio_tool_payloads else None
+            policy = (
+                CodexToolPolicy(
+                    tools = studio_tool_payloads,
+                    max_calls = (
+                        payload.max_tool_calls_per_message
+                        if payload.max_tool_calls_per_message is not None
+                        else 25
+                    ),
+                    timeout = payload.tool_call_timeout or 300,
+                    permission_mode = payload.permission_mode or "auto",
+                    confirm_calls = _permission_mode_confirm(payload),
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    rag_scope = payload.rag_scope,
+                )
+                if studio_tool_payloads
+                else None
+            )
             should_cancel = False
             with _CANCEL_LOCK:
                 now = time.monotonic()
@@ -11101,7 +11106,6 @@ async def _proxy_to_external_provider(
                     should_cancel = True
             if should_cancel:
                 cancel_event.set()
-
 
             async def _watch_disconnect() -> None:
                 while not cancel_event.is_set():
@@ -11115,7 +11119,7 @@ async def _proxy_to_external_provider(
             client = OpenAICodexClient(
                 access_token,
                 account_id,
-                refresh_access=_refresh_codex_access,
+                refresh_access = _refresh_codex_access,
             )
             try:
                 # Closing the upstream response from the client's watcher makes
@@ -11123,21 +11127,21 @@ async def _proxy_to_external_provider(
                 generator = (
                     stream_codex_with_studio_tools(
                         client,
-                        run=run,
-                        policy=policy,
-                        cancel_event=cancel_event,
+                        run = run,
+                        policy = policy,
+                        cancel_event = cancel_event,
                     )
                     if policy
                     else client.stream(
-                        provider_id=run.provider_id,
-                        thread_id=run.thread_id,
-                        messages=run.messages,
-                        model=run.model,
-                        max_tokens=_effective_max_tokens(payload),
-                        reasoning_effort=run.reasoning_effort,
-                        tools=tool_payloads,
-                        tool_choice=payload.tool_choice,
-                        cancel_event=cancel_event,
+                        provider_id = run.provider_id,
+                        thread_id = run.thread_id,
+                        messages = run.messages,
+                        model = run.model,
+                        max_tokens = _effective_max_tokens(payload),
+                        reasoning_effort = run.reasoning_effort,
+                        tools = tool_payloads,
+                        tool_choice = payload.tool_choice,
+                        cancel_event = cancel_event,
                     )
                 )
                 async for line in generator:
@@ -11157,12 +11161,28 @@ async def _proxy_to_external_provider(
                 async with provider_oauth_write_guard(payload.provider_id):
                     mark_reauthorization_required(
                         payload.provider_id,
-                        expected_access_token=exc.metadata.get("access_token"),
+                        expected_access_token = exc.metadata.get("access_token"),
                     )
-                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "authentication_error"}}) + "\n\n"
+                yield (
+                    "data: "
+                    + json.dumps({"error": {"message": str(exc), "type": "authentication_error"}})
+                    + "\n\n"
+                )
                 yield "data: [DONE]\n\n"
             except CodexQuotaError as exc:
-                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "rate_limit_error", "metadata": exc.metadata}}) + "\n\n"
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "error": {
+                                "message": str(exc),
+                                "type": "rate_limit_error",
+                                "metadata": exc.metadata,
+                            }
+                        }
+                    )
+                    + "\n\n"
+                )
                 yield "data: [DONE]\n\n"
 
             except CodexTransportError as exc:
@@ -11172,9 +11192,12 @@ async def _proxy_to_external_provider(
                     status = exc.status,
                     error = str(exc),
                 )
-                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "upstream_error"}}) + "\n\n"
+                yield (
+                    "data: "
+                    + json.dumps({"error": {"message": str(exc), "type": "upstream_error"}})
+                    + "\n\n"
+                )
                 yield "data: [DONE]\n\n"
-
 
             except Exception as exc:
                 logger.warning(
@@ -11183,13 +11206,18 @@ async def _proxy_to_external_provider(
                     status = getattr(exc, "status", None),
                     error = str(exc),
                 )
-                yield "data: " + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}}) + "\n\n"
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {"error": {"message": _friendly_error(exc), "type": "server_error"}}
+                    )
+                    + "\n\n"
+                )
                 yield "data: [DONE]\n\n"
             finally:
-
                 await client.close()
                 disconnect_task.cancel()
-                await asyncio.gather(disconnect_task, return_exceptions=True)
+                await asyncio.gather(disconnect_task, return_exceptions = True)
 
                 with _CANCEL_LOCK:
                     for key in cancel_keys:
@@ -11200,10 +11228,10 @@ async def _proxy_to_external_provider(
                                 _CANCEL_REGISTRY.pop(key, None)
 
         return StreamingResponse(
-            _codex_stream(), media_type = "text/event-stream",
+            _codex_stream(),
+            media_type = "text/event-stream",
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-
 
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,

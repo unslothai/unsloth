@@ -300,7 +300,6 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
-
     openai_codex_auth_router,
     rag_router,
     research_runs_router,

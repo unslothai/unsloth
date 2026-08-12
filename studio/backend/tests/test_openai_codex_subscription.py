@@ -43,7 +43,6 @@ from core.inference.openai_responses_shared import normalize_function_schema
 from core.inference.providers import get_provider_info, list_available_providers
 
 
-
 def _jwt(payload: dict) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     return f"header.{encoded}.signature"
@@ -66,12 +65,11 @@ def test_protocol_constants_and_curated_provider_contract():
         "gpt-5.6-sol",
         "gpt-5.6-terra",
     ]
-    assert OPENAI_CODEX_DEVICE_REDIRECT_URI == (
-        "https://auth.openai.com/deviceauth/callback"
+    assert OPENAI_CODEX_DEVICE_REDIRECT_URI == ("https://auth.openai.com/deviceauth/callback")
+    row = next(
+        item for item in list_available_providers() if item["provider_type"] == "openai_codex"
     )
-    row = next(item for item in list_available_providers() if item["provider_type"] == "openai_codex")
     assert row["auth_kind"] == "chatgpt_oauth"
-
 
 
 
@@ -84,7 +82,9 @@ def test_provider_lock_can_release_from_another_executor_thread():
 
 def test_pkce_uses_s256_and_high_entropy_verifier():
     verifier, challenge = create_pkce()
-    expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    )
     assert len(verifier) >= 43
     assert challenge == expected
     assert create_pkce()[0] != verifier
@@ -98,15 +98,21 @@ def test_account_claim_and_token_response_are_validated_without_returning_raw_bo
     )
     assert bundle["account_id"] == "acct-1"
     assert bundle["expires_at"] > time.time()
-    with pytest.raises(Exception, match="invalid access token"):
+    with pytest.raises(Exception, match = "invalid access token"):
         extract_chatgpt_account_id("not-a-jwt")
 
 
 def test_safe_flow_never_exposes_pkce_state_or_device_identifier():
     flow = OAuthFlow(
-        id="opaque", provider_id="provider", method="browser",
-        created_at=1, expires_at=2, state="secret-state", verifier="secret-verifier",
-        device_auth_id="secret-device", authorization_url="https://auth.openai.com/oauth/authorize",
+        id = "opaque",
+        provider_id = "provider",
+        method = "browser",
+        created_at = 1,
+        expires_at = 2,
+        state = "secret-state",
+        verifier = "secret-verifier",
+        device_auth_id = "secret-device",
+        authorization_url = "https://auth.openai.com/oauth/authorize",
     )
     serialized = json.dumps(safe_flow(flow))
     assert "opaque" in serialized
@@ -116,20 +122,27 @@ def test_safe_flow_never_exposes_pkce_state_or_device_identifier():
 
 
 def test_responses_conversion_replays_only_opaque_reasoning_and_normalizes_tools():
-    instructions, items = _responses_input([
-        {"role": "system", "content": "User system prompt"},
-        {
-            "role": "assistant",
-            "content": "visible",
-            "extra_content": {
-                "openai_codex_reasoning": [
-                    {"type": "reasoning", "id": "r1", "encrypted_content": "opaque", "summary": []},
-                    {"type": "reasoning", "id": "bad"},
-                ]
+    instructions, items = _responses_input(
+        [
+            {"role": "system", "content": "User system prompt"},
+            {
+                "role": "assistant",
+                "content": "visible",
+                "extra_content": {
+                    "openai_codex_reasoning": [
+                        {
+                            "type": "reasoning",
+                            "id": "r1",
+                            "encrypted_content": "opaque",
+                            "summary": [],
+                        },
+                        {"type": "reasoning", "id": "bad"},
+                    ]
+                },
             },
-        },
-        {"role": "user", "content": "next"},
-    ])
+            {"role": "user", "content": "next"},
+        ]
+    )
     assert "User system prompt" in instructions
     assert any(item.get("encrypted_content") == "opaque" for item in items)
     assert not any(item.get("id") == "bad" for item in items)
@@ -147,20 +160,22 @@ def test_responses_conversion_replays_only_opaque_reasoning_and_normalizes_tools
 
 def test_responses_conversion_stably_shortens_oversized_tool_call_ids():
     oversized = "call_" + "x" * 70
-    _, items = _responses_input([
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": oversized,
-                    "type": "function",
-                    "function": {"name": "python", "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": oversized, "content": "done"},
-    ])
+    _, items = _responses_input(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": oversized,
+                        "type": "function",
+                        "function": {"name": "python", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": oversized, "content": "done"},
+        ]
+    )
 
     call = next(item for item in items if item.get("type") == "function_call")
     output = next(item for item in items if item.get("type") == "function_call_output")
@@ -169,16 +184,15 @@ def test_responses_conversion_stably_shortens_oversized_tool_call_ids():
     assert call["call_id"].startswith(oversized[:31] + "_")
 
 
-
 def test_cancelled_oauth_exchange_cannot_persist_credentials(monkeypatch):
     persisted = []
     flow = OAuthFlow(
-        id="flow-cancelled",
-        provider_id="provider",
-        method="browser",
-        created_at=time.time(),
-        expires_at=time.time() + 60,
-        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
+        id = "flow-cancelled",
+        provider_id = "provider",
+        method = "browser",
+        created_at = time.time(),
+        expires_at = time.time() + 60,
+        persist_bundle = lambda _provider, bundle: persisted.append(bundle),
     )
     token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
 
@@ -187,10 +201,9 @@ def test_cancelled_oauth_exchange_cannot_persist_credentials(monkeypatch):
         return {"access_token": token, "refresh_token": "refresh", "expires_in": 600}
 
     monkeypatch.setattr(codex_auth, "_token_request", token_request)
-    with pytest.raises(codex_auth.CodexAuthError, match="cancelled"):
+    with pytest.raises(codex_auth.CodexAuthError, match = "cancelled"):
         asyncio.run(codex_auth._exchange_code(flow, "code"))
     assert persisted == []
-
 
 
 def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
@@ -213,7 +226,7 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
 
     class FakeClient:
         def stream(self, method, url, **kwargs):
-            captured.update(method=method, url=url, **kwargs)
+            captured.update(method = method, url = url, **kwargs)
             return FakeStream()
 
         async def aclose(self):
@@ -226,14 +239,14 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
         lines = [
             line
             async for line in client.stream(
-                provider_id="provider-1",
-                thread_id="thread-1",
-                messages=[{"role": "user", "content": "hello"}],
-                model="gpt-5.4",
-                max_tokens=100,
-                reasoning_effort="none",
-                tools=None,
-                tool_choice=None,
+                provider_id = "provider-1",
+                thread_id = "thread-1",
+                messages = [{"role": "user", "content": "hello"}],
+                model = "gpt-5.4",
+                max_tokens = 100,
+                reasoning_effort = "none",
+                tools = None,
+                tool_choice = None,
             )
         ]
         await client.close()
@@ -254,19 +267,18 @@ def test_fixed_host_transport_sends_subscription_headers_and_normalizes_sse():
     assert not any("secret-token" in line for line in lines)
 
 
-
 def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
     persisted = []
     flow = OAuthFlow(
-        id="flow",
-        provider_id="provider",
-        method="browser",
-        created_at=time.time(),
-        expires_at=time.time() + 60,
-        state="expected-state",
-        verifier="secret-verifier",
-        redirect_uri="http://127.0.0.1:1455/auth/callback",
-        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
+        id = "flow",
+        provider_id = "provider",
+        method = "browser",
+        created_at = time.time(),
+        expires_at = time.time() + 60,
+        state = "expected-state",
+        verifier = "secret-verifier",
+        redirect_uri = "http://127.0.0.1:1455/auth/callback",
+        persist_bundle = lambda _provider, bundle: persisted.append(bundle),
     )
     monkeypatch.setitem(codex_auth._flows, flow.id, flow)
     token = _jwt({"https://api.openai.com/auth": {"chatgpt_account_id": "acct-1"}})
@@ -276,25 +288,34 @@ def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
         return {"access_token": token, "refresh_token": "refresh", "expires_in": 600}
 
     monkeypatch.setattr(codex_auth, "_token_request", token_request)
-    with pytest.raises(codex_auth.CodexAuthError, match="state"):
-        asyncio.run(codex_auth.complete_browser_flow(
-            "provider", "flow",
-            "http://127.0.0.1:1455/auth/callback?code=bad&state=wrong",
-        ))
+    with pytest.raises(codex_auth.CodexAuthError, match = "state"):
+        asyncio.run(
+            codex_auth.complete_browser_flow(
+                "provider",
+                "flow",
+                "http://127.0.0.1:1455/auth/callback?code=bad&state=wrong",
+            )
+        )
     assert flow.status == "pending"
     assert flow.consumed is False
 
-    asyncio.run(codex_auth.complete_browser_flow(
-        "provider", "flow",
-        "http://127.0.0.1:1455/auth/callback?code=good&state=expected-state",
-    ))
+    asyncio.run(
+        codex_auth.complete_browser_flow(
+            "provider",
+            "flow",
+            "http://127.0.0.1:1455/auth/callback?code=good&state=expected-state",
+        )
+    )
     assert flow.status == "connected"
     assert len(persisted) == 1
-    with pytest.raises(codex_auth.CodexAuthError, match="no longer active"):
-        asyncio.run(codex_auth.complete_browser_flow(
-            "provider", "flow",
-            "http://127.0.0.1:1455/auth/callback?code=replay&state=expected-state",
-        ))
+    with pytest.raises(codex_auth.CodexAuthError, match = "no longer active"):
+        asyncio.run(
+            codex_auth.complete_browser_flow(
+                "provider",
+                "flow",
+                "http://127.0.0.1:1455/auth/callback?code=replay&state=expected-state",
+            )
+        )
 
 
 def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch):
@@ -338,11 +359,16 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
 
     persisted = []
     flow = OAuthFlow(
-        id="device-flow", provider_id="provider", method="device",
-        created_at=time.time(), expires_at=time.time() + 60,
-        device_auth_id="device-id", user_code="USER-CODE", interval=1,
-        redirect_uri=OPENAI_CODEX_DEVICE_REDIRECT_URI,
-        persist_bundle=lambda _provider, bundle: persisted.append(bundle),
+        id = "device-flow",
+        provider_id = "provider",
+        method = "device",
+        created_at = time.time(),
+        expires_at = time.time() + 60,
+        device_auth_id = "device-id",
+        user_code = "USER-CODE",
+        interval = 1,
+        redirect_uri = OPENAI_CODEX_DEVICE_REDIRECT_URI,
+        persist_bundle = lambda _provider, bundle: persisted.append(bundle),
     )
     monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
@@ -394,7 +420,9 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
 
     seen = []
     markers = {}
-    monkeypatch.setattr(auth_route, "_provider", lambda _provider: {"provider_type": "openai_codex"})
+    monkeypatch.setattr(
+        auth_route, "_provider", lambda _provider: {"provider_type": "openai_codex"}
+    )
     monkeypatch.setattr(
         codex_auth.credential_secrets,
         "get_or_create_credential_encryption_key",
@@ -415,7 +443,7 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
     monkeypatch.setattr(
         codex_auth,
         "save_oauth_flow_marker",
-        lambda scope, marker, _flow=None: markers.__setitem__(scope, marker),
+        lambda scope, marker, _flow = None: markers.__setitem__(scope, marker),
     )
 
     monkeypatch.setattr(
@@ -433,7 +461,7 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
     monkeypatch.setattr(
         codex_auth,
         "delete_oauth_flow_marker",
-        lambda scope, marker=None: markers.pop(scope, None)
+        lambda scope, marker = None: markers.pop(scope, None)
         if marker is None or markers.get(scope) == marker
         else None,
     )
@@ -450,15 +478,23 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
         assert markers[provider_id] == marker
         await persist(provider_id, {"access_token": "not-returned"})
         return OAuthFlow(
-            id="opaque", provider_id=provider_id, method=method,
-            created_at=1, expires_at=2, marker=marker,
+            id = "opaque",
+            provider_id = provider_id,
+            method = method,
+            created_at = 1,
+            expires_at = 2,
+            marker = marker,
         )
 
     monkeypatch.setattr(codex_auth, "start_flow", fake_start)
-    result = asyncio.run(auth_route.start_oauth(
-        "provider", auth_route.OAuthStartRequest(method="browser"),
-        credential=("alice", "generation-1"), via_api_key=False,
-    ))
+    result = asyncio.run(
+        auth_route.start_oauth(
+            "provider",
+            auth_route.OAuthStartRequest(method = "browser"),
+            credential = ("alice", "generation-1"),
+            via_api_key = False,
+        )
+    )
     assert result["flow_id"] == "opaque"
     assert ("guard", ("alice", "generation-1")) in seen
     assert any(item[0] == "provider" for item in seen if isinstance(item, tuple))
@@ -466,11 +502,14 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
     assert "not-returned" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("stream_lines", [
-    ['data: {"type":"response.output_text.delta","delta":"partial"}'],
-    ["data: {not-json}"],
-    ['data: {"type":"response.output_text.delta","delta":42}'],
-])
+@pytest.mark.parametrize(
+    "stream_lines",
+    [
+        ['data: {"type":"response.output_text.delta","delta":"partial"}'],
+        ["data: {not-json}"],
+        ['data: {"type":"response.output_text.delta","delta":42}'],
+    ],
+)
 def test_malformed_or_truncated_stream_fails_without_token_leak(stream_lines):
     class FakeResponse:
         status_code = 200
@@ -498,11 +537,19 @@ def test_malformed_or_truncated_stream_fails_without_token_leak(stream_lines):
         await client._client.aclose()
         client._client = FakeClient()
         try:
-            return [line async for line in client.stream(
-                provider_id="provider", thread_id="thread",
-                messages=[{"role": "user", "content": "hello"}], model="gpt-5.4",
-                max_tokens=None, reasoning_effort=None, tools=None, tool_choice=None,
-            )]
+            return [
+                line
+                async for line in client.stream(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    messages = [{"role": "user", "content": "hello"}],
+                    model = "gpt-5.4",
+                    max_tokens = None,
+                    reasoning_effort = None,
+                    tools = None,
+                    tool_choice = None,
+                )
+            ]
         finally:
             await client.close()
 
@@ -516,7 +563,9 @@ def test_structured_upstream_error_is_actionable_and_bounded():
         async def __aenter__(self):
             return __import__("httpx").Response(
                 400,
-                json={"error": {"code": "invalid_request", "message": "Unsupported request field."}},
+                json = {
+                    "error": {"code": "invalid_request", "message": "Unsupported request field."}
+                },
             )
 
         async def __aexit__(self, *_args):
@@ -534,11 +583,19 @@ def test_structured_upstream_error_is_actionable_and_bounded():
         await client._client.aclose()
         client._client = FakeClient()
         try:
-            return [line async for line in client.stream(
-                provider_id="provider", thread_id="thread",
-                messages=[{"role": "user", "content": "hello"}], model="gpt-5.4",
-                max_tokens=None, reasoning_effort=None, tools=None, tool_choice=None,
-            )]
+            return [
+                line
+                async for line in client.stream(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    messages = [{"role": "user", "content": "hello"}],
+                    model = "gpt-5.4",
+                    max_tokens = None,
+                    reasoning_effort = None,
+                    tools = None,
+                    tool_choice = None,
+                )
+            ]
         finally:
             await client.close()
 
@@ -547,7 +604,6 @@ def test_structured_upstream_error_is_actionable_and_bounded():
     assert error.value.status == 400
     assert "Unsupported request field" in str(error.value)
     assert "secret-token" not in str(error.value)
-
 
 
 def test_client_never_emits_done_marker_itself():
@@ -581,15 +637,21 @@ async def _successful_stream_lines():
     await client._client.aclose()
     client._client = Client()
     try:
-        return [line async for line in client.stream(
-            provider_id="provider", thread_id=None,
-            messages=[{"role": "user", "content": "hello"}], model="gpt-5.4",
-            max_tokens=None, reasoning_effort=None, tools=None, tool_choice=None,
-        )]
+        return [
+            line
+            async for line in client.stream(
+                provider_id = "provider",
+                thread_id = None,
+                messages = [{"role": "user", "content": "hello"}],
+                model = "gpt-5.4",
+                max_tokens = None,
+                reasoning_effort = None,
+                tools = None,
+                tool_choice = None,
+            )
+        ]
     finally:
         await client.close()
-
-
 
 
 def test_browser_no_bind_fallback_keeps_registered_manual_redirect(monkeypatch):
@@ -607,7 +669,6 @@ def test_browser_no_bind_fallback_keeps_registered_manual_redirect(monkeypatch):
     assert "redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback" in (
         flow.authorization_url
     )
-
 
 
 def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkeypatch):
@@ -632,7 +693,9 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
         )
 
     monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _provider: bundle.copy())
-    monkeypatch.setattr(codex_auth, "save_oauth_bundle", lambda _provider, value: saved.append(value))
+    monkeypatch.setattr(
+        codex_auth, "save_oauth_bundle", lambda _provider, value: saved.append(value)
+    )
     monkeypatch.setattr(codex_auth, "FileLock", lambda *_args, **_kwargs: Lock())
     monkeypatch.setattr(codex_auth, "_token_request", rejected)
     codex_auth._refresh_locks.clear()
@@ -643,7 +706,6 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
     assert saved and saved[-1]["reauthorization_required"] is True
     assert "secret-access" not in str(error.value)
     assert "secret-refresh" not in str(error.value)
-
 
 
 def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypatch):
@@ -667,14 +729,13 @@ def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypa
     assert saved[-1]["reauthorization_required"] is True
 
 
-
 def test_expired_flow_is_removed_after_terminal_retention(monkeypatch):
     flow = OAuthFlow(
-        id="expired-flow",
-        provider_id="provider",
-        method="browser",
-        created_at=time.time() - 10,
-        expires_at=time.time() - 1,
+        id = "expired-flow",
+        provider_id = "provider",
+        method = "browser",
+        created_at = time.time() - 10,
+        expires_at = time.time() - 1,
     )
     codex_auth._flows[flow.id] = flow
     monkeypatch.setattr(codex_auth, "_FLOW_TERMINAL_RETENTION_SECONDS", 0)
@@ -683,7 +744,6 @@ def test_expired_flow_is_removed_after_terminal_retention(monkeypatch):
 
     assert flow.id not in codex_auth._flows
     assert flow.status == "cancelled"
-
 
 
 def test_cancellation_interrupts_request_before_response_headers():
@@ -717,7 +777,7 @@ def test_cancellation_interrupts_request_before_response_headers():
         task = asyncio.create_task(_collect_codex_lines(client, cancel_event))
         await entered.wait()
         cancel_event.set()
-        lines = await asyncio.wait_for(task, timeout=1)
+        lines = await asyncio.wait_for(task, timeout = 1)
         await client.close()
         return lines
 
@@ -729,18 +789,17 @@ async def _collect_codex_lines(client, cancel_event):
     return [
         line
         async for line in client.stream(
-            provider_id="provider",
-            thread_id="thread",
-            messages=[{"role": "user", "content": "hello"}],
-            model="gpt-5.4",
-            max_tokens=None,
-            reasoning_effort=None,
-            tools=None,
-            tool_choice=None,
-            cancel_event=cancel_event,
+            provider_id = "provider",
+            thread_id = "thread",
+            messages = [{"role": "user", "content": "hello"}],
+            model = "gpt-5.4",
+            max_tokens = None,
+            reasoning_effort = None,
+            tools = None,
+            tool_choice = None,
+            cancel_event = cancel_event,
         )
     ]
-
 
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
@@ -772,16 +831,16 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
             line
             async for line in tool_loop.stream_codex_with_studio_tools(
                 client,
-                run=tool_loop.CodexRunContext(
-                    provider_id="provider",
-                    thread_id="thread",
-                    session_id="sandbox",
-                    messages=[{"role": "user", "content": "calculate"}],
-                    model="gpt-5.6-sol",
-                    reasoning_effort="medium",
+                run = tool_loop.CodexRunContext(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    session_id = "sandbox",
+                    messages = [{"role": "user", "content": "calculate"}],
+                    model = "gpt-5.6-sol",
+                    reasoning_effort = "medium",
                 ),
-                policy=tool_loop.CodexToolPolicy(
-                    tools=[
+                policy = tool_loop.CodexToolPolicy(
+                    tools = [
                         {
                             "type": "function",
                             "function": {
@@ -791,14 +850,14 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
                             },
                         }
                     ],
-                    max_calls=2,
-                    timeout=30,
-                    permission_mode="off",
-                    confirm_calls=False,
-                    bypass_permissions=False,
-                    rag_scope=None,
+                    max_calls = 2,
+                    timeout = 30,
+                    permission_mode = "off",
+                    confirm_calls = False,
+                    bypass_permissions = False,
+                    rag_scope = None,
                 ),
-                cancel_event=threading.Event(),
+                cancel_event = threading.Event(),
             )
         ]
 
@@ -819,7 +878,6 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
         "name": "python",
         "content": "42",
     }
-
 
 
 def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monkeypatch):
@@ -851,24 +909,24 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
             line
             async for line in tool_loop.stream_codex_with_studio_tools(
                 client,
-                run=tool_loop.CodexRunContext(
-                    provider_id="provider",
-                    thread_id="thread",
-                    session_id="session",
-                    messages=[{"role": "user", "content": "go"}],
-                    model="gpt-5.6-sol",
-                    reasoning_effort="medium",
+                run = tool_loop.CodexRunContext(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    session_id = "session",
+                    messages = [{"role": "user", "content": "go"}],
+                    model = "gpt-5.6-sol",
+                    reasoning_effort = "medium",
                 ),
-                policy=tool_loop.CodexToolPolicy(
-                    tools=[{"type": "function", "function": {"name": "python"}}],
-                    max_calls=1,
-                    timeout=30,
-                    permission_mode="off",
-                    confirm_calls=False,
-                    bypass_permissions=False,
-                    rag_scope=None,
+                policy = tool_loop.CodexToolPolicy(
+                    tools = [{"type": "function", "function": {"name": "python"}}],
+                    max_calls = 1,
+                    timeout = 30,
+                    permission_mode = "off",
+                    confirm_calls = False,
+                    bypass_permissions = False,
+                    rag_scope = None,
                 ),
-                cancel_event=threading.Event(),
+                cancel_event = threading.Event(),
             )
         ]
 

@@ -36,7 +36,6 @@ __all__ = [
     "training_history_router",
     "chat_history_router",
     "providers_router",
-
     "openai_codex_auth_router",
     "mcp_servers_router",
     "rag_router",

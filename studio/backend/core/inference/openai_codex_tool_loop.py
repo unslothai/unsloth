@@ -29,8 +29,9 @@ _TOOL_BUDGET_EXHAUSTED = (
     "Continue with the available results and answer without calling another tool."
 )
 
+
 def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators=(",", ":"))
+    return "data: " + json.dumps(payload, separators = (",", ":"))
 
 
 def _chunk_payload(line: str) -> dict[str, Any] | None:
@@ -71,7 +72,7 @@ def _normalized_call(call: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class CodexRunContext:
     provider_id: str
     thread_id: str | None
@@ -81,7 +82,7 @@ class CodexRunContext:
     reasoning_effort: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class CodexToolPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -125,15 +126,15 @@ async def stream_codex_with_studio_tools(
 
         tools_available = unlimited or remaining > 0
         generator = client.stream(
-            provider_id=provider_id,
-            thread_id=thread_id,
-            messages=conversation,
-            model=model,
-            max_tokens=None,
-            reasoning_effort=reasoning_effort,
-            tools=tools if tools_available else None,
-            tool_choice="auto" if tools_available else "none",
-            cancel_event=cancel_event,
+            provider_id = provider_id,
+            thread_id = thread_id,
+            messages = conversation,
+            model = model,
+            max_tokens = None,
+            reasoning_effort = reasoning_effort,
+            tools = tools if tools_available else None,
+            tool_choice = "auto" if tools_available else "none",
+            cancel_event = cancel_event,
         )
         async for line in generator:
             payload = _chunk_payload(line)
@@ -159,7 +160,11 @@ async def stream_codex_with_studio_tools(
                                     index = len(by_index)
                                 current = by_index.setdefault(
                                     index,
-                                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                                    {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    },
                                 )
                                 if isinstance(raw_call.get("id"), str):
                                     current["id"] = raw_call["id"]
@@ -203,9 +208,7 @@ async def stream_codex_with_studio_tools(
             name = call["function"]["name"]
             arguments = call["arguments"]
             needs_confirmation = (
-                confirm_tool_calls
-                and not bypass_permissions
-                and permission_mode != "off"
+                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
@@ -221,7 +224,6 @@ async def stream_codex_with_studio_tools(
                     "tool_name": name,
                     "tool_call_id": call_id,
                     "arguments": arguments,
-
                     "provenance": {"source": "local", "round_id": round_id},
                     "approval_id": approval_id if within_budget else "",
                     "awaiting_confirmation": needs_confirmation and within_budget,
@@ -236,7 +238,7 @@ async def stream_codex_with_studio_tools(
                             wait_tool_decision,
                             decision_slot,
                             approval_id,
-                            cancel_event=cancel_event,
+                            cancel_event = cancel_event,
                         )
                         if decision_slot is not None
                         else None
@@ -251,12 +253,12 @@ async def stream_codex_with_studio_tools(
                             execute_tool,
                             name,
                             arguments,
-                            cancel_event=cancel_event,
-                            timeout=timeout,
-                            session_id=session_id,
-                            thread_id=thread_id,
-                            rag_scope=rag_scope,
-                            disable_sandbox=bypass_permissions,
+                            cancel_event = cancel_event,
+                            timeout = timeout,
+                            session_id = session_id,
+                            thread_id = thread_id,
+                            rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                 finally:
                     if decision_slot is not None:
@@ -269,7 +271,6 @@ async def stream_codex_with_studio_tools(
                     "tool_call_id": call_id,
                     "arguments": arguments,
                     "result": result_text,
-
                     "provenance": {"source": "local", "round_id": round_id},
                 }
             )

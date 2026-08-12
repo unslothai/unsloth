@@ -22,23 +22,24 @@ class OAuthStartRequest(BaseModel):
 
 
 class OAuthCompleteRequest(BaseModel):
-    callback_url: str = Field(..., min_length=1, max_length=8192)
+    callback_url: str = Field(..., min_length = 1, max_length = 8192)
 
 
 def _provider(provider_id: str) -> dict:
     row = providers_db.get_provider(provider_id)
     if row is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code = 404, detail = "Provider not found")
     if row["provider_type"] != "openai_codex":
-        raise HTTPException(status_code=400, detail="This provider does not use ChatGPT authorization.")
+        raise HTTPException(
+            status_code = 400, detail = "This provider does not use ChatGPT authorization."
+        )
     return row
 
 
 def _safe_error(exc: Exception) -> HTTPException:
     if isinstance(exc, codex_auth.CodexAuthError):
-        return HTTPException(status_code=400, detail=str(exc))
-    return HTTPException(status_code=502, detail="ChatGPT authorization failed. Please retry.")
-
+        return HTTPException(status_code = 400, detail = str(exc))
+    return HTTPException(status_code = 502, detail = "ChatGPT authorization failed. Please retry.")
 
 
 def _bundle_persister(credential: tuple, marker: str):
@@ -47,13 +48,9 @@ def _bundle_persister(credential: tuple, marker: str):
             with current_credential_write(credential):
                 _provider(scope_id)
                 if not codex_auth.oauth_flow_marker_matches(scope_id, marker):
-                    raise codex_auth.CodexAuthError(
-                        "Authorization flow is no longer active."
-                    )
+                    raise codex_auth.CodexAuthError("Authorization flow is no longer active.")
                 codex_auth.save_oauth_bundle(scope_id, bundle)
-                codex_auth.set_oauth_flow_marker_status(
-                    scope_id, marker, "connected"
-                )
+                codex_auth.set_oauth_flow_marker_status(scope_id, marker, "connected")
 
     return persist
 
@@ -123,15 +120,13 @@ async def complete_oauth(
         flow = codex_auth.get_flow(provider_id, flow_id)
         if flow.persist_bundle is None:
             flow.persist_bundle = _bundle_persister(credential, flow.marker)
-        flow = await codex_auth.complete_browser_flow(
-            provider_id, flow_id, payload.callback_url
-        )
+        flow = await codex_auth.complete_browser_flow(provider_id, flow_id, payload.callback_url)
         return codex_auth.safe_flow(flow)
     except Exception as exc:
         raise _safe_error(exc) from exc
 
 
-@router.delete("/{provider_id}/oauth/flows/{flow_id}", status_code=204)
+@router.delete("/{provider_id}/oauth/flows/{flow_id}", status_code = 204)
 async def cancel_oauth(
     provider_id: str,
     flow_id: str,
@@ -147,8 +142,7 @@ async def cancel_oauth(
             codex_auth.delete_oauth_flow_marker(provider_id, flow.marker)
 
 
-
-@router.delete("/{provider_id}/oauth", status_code=204)
+@router.delete("/{provider_id}/oauth", status_code = 204)
 async def delete_oauth(
     provider_id: str,
     credential: tuple = Depends(get_current_credential),
