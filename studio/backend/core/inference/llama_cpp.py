@@ -9647,6 +9647,14 @@ class LlamaCppBackend:
         the flag falls back to llama.cpp's own free-VRAM split, which is correct
         for any device set. Both spellings and the ``--tensor-split=1,2`` form.
         """
+        return LlamaCppBackend._without_flags(cmd, ("--tensor-split", "-ts"))
+
+    @staticmethod
+    def _without_flags(cmd: list[str], names: Collection[str]) -> Optional[list[str]]:
+        """Return cmd with every ``names`` flag (and its value) dropped, or None
+        when it carries none. ``_flag_name`` peels ``--key=value`` and llama.cpp's
+        underscore spellings, and an ``=`` form carries its own value, so only the
+        two-token form may swallow the next argv entry."""
         out: list[str] = []
         found = False
         skip = False
@@ -9655,7 +9663,7 @@ class LlamaCppBackend:
                 skip = False
                 continue
             token = str(tok)
-            if _flag_name(token) in ("--tensor-split", "-ts"):
+            if _flag_name(token) in names:
                 found = True
                 skip = "=" not in token
                 continue
@@ -12954,6 +12962,31 @@ class LlamaCppBackend:
                 # that path, so this is the branch that gets to write the mask.
                 if _cpu_only_zero_offload or _arch_gate_forced_cpu:
                     self._emit_child_gpu_visibility(env, "-1")
+                    # Manual mode admits tensor parallelism on the FULL device
+                    # count (_effective_gpu_count(None)), which still counts the
+                    # cards the gate dropped, so --split-mode tensor can reach a
+                    # child that now sees no device at all. That is the exact
+                    # combination the manual gpu_layers=0 guard above calls out.
+                    # llama.cpp's llama_prepare_model_devices fails the load with
+                    # "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" once the mask
+                    # hides every device, and llama-server exits 1 rather than
+                    # falling back, so normalise to layer/CPU. Gate-scoped: the
+                    # zero-offload arm already dropped Studio's own flags, and a
+                    # user --split-mode there is deliberately overridden, not
+                    # stripped (see the paravirtual split-mode pin).
+                    _cpu_cmd = (
+                        self._without_flags(cmd, ("--split-mode", "-sm", "--tensor-split", "-ts"))
+                        if _arch_gate_forced_cpu
+                        else None
+                    )
+                    if _cpu_cmd is not None:
+                        logger.info(
+                            "Forced-CPU launch: dropped the split-mode/tensor-split "
+                            "flags, which abort a server with no visible device."
+                        )
+                        cmd = _cpu_cmd
+                        self._tensor_parallel = False
+                        self._tensor_split = None
                 elif gpu_indices is not None and not is_vulkan_backend:
                     # When the user picked GPUs by index, align CUDA's ordering
                     # with the PCI-bus order the picker enumerated (nvidia-smi),
@@ -12967,35 +13000,49 @@ class LlamaCppBackend:
                     self._emit_child_gpu_visibility(
                         env, ",".join(str(i) for i in gpu_indices), prefer_rocr = True
                     )
-                elif manual_tensor_split_emitted and not is_vulkan_backend:
-                    # A manual per-GPU ratio across ALL GPUs (no explicit pick, so
-                    # no CUDA_VISIBLE_DEVICES mask above): the UI built the
-                    # --tensor-split list in ascending physical/PCI index order,
-                    # so pin the child's enumeration to that order too. The whole
-                    # visible set stays in use; only its ordering is fixed.
-                    self._pin_visible_gpu_order_for_split(env)
                 elif not is_vulkan_backend and not gpu_ids:
-                    # Nothing above pinned the child, which on auto placement means
-                    # `--fit on` owns it (the model was too large for the planner,
-                    # so _select_gpus returned (None, True) and gpu_indices stayed
-                    # None). One card short of the forced-CPU case above: the gate
-                    # dropped the uncovered iGPU but kept the dGPU, so the child
-                    # would enumerate the dropped card and die on it, and the
-                    # reactive retry cannot help (its guard needs gpu_indices).
-                    # Mask the survivors in. Deliberately last: a manual
-                    # --tensor-split was sized against the FULL visible count, and
-                    # masking under it would re-index the devices (the positional
-                    # mismatch _without_tensor_split exists for).
+                    # Nothing above pinned the child. Two shapes land here, and the
+                    # arch gate breaks both the same way, so they share one probe:
+                    # `--fit on` owning placement (the model was too large for the
+                    # planner, so _select_gpus returned (None, True)), and a manual
+                    # per-GPU ratio across ALL GPUs. Either way gpu_indices is None
+                    # and the reactive retry cannot help, since its guard needs a
+                    # truthy gpu_indices -- so an uncovered card reaches the child
+                    # and it dies enumerating it. One card short of the forced-CPU
+                    # branch above. gpu_ids is falsy here by construction: an
+                    # explicit pick sets gpu_indices and takes the arm above.
                     _survivors = self._arch_gate_survivors(binary)
                     if _survivors:
+                        # The manual ratio was validated against the FULL visible
+                        # count, which still counts the card the gate dropped, and
+                        # masking re-indexes the survivors under it -- the same
+                        # positional mismatch _without_tensor_split exists for. The
+                        # ratio cannot survive a narrowed set, so drop it and let
+                        # llama.cpp split the survivors by free VRAM.
+                        _gated_cmd = self._without_tensor_split(cmd)
+                        if _gated_cmd is not None:
+                            logger.warning(
+                                "Dropping the manual --tensor-split: it was sized "
+                                "for every visible GPU, and the installed build "
+                                "has no kernels for some of them."
+                            )
+                            cmd = _gated_cmd
+                            self._tensor_split = None
                         logger.info(
                             "The installed llama.cpp build has no kernels for GPU(s) "
-                            "the fit left visible; pinning the child to %s.",
+                            "left visible; pinning the child to %s.",
                             _survivors,
                         )
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _survivors), prefer_rocr = True
                         )
+                    elif manual_tensor_split_emitted:
+                        # A manual per-GPU ratio across ALL GPUs (no explicit pick,
+                        # so no CUDA_VISIBLE_DEVICES mask above): the UI built the
+                        # --tensor-split list in ascending physical/PCI index order,
+                        # so pin the child's enumeration to that order too. The
+                        # whole visible set stays in use; only its ordering is fixed.
+                        self._pin_visible_gpu_order_for_split(env)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd

@@ -569,7 +569,9 @@ class TestArchRetryDropsTensorSplit:
         # drop happens between narrowing the device set and the respawn.
         path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         text = path.read_text(encoding = "utf-8")
-        assert text.count("_without_tensor_split(") == 2  # definition + the one call site
+        # Two call sites: the arch-crash retry, and the manual-split launch the
+        # gate narrows. Both mask devices out from under a positional ratio.
+        assert text.count("self._without_tensor_split(") == 2
         block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
         assert "_without_tensor_split(cmd)" in block
         assert "self._tensor_split = None" in block  # /status must not report a dropped split

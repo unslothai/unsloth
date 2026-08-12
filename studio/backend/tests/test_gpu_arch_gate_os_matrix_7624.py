@@ -796,6 +796,7 @@ def _run_auto_load(
     env_extra = None,
     model_bytes = 1024,
     capture = None,
+    intent_kwargs = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the
     real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -880,6 +881,7 @@ def _run_auto_load(
             GgufLoadIntent(
                 gguf_path = str(gguf),
                 model_identifier = "owner/model",
+                **(intent_kwargs or {}),
             )
         )
     except Exception:
@@ -1181,3 +1183,122 @@ class TestArchCrashRetryEnv:
         _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
         assert _retry, "the arch-crash retry did not fire"
         assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)
+
+
+class TestManualSplitLaunchesRespectTheGate:
+    """Manual memory mode is not an explicit GPU pick: the probe still opts into
+    the gate (``for_llama_server = not gpu_ids``). But a manual per-GPU ratio
+    took its own env branch, which re-emits the WHOLE visible set -- handing the
+    child the very card the gate had just dropped."""
+
+    def _manual_split(self, monkeypatch, tmp_path, targets, *, devices):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(devices, vendor = "amd")
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            targets,
+            returncode = None,
+            intent_kwargs = {
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 20,
+                "tensor_split": (1.0, 1.0),
+            },
+        )
+
+    def test_a_narrowed_host_masks_and_drops_the_ratio(self, tmp_path, monkeypatch, probe_env):
+        launches = self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 12176),
+            ],
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        # The ratio was sized for both cards; the mask re-indexes the survivor to
+        # ordinal 0, so keeping it would weight the wrong device.
+        assert "--tensor-split" not in cmd
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+
+    def test_a_covered_host_keeps_its_ratio_and_its_order_pin(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The drop is the gate's doing. With every card covered the manual ratio
+        survives untouched and the launch keeps the PCI order pin it always had."""
+        launches = self._manual_split(
+            monkeypatch,
+            tmp_path,
+            GFX103X,
+            devices = [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1031", free_mib = 12176),
+            ],
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert cmd[cmd.index("--tensor-split") + 1] == "1,1"
+        assert env.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+
+
+class TestForcedCpuDropsTensorMode:
+    """``--split-mode tensor`` with no visible device aborts the server instead
+    of loading on CPU -- the file says so twice (the manual gpu_layers=0 guard,
+    and the paravirtual pin's note that -sm tensor throws
+    "LLAMA_SPLIT_MODE_TENSOR not implemented for architecture"). Manual mode
+    admits tensor parallelism on the FULL device count, which still counts the
+    cards the gate dropped, so the new forced-CPU mask could be reached with the
+    flag still in the argv."""
+
+    def test_the_forced_cpu_launch_carries_no_split_flags(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
+            vendor = "amd",
+        )
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX120X,  # covers neither card
+            returncode = None,
+            capture = capture,
+            intent_kwargs = {
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 20,
+                "tensor_parallel": True,
+            },
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert _visibility(env) == {"HIP_VISIBLE_DEVICES": "-1", "CUDA_VISIBLE_DEVICES": "-1"}
+        assert "--split-mode" not in cmd and "--tensor-split" not in cmd
+        # /status must not advertise a mode the child was never given.
+        assert capture["backend"]._tensor_parallel is False
+
+    def test_a_covered_host_keeps_tensor_mode(self, tmp_path, monkeypatch, probe_env):
+        """The normalisation is the gate's doing, not a blanket drop of tensor
+        mode from every manual launch."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1031", free_mib = 12176)],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX103X,
+            returncode = None,
+            intent_kwargs = {
+                "gpu_memory_mode": "manual",
+                "gpu_layers": 20,
+                "tensor_parallel": True,
+            },
+        )
+        cmd, _env = launches[0]
+        assert cmd[cmd.index("--split-mode") + 1] == "tensor"
