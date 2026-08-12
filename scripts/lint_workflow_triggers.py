@@ -87,8 +87,16 @@ def _trigger_set(yaml_doc) -> set[str]:
     return _normalise_on(_on_field(yaml_doc))
 
 
+# The script named as the argument of a python interpreter, at the start of a
+# command. `echo scripts/lint_workflow_triggers.py` mentions the script without
+# running it, and would otherwise pass for a host.
+_INVOCATION = re.compile(
+    rf"(?:^|[;&|]|\n)\s*[\w./-]*python[\w.]*\s+[^\n;&|]*{re.escape(LINT_SCRIPT_NAME)}"
+)
+
+
 def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
-    """(job, step) pairs whose `run` invokes this script.
+    """(job, step) pairs whose `run` actually invokes this script.
 
     Reads the parsed steps rather than the raw text: a commented-out
     `# - run: python3 scripts/lint_workflow_triggers.py` executes nothing, and
@@ -103,7 +111,7 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict]]:
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if isinstance(step, dict) and LINT_SCRIPT_NAME in str(step.get("run") or ""):
+            if isinstance(step, dict) and _INVOCATION.search(str(step.get("run") or "")):
                 found.append((job, step))
     return found
 
@@ -207,6 +215,11 @@ def main() -> int:
                 problems.append(
                     "its lint step is gated by an 'if:' condition, so the gate "
                     "can be skipped while the run still succeeds"
+                )
+            if any(job.get("needs") is not None for job, _ in lint_steps):
+                problems.append(
+                    "its lint job declares 'needs:', so a skipped prerequisite "
+                    "skips the gate without failing the run"
                 )
             if problems:
                 findings.append(

@@ -142,6 +142,43 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
     assert expected in proc.stderr
 
 
+def test_lint_rejects_a_host_that_only_mentions_the_script(tmp_path):
+    """`echo <script>` runs nothing, so it must not satisfy the wiring check."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            "run: echo scripts/lint_workflow_triggers.py",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+def test_lint_rejects_a_host_job_with_needs(tmp_path):
+    """A skipped prerequisite skips the lint job without failing the run."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "  lint:\n    runs-on: ubuntu-latest\n",
+            "  setup:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    if: ${{ false }}\n"
+            "    steps:\n"
+            "      - run: echo hi\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    needs: setup\n",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "needs:" in proc.stderr
+
+
 def test_lint_accepts_unfiltered_host(tmp_path):
     """A bare `pull_request:` host that can fail satisfies the requirement."""
     wf = tmp_path / "wf"
@@ -222,6 +259,30 @@ def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
     return rules
 
 
+def _glob_variants(pattern: str) -> list[str]:
+    """Expand `**/`, which wildmatch lets match ZERO directories.
+
+    `fnmatch` has no way to express that, so `/.github/**/workflows/` would
+    miss `.github/workflows/...` and hide a real override.
+    """
+    head, sep, tail = pattern.partition("**/")
+    if not sep:
+        return [pattern]
+    return [
+        f"{head}{prefix}{t}"
+        for t in _glob_variants(tail)
+        for prefix in ("**/", "")
+    ]
+
+
+def _is_valid_owner(token: str) -> bool:
+    """GitHub only requests review from an @user, an @org/team, or an email."""
+    if token.startswith("@"):
+        return len(token) > 1
+    local, _, domain = token.partition("@")
+    return bool(local and "." in domain)
+
+
 def _pattern_matches(pattern: str, path: str) -> bool:
     """Approximate GitHub's CODEOWNERS matching, erring toward matching.
 
@@ -244,7 +305,11 @@ def _pattern_matches(pattern: str, path: str) -> bool:
         candidates += [
             "/".join(segments[j:i]) for i in range(1, len(segments) + 1) for j in range(1, i)
         ]
-    return any(fnmatch.fnmatch(c, body) for c in candidates)
+    return any(
+        fnmatch.fnmatch(c, variant)
+        for c in candidates
+        for variant in _glob_variants(body)
+    )
 
 
 def _effective_owners(text: str, path: str) -> list[str]:
@@ -281,9 +346,11 @@ def test_workflow_changes_require_code_owner_review():
     )
     assert workflows, "no workflow files found"
     for probe in workflows:
-        assert _effective_owners(text, probe), (
-            f"CODEOWNERS leaves {probe} with no effective owner; a later "
-            "pattern overrode the .github/workflows/ rule."
+        owners = [o for o in _effective_owners(text, probe) if _is_valid_owner(o)]
+        assert owners, (
+            f"CODEOWNERS leaves {probe} with no effective owner GitHub could "
+            "request review from; a later pattern overrode the "
+            ".github/workflows/ rule."
         )
     for probe in CODEOWNERS_PROBES:
         owners = _effective_owners(text, probe)
@@ -291,6 +358,34 @@ def test_workflow_changes_require_code_owner_review():
             f"CODEOWNERS gives {probe} effective owners {owners or '(none)'}; "
             "a later pattern overrode the workflow rule."
         )
+
+
+@pytest.mark.parametrize(
+    "token, valid",
+    [
+        ("@danielhanchen", True),
+        ("@unslothai/maintainers", True),
+        ("danielhanchen@gmail.com", True),
+        ("not-an-owner", False),
+        ("@", False),
+    ],
+)
+def test_owner_token_validity(token, valid):
+    """An unusable owner token leaves a path effectively unowned.
+
+    GitHub cannot request review from a bare word, so counting it as an owner
+    would let a trailing rule quietly disown a workflow.
+    """
+    assert _is_valid_owner(token) is valid
+
+
+def test_invalid_owner_does_not_count_as_ownership():
+    """The realistic mistake: a later rule naming a non-owner."""
+    text = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding = "utf-8")
+    probe = CODEOWNERS_PROBES[0]
+    owners = _effective_owners(f"{text}\n/{probe} not-an-owner\n", probe)
+    assert owners == ["not-an-owner"]
+    assert not [o for o in owners if _is_valid_owner(o)]
 
 
 @pytest.mark.parametrize(
@@ -305,6 +400,8 @@ def test_workflow_changes_require_code_owner_review():
         ("**/workflows/ @someone-else", ["@someone-else"]),
         ("workflows/ @someone-else", ["@someone-else"]),
         (".github/*/ @someone-else", ["@someone-else"]),
+        # `**/` may match zero directories.
+        ("/.github/**/workflows/ @someone-else", ["@someone-else"]),
     ],
     ids = [
         "catch-all",
@@ -314,6 +411,7 @@ def test_workflow_changes_require_code_owner_review():
         "globbed-dir",
         "unanchored-dir",
         "wildcard-segment",
+        "double-star-zero-dirs",
     ],
 )
 def test_codeowners_guard_catches_a_later_rule(override, expected):
