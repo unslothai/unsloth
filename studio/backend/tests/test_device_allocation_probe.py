@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,30 @@ def test_timeout_escalates_to_kill_and_always_reaps(monkeypatch):
     assert proc.calls.count("kill") == 1
     # terminate drain, kill drain: the child is waited on, never left as a zombie.
     assert proc.calls.count("communicate") == 3
+
+
+def test_a_child_that_outlives_sigkill_is_still_reaped(monkeypatch):
+    # SIGKILL is not delivered while a task sits in an uninterruptible driver wait, which
+    # is exactly the wedged-GPU case this module exists to survive. Dropping the last
+    # reference there would leave an unreaped stray, so it is handed to a reaper instead.
+    proc = _FakeProc(returncode = -int(signal.SIGKILL), timeouts = 3)
+    waited = threading.Event()
+    proc.wait = lambda: waited.set()  # type: ignore[method-assign]
+    _patch_popen(monkeypatch, proc)
+
+    assert probe_torch_device_allocation("cuda:0").ok is False
+    assert waited.wait(timeout = 5), "abandoned child was never waited on"
+
+
+def test_a_child_that_dies_within_the_grace_needs_no_reaper(monkeypatch):
+    proc = _FakeProc(returncode = -int(signal.SIGTERM), timeouts = 1)
+    before = threading.active_count()
+    _patch_popen(monkeypatch, proc)
+
+    probe_torch_device_allocation("cuda:0")
+
+    assert "kill" not in proc.calls
+    assert threading.active_count() <= before
 
 
 def test_spawn_failure_fails_closed_without_raising(monkeypatch):

@@ -235,6 +235,31 @@ def _run_child(device: str) -> tuple[Optional[int], str, Optional[str]]:
     return process.returncode, stderr or "", None
 
 
+def _reap_later(process: subprocess.Popen) -> None:
+    """Wait on a child that outlived SIGKILL, on a daemon thread, forever.
+
+    SIGKILL cannot be caught, but it also cannot land while the process sits in an
+    uninterruptible driver wait: the signal is only delivered once the ioctl returns, and a
+    wedged GPU is precisely how a task ends up there. Since that is the scenario this
+    module exists to survive, dropping the last reference to such a child is the one way it
+    becomes an unreaped stray. Hold it and let the thread collect the corpse whenever the
+    driver finally lets go. Daemon, so it never delays shutdown.
+    """
+    threading.Thread(
+        target = _wait_forever,
+        args = (process,),
+        daemon = True,
+        name = f"device-probe-reaper-{process.pid}",
+    ).start()
+
+
+def _wait_forever(process: subprocess.Popen) -> None:
+    try:
+        process.wait()
+    except Exception:  # noqa: BLE001 - nothing to do but stop holding the reference
+        pass
+
+
 def _terminate_and_drain(process: subprocess.Popen) -> str:
     """Terminate, give it a moment, kill, and always drain and reap, so an overrunning
     probe cannot leave a zombie or a held pipe behind."""
@@ -253,7 +278,9 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
         try:
             _, stderr = process.communicate(timeout = _TERMINATE_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            pass
+            # Still alive after SIGKILL: stuck in the driver. Hand it to a reaper rather
+            # than returning and letting the last reference go.
+            _reap_later(process)
     except OSError:
         pass
     return stderr or ""

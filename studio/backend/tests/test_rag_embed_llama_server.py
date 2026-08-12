@@ -7,6 +7,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -226,12 +227,30 @@ def test_resolver_keeps_the_gguf_answer_for_an_impossible_rocm_host(monkeypatch)
     assert embeddings._resolve_auto() == "llama-server"
 
 
+def test_settings_gate_never_waits_on_hardware_detection(monkeypatch):
+    # ensure_hardware_detected() holds _DETECT_LOCK across a cold torch import, so a
+    # request reaching get_device() while background detection runs parks for the whole
+    # pass. ROCm is already ruled out here, and the rest of auto needs no detection.
+    _unsettled_detection(monkeypatch, rocm_possible = False)
+    monkeypatch.setattr(
+        embeddings, "get_device", lambda: (_ for _ in ()).throw(AssertionError("forced detection"))
+    )
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
+    assert embeddings.active_backend_is_llama() is True
+
+
+def _no_torch_loaded(monkeypatch):
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+
+
 def test_rocm_is_possible_is_false_on_macos(monkeypatch):
+    _no_torch_loaded(monkeypatch)
     monkeypatch.setattr(embeddings.sys, "platform", "darwin")
     assert embeddings._rocm_is_possible() is False
 
 
 def test_rocm_is_possible_follows_the_kfd_node_on_linux(monkeypatch):
+    _no_torch_loaded(monkeypatch)
     monkeypatch.setattr(embeddings.sys, "platform", "linux")
     seen: list = []
 
@@ -245,14 +264,26 @@ def test_rocm_is_possible_follows_the_kfd_node_on_linux(monkeypatch):
     assert seen == ["/sys/class/kfd/kfd/topology/nodes"]
 
 
-def test_rocm_is_possible_follows_the_rocm_install_on_windows(monkeypatch):
-    from utils import device_allocation_probe as probe_mod
-
+def test_an_installed_hip_sdk_alone_is_not_a_rocm_host(monkeypatch):
+    # main.py makes the same point where it refuses to let HIP_PATH/ROCM_PATH pick a
+    # backend: a CUDA or CPU box can carry the SDK. Claiming ROCm from it would strand
+    # such a host on the provisional answer and cost it its GGUF handling.
+    _no_torch_loaded(monkeypatch)
     monkeypatch.setattr(embeddings.sys, "platform", "win32")
-    monkeypatch.setattr(probe_mod, "_rocm_dll_directories", lambda: [])
     assert embeddings._rocm_is_possible() is False
-    monkeypatch.setattr(probe_mod, "_rocm_dll_directories", lambda: [r"C:\rocm\bin"])
+
+
+def test_rocm_is_possible_reads_torch_hip_when_torch_is_already_loaded(monkeypatch):
+    # A build attribute, so reading it initialises no driver, and it is the exact ROCm-ness
+    # the dangerous query depends on. Only consulted when torch is already imported.
+    monkeypatch.setattr(embeddings.sys, "platform", "win32")
+    monkeypatch.setitem(
+        sys.modules, "torch", SimpleNamespace(version = SimpleNamespace(hip = "6.3.42134"))
+    )
     assert embeddings._rocm_is_possible() is True
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(version = SimpleNamespace(hip = None)))
+    assert embeddings._rocm_is_possible() is False
 
 
 def test_settings_gate_does_not_probe_on_a_settled_rocm_host(monkeypatch):

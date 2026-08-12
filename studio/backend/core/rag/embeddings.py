@@ -99,19 +99,27 @@ def _rocm_is_possible() -> bool:
     ``routes/settings.py`` reads that as "not llama" and stops applying its GGUF handling,
     so a valid local .gguf briefly 409s on a host that never had an AMD GPU.
 
-    Each branch is a file-existence test, so it costs nothing on the request path:
+    The signal that actually settles it is ``torch.version.hip``: a build attribute, read
+    without initialising the driver (``utils/hardware/hardware.py::apply_gpu_ids`` relies
+    on exactly that), and it is the ROCm-ness the dangerous query depends on. It is only
+    consulted when torch is ALREADY imported, so this never pays an import of its own.
+
+    Without torch loaded there is no equally exact answer, so each platform falls back to
+    a file-existence test, or to no claim at all:
       * macOS never has ROCm.
       * Linux: ROCm's own kernel driver publishes this topology directory, and
         ``utils/hardware/hardware.py`` already reads it (``_rocm_kfd_gpu_pci_ids``).
-      * Windows: no equivalent node, so use the ROCm install itself -- the same bin
-        directories the probe child needs in order to load amdhip64.dll.
+      * Windows: nothing equivalent. An installed HIP SDK is NOT evidence -- ``main.py``
+        makes the same point where it refuses to let HIP_PATH/ROCM_PATH alone pick a
+        backend, since a CUDA or CPU box can carry the SDK. Claim nothing rather than
+        strand such a host on the provisional answer.
     """
     try:
-        if sys.platform == "darwin":
+        torch = sys.modules.get("torch")
+        if torch is not None:
+            return bool(getattr(getattr(torch, "version", None), "hip", None))
+        if sys.platform in ("darwin", "win32"):
             return False
-        if sys.platform == "win32":
-            from utils.device_allocation_probe import _rocm_dll_directories
-            return bool(_rocm_dll_directories())
         return os.path.isdir("/sys/class/kfd/kfd/topology/nodes")
     except Exception:  # noqa: BLE001 - unsure means possible; the caution is the safe side
         return True
@@ -621,6 +629,15 @@ def _resolve_auto() -> str:
         # real answer, which is what keeps its GGUF classification intact.
         return "sentence-transformers"
 
+    return _resolve_by_gpu_and_binary()
+
+
+def _resolve_by_gpu_and_binary() -> str:
+    """The non-ROCm half of ``auto``: GPU present -> ST, else the GGUF llama-server, or ST
+    if its binary is missing. Exactly what ``_resolve_auto`` was before this file learned
+    about ROCm, and it needs no hardware detection, which is why the request path can call
+    it directly rather than going through the resolver and parking on the detection lock.
+    """
     from core.inference.llama_cpp import LlamaCppBackend
 
     if LlamaCppBackend._get_gpu_free_memory():
@@ -758,7 +775,11 @@ def active_backend_is_llama() -> bool:
             is_rocm = _host_is_rocm()
             if is_rocm is True or (is_rocm is None and _rocm_is_possible()):
                 return False
-            key = _resolve_auto()
+            # Detection may still be running, and ensure_hardware_detected() holds
+            # _DETECT_LOCK across a cold torch import, so going through _resolve_auto here
+            # would park the request on exactly the wait this branch exists to avoid. ROCm
+            # is ruled out by now, and the rest of auto needs no detection at all.
+            key = _resolve_auto() if is_rocm is False else _resolve_by_gpu_and_binary()
         else:
             key = raw
         return key in _LLAMA_ALIASES
