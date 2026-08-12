@@ -514,8 +514,4 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
 
     assert result.exit_code == 1, result.output
     # Default first, then the explicit override, both before the server starts.
-    assert calls[:3] == [
-        ("policy_default", True),
-        ("policy", False),
-        ("run_server", None),
-    ]
+    assert calls[:3] == [("policy_default", True), ("policy", False), ("run_server", None)]

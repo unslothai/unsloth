@@ -88,7 +88,6 @@ class TestLauncherDefault:
 
     def test_force_disabled_context_beats_default(self):
         from state.tool_policy import tools_force_disabled
-
         set_tool_policy_default(True)
         with tools_force_disabled():
             assert _effective_enable_tools(_payload(None)) is False
