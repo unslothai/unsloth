@@ -360,7 +360,7 @@ def test_duplicate_metadata_gets_its_own_actionable_failure(monkeypatch, capsys)
     err = capsys.readouterr().err
     assert "Studio package metadata is inconsistent" in err
     assert "cannot safely choose" in err
-    assert "recreate the managed environment" in err
+    assert "Recreate the managed environment before" in err
     assert "pip install" not in err
     assert "installed files are damaged" not in err
     assert "Studio will keep failing to start" not in err
