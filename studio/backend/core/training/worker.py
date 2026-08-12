@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from loggers import get_logger
 import importlib
+import importlib.metadata
 import math
 import os
 import shutil
@@ -1032,14 +1033,32 @@ def _uninstall_package(pypi_name: str, display_name: str) -> bool:
     return True
 
 
+def _distribution_present(pypi_name: str) -> bool:
+    """Whether the distribution's METADATA is installed, without importing it.
+
+    Metadata is the thing that matters: unsloth/models/_utils.py gates on
+    ``_package_available`` (metadata) and only then imports the native module, so metadata
+    left behind is what turns a rejected wheel into an in-process crash. Reading it never
+    loads the extension, so this is safe to call even for a wheel that would abort.
+    """
+    importlib.invalidate_caches()
+    try:
+        importlib.metadata.distribution(pypi_name)
+        return True
+    except Exception:
+        return False
+
+
 def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
     """Discard an install that will not import, and say which state we ended in.
 
-    Every rejection goes through here. Leaving the distribution in place is not the same as
-    never having installed it: unsloth/models/_utils.py gates on package METADATA and then
-    imports the native module in process, so a wheel the isolated probe could not survive
-    would be loaded anyway and take the training process with it.
+    Idempotent and state-based, so it is safe to call on EVERY exit from the install path
+    rather than only the ones somebody remembered: it no-ops when the distribution is
+    already gone. Leaving it in place is not the same as never having installed it, since
+    the metadata gate above would import the extension anyway.
     """
+    if not _distribution_present(pypi_name):
+        return
     logger.warning("%s %s", display_name, reason)
     if _uninstall_package(pypi_name, display_name):
         _send_status(event_queue, f"{display_name} is not usable on this GPU; removed it")
@@ -1057,14 +1076,18 @@ def _install_package_wheel_first(
     import_name: str,
     display_name: str,
     pypi_name: str,
-    pypi_version: str | None = None,
-    filename_prefix: str | None = None,
-    release_tag: str | None = None,
-    release_base_url: str | None = None,
-    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
-    pypi_spec: str | None = None,
-    pypi_status_message: str | None = None,
+    **kwargs: Any,
 ) -> bool:
+    """Install a fast-path package, wheel first, and never leave an unusable one behind.
+
+    The two "touch nothing" guards run here, outside the cleanup: an already-working
+    package returns before any subprocess, and offline returns without changing anything.
+    Everything after them is an install attempt, so the invariant applies to it -- ANY
+    unsuccessful exit, including a timeout or a failed install, discards whatever is left
+    rather than leaving metadata the in-process import would pick up. Enforcing that here
+    rather than at each return is deliberate: this is the fourth defect of exactly that
+    shape, each one a path somebody did not think to clean up.
+    """
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
@@ -1073,6 +1096,36 @@ def _install_package_wheel_first(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
+    installed = False
+    try:
+        installed = _attempt_package_install(
+            event_queue = event_queue,
+            import_name = import_name,
+            display_name = display_name,
+            pypi_name = pypi_name,
+            **kwargs,
+        )
+        return installed
+    finally:
+        if not installed:
+            _reject_install(event_queue, pypi_name, display_name, "will not import")
+
+
+def _attempt_package_install(
+    *,
+    event_queue: Any,
+    import_name: str,
+    display_name: str,
+    pypi_name: str,
+    pypi_version: str | None = None,
+    filename_prefix: str | None = None,
+    release_tag: str | None = None,
+    release_base_url: str | None = None,
+    wheel_url_builder: Callable[[dict[str, str] | None], str | None] | None = None,
+    pypi_spec: str | None = None,
+    pypi_status_message: str | None = None,
+) -> bool:
+    """The install itself. Call it through _install_package_wheel_first, never directly."""
     # Set when a wheel installed but would not import; see the uninstall before the fallback.
     wheel_rejected = False
 
@@ -1150,8 +1203,8 @@ def _install_package_wheel_first(
         # not the answer either, since both scope it to the whole resolved transaction,
         # which for flash-attn means torch and the running CUDA stack.
         #
-        # Not fatal if it fails: the fallback then no-ops on "already satisfied", the probe
-        # below rejects it, and _reject_install reports the state we actually ended in.
+        # A failure here is caught by the _reject_install in the finally below, which is
+        # reached from every exit rather than only the ones that remember to clean up.
         _uninstall_package(pypi_name, display_name)
 
     _send_status(event_queue, pypi_status_message)
@@ -1275,11 +1328,9 @@ def _install_package_wheel_first(
         return False
 
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
-    # installing anything, so a rejected wheel would otherwise be reported as a success.
+    # installing anything. Returning False is enough; the caller's finally discards it.
     if not _is_importable_isolated(import_name):
-        _reject_install(
-            event_queue, pypi_name, display_name, "installed from PyPI but will not import"
-        )
+        logger.warning("%s installed from PyPI but will not import", display_name)
         return False
 
     if is_hip:

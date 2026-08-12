@@ -139,6 +139,138 @@ class TestIsImportableIsolated:
         assert "import flash_attn" not in " ".join(captured[0])
 
 
+class TestNoExitLeavesAnUnusableInstall:
+    """Every unsuccessful exit discards the distribution, not just the ones with a call.
+
+    The metadata gate in unsloth/models/_utils.py imports the extension in process, so
+    anything left behind is loaded anyway. Four rounds of review found four separate exits
+    that forgot to clean up, which is why this is enforced in one place.
+    """
+
+    def _run(self, monkeypatch, *, run_side_effect):
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "")
+            return run_side_effect(cmd, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        # Metadata says it is installed, which is exactly the state that must not survive.
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+        return installed, removals
+
+    def test_a_failed_fallback_install_still_cleans_up(self, monkeypatch):
+        installed, removals = self._run(
+            monkeypatch,
+            run_side_effect = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "boom"),
+        )
+        assert installed is False
+        assert removals, "a non-zero fallback exit must not leave the distribution installed"
+
+    def test_a_timed_out_fallback_still_cleans_up(self, monkeypatch):
+        """Only the ROCm source build sets a timeout, so this is the path that can raise."""
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+                return subprocess.CompletedProcess(cmd, 0, "")
+            raise subprocess.TimeoutExpired(cmd = cmd, timeout = 1800)
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: True)
+        monkeypatch.setattr(
+            worker,
+            "probe_torch_wheel_env",
+            lambda timeout = 30: {
+                "python_tag": "cp313",
+                "torch_mm": "2.10",
+                "cuda_major": "",
+                "hip_version": "6.2",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        )
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        # hipcc present, so the ROCm build is attempted rather than skipped.
+        monkeypatch.setattr(worker.shutil, "which", lambda name: "/opt/rocm/bin/hipcc")
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+
+        assert installed is False
+        assert removals, "a timed-out build must not leave the distribution installed"
+
+    def test_nothing_installed_means_nothing_to_remove(self, monkeypatch):
+        """The discard is state-based, so a clean failure does not run a pointless uninstall."""
+        removals: list[list[str]] = []
+
+        def _spy(cmd, **_kwargs):
+            if "uninstall" in cmd:
+                removals.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "")
+
+        monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+        monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+        monkeypatch.setattr(worker, "_distribution_present", lambda name: False)
+        monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+        monkeypatch.setattr(worker, "url_exists", lambda url: False)
+        monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+        monkeypatch.setattr(worker, "_send_status", lambda q, m: None)
+        monkeypatch.setattr(worker._sp, "run", _spy)
+
+        worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+            pypi_spec = "flash-attn",
+        )
+
+        assert removals == []
+
+    def test_a_working_package_is_never_touched(self, monkeypatch):
+        """The guard runs before the cleanup, so an install that works is left alone."""
+        calls: list[list[str]] = []
+        monkeypatch.setattr(worker, "_is_importable", lambda name: True)
+        monkeypatch.setattr(worker._sp, "run", lambda cmd, **kw: calls.append(list(cmd)))
+
+        installed = worker._install_package_wheel_first(
+            event_queue = [],
+            import_name = "flash_attn",
+            display_name = "flash-attn",
+            pypi_name = "flash-attn",
+        )
+
+        assert installed is True
+        assert calls == [], "a working package must not be probed, installed or removed"
+
+
 def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
     assert worker._should_try_runtime_flash_attn_install(32767) is False
