@@ -159,9 +159,13 @@ const FAMILY_PHASE = {
 /** Ordered; first match wins. Tested against the canonical path. */
 const PHASE_OVERRIDES = [
   // system: tokens and stats are the phase 9 observability/API-key surfaces,
-  // the rest of the family is the phase 1 connection indicator.
+  // while the public auth-capability config belongs to phase 2. The raw plural
+  // configs surface is backend/admin plumbing and is reviewed in phase 14.
   [/^\/api\/v1\/system\/tokens/, 9],
   [/^\/api\/v1\/system\/(stats|keys)/, 9],
+  [/^\/api\/v1\/system\/status$/, 9],
+  [/^\/api\/v1\/system\/config$/, 2],
+  [/^\/(api\/)?v1\/system\/configs$/, 14],
   [/^\/api\/v1\/system\/(variables|environments|oceanbase)/, 14],
   [/^\/api\/v1\/system\/config\/log/, 14],
   // datasets is split across five phases by the plan §4 rows.
@@ -293,6 +297,52 @@ const UNSUPPORTED = "unsupported";
 const FRONTEND = "rag-platform-frontend";
 
 const CLASS_RULES = [
+  // -- 0. Phase 1 system routes whose active Go implementation must not be
+  // swallowed by the broader historical go-unreachable rule below. ----------
+  {
+    id: "raw-system-config-internal",
+    when: { path: /^\/(api\/)?v1\/system\/configs$/, runtimeEnabled: true },
+    class: INTERNAL,
+    consumer: "backend operator only",
+    justification:
+      "Returns the process runtime configuration, including credential-bearing backend fields. It is never exposed by the frontend typed system API or persisted in browser state; source/contract and negative-export security tests only.",
+  },
+  {
+    id: "root-liveness-internal",
+    when: { path: /^\/health$/, service: /^go-api$/ },
+    class: INTERNAL,
+    consumer: "deployment health probe",
+    justification:
+      "Static Go service liveness used by deployment probes. The user-facing connection store uses the canonical /api/v1/system endpoints; no UI calls this root path.",
+  },
+  {
+    id: "active-system-health-probe",
+    when: {
+      path: /^\/api\/v1\/system\/(ping|healthz|version)$/,
+      runtimeEnabled: true,
+    },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "Feeds the phase 1 connection store and the small Settings > Connections readiness card. Existing auth, RAG and chat calls remain on their prior clients.",
+  },
+  {
+    id: "auth-capability-config",
+    when: { path: /^\/api\/v1\/system\/config$/, runtimeEnabled: true },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "Safe registration/password-login capability response used by the phase 2 auth UI; it is not part of the phase 1 connection store.",
+  },
+  {
+    id: "system-status-action",
+    when: { path: /^\/api\/v1\/system\/status$/, runtimeEnabled: true },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "Authenticated dependency and worker status used by the phase 9 operations UI, not by the anonymous phase 1 connection check.",
+  },
+
   // -- 1. Records the deployment cannot serve -------------------------------
   {
     id: "go-unreachable",
@@ -365,7 +415,7 @@ const CLASS_RULES = [
   // -- 6. Connection / readiness indicator (phase 1) -----------------------
   {
     id: "health-probe",
-    when: { path: /^\/api\/v1\/system\/(ping|healthz|version|status|config)$/ },
+    when: { path: /^\/api\/v1\/system\/(ping|healthz|version)$/ },
     class: ACTION,
     consumer: FRONTEND,
     justification:
@@ -512,6 +562,11 @@ function matches(rule, route, canonical) {
   if (when.method && !when.method.test(route.method)) return false;
   if (when.path && !when.path.test(canonical)) return false;
   if (when.notes && !when.notes.test(route.notes || "")) return false;
+  if (
+    when.runtimeEnabled !== undefined &&
+    route.runtime_enabled !== when.runtimeEnabled
+  )
+    return false;
   return true;
 }
 
@@ -813,6 +868,75 @@ const SMOKE_EVIDENCE = {
   "GET /api/v1/admin/ping": "smoke: 127.0.0.1:9381 -> 200 (`runtime-disabled.md`)",
 };
 
+const PHASE_IMPLEMENTATION_EVIDENCE = {
+  "python-api|GET /api/v1/system/ping": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    typedService:
+      "`src/integrations/platform-backend/system-api.ts#getSystemPing`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
+      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
+    ],
+  },
+  "python-api|GET /api/v1/system/version": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    typedService:
+      "`src/integrations/platform-backend/system-api.ts#getSystemVersion`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
+      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
+    ],
+  },
+  "python-api|GET /api/v1/system/healthz": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Rag Platform backend connection card",
+    typedService:
+      "`src/integrations/platform-backend/system-api.ts#getSystemHealth`",
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts`",
+      "`src/integrations/platform-backend/__tests__/connection-store.test.ts`",
+      "`src/integrations/platform-backend/__tests__/backend-connection-status.test.tsx`",
+    ],
+  },
+  "go-api|GET /health": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: [
+      "direct smoke: 127.0.0.1:9384/health -> 200",
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts` (canonical health service only)",
+    ],
+  },
+  "python-api|GET /v1/system/healthz": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts` (compatibility contract)",
+    ],
+  },
+  "go-api|GET /v1/system/configs": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts` (negative export/security contract)",
+    ],
+  },
+  "go-api|GET /api/v1/system/configs": {
+    status: "contract-verified",
+    uiPath: "—",
+    typedService: null,
+    evidence: [
+      "`src/integrations/platform-backend/__tests__/system-api.test.ts` (negative export/security contract)",
+    ],
+  },
+};
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
@@ -889,6 +1013,8 @@ function buildRecord(route, parent) {
   const classification = classifyRecord(route, canonical);
   const phase = phaseOf(route, canonical);
   const key = `${route.method} ${canonical}`;
+  const implementation =
+    PHASE_IMPLEMENTATION_EVIDENCE[`${route.service}|${key}`];
 
   const evidence = [];
   if (route.runtime_enabled === false) {
@@ -908,12 +1034,19 @@ function buildRecord(route, parent) {
   else if (evidence.length > 0) status = "contract-verified";
   else status = "planned";
 
+  if (route.runtime_enabled === true && implementation) {
+    status = implementation.status;
+    evidence.push(...implementation.evidence);
+  }
+
   if (evidence.length === 0) {
     evidence.push(phase === null ? "none" : `pending (Faz ${phase})`);
   }
 
   const isFrontend = classification.class === SCREEN || classification.class === ACTION;
-  const uiPath = isFrontend ? `pending (Faz ${phase})` : "—";
+  const uiPath =
+    implementation?.uiPath ?? (isFrontend ? `pending (Faz ${phase})` : "—");
+  const typedService = implementation?.typedService ?? null;
 
   // A closed route is only a lost capability if nothing reachable serves the
   // same method and path. For a nested alternate that equivalent is its own
@@ -997,6 +1130,7 @@ function buildRecord(route, parent) {
     consumer: classification.consumer,
     status,
     ui_path: uiPath,
+    typed_service: typedService,
     test_evidence: evidence,
     justification,
     is_alternate: Boolean(parent),
@@ -1035,6 +1169,15 @@ for (const record of records) {
   }
   if (record.owner === "unassigned") {
     problems.push(`no owner for family "${record.family}": ${record.method} ${record.path}`);
+  }
+  if (
+    record.status === "implemented" &&
+    (record.class === SCREEN || record.class === ACTION) &&
+    (!record.typed_service || record.ui_path === "—" || record.ui_path.startsWith("pending"))
+  ) {
+    problems.push(
+      `implemented frontend route lacks typed service/UI path: ${record.method} ${record.path} (${record.service})`,
+    );
   }
 }
 
@@ -1377,14 +1520,14 @@ function renderMarkdown() {
       lines.push(`#### \`${family}\` (${familyGroup.length})`);
       lines.push("");
       lines.push(
-        "| Method | Path | Service | Class | Owner | Auth role | Consumer | Status | Runtime | UI path | Evidence | Justification | Source |",
+        "| Method | Path | Service | Class | Owner | Auth role | Consumer | Status | Runtime | Typed service | UI path | Evidence | Justification | Source |",
       );
-      lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+      lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
       for (const record of familyGroup) {
         lines.push(
           `| ${record.method} | \`${record.path}\` | ${record.service}@${record.service_port} | \`${record.class}\` | ` +
             `${record.owner} | ${record.auth_role} | ${record.consumer} | \`${record.status}\` | ` +
-            `${record.runtime === "disabled" ? "**disabled**" : record.runtime} | ${record.ui_path} | ` +
+            `${record.runtime === "disabled" ? "**disabled**" : record.runtime} | ${record.typed_service ?? "—"} | ${record.ui_path} | ` +
             `${record.test_evidence.join("<br>")} | ${record.justification} | \`${record.source}\` |`,
         );
       }
