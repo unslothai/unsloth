@@ -96,6 +96,13 @@ class TestDarwin:
     def test_a_wrapper_entrypoint_resolves_to_the_real_bin_dir(self, monkeypatch, tmp_path):
         # The managed install can put a shell entrypoint in front of the real
         # binary; the dylibs sit next to the target, not next to the wrapper.
+        # This pins the env dict only. macOS SIP purges DYLD_* when exec'ing a
+        # protected binary, and a #!/bin/sh wrapper is exactly that, so on a
+        # real Mac the variable would not survive into llama-server through
+        # this path. The installer only writes a wrapper when it cannot make
+        # the symlink (install_llama_prebuilt.create_exec_entrypoint), so the
+        # mainline is unaffected; do not read this test as covering the
+        # wrapper case end to end.
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
         real_dir.mkdir(parents = True)
         (real_dir / "llama-server-real").write_text("")

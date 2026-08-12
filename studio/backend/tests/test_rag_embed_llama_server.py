@@ -153,6 +153,22 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Unsloth's selection
 
 
+def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch):
+    # dyld ignores LD_LIBRARY_PATH, and Apple Silicon is routed through the
+    # use_gpu branch, so the embedding server needs the same treatment the chat
+    # server got in #8566.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/inherited")
+    b = LlamaServerBackend()
+    env = b._build_env("/opt/llama/bin/llama-server", use_gpu = True)
+    entries = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert entries == ["/opt/llama/bin", "/opt/inherited"]
+    assert "LD_LIBRARY_PATH" not in env
+
+
 def test_use_gpu_explicit_modes(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")

@@ -269,6 +269,16 @@ class LlamaServerBackend:
 
         if sys.platform == "win32":
             return  # Windows resolves CUDA via PATH in the inherited env.
+        if sys.platform == "darwin":
+            # dyld ignores LD_LIBRARY_PATH, and there is no CUDA to find. Give
+            # the embedding server the same dyld search path the chat server
+            # gets (#8566); Apple Silicon is routed here with use_gpu set, so
+            # this branch is the normal macOS path, not an edge case.
+            existing = [p for p in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if p]
+            env["DYLD_LIBRARY_PATH"] = os.pathsep.join(
+                dict.fromkeys([binary_dir, *existing])
+            )
+            return
         arch = platform.machine()
         lib_dirs = [binary_dir]
         for pattern in (

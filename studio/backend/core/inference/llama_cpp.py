@@ -8996,6 +8996,64 @@ class LlamaCppBackend:
             else "reinstall or rebuild that custom llama.cpp"
         )
 
+    # dyld's reason can run to kilobytes (a "tried:" list names every searched
+    # path). The glibc branch is capped to one line; cap this one too, since it
+    # is quoted verbatim into an API error.
+    _MACOS_REASON_CHARS = 300
+
+    @staticmethod
+    def _plain_dyld_lib_name(lib: str) -> str:
+        """Drop dyld's search directives from an install name.
+
+        ``@rpath/libllama.dylib`` is a lookup token, not a location, so passing
+        it through as a path makes _missing_library_message tell the user to
+        restore a file at a directory that does not exist. The soname is what
+        they can act on, and _is_bundled_llama_library already matches on it.
+        """
+        for directive in ("@rpath/", "@loader_path/", "@executable_path/"):
+            if lib.startswith(directive):
+                return lib[len(directive) :]
+        return lib
+
+    @staticmethod
+    def _dyld_reason_after(output: str, start: int) -> str:
+        """The ``Reason:`` belonging to a dyld error, flattened to one line.
+
+        Bounded to that line plus its indented continuations, and searched only
+        after the "Library not loaded:" it explains: an unrelated earlier
+        "Reason:" in llama.cpp's own output would otherwise be read as dyld's,
+        and an unbounded read would swallow everything printed afterwards.
+        """
+        match = re.compile(
+            r"reason:[ \t]*([^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)",
+            re.IGNORECASE,
+        ).search(output, start)
+        return " ".join(match.group(1).split()) if match else ""
+
+    @staticmethod
+    def _dyld_tried_verdict(reason: str, binary: Optional[str]) -> str:
+        """The verdict for the candidate that is ours, out of a "tried:" list.
+
+        dyld reports ``tried: '<path>' (<verdict>), '<path>' (<verdict>), ...``
+        over every search path, so the list routinely mixes "no such file" for
+        our own bundle with "incompatible architecture" for a leftover Intel
+        Homebrew copy. Prefer the candidate in the runtime's own lib dir, else
+        the first one; with no list at all the reason stands as its own verdict.
+        """
+        candidates = re.findall(r"'([^']+)'\s*\(([^)]*)\)", reason)
+        if not candidates:
+            return reason
+        if binary:
+            try:
+                lib_dir = str(_llama_lib_dir(binary))
+            except (OSError, ValueError):
+                lib_dir = ""
+            if lib_dir:
+                for path, verdict in candidates:
+                    if os.path.dirname(path) == lib_dir:
+                        return verdict
+        return candidates[0][1]
+
     @staticmethod
     def _classify_macos_loader_failure(output: str, binary: Optional[str]) -> Optional[str]:
         """dyld / Mach-O startup failures, or None when the output has none.
@@ -9023,47 +9081,49 @@ class LlamaCppBackend:
                 "to get a build that matches this OS."
             )
 
-        # "Library not loaded: <path>" plus the "Reason:" that follows it.
-        # dyld wraps the reason over several lines, so read to the end of the
-        # output rather than to the end of the line.
+        # "Library not loaded: <path>", then the "Reason:" that belongs to it.
         not_loaded = re.search(
             r"library not loaded:[ \t]*([^\r\n]+)",
             output,
             re.IGNORECASE,
         )
-        lib = not_loaded.group(1).strip() if not_loaded else ""
-        reason = ""
-        reason_match = re.search(r"reason:\s*(.+)", output, re.IGNORECASE | re.DOTALL)
-        if reason_match:
-            reason = " ".join(reason_match.group(1).split())
-        reason_l = reason.lower()
-
-        if lib or reason:
+        if not_loaded:
+            lib = LlamaCppBackend._plain_dyld_lib_name(not_loaded.group(1).strip())
+            reason = LlamaCppBackend._dyld_reason_after(output, not_loaded.end())
+            # dyld4 lists every path it searched with a per-path verdict, so
+            # judge the candidate that is actually ours. Scanning the whole
+            # list would let a stale Intel /usr/local/lib copy ("incompatible
+            # architecture") or a policy-blocked one ("code signature") decide
+            # the diagnosis for a dylib that is simply absent from our install.
+            verdict = LlamaCppBackend._dyld_tried_verdict(reason, binary)
+            verdict_l = verdict.lower()
             # macOS refused the Mach-O itself. Unsigned or altered code is a
             # hard SIGKILL on Apple Silicon, so never send the user hunting for
             # a corrupt GGUF or for free memory.
-            if "code signature" in reason_l or "not valid for use in process" in reason_l:
+            if "code signature" in verdict_l or "not valid for use in process" in verdict_l:
                 return (
-                    "llama-server could not start: macOS rejected the code "
-                    f"signature of {lib or 'part of the llama.cpp runtime'}. The "
-                    "file was modified or is incompletely signed, so "
-                    f"{LlamaCppBackend._runtime_remedy(binary)}."
+                    f"llama-server could not start: macOS rejected the code "
+                    f"signature of {lib}. The file was modified or is "
+                    f"incompletely signed, so {LlamaCppBackend._runtime_remedy(binary)}."
                 )
-            if "incompatible architecture" in reason_l:
+            if "incompatible architecture" in verdict_l:
                 return (
-                    "llama-server could not start: "
-                    f"{lib or 'part of the llama.cpp runtime'} was built for a "
+                    f"llama-server could not start: {lib} was built for a "
                     "different CPU architecture than this Mac. Its install is "
                     f"for the wrong platform, so {LlamaCppBackend._runtime_remedy(binary)}."
                 )
-            if not lib:
-                return None
             # "no such file" (the modern per-path "tried:" list) and the older
             # bare "image not found" both mean absent; anything else means dyld
             # found it and refused it, where reinstalling a package is wrong.
-            if not reason_l or "no such file" in reason_l or "image not found" in reason_l:
+            if (
+                not verdict_l
+                or "no such file" in verdict_l
+                or "image not found" in verdict_l
+            ):
                 return LlamaCppBackend._missing_library_message(lib, binary)
-            return LlamaCppBackend._unloadable_library_message(lib, reason, binary)
+            return LlamaCppBackend._unloadable_library_message(
+                lib, verdict[: LlamaCppBackend._MACOS_REASON_CHARS], binary
+            )
 
         # A symbol mismatch with no missing file: llama-server and its dylibs
         # come from different builds (a half-applied update, or a stale custom
@@ -9240,13 +9300,17 @@ class LlamaCppBackend:
             # whose code signature is invalid, before it can print anything, so
             # do not present memory as the only reading there (#8566).
             if sys.platform == "darwin":
-                return (
+                # A signature kill happens before the process can print, so the
+                # log is often empty here: offer both readings rather than
+                # promising the log settles it, and carry whatever there is.
+                return LlamaCppBackend._with_startup_diagnostics(
                     "llama-server was stopped by macOS (signal 9) before it "
                     "started. That is either out of memory -- try a smaller or "
                     "more quantized GGUF, or lower the context length -- or "
-                    "macOS refusing the binary's code signature, which "
-                    "`unsloth studio update` repairs. The llama-server log "
-                    "shows which."
+                    "macOS refusing the binary's code signature, in which case "
+                    f"{LlamaCppBackend._runtime_remedy(binary)}.",
+                    output,
+                    log_path,
                 )
             return (
                 "llama-server was stopped by the operating system (signal 9), "
@@ -9290,6 +9354,45 @@ class LlamaCppBackend:
     # chatty server cannot push an unreadable wall of text into an API error.
     _STARTUP_TAIL_CHARS = 2000
 
+    # Name markers for env values that must never reach an API error. Kept in
+    # step with tools._BYPASS_ENV_SECRET_MARKERS, but deliberately local: this
+    # runs on a failure path and must not drag tools' MCP/DB imports in.
+    _SECRET_ENV_MARKERS = (
+        "TOKEN",
+        "API_KEY",
+        "APIKEY",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "PRIVATE_KEY",
+        "AUTH",
+    )
+
+    @staticmethod
+    def _scrub_secret_values(text: str) -> str:
+        """Redact credential-looking environment values out of ``text``.
+
+        llama-server inherits nearly all of Studio's environment, so a wrapper
+        script, a diagnostic build or a crash handler that echoes its env would
+        otherwise put an API key straight into the load error. Redact on value,
+        not on name: the child decides how it prints them.
+        """
+        if not text:
+            return text
+        cleaned = text
+        for name, value in os.environ.items():
+            # Short values match innocuous substrings ("1", "true", a port).
+            if len(value or "") >= 8 and any(
+                marker in name.upper() for marker in LlamaCppBackend._SECRET_ENV_MARKERS
+            ):
+                cleaned = cleaned.replace(value, "***")
+        # Credentials the child obtained elsewhere (a HF token read from a
+        # config file, an Authorization header echoed by a proxy) are not in
+        # our environment to match on, so catch the two well-known shapes.
+        cleaned = re.sub(r"hf_[A-Za-z0-9]{20,}", "hf_***", cleaned)
+        return re.sub(r"(?i)bearer\s+[A-Za-z0-9._\-]+", "Bearer ***", cleaned)
+
     @staticmethod
     def _with_startup_diagnostics(
         message: str, output: Optional[str], log_path: "Optional[Path | str]"
@@ -9300,12 +9403,15 @@ class LlamaCppBackend:
         messages and the no-output case keep their exact existing text.
         """
         parts = [message]
+        # Slice before filtering: _drain_stdout keeps an unterminated line
+        # whole, so a runaway progress line would otherwise be walked
+        # character by character just to throw all but the last 2000 away.
+        raw = (output or "")[-LlamaCppBackend._STARTUP_TAIL_CHARS * 4 :]
         # Control characters (progress bars, colour codes) would corrupt the
         # API error; keep newlines and tabs, which carry the structure.
-        tail = "".join(
-            ch for ch in (output or "") if ch in "\n\t" or (ch.isprintable() and ch != "\x7f")
-        ).strip()
+        tail = "".join(ch for ch in raw if ch in "\n\t" or ch.isprintable()).strip()
         if tail:
+            tail = LlamaCppBackend._scrub_secret_values(tail)
             tail = tail[-LlamaCppBackend._STARTUP_TAIL_CHARS :].lstrip()
             parts.append(f"llama-server output:\n{tail}")
         if log_path:

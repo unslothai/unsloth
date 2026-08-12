@@ -630,3 +630,171 @@ class TestStartupDiagnostics:
         assert "Images page" in msg
         assert "Full log" not in msg
         assert "llama-server output:" not in msg
+
+
+class TestMacOSLoaderEdgeCases:
+    """dyld's real output shape: a mixed "tried:" list, unrelated text above it,
+    and a reason that can run for kilobytes."""
+
+    def test_a_mixed_tried_list_judges_our_own_copy(self, monkeypatch, tmp_path):
+        # An Apple Silicon Mac with a leftover Intel Homebrew tree lists our
+        # missing dylib AND an x86_64 one under /usr/local. Scanning the whole
+        # list would report "wrong CPU architecture" for a file that is simply
+        # absent from our install.
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        out = (
+            "dyld[4210]: Library not loaded: @rpath/libmtmd.dylib\n"
+            f"  Reason: tried: '{binary.parent}/libmtmd.dylib' (no such file), "
+            "'/usr/local/lib/libmtmd.dylib' (mach-o file, but is an incompatible "
+            "architecture (have 'x86_64', need 'arm64')), "
+            "'/usr/lib/libmtmd.dylib' (no such file, not in dyld cache)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, str(binary))
+        assert "libmtmd.dylib" in msg
+        assert "architecture" not in msg.lower()
+        assert "missing" in msg.lower()
+
+    def test_a_policy_blocked_sibling_does_not_accuse_the_user_of_tampering(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        out = (
+            "dyld[4210]: Library not loaded: @rpath/libllama.dylib\n"
+            f"  Reason: tried: '{binary.parent}/libllama.dylib' (no such file), "
+            "'/usr/local/lib/libllama.dylib' (code signature not valid for use in "
+            "process: library load disallowed by system policy)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, str(binary))
+        assert "code signature" not in msg.lower()
+        assert "was modified" not in msg
+
+    def test_our_own_copy_really_is_the_signature_failure(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+        binary.parent.mkdir(parents = True)
+        binary.write_text("")
+        out = (
+            "dyld[4210]: Library not loaded: @rpath/libllama.dylib\n"
+            f"  Reason: tried: '{binary.parent}/libllama.dylib' (code signature in "
+            "<A1B2> not valid for use in process: mapped file has no cdhash)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, str(binary))
+        assert "code signature" in msg.lower()
+
+    def test_an_earlier_unrelated_reason_is_not_read_as_dylds(self):
+        # llama.cpp prints its own "Reason:" lines; only the one after the
+        # "Library not loaded:" explains it.
+        out = (
+            "main: loading model\n"
+            "llama_model_load: error loading model: Reason: unknown\n"
+            "ggml_metal_init: skipping device, incompatible architecture\n"
+            "dyld[9]: Library not loaded: @rpath/libggml-base.dylib\n"
+            "  Reason: tried: '/x/libggml-base.dylib' (no such file)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "libggml-base.dylib" in msg
+        assert "architecture" not in msg.lower()
+
+    def test_a_stray_reason_does_not_disable_symbol_classification(self):
+        # A "reason:" anywhere used to swallow the symbol-mismatch branch.
+        out = (
+            "srv load: Reason: retrying\n"
+            "dyld[1]: Symbol not found: __ZN4ggml7backendE\n"
+            "  Referenced from: /x/libmtmd.dylib\n"
+            "  Expected in: /x/libllama.dylib"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "different build" in msg
+
+    def test_the_classified_reason_is_bounded(self):
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: no suitable image found. Did find: " + "x" * 20_000
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "libllama.dylib" in msg
+        assert len(msg) < 1000
+
+    def test_the_health_timeout_marker_is_not_absorbed_into_a_dyld_reason(self):
+        # Studio appends its own marker to the captured output; it must not be
+        # quoted back to the user as part of dyld's diagnosis.
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: tried: '/x/libllama.dylib' (no such file)\n"
+            "llama-server health check timed out after 600.0s"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "health check timed out" not in msg
+
+    def test_signal_9_on_macos_respects_a_custom_binary(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
+        msg = _classify("", "/models/x.gguf", "local/x", -9, "/opt/mybuild/bin/llama-server")
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+
+class TestDiagnosticsDoNotLeak:
+    """The output tail is llama-server's own stdout, and llama-server inherits
+    nearly all of Studio's environment."""
+
+    _OUT = "build: 9415\nenv dump: OPENAI_API_KEY=sk-owner-secret-1234567890\nabort"
+
+    def test_a_secret_env_value_is_redacted(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-owner-secret-1234567890")
+        msg = _classify(self._OUT, "/models/x.gguf", "local/x", 1)
+        assert "sk-owner-secret-1234567890" not in msg
+        assert "***" in msg
+
+    def test_a_non_secret_env_value_is_left_alone(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_MODEL_DIR", "/models/mymodels")
+        msg = _classify(
+            "loading from /models/mymodels failed", "/models/x.gguf", "local/x", 1
+        )
+        assert "/models/mymodels" in msg
+
+    def test_a_bare_hf_token_shape_is_redacted(self):
+        out = "curl -H 'Authorization: Bearer hf_" + "a" * 34 + "' failed"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "hf_" + "a" * 34 not in msg
+
+    def test_a_huge_unterminated_line_is_cheap(self):
+        # _drain_stdout keeps an unterminated line whole; the tail must be
+        # sliced before it is filtered character by character.
+        import time
+
+        out = "x" * 10_000_000 + "\nggml_metal_init: error"
+        start = time.perf_counter()
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert time.perf_counter() - start < 0.2
+        assert "ggml_metal_init: error" in msg
+
+
+class TestDyldInstallNames:
+    def test_an_rpath_placeholder_is_not_reported_as_a_location(self, monkeypatch):
+        # "@rpath/libfoo.dylib is missing from that exact location" is
+        # unusable advice: @rpath is a search directive, not a directory.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/mybuild/bin/llama-server")
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libomp.dylib\n"
+            "  Reason: tried: '/opt/mybuild/bin/libomp.dylib' (no such file)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, "/opt/mybuild/bin/llama-server")
+        assert "@rpath" not in msg
+        assert "libomp.dylib" in msg
+        assert "that exact location" not in msg
+
+    def test_a_bundled_dylib_behind_rpath_still_points_at_the_installer(self, monkeypatch):
+        monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libggml-metal.dylib\n"
+            "  Reason: tried: '/x/libggml-metal.dylib' (no such file)"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert "unsloth studio update" in msg
