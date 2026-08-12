@@ -3566,11 +3566,12 @@ def _repair_duplicate_core_metadata(
 ) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
-    Remove every record first because pip's force-reinstall only uninstalls the
-    one record its finder selects. Repeating a dependency-free uninstall keeps
-    removing the selected record until none remain, after which the requested
-    source can be installed without asking a resolver to replace the existing
-    torch build. The normal dependency pass still follows this repair.
+    Remove invalid records directly because pip cannot parse them. Then repeat
+    a dependency-free uninstall until no valid record remains, because pip's
+    force-reinstall only uninstalls the one record its finder selects. The
+    requested source can then be installed without asking a resolver to replace
+    the existing torch build. The normal dependency pass still follows this
+    repair.
     """
     duplicates: list[tuple[str, int]] = []
     seen: set[str] = set()
@@ -3587,6 +3588,19 @@ def _repair_duplicate_core_metadata(
     repaired: list[str] = []
     for name, record_count in duplicates:
         _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
+        invalid_paths = install_manifest.invalid_metadata_paths(name)
+        for path in invalid_paths:
+            try:
+                shutil.rmtree(path)
+            except OSError:
+                _safe_print(
+                    _red(f"   could not remove invalid metadata for {name}: {path}"),
+                    file = sys.stderr,
+                )
+                return False
+        if invalid_paths:
+            importlib.invalidate_caches()
+            record_count = len(install_manifest.installed_versions(name))
         while record_count:
             run(
                 f"Removing an installed metadata record for {name}",

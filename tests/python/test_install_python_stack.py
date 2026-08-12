@@ -545,6 +545,39 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDuplicateCoreMetadataRepair:
+    def test_invalid_metadata_is_removed_before_pip_uninstall(self, tmp_path, monkeypatch):
+        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        malformed.mkdir()
+        (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        probes = iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
+        commands = []
+
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda _name: next(probes),
+        )
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "invalid_metadata_paths",
+            lambda _name: [malformed],
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+
+        def record_run(label, cmd):
+            assert not malformed.exists()
+            commands.append((label, cmd))
+
+        monkeypatch.setattr(ips, "run", record_run)
+        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: None)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert not malformed.exists()
+        assert [command for _label, command in commands] == [
+            [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"]
+        ]
+
     def test_every_duplicate_record_is_uninstalled_before_reinstall(self, monkeypatch):
         probes = {
             "unsloth": iter(

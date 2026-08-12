@@ -109,6 +109,38 @@ def _metadata_scan_paths() -> List[str]:
     return paths
 
 
+def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
+    """Every matching metadata version and its directory, when available."""
+    from importlib.metadata import distributions
+
+    wanted = _canonical(dist_name)
+    paths = _metadata_scan_paths()
+    kwargs = {"path": paths} if paths else {}
+    found: List[Tuple[str, Optional[Path]]] = []
+    for dist in distributions(**kwargs):
+        path = getattr(dist, "_path", None)
+        try:
+            record_path = Path(os.fspath(path)) if path is not None else None
+        except (TypeError, ValueError):
+            record_path = None
+        try:
+            name = dist.metadata.get("Name")
+            if name:
+                if _canonical(name) == wanted:
+                    found.append((dist.version or "", record_path))
+                continue
+        except Exception:
+            pass
+        # A nameless or unreadable matching record is itself a conflict. Wheel
+        # metadata directory names escape name separators as underscores, so
+        # splitting off the final version is unambiguous.
+        stem = record_path.name if record_path is not None else ""
+        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
+        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
+            found.append(("", record_path))
+    return sorted(found, key = lambda record: (record[0], os.fspath(record[1] or "")))
+
+
 def installed_versions(dist_name: str) -> List[str]:
     """Every metadata version for one canonical distribution name.
 
@@ -117,30 +149,16 @@ def installed_versions(dist_name: str) -> List[str]:
     the filesystem finder happens to yield first, which can be a superseded
     dist-info left behind by an interrupted uninstall.
     """
-    from importlib.metadata import distributions
+    return [version for version, _path in _installed_metadata_records(dist_name)]
 
-    wanted = _canonical(dist_name)
-    paths = _metadata_scan_paths()
-    kwargs = {"path": paths} if paths else {}
-    found: List[str] = []
-    for dist in distributions(**kwargs):
-        try:
-            name = dist.metadata.get("Name")
-            if name:
-                if _canonical(name) == wanted:
-                    found.append(dist.version or "")
-                continue
-        except Exception:
-            pass
-        # A nameless or unreadable matching record is itself a conflict. Wheel
-        # metadata directory names escape name separators as underscores, so
-        # splitting off the final version is unambiguous.
-        path = getattr(dist, "_path", None)
-        stem = os.path.basename(os.fspath(path)) if path is not None else ""
-        path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
-        if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
-            found.append("")
-    return sorted(found)
+
+def invalid_metadata_paths(dist_name: str) -> List[Path]:
+    """Matching metadata directories that pip cannot safely identify."""
+    return [
+        path
+        for version, path in _installed_metadata_records(dist_name)
+        if not version and path is not None
+    ]
 
 
 def metadata_conflict(versions: Sequence[str]) -> bool:

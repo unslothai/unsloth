@@ -113,6 +113,7 @@ def test_installed_versions_marks_malformed_matching_metadata_as_a_conflict(tmp_
 
     versions = im.installed_versions("demo")
     assert versions == ["", "1.0"]
+    assert im.invalid_metadata_paths("demo") == [malformed]
     assert im.metadata_conflict(versions) is True
     assert im._installed_version("demo") is None
 
@@ -127,6 +128,7 @@ def test_single_malformed_matching_metadata_is_a_conflict(tmp_path, monkeypatch)
 
     versions = im.installed_versions("demo-pkg")
     assert versions == [""]
+    assert im.invalid_metadata_paths("demo-pkg") == [malformed]
     assert im.metadata_conflict(versions) is True
 
 
@@ -141,6 +143,7 @@ def test_nameless_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
 
     versions = im.installed_versions("demo")
     assert versions == ["", "1.0"]
+    assert im.invalid_metadata_paths("demo") == [nameless]
     assert im.metadata_conflict(versions) is True
 
 
