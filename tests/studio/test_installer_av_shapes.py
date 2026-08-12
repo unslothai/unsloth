@@ -128,6 +128,15 @@ ALLOWED_PINVOKES = {
     "SetConsoleMode",
     # Per-item Explorer icon refresh; the global broadcast alone does not recover a stale .lnk.
     "SHChangeNotify",
+    # Resolving a PID to its image path for the venv-holder check. Opening a handle per process
+    # is a shape heuristics score, and Win32_Process.ExecutablePath answers the same question --
+    # but tests/python/test_windows_installer_concurrency_guard.py bans Get-CimInstance and
+    # $process.Path from that detector outright, because the races #7764 closed came from
+    # inferring "in use" out of anything other than a confirmed executable identity. The contract
+    # wins: a wrongly blocked install costs more than these three imports.
+    "OpenProcess",
+    "QueryFullProcessImageNameW",
+    "CloseHandle",
 }
 
 
@@ -148,10 +157,16 @@ def test_no_new_native_imports(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
-def test_process_inspection_stays_out_of_native_code(name: str) -> None:
-    # Opening a handle to every running PID is the specific pair that was removed; Win32_Process
-    # answers the same question for the same processes in one query.
-    for banned in ("OpenProcess", "QueryFullProcessImageName", "VirtualAllocEx", "WriteProcessMemory"):
+def test_no_process_memory_apis(name: str) -> None:
+    # The installer reads a process's image path and nothing else. Reaching into another
+    # process's memory has no legitimate use here and is what the injection heuristics look for.
+    for banned in (
+        "VirtualAllocEx",
+        "WriteProcessMemory",
+        "ReadProcessMemory",
+        "CreateRemoteThread",
+        "SetWindowsHookEx",
+    ):
         assert banned not in _text(name), f"{name} references {banned}"
 
 

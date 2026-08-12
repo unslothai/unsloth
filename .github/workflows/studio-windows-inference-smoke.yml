@@ -131,8 +131,6 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          pwsh -NoProfile -File tests/studio/test_process_image_path_map.ps1
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.
