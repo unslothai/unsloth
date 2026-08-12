@@ -195,7 +195,7 @@ def test_resolve_head_prefers_continued_branch_over_newer_regen_sibling():
                 }},
               }})),
             }});
-            console.log(JSON.stringify({{ headId, active: repo.getHeadId() }}));
+            console.log(JSON.stringify({{ headId, active: repo.headId }}));
             """
         )
     )

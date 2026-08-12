@@ -24,14 +24,11 @@ import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
-<<<<<<< HEAD
+import { repairAssistantParentIds } from "./chat-message-tree";
 import {
   hasResearchMetadata,
   reconcileServerManagedMessages,
 } from "./research-message-sync";
-=======
-import { repairAssistantParentIds } from "./chat-message-tree";
->>>>>>> e13968c38 (fix(studio): preserve regeneration branch history on reload (#7732))
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -116,18 +113,15 @@ export async function syncExportedRepositoryToBackend(
   await ensureStoredChatThread(remoteId);
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
-<<<<<<< HEAD
   );
   await syncStoredChatMessages(
     remoteId,
-    await withStoredResearchMessages(remoteId, records),
+    await withStoredResearchMessages(
+      remoteId,
+      repairAssistantParentIds(records),
+    ),
     { pruneMissing: options.pruneMissing },
-=======
->>>>>>> e13968c38 (fix(studio): preserve regeneration branch history on reload (#7732))
   );
-  await syncStoredChatMessages(remoteId, repairAssistantParentIds(records), {
-    pruneMissing: options.pruneMissing,
-  });
 }
 
 type ThreadImportExport = {
