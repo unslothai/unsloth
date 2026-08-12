@@ -583,6 +583,25 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
     assert chat_loud > chat_quiet + 0.7
 
 
+def test_embedding_guard_prices_the_slots_that_will_launch():
+    """The loader clamps embedding slots to a smaller physical micro-batch.
+    The training coexistence guard must not 409 that reduced process by pricing
+    the original slot request."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    embedding = dict(_QWEN3_8B, pooling_type = 2)
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**embedding)):
+        clamped = route._estimate_gguf_kv_gb(
+            "/x.gguf", 32768, n_parallel = 4, n_batch = 4, n_ubatch = 2
+        )
+        launched = route._estimate_gguf_kv_gb(
+            "/x.gguf", 32768, n_parallel = 2, n_batch = 4, n_ubatch = 2
+        )
+    assert clamped == pytest.approx(launched, abs = 0.01)
+
+
 def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
     read together later (the slot save re-estimates the KV from both). The fit-time reduction

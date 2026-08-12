@@ -73,12 +73,16 @@ def _make_gguf(
     arch: str,
     *,
     pooling_type: int | None = None,
+    pooling_first: bool = False,
     filename: str = "test.gguf",
 ) -> str:
     """Header-only GGUF v3 carrying the architecture and optional pooling type."""
-    entries: list[tuple[str, object, int]] = [("general.architecture", arch, _VTYPE_STRING)]
+    entries: list[tuple[str, object, int]] = []
+    if pooling_type is not None and pooling_first:
+        entries.append((f"{arch}.pooling_type", pooling_type, _VTYPE_UINT32))
+    entries.append(("general.architecture", arch, _VTYPE_STRING))
     entries.append((f"{arch}.block_count", 12, _VTYPE_UINT32))
-    if pooling_type is not None:
+    if pooling_type is not None and not pooling_first:
         entries.append((f"{arch}.pooling_type", pooling_type, _VTYPE_UINT32))
 
     buf = io.BytesIO()
@@ -110,6 +114,13 @@ class TestIsEmbeddingGguf:
     def test_true_for_every_sequence_pooling_mode(self, tmp_path, backend, pooling_type):
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = pooling_type))
         assert backend._pooling_type == pooling_type
+        assert backend.is_embedding_gguf is True
+
+    def test_pooling_before_architecture_is_detected(self, tmp_path, backend):
+        backend._read_gguf_metadata(
+            _make_gguf(tmp_path, "bert", pooling_type = POOLING_CLS, pooling_first = True)
+        )
+        assert backend._pooling_type == POOLING_CLS
         assert backend.is_embedding_gguf is True
 
     def test_false_when_the_header_pools_nothing(self, tmp_path, backend):
@@ -209,7 +220,7 @@ class TestLoadModelEmitsTheFlag:
         )
 
 
-@pytest.mark.parametrize("flag", ["--embedding", "--embeddings"])
+@pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])
 def test_user_extra_args_still_cannot_pass_the_flag(flag):
     # The denylist keeps a user-supplied --embedding off the chat server; the
     # header probe is the only thing allowed to turn it on.

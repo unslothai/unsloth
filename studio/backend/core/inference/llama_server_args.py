@@ -77,6 +77,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # Server-mode flips: --embedding is set from the GGUF pooling type at load, not by hand.
     frozenset({"--embedding", "--embeddings"}),
     frozenset({"--rerank", "--reranking"}),
+    # Pooling decides whether the managed embedding launch is safe. A pass-through
+    # override appended after --embedding could switch it to NONE or RANK.
+    frozenset({"--pooling"}),
     # llama-server's own built-in tools flag would silently stack on top of
     # Unsloth's --enable-tools / --disable-tools policy resolver.
     frozenset({"--tools"}),

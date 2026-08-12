@@ -4272,7 +4272,7 @@ class LlamaCppBackend:
         head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
         send_embedding reads n_embd_out floats out of it.
         """
-        return self._pooling_type in self._EMBEDDING_POOLING_TYPES
+        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -6662,9 +6662,11 @@ class LlamaCppBackend:
             compute = 2 * act_scratch + out_buffer * par
         else:
             # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot; would under-count embeddings/--logits-all,
-            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
-            compute = act_scratch + out_buffer * max(0, par - 1)
+            # ~one logit row per slot). Embedding mode outputs the whole first
+            # micro-batch too, so it pays for every slot rather than slots past one.
+            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
+            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
+            compute = act_scratch + out_buffer * output_slots
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
     def _compute_buffer_ctx_bytes(
@@ -7180,6 +7182,7 @@ class LlamaCppBackend:
             # Arch-specific keys added dynamically once we know the arch.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            pooling_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -7211,7 +7214,7 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys:
+                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -7256,6 +7259,8 @@ class LlamaCppBackend:
                                 )
                                 if key == "diffusion.canvas_length":
                                     canvas_seen = True
+                                if key.endswith(".pooling_type"):
+                                    pooling_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -7295,6 +7300,13 @@ class LlamaCppBackend:
                         # fetch); break so the resolver fallback runs on
                         # what we have.
                         break
+
+            # GGUF metadata has no key-order contract. Pooling can precede
+            # general.architecture, so bind the buffered value after the sweep.
+            if arch is not None:
+                self._pooling_type = pooling_by_arch.get(
+                    f"{arch}.pooling_type", self._pooling_type
+                )
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.

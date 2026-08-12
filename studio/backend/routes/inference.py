@@ -5713,10 +5713,6 @@ def _estimate_gguf_kv_gb(
         if ctx <= 0:
             return 0.0
         slots = max(1, n_parallel or 1)
-        managed_kv_unified = bool(
-            slots > 1
-            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
-        )
         planned_cache_types = _planned_main_cache_types(
             cache_type_kv,
             llama_extra_args,
@@ -5751,6 +5747,25 @@ def _estimate_gguf_kv_gb(
                 n_batch = _emitted_n_batch(n_batch, slots),
                 n_ubatch = n_ubatch,
             )
+        )
+        # --embedding makes llama-server cap n_batch to n_ubatch. The loader
+        # therefore reduces slots to the same value before fitting; admission
+        # must price the process that will launch, not the original request.
+        if (
+            getattr(probe, "is_embedding_gguf", False)
+            and effective_ubatch is not None
+            and effective_ubatch < slots
+        ):
+            slots = max(1, effective_ubatch)
+            effective_ubatch = _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
+        managed_kv_unified = bool(
+            slots > 1
+            and LlamaCppBackend.probe_server_capabilities().get("supports_kv_unified", False)
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -5793,10 +5808,13 @@ def _estimate_gguf_kv_gb(
             ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
             act_scratch = 4 * n_embd * ub * 4
             out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            output_slots = (
+                slots if getattr(probe, "is_embedding_gguf", False) else max(0, slots - 1)
+            )
             raw = (
                 2 * act_scratch + out_buffer * slots
                 if per_device_tensor
-                else act_scratch + out_buffer * max(0, slots - 1)
+                else act_scratch + out_buffer * output_slots
             )
             return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
