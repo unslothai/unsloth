@@ -613,14 +613,10 @@ def test_first_download_dispatch_loads_zoo_once(monkeypatch):
             return "/cache/model.bin"
 
     monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
-    monkeypatch.setattr(
-        shim, "_load_shared", lambda: calls.append("load") or True, raising = True
-    )
+    monkeypatch.setattr(shim, "_load_shared", lambda: calls.append("load") or True, raising = True)
 
     assert (
-        shim.hf_hub_download_with_xet_fallback(
-            "org/model", "model.bin", None, cache_dir = "/cache"
-        )
+        shim.hf_hub_download_with_xet_fallback("org/model", "model.bin", None, cache_dir = "/cache")
         == "/cache/model.bin"
     )
     assert calls == ["load", "download"]

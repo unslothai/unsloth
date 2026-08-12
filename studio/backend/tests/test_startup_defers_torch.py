@@ -79,7 +79,6 @@ def test_import_main_does_not_import_torch():
         "utils.datasets.raw_text",
         "core.inference.orchestrator",
         "routes.models",
-
         "utils.hf_xet_fallback",
         "core.rag.embeddings",
     ],
@@ -218,9 +217,9 @@ def test_the_warm_keeps_optional_gpu_consumers_cold():
         "datasets",  # raw-text dataset helpers
     ]
     assert "unsloth_zoo" not in stage_names
-    assert not hasattr(torch_warmup, "_warm_unsloth_zoo"), (
-        "the optional Hub/Xet integration must be loaded by a real download, not startup"
-    )
+    assert not hasattr(
+        torch_warmup, "_warm_unsloth_zoo"
+    ), "the optional Hub/Xet integration must be loaded by a real download, not startup"
 
 
 def test_a_failing_warm_stage_is_reported_not_swallowed(monkeypatch, capsys, caplog):

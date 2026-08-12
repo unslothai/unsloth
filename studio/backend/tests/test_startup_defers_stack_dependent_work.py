@@ -60,9 +60,9 @@ def test_lifespan_does_not_probe_mlx_before_yielding():
 def test_no_startup_worker_warms_the_rag_embedder():
     referenced = _names_called(_lifespan_body()) | _names_called(_post_warm_body())
     assert "_warm_rag_embedder" not in referenced
-    assert "warm" not in referenced, (
-        "startup calls an eager warm method; embeddings must load only from a real RAG operation"
-    )
+    assert (
+        "warm" not in referenced
+    ), "startup calls an eager warm method; embeddings must load only from a real RAG operation"
 
 
 def test_post_warm_thread_joins_before_platform_repair_and_folder_scheduling():

@@ -551,9 +551,7 @@ def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
     release_new.set()
     new.join(30)
 
-    assert ran == ["mlx", "folders"], (
-        f"the restarted lifespan did not get its deferred work: {ran}"
-    )
+    assert ran == ["mlx", "folders"], f"the restarted lifespan did not get its deferred work: {ran}"
 
 
 def test_only_the_current_generation_does_the_work(monkeypatch):

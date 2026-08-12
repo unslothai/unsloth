@@ -491,6 +491,7 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
         name = "llama-cpp-startup-probe",
     ).start()
 
+
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped by every start and stop. A worker captures the value it started with and stops once
@@ -754,7 +755,6 @@ async def lifespan(app: FastAPI):
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
-
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:

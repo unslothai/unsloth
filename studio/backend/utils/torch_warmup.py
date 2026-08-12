@@ -50,7 +50,6 @@ _thread_epoch: Optional[int] = None
 _status: dict = {"started": False, "finished": False, "stages": {}}
 
 
-
 def _is_extension_module(name: str) -> bool:
     """True if sys.modules[name] is a compiled extension, not Python source."""
     module = sys.modules.get(name)
@@ -169,7 +168,6 @@ def _warm_transformers() -> None:
 def _warm_datasets() -> None:
     # `import main` pulled it in; keep the first dataset op as cheap. Ungated: no torch needed.
     importlib.import_module("datasets")
-
 
 
 # Keep metadata and framework registries ready without importing optional GPU consumers.
