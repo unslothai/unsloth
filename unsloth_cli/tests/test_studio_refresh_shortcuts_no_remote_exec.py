@@ -52,9 +52,7 @@ def test_shipped_installer_is_executed(monkeypatch, tmp_path):
     installer.write_text("#!/bin/sh\nexit 0\n")
 
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(
-        studio, "_installer_script_candidates", lambda name: [tmp_path / name]
-    )
+    monkeypatch.setattr(studio, "_installer_script_candidates", lambda name: [tmp_path / name])
     calls = []
 
     class _Result:
@@ -71,9 +69,7 @@ def test_missing_installer_skips_instead_of_fetching(monkeypatch, tmp_path, caps
     """No installer on disk means no refresh -- never a download-and-run."""
     studio = _studio()
     monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(
-        studio, "_installer_script_candidates", lambda name: [tmp_path / name]
-    )
+    monkeypatch.setattr(studio, "_installer_script_candidates", lambda name: [tmp_path / name])
 
     def _boom(*args, **kwargs):
         raise AssertionError("launcher refresh must not open a network connection")

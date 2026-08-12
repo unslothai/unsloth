@@ -3428,7 +3428,10 @@ def _installer_script_candidates(installer_name: str) -> List[Path]:
 
 
 def _echo_missing_installer(
-    installer_name: str, candidates: Sequence[Path], *, verbose: bool = False
+    installer_name: str,
+    candidates: Sequence[Path],
+    *,
+    verbose: bool = False,
 ) -> None:
     """Report a skipped launcher refresh. The existing shortcuts keep working."""
     typer.echo(f"  refresh-launcher  skipped: no {installer_name} found next to this install")
@@ -3438,7 +3441,9 @@ def _echo_missing_installer(
     if platform.system() == "Windows":
         typer.echo("                      to rebuild it: irm https://unsloth.ai/install.ps1 | iex")
     else:
-        typer.echo("                      to rebuild it: curl -fsSL https://unsloth.ai/install.sh | sh")
+        typer.echo(
+            "                      to rebuild it: curl -fsSL https://unsloth.ai/install.sh | sh"
+        )
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
