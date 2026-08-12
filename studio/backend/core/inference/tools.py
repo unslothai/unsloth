@@ -11123,6 +11123,7 @@ def _check_signal_escape_patterns(code: str):
             "upload_folder",
             "upload_large_folder",
             "create_commit",
+            "preupload_lfs_files",
         }
     )
     # Cloud-metadata / link-local hosts.
@@ -11380,6 +11381,24 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
+    _HF_UPLOAD_PATH_VIOLATION = (
+        "HF upload path must be a sandbox-local relative-path literal "
+        "(no absolute paths, no '..' segments, no dynamic expressions)"
+    )
+
+    # Commit operations that never read a local file, so no path check applies.
+    _HF_NO_READ_COMMIT_OPS = frozenset(
+        {"CommitOperationDelete", "CommitOperationCopy"}
+    )
+
+    # Upload methods that take CommitOperation* objects rather than a path, and
+    # the kwarg each one carries them in. `preupload_lfs_files` sends the file
+    # bytes to the LFS store on its own, so it needs the same gate as a commit.
+    _HF_OPERATIONS_KWARG = {
+        "create_commit": "operations",
+        "preupload_lfs_files": "additions",
+    }
+
     def _is_os_environ(node: ast.AST) -> bool:
         return (
             isinstance(node, ast.Attribute)
@@ -11481,14 +11500,49 @@ def _check_signal_escape_patterns(code: str):
                     "HF upload cannot include os.environ / os.getenv / subprocess "
                     "env reads; secrets and tokens must not be exfiltrated"
                 )
-        if method_name == "create_commit":
+        if method_name in _HF_OPERATIONS_KWARG:
+            # Both take the operation list as the 2nd positional param.
+            ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
+            operations_node: ast.AST | None = (
+                node.args[1] if len(node.args or []) > 1 else None
+            )
             for kw in node.keywords or []:
-                if kw.arg == "operations" and isinstance(kw.value, ast.List):
-                    for elt in kw.value.elts:
-                        if isinstance(elt, ast.Call):
-                            inner = _hf_upload_violation(elt, "upload_file")
-                            if inner:
-                                return inner
+                if kw.arg is None:
+                    # `**kwargs` can smuggle the operations past this gate.
+                    return _HF_UPLOAD_PATH_VIOLATION
+                if kw.arg == ops_kwarg:
+                    operations_node = kw.value
+                    break
+            if operations_node is None:
+                return None  # no operations -> nothing is read off disk
+            if not isinstance(operations_node, (ast.List, ast.Tuple)):
+                return _HF_UPLOAD_PATH_VIOLATION
+            for elt in operations_node.elts:
+                if not isinstance(elt, ast.Call):
+                    return _HF_UPLOAD_PATH_VIOLATION
+                inner = _hf_upload_violation(elt, "commit_operation")
+                if inner:
+                    return inner
+            return None
+        if method_name == "commit_operation":
+            # A CommitOperation* constructor inside the operation list above.
+            f = node.func
+            op_name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if op_name in _HF_NO_READ_COMMIT_OPS:
+                return None  # deletes / server-side copies read no local file
+            # CommitOperationAdd(path_in_repo, path_or_fileobj) -- either can be
+            # positional, so every positional arg must be a sandbox-local literal.
+            path_nodes = list(node.args or [])
+            for kw in node.keywords or []:
+                if kw.arg is None:
+                    return _HF_UPLOAD_PATH_VIOLATION
+                if kw.arg == "path_or_fileobj":
+                    path_nodes.append(kw.value)
+            if not path_nodes:
+                return _HF_UPLOAD_PATH_VIOLATION
+            for p in path_nodes:
+                if not _path_arg_is_sandbox_local(p):
+                    return _HF_UPLOAD_PATH_VIOLATION
             return None
         path_node: ast.AST | None = node.args[0] if node.args else None
         for kw in node.keywords or []:
@@ -11496,10 +11550,7 @@ def _check_signal_escape_patterns(code: str):
                 path_node = kw.value
                 break
         if not _path_arg_is_sandbox_local(path_node):
-            return (
-                "HF upload path must be a sandbox-local relative-path literal "
-                "(no absolute paths, no '..' segments, no dynamic expressions)"
-            )
+            return _HF_UPLOAD_PATH_VIOLATION
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):

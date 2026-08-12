@@ -1622,6 +1622,146 @@ class TestHfUploadSandboxLocalPaths:
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
         )
 
+    def test_create_commit_operation_positional_path_absolute_blocked(self):
+        # CommitOperationAdd(path_in_repo, path_or_fileobj) -- the read path can
+        # arrive positionally, so every positional arg has to be checked.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationAdd('x', '/etc/passwd')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_positional_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  'r', [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_tuple_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=(CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x'),),\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_from_variable_blocked(self):
+        # The ops list is opaque to the static checker, so it cannot be allowed.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "ops = [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')]\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=ops)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_element_from_variable_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "op = CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=[op])",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_via_kwargs_splat_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "kw = {'operations': [CommitOperationAdd(\n"
+            "  path_or_fileobj='/etc/passwd', path_in_repo='x')]}\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', **kw)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_tuple_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=(CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin'),),\n"
+            ")"
+        )
+
+    def test_create_commit_operation_positional_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  'r', [CommitOperationAdd('m.bin', 'outputs/m.bin')],\n"
+            ")"
+        )
+
+    def test_create_commit_operation_open_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(\n"
+            "    path_in_repo='m.bin', path_or_fileobj=open('m.bin', 'rb'))],\n"
+            ")"
+        )
+
+    def test_create_commit_delete_operation_allowed(self):
+        # Deletes read no local file, so there is no path to validate.
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationDelete\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationDelete(path_in_repo='old.bin')],\n"
+            ")"
+        )
+
+    def test_create_commit_no_operations_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=[])"
+        )
+
+    def test_preupload_lfs_files_absolute_blocked(self):
+        # preupload_lfs_files ships the bytes to the LFS store by itself, so it
+        # exfiltrates without a create_commit ever running.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.preupload_lfs_files(\n"
+            "  repo_id='r',\n"
+            "  additions=[CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_preupload_lfs_files_from_variable_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "adds = [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')]\n"
+            "huggingface_hub.preupload_lfs_files(repo_id='r', additions=adds)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_preupload_lfs_files_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.preupload_lfs_files(\n"
+            "  repo_id='r',\n"
+            "  additions=[CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin')],\n"
+            ")"
+        )
+
 
 class TestHfUploadEnvAndSecretLeakBlock:
     """HF upload gate rejects any arg sourced from os.environ / os.getenv /
