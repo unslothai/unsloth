@@ -1385,8 +1385,8 @@ def test_the_baseline_waits_for_the_old_model_to_actually_leave(tmp_path, monkey
     """
     module = _load_payload()
     session = _baseline_session(
-        module, tmp_path, {"model_path": "chat.gguf"}, [4000.0, 2600.0, 1000.0, 996.0, 996.0]
-    )
+        module, tmp_path, {"model_identifier": "chat.gguf"},
+        [4000.0, 2600.0, 1000.0, 996.0, 996.0])
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 996.0
@@ -1409,8 +1409,8 @@ def test_a_refused_unload_does_not_abort_the_probe(tmp_path, monkeypatch):
     load result that the probe is actually there to record."""
     module = _load_payload()
     session = _baseline_session(
-        module, tmp_path, {"model_path": "chat.gguf"}, [900.0, 900.0], unload_raises = True
-    )
+        module, tmp_path, {"model_identifier": "chat.gguf"}, [900.0, 900.0],
+        unload_raises = True)
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: session._readings.pop(0))
     assert session.settled_baseline() == 900.0
@@ -1450,3 +1450,49 @@ def test_no_nvidia_smi_at_all_is_not_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
     monkeypatch.setattr(module, "nvidia_used_mib", lambda: None)
     assert session.settled_baseline() is None
+
+
+def test_the_status_fields_read_are_fields_the_response_really_has(tmp_path):
+    """Run 8's fix ran and did nothing, because it read model_path / model /
+    active_model_name off a response that carries none of them. Bind the names
+    to InferenceStatusResponse itself, so a rename or another guess fails here
+    instead of on hardware forty minutes later."""
+    import re
+    model_src = (REPO_ROOT / "studio" / "backend" / "models"
+                 / "inference.py").read_text(encoding = "utf-8")
+    block = model_src.split("class InferenceStatusResponse", 1)[1]
+    block = block.split("\nclass ", 1)[0]
+    declared = set(re.findall(r"^    (\w+):", block, re.MULTILINE))
+    payload_src = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    fn = payload_src.split("def settled_baseline", 1)[1].split("\n    def ", 1)[0]
+    read = set(re.findall(r'body\.get\("(\w+)"\)', fn))
+    assert read, "settled_baseline reads no status field at all"
+    assert read <= declared, (
+        f"settled_baseline reads {sorted(read - declared)}, which "
+        f"InferenceStatusResponse does not declare")
+
+
+def test_the_display_name_is_only_a_fallback(tmp_path, monkeypatch):
+    """model_identifier is the loadable one and is what /unload wants."""
+    module = _load_payload()
+    session = _baseline_session(
+        module, tmp_path,
+        {"model_identifier": "loadable.gguf", "active_model": "Pretty Name"},
+        [3000.0, 500.0, 500.0])
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    session.settled_baseline()
+    assert session.studio.posts[0][1]["model_path"] == "loadable.gguf"
+
+
+def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
+    module = _load_payload()
+    session = _baseline_session(module, tmp_path,
+                               {"loaded": ["only-here.gguf"]},
+                               [3000.0, 500.0, 500.0])
+    monkeypatch.setattr(module, "VRAM_SETTLE_POLL_S", 0.0)
+    monkeypatch.setattr(module, "nvidia_used_mib",
+                        lambda: session._readings.pop(0))
+    session.settled_baseline()
+    assert session.studio.posts[0][1]["model_path"] == "only-here.gguf"

@@ -454,7 +454,18 @@ class Payload:
         code, body = self.studio.get("/api/inference/status")
         active = None
         if code == 200 and isinstance(body, dict):
-            active = body.get("model_path") or body.get("model") or body.get("active_model_name")
+            # Field names from InferenceStatusResponse, not from guesswork.
+            # `model_identifier` is documented as the LOADABLE identifier,
+            # which is what /unload's `model_path` wants; `active_model` is a
+            # display string and only a fallback. Run 8 read three names that
+            # the response has never carried, so `active` was always None, no
+            # unload was ever sent, and the delta came back byte-identical to
+            # run 7 -- a fix that ran and did nothing.
+            active = body.get("model_identifier") or body.get("active_model")
+            if not active:
+                loaded = body.get("loaded")
+                if isinstance(loaded, list) and loaded:
+                    active = loaded[0]
         if isinstance(active, str) and active:
             try:
                 self.studio.post(
