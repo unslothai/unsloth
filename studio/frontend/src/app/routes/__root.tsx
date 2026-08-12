@@ -244,8 +244,9 @@ function RootLayout() {
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
 
-  // Same persistent mount for /images so a long batch keeps generating off-tab (ImagesPage reads no URL search, so it needs
-  // only the mount latch). Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
+  // Same persistent mount for /images so a long batch keeps generating off-tab. Mounts lazily on first visit, then stays
+  // mounted, hidden+inert while off-route. `active` is a visibility flag only: it lags the matches by a render, so ImagesPage
+  // reads ?model= from its own match instead of trusting it.
   const isImagesRoute = pathname === "/images";
   const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
   if (isImagesRoute && !imagesMounted) {
