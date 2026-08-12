@@ -62,61 +62,45 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
         return None
 
     device = torch.device(device)
-    q_seqinfo = getattr(attn_bias, "q_seqinfo", None)
-    k_seqinfo = getattr(attn_bias, "k_seqinfo", None)
-    if q_seqinfo is not None and k_seqinfo is not None:
-        q_seqstart = getattr(q_seqinfo, "seqstart", None)
-        k_seqstart = getattr(k_seqinfo, "seqstart", None)
-        if (
-            getattr(q_seqstart, "device", None) == device
-            and getattr(k_seqstart, "device", None) == device
+    seqinfos = [
+        (name, seqinfo)
+        for name in ("q_seqinfo", "k_seqinfo")
+        if (seqinfo := getattr(attn_bias, name, None)) is not None
+    ]
+    if seqinfos:
+        if all(
+            getattr(getattr(seqinfo, "seqstart", None), "device", None) == device
+            for _, seqinfo in seqinfos
         ):
             return attn_bias
 
-    # Do not rewrite a shared mask in place. Model-parallel forwards pass the
-    # same causal mask to every layer, and xFormers may retain earlier biases for
-    # backward after a later layer has moved to another device.
-    source_bias = attn_bias
-    attn_bias = copy.copy(source_bias)
-    copied_seqinfo = {}
-    for name in ("q_seqinfo", "k_seqinfo"):
-        seqinfo = getattr(source_bias, name, None)
-        if seqinfo is None:
-            continue
-        moved_seqinfo = copied_seqinfo.get(id(seqinfo))
-        if moved_seqinfo is None:
-            moved_seqinfo = copy.copy(seqinfo)
-            copied_seqinfo[id(seqinfo)] = moved_seqinfo
-        setattr(attn_bias, name, moved_seqinfo)
+        # Move the device-bearing metadata instead of the top-level mask. Older
+        # xFormers versions demote causal masks in their inherited ``to`` method.
+        # Copies also keep later model shards from rewriting masks retained for
+        # backward by earlier shards.
+        moved_bias = copy.copy(attn_bias)
+        moved_seqinfos = {}
+        for name, seqinfo in seqinfos:
+            source_id = id(seqinfo)
+            if source_id not in moved_seqinfos:
+                moved_seqinfo = copy.copy(seqinfo)
+                move = getattr(moved_seqinfo, "to", None)
+                if callable(move):
+                    moved = move(device)
+                    if moved is not None:
+                        moved_seqinfo = moved
+                moved_seqinfos[source_id] = moved_seqinfo
+            setattr(moved_bias, name, moved_seqinfos[source_id])
+        return moved_bias
 
-    move = getattr(attn_bias, "to", None)
+    # Biases without sequence metadata can safely use their own move protocol.
+    moved_bias = copy.copy(attn_bias)
+    move = getattr(moved_bias, "to", None)
     if callable(move):
         moved = move(device)
-        if moved is None or type(moved) is type(attn_bias):
-            return attn_bias if moved is None else moved
-
-        # xFormers 0.0.27 and 0.0.28 let BlockDiagonalCausalMask inherit
-        # BlockDiagonalMask.to(), which returns a non-causal BlockDiagonalMask.
-        # Preserve the original bias type and move its metadata below instead.
-
-    # Older xFormers exposes ``to`` only on the sequence metadata and mutates it
-    # in place. This also handles newer versions whose top-level ``to`` loses the
-    # concrete bias type. The metadata copies above keep both cases isolated from
-    # the source mask.
-    seen = set()
-    for name in ("q_seqinfo", "k_seqinfo"):
-        seqinfo = getattr(attn_bias, name, None)
-        if seqinfo is None or id(seqinfo) in seen:
-            continue
-        seen.add(id(seqinfo))
-        move = getattr(seqinfo, "to", None)
-        if callable(move):
-            moved = move(device)
-            if moved is not None:
-                for alias in ("q_seqinfo", "k_seqinfo"):
-                    if getattr(attn_bias, alias, None) is seqinfo:
-                        setattr(attn_bias, alias, moved)
-    return attn_bias
+        if moved is not None:
+            moved_bias = moved
+    return moved_bias
 
 
 def _get_cached_block_mask(
