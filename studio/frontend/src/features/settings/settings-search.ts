@@ -14,8 +14,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.account",
     "settings.general.password",
     "settings.general.huggingFaceToken",
-    "settings.general.gettingStarted",
-    "settings.general.startOnboarding",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
     "settings.general.notifications.sectionTitle",

@@ -131,6 +131,89 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
+def preferred_dflash_sibling(
+    siblings: Sequence,
+    weight_name: Optional[str] = None,
+    other_weight_names: Sequence[str] = (),
+) -> Optional[object]:
+    """The DFlash sidecar to fetch alongside ``weight_name``.
+
+    Root level only, like preferred_mtp_sibling: detect_dflash_file never offers a
+    nested ``quants/dflash-*.gguf``, and a listing cannot read a header, so matching
+    the basename would plan a whole ordinary weight nothing could reject in time.
+
+    Ordered by dflash_repo_preference_key, as the download, snapshot reuse and offline
+    cache are, so the manifest promises the file the loader launches.
+    """
+    from utils.models.drafters import dflash_repo_preference_key
+
+    candidates = [
+        s
+        for s in siblings
+        if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("dflash-")
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key = lambda s: dflash_repo_preference_key(
+            getattr(s, "rfilename"), weight_name, other_weight_names
+        ),
+    )
+
+
+def dflash_plan_files(
+    siblings: Sequence,
+    weight_name: Optional[str] = None,
+    other_weight_names: Sequence[str] = (),
+    *,
+    max_bytes: int = 0,
+) -> tuple[ExpectedFile, ...]:
+    """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
+
+    Whole shard family, not the ranked file alone: the loader refuses an incomplete
+    split set, so planning shard 1 reports the variant complete and then loses DFlash.
+    A half-published family is dropped for the same reason.
+
+    Bounded by ``max_bytes``, the variant's own weights. ``dflash-`` is a prefix real
+    weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the
+    ``general.architecture`` the loader rejects them by, but a drafter is a few layers
+    of its target and cannot outweigh it. An unknown size stays out.
+
+    Both rules filter BEFORE the ranking, so an oversized or half-published name at the
+    top steps aside for a usable sidecar behind it.
+    """
+    from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
+
+    families: dict[str, list[ExpectedFile]] = {}
+    for sibling in siblings:
+        name = _gguf_rfilename(sibling)
+        if not name or "/" in name or not name.lower().startswith("dflash-"):
+            continue
+        file = expected_file_from_sibling(sibling)
+        if file is not None:
+            families.setdefault(gguf_variant_family(name), []).append(file)
+
+    eligible: dict[str, tuple[ExpectedFile, ...]] = {}
+    for family, files in families.items():
+        shards = tuple(sorted(files, key = lambda file: file.path))
+        if not split_listing_is_complete([f.path for f in shards], shards[0].path):
+            continue
+        total = sum(max(0, int(file.size or 0)) for file in shards)
+        if not total or max_bytes <= 0 or total >= max_bytes:
+            continue
+        eligible[family] = shards
+    if not eligible:
+        return ()
+    best = min(
+        eligible,
+        key = lambda family: dflash_repo_preference_key(
+            eligible[family][0].path, weight_name, other_weight_names
+        ),
+    )
+    return eligible[best]
+
+
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
@@ -166,13 +249,35 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}
+    # Every weight in the listing, so the ranking can tell a sidecar naming a
+    # neighbouring family from one naming this variant's.
+    all_weight_names = [
+        name.rsplit("/", 1)[-1]
+        for quant_siblings in main.values()
+        for sibling in quant_siblings
+        if (name := _gguf_rfilename(sibling))
+    ]
     for quant, target_main_siblings in main.items():
         main_expected = tuple(
             file
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        expected_files = (*main_expected, *companions_expected)
+        # Per variant, unlike mmproj and the MTP drafter: ranked against the weight
+        # being fetched, so a multi-family repo does not hand B the drafter naming A.
+        # Against the family plan_from_expected_files KEEPS, not the listing's first,
+        # or a two-family variant key pairs the discarded one's sidecar.
+        kept_main = _one_shard_family(main_expected)
+        target_weight_name = (
+            min(file.path for file in kept_main).rsplit("/", 1)[-1] if kept_main else None
+        )
+        dflash_expected = dflash_plan_files(
+            siblings,
+            target_weight_name,
+            [n for n in all_weight_names if n != target_weight_name],
+            max_bytes = sum(max(0, int(file.size or 0)) for file in kept_main),
+        )
+        expected_files = (*main_expected, *companions_expected, *dflash_expected)
         plans[quant] = plan_from_expected_files(
             quant,
             expected_files,

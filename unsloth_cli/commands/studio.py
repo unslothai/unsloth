@@ -253,6 +253,177 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
+    """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
+
+    libhsakmt (topology.c) reads it as a major.minor.stepping triple
+    (``sscanf(envvar, "%u.%u.%u%c") != 3`` rejects anything else) and the target
+    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a:
+    11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
+
+    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py and
+    in install.sh.
+    """
+    if not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def _torch_requires_rocm_metapackage(venv_dir: Path) -> bool:
+    """Whether the installed torch actually resolves through the ``rocm`` meta-package.
+
+    AMD's per-gfx wheels depend on it; the generic pytorch.org ROCm wheels vendor their
+    own runtime and depend on nothing, so after a switch between them the meta-package is
+    left behind describing a family with no bearing on what torch loads. Unknown shapes
+    answer False: refusing to arbitrate leaves the environment untouched.
+    """
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("torch-*.dist-info"):
+                if not re.fullmatch(r"torch-[^-]+\.dist-info", info.name):
+                    continue
+                metadata = info / "METADATA"
+                if not metadata.is_file():
+                    continue
+                try:
+                    text = metadata.read_text(encoding = "utf-8", errors = "replace")
+                except OSError:
+                    return False
+                for line in text.splitlines():
+                    if not line.lower().startswith("requires-dist:"):
+                        continue
+                    # `Requires-Dist: rocm[libraries,devel]==7.13.0` and plain `rocm` both
+                    # count; `rocm-sdk-core` does not, it is a component not the arbiter.
+                    if re.search(r"requires-dist:\s*rocm(?![-_a-z0-9])", line, re.IGNORECASE):
+                        return True
+                return False
+    return False
+
+
+def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
+    """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None.
+
+    AMD's per-gfx index ships one runtime distribution per architecture,
+    ``rocm-sdk-libraries-<family>``, and the torch beside it holds code objects for
+    that family alone. Which one is live has to come from the ``rocm`` meta-package,
+    whose ``Requires-Dist`` names the family AMD's torch resolved (verified on
+    repo.amd.com/rocm/whl/gfx1151: ``rocm-sdk-libraries-gfx1151==7.13.0; extra ==
+    "libraries"``). Globbing for a ``rocm_sdk_libraries_gfx*`` directory instead
+    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while the
+    superseded runtime keeps its own distribution name and is never uninstalled, so a
+    venv that has changed families holds both. Same reasoning and hazard as
+    _installed_rocm_wheel_family in studio/install_python_stack.py.
+
+    None means "do not act": no ``rocm``, unreadable metadata, more than one family
+    named, or a MULTI-arch family such as gfx120x-all, whose runtime carries kernels
+    for several ISAs and so contradicts no override.
+    """
+    # The bare `rocm` metadata only describes a LIVE install while torch still resolves
+    # through it. Switching from AMD's per-gfx index to a generic pytorch.org one does not
+    # uninstall it: the generic wheels vendor their own ROCm libraries and depend on no
+    # meta-package, so `rocm` is orphaned and pip never removes it. Reading it then would
+    # name the OLD family and clear an override the generic wheels may be the only reason
+    # the GPU works at all.
+    if not _torch_requires_rocm_metapackage(venv_dir):
+        return None
+    _metadata: Optional[Path] = None
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("rocm-*.dist-info"):
+                # rocm-sdk-core and rocm-sdk-libraries-* also start "rocm-"; only the
+                # bare `rocm` meta-package arbitrates.
+                if (
+                    re.fullmatch(r"rocm-[^-]+\.dist-info", info.name)
+                    and (info / "METADATA").is_file()
+                ):
+                    _metadata = info / "METADATA"
+                    break
+    if _metadata is None:
+        return None
+    try:
+        _text = _metadata.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    _families = set()
+    for _line in _text.splitlines():
+        if not _line.lower().startswith("requires-dist:"):
+            continue
+        _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([0-9a-zA-Z]+)", _line)
+        if _m:
+            _families.add(_m.group(1).lower())
+    if len(_families) != 1:
+        return None  # nothing to arbitrate with, or two runtimes and no tie-break
+    _family = _families.pop()
+    # Single ISA only: gfx120x-all style families cover several architectures, so an
+    # override naming one of them is contradicted by nothing.
+    return _family if re.fullmatch(r"gfx[0-9a-f]+", _family) else None
+
+
+def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
+    """Drop an HSA_OVERRIDE_GFX_VERSION no installed kernel can satisfy (#7331).
+
+    libhsakmt (topology.c) writes the variable's major.minor.stepping straight into
+    the KFD node's EngineId and ROCr names the agent from that, so the override
+    decides the ISA every later process sees. Against per-gfx wheels, which hold code
+    objects for one architecture, an override naming a different one leaves the
+    runtime asking for kernels the install does not contain and every launch fails on
+    the first allocation, exactly as before the routing fix.
+
+    install.sh clears it for the one launch it performs itself, but that unset dies
+    with the installer: `unsloth studio update` runs install_python_stack.py as a
+    child (studio/setup.sh:1444) and every later launch inherits the user's shell
+    instead. This is the chokepoint the exec, the Windows Popen and the in-process
+    paths all pass through.
+
+    Keyed on the INSTALL, never on a hardware probe: on a generic multi-arch index
+    there is nothing to contradict and the override is often the only thing making
+    the GPU usable. Returns the installed arch when the variable was dropped.
+    """
+    raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+    # Windows ROCm ignores the variable entirely, so there is nothing to correct.
+    if not raw or platform.system() == "Windows":
+        return None
+    arch = _installed_rocm_single_arch(venv_dir)
+    if arch is None:
+        return None
+    named = _hsa_override_gfx_arch(raw)
+    # Unreadable: libhsakmt rejects it too, so it is not this spoof to undo.
+    if named is None or named == arch:
+        return None
+    os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
+    return arch
+
+
+def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
+    """Run the #7331 spoof clear for whichever entry point is about to launch.
+
+    Every launch needs it, not just plain ``unsloth studio``: the group callback
+    returns early once a subcommand is named, and ``unsloth run`` is bound straight
+    to ``studio_run``, so both would otherwise reach llama-server and the backend
+    with the contradicting override still set. Idempotent, so chained entry points
+    are free to call it twice.
+    """
+    _venv = STUDIO_HOME / "unsloth_studio"
+    _arch = _clear_hsa_override_contradicting_install(
+        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    )
+    if _arch is not None and not silent:
+        typer.echo(
+            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
+            f"only, so the runtime has to report the real arch. Remove the export "
+            f"from your shell profile as well, or the next terminal restores it.",
+            err = True,
+        )
+    return _arch
+
+
 def _find_run_py() -> Optional[Path]:
     """Find studio/backend/run.py.
 
@@ -1400,15 +1571,18 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
-        "/v1/messages takes the on direction per request (enable_tools) because it has no "
-        "confirmation channel; the off direction still applies everywhere.",
+        "every request. Default: no server-wide policy, so the per-chat UI toggle "
+        "(the request's own enable_tools) decides; `unsloth studio run` is the "
+        "launcher that defaults them on. /v1/messages takes the on direction per "
+        "request (enable_tools) because it has no confirmation channel; the off "
+        "direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
         "--disable-dns-pinning",
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     password: str = typer.Option(
         "",
@@ -1546,6 +1720,10 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # Before any of the three launch paths below, and before the environment is handed
+    # to a child: an override contradicting single-arch wheels makes every kernel launch
+    # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
+    _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -1917,17 +2095,19 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind. /v1/messages takes the on "
-            "direction per request (enable_tools) because it has no confirmation "
-            "channel; the off direction still applies everywhere."
+            "every request. Default: on for every bind, with a request's own "
+            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "takes the on direction per request (enable_tools) because it has no "
+            "confirmation channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
         "--disable-dns-pinning",
         rich_help_panel = _RUN_PANEL_TOOLS,
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     ),
     tool_call_healing: Optional[bool] = typer.Option(
         None,
@@ -2093,6 +2273,10 @@ def run(
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    # The group callback returns before its own clear once a subcommand is named, and
+    # `unsloth run` is bound straight here, so this path has to do it itself or
+    # llama-server and the backend start with the contradicting override (#7331).
+    _clear_hsa_override_before_launch(silent = bool(silent))
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
@@ -2199,9 +2383,11 @@ def run(
             )
         host = "127.0.0.1"
 
-    # Tool policy no longer depends on the bind: tools default on everywhere
-    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
-    # so the re-exec'd child inherits a concrete decision.
+    # Tool policy does not depend on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
+    # this stays None, so the default applies without becoming an override and a
+    # request's own enable_tools: false is honored. Resolve here so the re-exec'd
+    # child inherits the same decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -2319,10 +2505,11 @@ def run(
             args.append("--api-only")
         if silent:
             args.append("--silent")
-        # Forward the resolved tool policy so the child doesn't re-resolve.
-        if enable_tools:
+        # Forward the resolved tool policy so the child doesn't re-resolve. None
+        # forwards neither flag: the child then leaves the policy unset too.
+        if enable_tools is True:
             args.append("--enable-tools")
-        else:
+        elif enable_tools is False:
             args.append("--disable-tools")
         # Forward --yes only if the user passed it; resolution no longer prompts.
         if yes:
@@ -2373,8 +2560,10 @@ def run(
     # Match the route handlers' import path: run.py adds studio/backend/ to
     # sys.path, so they import as `state.tool_policy`. Set this before
     # run_server() starts uvicorn; once sockets are bound, routes can be hit.
-    from state.tool_policy import set_tool_policy
+    # run_server() applies the same pair; both calls are idempotent.
+    from state.tool_policy import set_tool_policy, set_tool_policy_default
 
+    set_tool_policy_default(True)
     set_tool_policy(enable_tools)
 
     run_kwargs = dict(
@@ -2462,7 +2651,7 @@ def run(
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
-    if not enable_tools:
+    if enable_tools is False:
         _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
     elif secure:
         _tool_notice = (
