@@ -769,19 +769,7 @@ def test_cli_guard_pins_a_relative_studio_home_before_moving():
     ), "the override must keep naming the folder the caller meant"
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "UNSLOTH_STUDIO_HOME",
-        "STUDIO_HOME",
-        "UNSLOTH_LLAMA_CPP_PATH",
-        "UNSLOTH_COMPILE_LOCATION",
-        "HF_HOME",
-        "HF_HUB_CACHE",
-        "HUGGINGFACE_HUB_CACHE",
-        "HF_XET_CACHE",
-    ],
-)
+@pytest.mark.parametrize("name", _system_dir_guard._RELATIVE_PATH_ENV)
 def test_cli_guard_pins_every_relative_path_override(name: str):
     environ_out: dict[str, str] = {}
     _, colour, _ = _guard_outcome(
@@ -792,6 +780,18 @@ def test_cli_guard_pins_every_relative_path_override(name: str):
     )
     assert colour == "yellow"
     assert environ_out[name] == r"C:\Windows\System32\cache"
+
+
+def test_cli_guard_pins_every_storage_root_override_studio_reads():
+    """storage_roots.py owns the Studio folders, and each of its overrides is a
+    plain user-supplied path, so a relative one must be pinned before the move.
+    Reading them from the module keeps the guard honest as roots are added."""
+    storage_roots = REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py"
+    source = storage_roots.read_text(encoding = "utf-8")
+    overrides = set(re.findall(r'environ\.get\(\s*"(UNSLOTH_[A-Z_]*(?:HOME|PATH|DIR))"', source))
+    assert overrides, "no storage root overrides found: has storage_roots.py moved?"
+    missing = sorted(overrides - set(_system_dir_guard._RELATIVE_PATH_ENV))
+    assert not missing, f"relative values of {missing} would be retargeted by the move"
 
 
 @pytest.mark.parametrize("value", [r"C:\elsewhere\custom", r"~\custom", r"\\server\share\c"])

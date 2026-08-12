@@ -34,6 +34,25 @@ fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
 }
 
+/// Whether the managed install sits on a profile the app cannot reach right now.
+/// Reported either way round: as `Unavailable` when the binary itself could not
+/// be looked up, and as `Stale` when it was found but has nowhere to run from.
+fn managed_profile_unreachable(managed: &ManagedProbe) -> bool {
+    match managed {
+        ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
+            reason == managed::WORKING_DIRECTORY_UNAVAILABLE
+        }
+        ManagedProbe::Ready { .. } | ManagedProbe::Missing => false,
+    }
+}
+
+/// Repair reinstalls through the managed CLI, which needs the same profile the
+/// probe just failed to reach, and it stops the backend to do it. Offering it
+/// there trades a backend that still answers for one that cannot come back.
+fn stale_auto_repair(managed: &ManagedProbe) -> bool {
+    release_auto_repair() && !managed_profile_unreachable(managed)
+}
+
 fn managed_bin_for_result(managed: &ManagedProbe) -> Option<PathBuf> {
     match managed {
         ManagedProbe::Ready { bin } | ManagedProbe::Stale { bin, .. } => Some(bin.clone()),
@@ -115,7 +134,7 @@ fn choose_owned_preflight(
             disposition: DesktopPreflightDisposition::OwnedStale,
             reason: Some(reason.clone()),
             port: Some(owned.port),
-            can_auto_repair: release_auto_repair(),
+            can_auto_repair: stale_auto_repair(managed),
             managed_bin: managed_bin_for_result(managed),
         },
     }
@@ -168,7 +187,7 @@ fn choose_ownerless_spawned_preflight(
                 disposition: DesktopPreflightDisposition::OwnedStale,
                 reason: Some(reason.clone()),
                 port: Some(*port),
-                can_auto_repair: release_auto_repair(),
+                can_auto_repair: stale_auto_repair(managed),
                 managed_bin: managed_bin_for_result(managed),
             }
         }
@@ -444,6 +463,73 @@ mod tests {
             assert_eq!(result.reason.as_deref(), reason);
             assert_eq!(result.can_auto_repair, can_auto_repair);
             assert_eq!(result.managed_bin, managed_bin);
+        }
+    }
+
+    #[test]
+    fn repair_is_withheld_from_stale_backends_on_an_unreachable_profile() {
+        let bin = PathBuf::from("/managed/unsloth");
+        let unreachable = [
+            ManagedProbe::Unavailable {
+                reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+            },
+            ManagedProbe::Stale {
+                bin: bin.clone(),
+                reason: managed::WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+            },
+        ];
+        let reachable = [
+            ManagedProbe::Ready { bin: bin.clone() },
+            ManagedProbe::Missing,
+            ManagedProbe::Stale {
+                bin: bin.clone(),
+                reason: "cli_unusable".to_string(),
+            },
+        ];
+
+        let owned = |managed: &ManagedProbe| {
+            choose_owned_preflight(
+                managed,
+                &VerifiedOwnedBackend {
+                    owner: crate::desktop_backend_owner::test_owner_state("root", "token", 8000),
+                    port: 8000,
+                    backend_pid: 2,
+                    generation: 3,
+                    readiness: OwnedBackendReadiness::Stale {
+                        reason: "backend_outdated".to_string(),
+                    },
+                },
+            )
+        };
+        let ownerless = |managed: &ManagedProbe| {
+            choose_ownerless_spawned_preflight(
+                managed,
+                &BackendProbe::Old {
+                    port: 8000,
+                    reason: "backend_outdated".to_string(),
+                },
+                Some(8000),
+            )
+        };
+
+        for managed in &unreachable {
+            assert!(managed_profile_unreachable(managed), "{managed:?}");
+            assert!(!stale_auto_repair(managed), "{managed:?}");
+            // Repair would stop a backend that still answers, to run an install
+            // that cannot reach the folder it needs.
+            for result in [owned(managed), ownerless(managed)] {
+                assert_eq!(result.disposition, DesktopPreflightDisposition::OwnedStale);
+                assert_eq!(result.port, Some(8000));
+                assert!(!result.can_auto_repair, "{managed:?}");
+            }
+        }
+
+        for managed in &reachable {
+            assert!(!managed_profile_unreachable(managed), "{managed:?}");
+            assert_eq!(stale_auto_repair(managed), release_auto_repair());
+            for result in [owned(managed), ownerless(managed)] {
+                assert_eq!(result.can_auto_repair, release_auto_repair(), "{managed:?}");
+            }
         }
     }
 

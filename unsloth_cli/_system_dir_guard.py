@@ -234,14 +234,30 @@ def is_relocatable_invocation(argv, environ):
 # unsloth_cli/commands/studio.py, the caches storage_roots.py and
 # hf_cache_settings.py.
 _RELATIVE_PATH_ENV = (
+    # Studio roots: storage_roots.py.
     "UNSLOTH_STUDIO_HOME",
     "STUDIO_HOME",
+    "UNSLOTH_STUDIO_DOCUMENTS_HOME",
+    "UNSLOTH_STUDIO_PROJECTS_HOME",
+    "UNSLOTH_STUDIO_SANDBOX_HOME",
+    # Engine and tool locations the user may point somewhere of their own.
     "UNSLOTH_LLAMA_CPP_PATH",
+    "UNSLOTH_LLAMA_CPP_SCRIPTS_DIR",
+    "UNSLOTH_SD_CPP_PATH",
+    "UNSLOTH_WHISPER_CPP_PATH",
+    "LLAMA_SERVER_PATH",
+    "WHISPER_SERVER_PATH",
+    "MLX_HOSTFILE",
+    # Caches.
     "UNSLOTH_COMPILE_LOCATION",
+    "TORCHINDUCTOR_CACHE_DIR",
     "HF_HOME",
     "HF_HUB_CACHE",
     "HUGGINGFACE_HUB_CACHE",
     "HF_XET_CACHE",
+    "HF_DATASETS_CACHE",
+    "SENTENCE_TRANSFORMERS_HOME",
+    "XDG_CACHE_HOME",
 )
 
 
