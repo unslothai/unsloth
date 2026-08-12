@@ -109,12 +109,12 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
     except ValueError:
         return False, None
     if not tokens or not _PYTHON.fullmatch(tokens[0]):
-        return False, None          # `echo <script>`, or not python at all
+        return False, None  # `echo <script>`, or not python at all
 
     args, i = tokens[1:], 0
     while i < len(args) and args[i].startswith("-"):
         if args[i].startswith(("-c", "-m")):
-            return False, None      # runs that program, not this file
+            return False, None  # runs that program, not this file
         i += 2 if args[i] in _OPTS_WITH_VALUE else 1
 
     rest = args[i:]
@@ -147,8 +147,7 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
             problems.append(problem)
     if (enforcing or problems) and "set +e" in run:
         problems.append(
-            "its lint step runs under 'set +e', so a non-zero exit does not "
-            "fail the step"
+            "its lint step runs under 'set +e', so a non-zero exit does not fail the step"
         )
     return enforcing, problems
 
@@ -293,9 +292,7 @@ def main() -> int:
                     + ", and ".join(problems)
                     + ". The gate must run, and be able to fail, on every PR."
                 )
-            elif "pull_request" in triggers and any(
-                enforcing for _, _, enforcing, _ in lint_steps
-            ):
+            elif "pull_request" in triggers and any(enforcing for _, _, enforcing, _ in lint_steps):
                 unfiltered_hosts.append(path)
 
         if "pull_request" in triggers:
