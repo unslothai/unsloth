@@ -1478,11 +1478,95 @@ _setup_http_get_timed() {
     fi
 }
 
+# ── uv from a pinned release ──
+# Same archive and destination as astral's installer, but it fetches a data file with a
+# pinned SHA-256 instead of piping remote script text into a shell. Mirrors the block in
+# install.sh (and Install-UvFromRelease in install.ps1); bumping the version means bumping
+# every hash below:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
+#
+# Deliberately covers only the four mainstream targets. musl, armv7 and anything else fall
+# through to the existing path rather than risk installing a binary for the wrong triple.
+_SETUP_UV_PINNED_VERSION="0.12.1"
+
+_setup_uv_pinned_asset() {
+    _supa_os=$(uname -s 2>/dev/null || echo unknown)
+    _supa_arch=$(uname -m 2>/dev/null || echo unknown)
+    case "$_supa_os" in
+        Linux)
+            if (ldd --version 2>&1 || true) | grep -qi musl; then return 1; fi
+            case "$_supa_arch" in
+                x86_64|amd64)
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                aarch64|arm64)
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        Darwin)
+            case "$_supa_arch" in
+                x86_64)
+                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                arm64|aarch64)
+                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+_setup_uv_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+_setup_install_uv_pinned() {
+    _siup_spec=$(_setup_uv_pinned_asset) || return 1
+    [ -n "$_siup_spec" ] || return 1
+    _siup_asset=${_siup_spec%% *}
+    _siup_want=${_siup_spec##* }
+    command -v tar >/dev/null 2>&1 || return 1
+    [ -n "$(_setup_uv_sha256 /dev/null)" ] || return 1
+    [ -n "${HOME:-}" ] || return 1
+
+    _siup_dest="${UV_INSTALL_DIR:-${UV_UNMANAGED_INSTALL:-${XDG_BIN_HOME:-$HOME/.local/bin}}}"
+    _siup_work=$(mktemp -d) || return 1
+    _siup_rc=1
+    for _siup_base in \
+        "https://releases.astral.sh/github/uv/releases/download/$_SETUP_UV_PINNED_VERSION" \
+        "https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"; do
+        _setup_http_get "$_siup_base/$_siup_asset" > "$_siup_work/$_siup_asset" 2>/dev/null || continue
+        [ -s "$_siup_work/$_siup_asset" ] || continue
+        [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
+        tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
+        mkdir -p "$_siup_dest" 2>/dev/null || break
+        for _siup_exe in uv uvx; do
+            _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
+            if [ -n "$_siup_src" ]; then
+                cp -f "$_siup_src" "$_siup_dest/$_siup_exe" 2>/dev/null || continue
+                chmod +x "$_siup_dest/$_siup_exe" 2>/dev/null || true
+                [ "$_siup_exe" = "uv" ] && _siup_rc=0
+            fi
+        done
+        break
+    done
+    rm -rf "$_siup_work"
+    [ "$_siup_rc" = "0" ] && export PATH="$_siup_dest:$PATH"
+    return "$_siup_rc"
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
-    if _is_verbose; then
+    if _setup_install_uv_pinned; then
+        true
+    elif _is_verbose; then
         _setup_http_get https://astral.sh/uv/install.sh | sh
     else
         _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1

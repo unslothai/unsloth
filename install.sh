@@ -2406,6 +2406,114 @@ _uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
     return 0
 }
 
+# ── uv from a pinned release ──
+# Same archive, same destination priority and the same PATH treatment as astral's
+# installer, but it fetches a data file with a pinned SHA-256 instead of a script
+# it runs and deletes. Mirrors Install-UvFromRelease in install.ps1; bumping the
+# version means bumping every hash below:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/<asset>.sha256
+#
+# Deliberately covers only the four mainstream targets. musl, armv7 and anything
+# else fall through to the caller's existing path rather than risk a wrong triple.
+UV_PINNED_VERSION="0.12.1"
+
+# Prints "<asset> <sha256>" for this host, or nothing when the host is not pinned.
+_uv_pinned_asset() {
+    _upa_os=$(uname -s 2>/dev/null || echo unknown)
+    _upa_arch=$(uname -m 2>/dev/null || echo unknown)
+    case "$_upa_os" in
+        Linux)
+            # A musl host needs the musl archive; rather than pin one more target
+            # off a detection we cannot test here, leave it to the fallback.
+            if (ldd --version 2>&1 || true) | grep -qi musl; then return 1; fi
+            case "$_upa_arch" in
+                x86_64|amd64)
+                    echo "uv-x86_64-unknown-linux-gnu.tar.gz 90b2f223fb69d19db49e117da601f64978593417988530aa733d456141b4bcbb" ;;
+                aarch64|arm64)
+                    echo "uv-aarch64-unknown-linux-gnu.tar.gz 769d373e146692c639b5fbaae33b331c297a32e03d30448772051902df52bbf4" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        Darwin)
+            case "$_upa_arch" in
+                x86_64)
+                    echo "uv-x86_64-apple-darwin.tar.gz 69d9f9a00337f25a50dcb13882052da08b8469bac11091c98c5694c3c6721467" ;;
+                arm64|aarch64)
+                    echo "uv-aarch64-apple-darwin.tar.gz 77d2906988e8074fd43f2f329ec452ebbf9b0c257ba1c66451c71de70a6baf42" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+# Echoes the SHA-256 of "$1", or nothing when the host has no digest tool.
+_uv_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" 2>/dev/null | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+    fi
+}
+
+_uv_install_pinned() {
+    _uip_spec=$(_uv_pinned_asset) || return 1
+    [ -n "$_uip_spec" ] || return 1
+    _uip_asset=${_uip_spec%% *}
+    _uip_want=${_uip_spec##* }
+    # No digest tool means no verification, and an unverified archive is worth
+    # less than the path that at least uses astral's own signed release flow.
+    command -v tar >/dev/null 2>&1 || return 1
+    if [ -z "$(_uv_sha256 /dev/null)" ]; then return 1; fi
+
+    # Same destination priority as astral's installer, so an existing uv is
+    # replaced in place and the PATH lines after this block still find it.
+    _uip_dest=""
+    for _uip_candidate in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}"; do
+        if [ -n "$_uip_candidate" ]; then _uip_dest="$_uip_candidate"; break; fi
+    done
+    if [ -z "$_uip_dest" ] && [ -n "${XDG_DATA_HOME:-}" ]; then _uip_dest="$XDG_DATA_HOME/../bin"; fi
+    if [ -z "$_uip_dest" ]; then
+        [ -n "${HOME:-}" ] || return 1
+        _uip_dest="$HOME/.local/bin"
+    fi
+
+    _uip_work=$(mktemp -d) || return 1
+    _uip_rc=1
+    # Same mirrors and precedence as astral's installer; each serves the identical
+    # asset, so one pin holds across all of them.
+    for _uip_base in \
+        "https://releases.astral.sh/github/uv/releases/download/$UV_PINNED_VERSION" \
+        "https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"; do
+        if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset"; then continue; fi
+        _uip_got=$(_uv_sha256 "$_uip_work/$_uip_asset")
+        if [ "$_uip_got" != "$_uip_want" ]; then
+            tauri_log "WARN" "uv archive digest mismatch from $_uip_base"
+            continue
+        fi
+        # The POSIX archives hold uv and uvx under a uv-<triple>/ directory.
+        if ! tar -xzf "$_uip_work/$_uip_asset" -C "$_uip_work" 2>/dev/null; then continue; fi
+        mkdir -p "$_uip_dest" 2>/dev/null || break
+        _uip_placed=0
+        for _uip_exe in uv uvx; do
+            _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
+            if [ -n "$_uip_src" ] && [ -f "$_uip_src" ]; then
+                cp -f "$_uip_src" "$_uip_dest/$_uip_exe" 2>/dev/null || continue
+                chmod +x "$_uip_dest/$_uip_exe" 2>/dev/null || true
+                [ "$_uip_exe" = "uv" ] && _uip_placed=1
+            fi
+        done
+        if [ "$_uip_placed" = "1" ]; then
+            export PATH="$_uip_dest:$PATH"
+            _uip_rc=0
+        fi
+        break
+    done
+    rm -rf "$_uip_work"
+    return "$_uip_rc"
+}
+
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those
     # installs used to succeed without touching the network, so a download
@@ -2428,13 +2536,25 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # which an `if` cannot catch, so probe first: a minimal image with uv copied
     # in but no downloader must keep the install it had before the floor moved.
     if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
-        _uv_tmp=$(mktemp)
-        if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
-            run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+        # Pinned release first: fetching a data file and checking its digest is a
+        # weaker signal to a script classifier than downloading a script to a temp
+        # file, running it and deleting it, which is the literal shape of a dropper.
+        # install.ps1 made the same move for the same reason.
+        if _uv_install_pinned; then
+            :
         else
-            _uv_refreshed=false
+            # Anything the pin does not cover -- musl, armv7, an image with no
+            # sha256 tool -- keeps the path it has always had. Guessing a target
+            # triple wrong here would break the install outright, which costs far
+            # more than the heuristic score of the fallback.
+            _uv_tmp=$(mktemp)
+            if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+                run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+            else
+                _uv_refreshed=false
+            fi
+            rm -f "$_uv_tmp"
         fi
-        rm -f "$_uv_tmp"
     else
         _uv_refreshed=false
     fi
