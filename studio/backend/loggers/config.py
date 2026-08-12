@@ -100,6 +100,52 @@ def _truncate_exception_processor(logger, method_name, event_dict):
     return truncate_exception(event_dict)
 
 
+def _plain_tracebacks_enabled() -> bool:
+    """Whether to echo a readable traceback under each JSON error record.
+    ``UNSLOTH_STUDIO_PLAIN_TRACEBACKS=0`` turns it off."""
+    return (os.environ.get("UNSLOTH_STUDIO_PLAIN_TRACEBACKS") or "").strip().lower() not in (
+        "0",
+        "off",
+        "no",
+        "false",
+    )
+
+
+def with_readable_traceback(renderer):
+    """Wrap the JSON renderer so an exception is ALSO written as a real multi-line
+    traceback, on the lines after the record.
+
+    ~/.unsloth/studio/logs is a tee of stdout, and stdout is JSON, so every traceback
+    reached the person reading that file as one enormous line with its newlines escaped
+    to ``\\n``. That is correct JSON and unreadable prose: the reported Image Transform
+    failure ("RuntimeError: Input type (float) and bias type (c10::BFloat16)...") was
+    found in the log with, in the reporter's words, all its newlines mangled -- which is
+    the state the log is in for every crash anyone is ever asked to send in.
+
+    The JSON record is emitted UNCHANGED, escaped exception field and all, so anything
+    parsing the file record-by-record is unaffected; the readable copy follows it. That
+    the file also carries non-JSON lines already is not an accident this relies on by
+    chance -- faulthandler dumps native stacks straight to the same handle, and uvicorn
+    and third-party stderr land there too.
+
+    Only for the JSON renderer. ConsoleRenderer (development) already prints tracebacks
+    as tracebacks, and wrapping it would print each one twice."""
+
+    def _render(logger, method_name, event_dict):
+        exception = event_dict.get("exception")
+        line = renderer(logger, method_name, event_dict)
+        if (
+            isinstance(exception, str)
+            and exception.strip()
+            and isinstance(line, str)
+            and _plain_tracebacks_enabled()
+        ):
+            return f"{line}\n{exception.rstrip()}"
+        return line
+
+    return _render
+
+
 # Set alongside HF_HUB_DISABLE_PROGRESS_BARS when the value is Studio's default rather
 # than the operator's, so allow_progress_bars() can tell them apart.
 _PROGRESS_BARS_DEFAULTED = "UNSLOTH_STUDIO_PROGRESS_BARS_DEFAULTED"
@@ -391,7 +437,8 @@ class LogConfig:
                     },
                 },
                 (
-                    structlog.processors.JSONRenderer(sort_keys = False)  # Preserve order
+                    # Preserve order; the wrapper adds the human-readable traceback copy.
+                    with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
                     if env == "production"
                     else structlog.dev.ConsoleRenderer()
                 ),
