@@ -102,6 +102,8 @@ def _provider_file_lock(provider_id: str) -> FileLock:
     return FileLock(
         str(studio_db_path().parent / f".openai-codex-refresh-{lock_name}.lock"),
         timeout = 30,
+
+        thread_local = False,
     )
 
 

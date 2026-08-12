@@ -76,6 +76,12 @@ def test_protocol_constants_and_curated_provider_contract():
 
 
 
+def test_provider_lock_can_release_from_another_executor_thread():
+    lock = codex_auth._provider_file_lock("provider")
+    assert lock.is_thread_local() is False
+
+
+
 def test_pkce_uses_s256_and_high_entropy_verifier():
     verifier, challenge = create_pkce()
     expected = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")

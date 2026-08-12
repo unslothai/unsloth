@@ -70,13 +70,12 @@ async def start_oauth(
     codex_auth.credential_secrets.get_or_create_credential_encryption_key()
     marker = secrets.token_urlsafe(32)
 
-    async with codex_auth.provider_oauth_write_guard(provider_id):
-        with current_credential_write(credential):
-            codex_auth.save_oauth_flow_marker(provider_id, marker)
-
     guarded_persist = _bundle_persister(credential, marker)
 
     try:
+        async with codex_auth.provider_oauth_write_guard(provider_id):
+            with current_credential_write(credential):
+                codex_auth.save_oauth_flow_marker(provider_id, marker)
         flow = await codex_auth.start_flow(
             provider_id, payload.method, guarded_persist, marker
         )
@@ -86,9 +85,12 @@ async def start_oauth(
                     codex_auth.save_oauth_flow_marker(provider_id, marker, flow)
         return codex_auth.safe_flow(flow)
     except Exception as exc:
-        async with codex_auth.provider_oauth_write_guard(provider_id):
-            with current_credential_write(credential):
-                codex_auth.delete_oauth_flow_marker(provider_id, marker)
+        try:
+            async with codex_auth.provider_oauth_write_guard(provider_id):
+                with current_credential_write(credential):
+                    codex_auth.delete_oauth_flow_marker(provider_id, marker)
+        except codex_auth.CodexAuthError:
+            pass
         raise _safe_error(exc) from exc
 
 
