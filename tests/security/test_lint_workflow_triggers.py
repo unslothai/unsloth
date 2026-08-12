@@ -257,19 +257,15 @@ def test_lint_rejects_a_custom_shell(tmp_path, where):
     if where == "step":
         body = body.replace(
             "      - run: python3 scripts/lint_workflow_triggers.py\n",
-            "      - run: python3 scripts/lint_workflow_triggers.py\n"
-            f"        shell: {evil}\n",
+            f"      - run: python3 scripts/lint_workflow_triggers.py\n        shell: {evil}\n",
         )
     elif where == "job-defaults":
         body = body.replace(
             "    runs-on: ubuntu-latest\n",
-            "    runs-on: ubuntu-latest\n"
-            f"    defaults:\n      run:\n        shell: {evil}\n",
+            f"    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: {evil}\n",
         )
     else:
-        body = body.replace(
-            "jobs:\n", f"defaults:\n  run:\n    shell: {evil}\njobs:\n"
-        )
+        body = body.replace("jobs:\n", f"defaults:\n  run:\n    shell: {evil}\njobs:\n")
     (wf := tmp_path / "wf").mkdir()
     (wf / "host.yml").write_text(body)
     proc = _run(wf, require_host = True)
@@ -283,8 +279,7 @@ def test_lint_accepts_an_explicit_plain_shell(tmp_path):
     (wf / "host.yml").write_text(
         _host_workflow().replace(
             "      - run: python3 scripts/lint_workflow_triggers.py\n",
-            "      - run: python3 scripts/lint_workflow_triggers.py\n"
-            "        shell: bash\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n        shell: bash\n",
         )
     )
     proc = _run(wf, require_host = True)

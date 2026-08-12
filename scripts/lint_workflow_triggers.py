@@ -145,10 +145,7 @@ def _lint_step_report(run: str) -> tuple[bool, list[str]]:
     an uncalled function or a here-document would read as enforcing while
     executing nothing. Requiring a single command sidesteps shell parsing.
     """
-    lines = [
-        line for line in run.splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    lines = [line for line in run.splitlines() if line.strip() and not line.strip().startswith("#")]
     mentions = [line for line in lines if LINT_SCRIPT_NAME in line]
     if not mentions:
         return False, []
