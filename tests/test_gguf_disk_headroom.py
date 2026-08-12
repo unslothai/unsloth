@@ -512,19 +512,21 @@ def test_a_checkpoint_in_the_other_serialization_is_not_the_merge(tmp_path, monk
     assert not [f for f in os.listdir(merge) if f.startswith("model-")]
 
 
-def test_a_bin_merge_that_wrote_an_index_is_still_reclaimed(tmp_path, monkeypatch, save_mod):
-    """Narrowing the name match must not cost a reclamation: an index names its
-    own shards whatever they are called, and it still decides."""
-    merge, gguf, bases = _layout(tmp_path, merge_gb = 30, base_gb = 60)
-    shard = Path(merge) / "pytorch_model-00001-of-00001.bin"
-    with open(shard, "wb") as fh:
-        fh.truncate(int(20 * GB))
+def test_a_stale_sharded_bin_checkpoint_is_left_alone(tmp_path, monkeypatch, save_mod):
+    """The sharded form of the same thing. Its index is not this merge's index,
+    and reading it would hand the shards it names to the deletion."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    theirs = [Path(merge) / f"pytorch_model-0000{i}-of-00002.bin" for i in (1, 2)]
+    for shard in theirs:
+        shard.write_bytes(b"an earlier sharded save")
     (Path(merge) / "pytorch_model.bin.index.json").write_text(
-        json.dumps({"weight_map": {"a.weight": "pytorch_model-00001-of-00001.bin"}})
+        json.dumps({"weight_map": {f"w{i}": shard.name for i, shard in enumerate(theirs)}})
     )
     _with_free(monkeypatch, save_mod, 1)
-    assert _reclaim(save_mod, merge, gguf, bases) > 20 * GB
-    assert not shard.exists(), "the index named this shard and it was left behind"
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    for shard in theirs:
+        assert shard.exists(), f"{shard.name} was deleted but the merge did not write it"
+    assert not [f for f in os.listdir(merge) if f.startswith("model-")]
 
 
 def test_a_malformed_index_falls_back_to_the_naming_convention(tmp_path, monkeypatch, save_mod):

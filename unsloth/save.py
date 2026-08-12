@@ -3545,8 +3545,12 @@ def _gguf_output_size_ratio(quant_method, first_conversion):
 # misses is still reclaimed whenever it wrote an index, because the index names
 # its own shards.
 _MERGE_WEIGHT_NAME = re.compile(r"^(model|consolidated)(-\d{5}-of-\d{5})?\.safetensors$")
-# `save_pretrained` names the shard set here when it writes more than one.
-_WEIGHT_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+# `save_pretrained` names the shard set here when it writes more than one. Only
+# the safetensors index, for the same reason the matcher takes only safetensors:
+# a `pytorch_model.bin.index.json` in the directory belongs to an earlier save in
+# the other serialization, which transformers leaves in place, and reading it
+# would hand its shards to the deletion.
+_WEIGHT_INDEX_NAMES = ("model.safetensors.index.json",)
 
 
 def _merge_weight_files(model_directory, names):
