@@ -731,9 +731,7 @@ def test_a_truncated_duplicate_does_not_overwrite_the_complete_chunk(tmp_path):
     (evidence / "studio_gpu_output.ipynb").write_text(
         json.dumps({"cells": [{"outputs": [{"text": "\n".join(lines)}]}]}), encoding = "utf-8"
     )
-    (evidence / "kernel.log").write_text(
-        "\n".join(lines[:-2] + [lines[-2][:-9]]), encoding = "utf-8"
-    )
+    (evidence / "kernel.log").write_text("\n".join(lines[:-2] + [lines[-2][:-9]]), encoding = "utf-8")
 
     outdir = tmp_path / "studio_evidence"
     proc = subprocess.run(
