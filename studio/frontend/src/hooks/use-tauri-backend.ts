@@ -243,6 +243,12 @@ export function useTauriBackend() {
       const preflight = await invoke<DesktopPreflightResult>("desktop_preflight");
       switch (preflight.disposition) {
         case "attached_ready": {
+          if (sessionStorage.getItem(USER_STOPPED_KEY)) {
+            setIsExternalServer(false);
+            stopExternalServerPoll();
+            setBackendStatus("stopped");
+            return;
+          }
           if (!preflight.port) {
             setBackendError("Desktop preflight found a backend without a port.");
             return;
@@ -389,12 +395,20 @@ export function useTauriBackend() {
       startingRef.current = false;
       setIsExternalServer(false);
       stopExternalServerPoll();
+      sessionStorage.setItem(USER_STOPPED_KEY, "1");
       setBackendStatus("stopped");
       return;
     }
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("stop_server");
+    // Record intent before the await: reaping can block ~15s and a reload
+    // mid-await would lose the marker. Roll back if the stop fails.
     sessionStorage.setItem(USER_STOPPED_KEY, "1");
+    try {
+      await invoke("stop_server");
+    } catch (e) {
+      sessionStorage.removeItem(USER_STOPPED_KEY);
+      throw e;
+    }
     startingRef.current = false;
     setBackendStatus("stopped");
   }
