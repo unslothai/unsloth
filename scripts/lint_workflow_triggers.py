@@ -118,7 +118,9 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
         i += 2 if args[i] in _OPTS_WITH_VALUE else 1
 
     rest = args[i:]
-    if not rest or not rest[0].endswith(LINT_SCRIPT_PATH):
+    # Exactly the repo-relative path. A suffix match would accept a decoy at
+    # /tmp/scripts/lint_workflow_triggers.py.
+    if not rest or rest[0] not in (LINT_SCRIPT_PATH, f"./{LINT_SCRIPT_PATH}"):
         return False, None
     if len(rest) == 1:
         return True, None
@@ -136,20 +138,47 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
 
 
 def _lint_step_report(run: str) -> tuple[bool, list[str]]:
-    """(an enforcing invocation is present, problems with lint-ish commands)."""
-    enforcing, problems = False, []
-    for line in run.splitlines():
-        if LINT_SCRIPT_NAME not in line:
-            continue
-        ok, problem = _classify_lint_line(line)
-        enforcing = enforcing or ok
-        if problem:
-            problems.append(problem)
-    if (enforcing or problems) and "set +e" in run:
-        problems.append(
-            "its lint step runs under 'set +e', so a non-zero exit does not fail the step"
-        )
+    """(an enforcing invocation is present, problems with lint-ish commands).
+
+    The step body must be the lint command and nothing else. Judging lines in
+    isolation cannot tell a call from a definition, so an invocation parked in
+    an uncalled function or a here-document would read as enforcing while
+    executing nothing. Requiring a single command sidesteps shell parsing.
+    """
+    lines = [
+        line for line in run.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    mentions = [line for line in lines if LINT_SCRIPT_NAME in line]
+    if not mentions:
+        return False, []
+
+    problems = [p for _, p in map(_classify_lint_line, mentions) if p]
+    enforcing = any(ok for ok, _ in map(_classify_lint_line, mentions))
+    if enforcing and len(lines) > 1:
+        return False, problems + [
+            "its lint step runs other shell besides the lint command, so the "
+            "lint need not execute (a function body or here-document is not a "
+            "call)"
+        ]
     return enforcing, problems
+
+
+# A custom `shell:` template can wrap the command in anything, including
+# `bash -c '"{0}" || true'`, so only the plain executors count.
+SAFE_SHELLS: tuple[str, ...] = ("bash", "sh")
+
+
+def _effective_shell(yaml_doc, job: dict, step: dict) -> str | None:
+    """The step's shell, falling back to job then workflow `defaults.run`."""
+    if step.get("shell"):
+        return str(step["shell"])
+    for scope in (job, yaml_doc):
+        defaults = scope.get("defaults") if isinstance(scope, dict) else None
+        run = defaults.get("run") if isinstance(defaults, dict) else None
+        if isinstance(run, dict) and run.get("shell"):
+            return str(run["shell"])
+    return None
 
 
 def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
@@ -171,8 +200,16 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
             if not isinstance(step, dict):
                 continue
             enforcing, problems = _lint_step_report(str(step.get("run") or ""))
-            if enforcing or problems:
-                found.append((job, step, enforcing, problems))
+            if not (enforcing or problems):
+                continue
+            shell = _effective_shell(yaml_doc, job, step)
+            if shell is not None and shell not in SAFE_SHELLS:
+                enforcing = False
+                problems.append(
+                    f"its lint step runs under shell {shell!r}, which can wrap "
+                    "the command and drop its exit status"
+                )
+            found.append((job, step, enforcing, problems))
     return found
 
 

@@ -149,7 +149,10 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
         ("python3 scripts/lint_workflow_triggers.py ; true", "chained"),
         ("python3 scripts/lint_workflow_triggers.py | tee lint.log", "chained"),
         ("python3 scripts/lint_workflow_triggers.py &", "chained"),
-        ("set -e\n          set +e\n          python3 scripts/lint_workflow_triggers.py", "set +e"),
+        (
+            "set +e\n          python3 scripts/lint_workflow_triggers.py",
+            "other shell besides the lint command",
+        ),
         (
             "python3 scripts/lint_workflow_triggers.py --workflows-dir /tmp/empty",
             "--workflows-dir",
@@ -163,7 +166,7 @@ def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expec
         "semi-true",
         "pipe-tee",
         "background",
-        "set-plus-e",
+        "extra-shell",
         "elsewhere-dir",
         "self-check-off",
         "abbreviated-flag",
@@ -214,6 +217,78 @@ def test_lint_does_not_count_a_non_running_command_as_a_host(tmp_path, command):
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
     assert "does not cover every PR" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A decoy under any prefix, not just a bare /tmp path.
+        "python3 /tmp/scripts/lint_workflow_triggers.py",
+        # Defining a function is not calling it.
+        "never_called() {\n            python3 scripts/lint_workflow_triggers.py\n          }",
+        # A here-document is data, not a command.
+        "cat <<'EOF'\n          python3 scripts/lint_workflow_triggers.py\n          EOF",
+    ],
+    ids = ["prefixed-decoy", "uncalled-function", "heredoc"],
+)
+def test_lint_rejects_an_unexecuted_lint_command(tmp_path, body):
+    """Text that looks like the invocation but never runs it is not a host."""
+    wf = tmp_path / "wf"
+    wf.mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            f"run: |\n          {body}",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["step", "job-defaults", "workflow-defaults"],
+)
+def test_lint_rejects_a_custom_shell(tmp_path, where):
+    """A shell template can wrap the command and drop its exit status."""
+    evil = "bash -c '\"{0}\" || true'"
+    body = _host_workflow()
+    if where == "step":
+        body = body.replace(
+            "      - run: python3 scripts/lint_workflow_triggers.py\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n"
+            f"        shell: {evil}\n",
+        )
+    elif where == "job-defaults":
+        body = body.replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n"
+            f"    defaults:\n      run:\n        shell: {evil}\n",
+        )
+    else:
+        body = body.replace(
+            "jobs:\n", f"defaults:\n  run:\n    shell: {evil}\njobs:\n"
+        )
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(body)
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "shell" in proc.stderr
+
+
+def test_lint_accepts_an_explicit_plain_shell(tmp_path):
+    """`shell: bash` is ordinary and must keep working."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "      - run: python3 scripts/lint_workflow_triggers.py\n",
+            "      - run: python3 scripts/lint_workflow_triggers.py\n"
+            "        shell: bash\n",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
