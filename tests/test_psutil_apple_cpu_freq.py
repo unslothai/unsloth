@@ -46,7 +46,11 @@ _M4_EFF_TABLE = _table([1_020_000, 2_592_000])
 _GPU_TABLE = _table([444_000, 1_398_000])
 
 
-def _scpufreq(current, minimum = 0.0, maximum = 0.0):
+def _scpufreq(
+    current,
+    minimum = 0.0,
+    maximum = 0.0,
+):
     import psutil
     return psutil._ntuples.scpufreq(current, minimum, maximum)
 
@@ -117,7 +121,10 @@ class TestFreqRangeFromEntries:
         assert IF._apple_cpu_freq_range_from_ioreg_entries(entries) == (1020.0, 4512.0)
 
     def test_gpu_rails_excluded(self):
-        assert IF._apple_cpu_freq_range_from_ioreg_entries([{"voltage-states2-sram": _GPU_TABLE}]) is None
+        assert (
+            IF._apple_cpu_freq_range_from_ioreg_entries([{"voltage-states2-sram": _GPU_TABLE}])
+            is None
+        )
 
     def test_renumbered_tables_still_found(self):
         # M5 renumbered the indexes; classification is by peak, not by index.
@@ -125,7 +132,10 @@ class TestFreqRangeFromEntries:
         assert IF._apple_cpu_freq_range_from_ioreg_entries(entries) == (1050.0, 4512.0)
 
     def test_non_dict_and_non_bytes_values_ignored(self):
-        entries = ["not-a-dict", {"voltage-states5-sram": "not-bytes", "IORegistryEntryName": "pmgr"}]
+        entries = [
+            "not-a-dict",
+            {"voltage-states5-sram": "not-bytes", "IORegistryEntryName": "pmgr"},
+        ]
         assert IF._apple_cpu_freq_range_from_ioreg_entries(entries) is None
 
 
@@ -193,7 +203,9 @@ class TestPatchApplication:
 
         psutil = _install_fake_psutil(monkeypatch, _scpufreq(4056.0, 702.0, 4056.0))
         monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: pytest.fail("ioreg must not run for a plausible value")
+            subprocess,
+            "run",
+            lambda *a, **k: pytest.fail("ioreg must not run for a plausible value"),
         )
         IF.patch_psutil_cpu_freq()
         result = psutil.cpu_freq()

@@ -40,7 +40,11 @@ def _reset_cache():
     hardware._apple_cpu_peak_mhz = "unprobed"
 
 
-def _fake_psutil(monkeypatch, current, raises = False):
+def _fake_psutil(
+    monkeypatch,
+    current,
+    raises = False,
+):
     def cpu_freq():
         if raises:
             raise RuntimeError("no frequency support")
