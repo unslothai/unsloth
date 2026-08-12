@@ -214,3 +214,41 @@ def test_quantize_failure_raises_actionable_error(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path, quantize_error = OSError("disk full"))
     with pytest.raises(RuntimeError, match = "Quantization failed"):
         _run(tmp_path, ["q4_k_m", "q5_k_m"])
+
+
+# -- reclaiming the 16-bit merge on a tight disk (see tests/test_gguf_disk_headroom.py) -----
+
+
+def _tight_disk(monkeypatch, free_gb = 1):
+    import types
+
+    usage = types.SimpleNamespace(total = 0, used = 0, free = free_gb * 1024**3)
+    monkeypatch.setattr(save_mod.shutil, "disk_usage", lambda *_a, **_k: usage)
+
+
+def _merge_weights(tmp_path):
+    model_dir = tmp_path / "model_dir"
+    model_dir.mkdir(exist_ok = True)
+    weights = model_dir / "model.safetensors"
+    weights.write_bytes(b"\0" * 4096)
+    return weights
+
+
+def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp_path):
+    """End to end through save_to_gguf: the flag has to survive the trip from
+    the export down to the reclamation, not just exist at both ends."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(tmp_path, ["q4_k_m"], merge_is_disposable = True)
+    assert not weights.exists()
+
+
+def test_a_merge_the_caller_owns_survives_the_same_export(monkeypatch, tmp_path):
+    """Same tight disk, default flag: nothing is deleted. This is the default
+    every existing caller of save_to_gguf gets."""
+    _Harness(monkeypatch, tmp_path)
+    weights = _merge_weights(tmp_path)
+    _tight_disk(monkeypatch)
+    _run(tmp_path, ["q4_k_m"])
+    assert weights.exists()
