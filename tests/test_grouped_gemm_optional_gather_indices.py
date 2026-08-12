@@ -100,12 +100,23 @@ def test_forward_matches_the_dummy_index_workaround():
     dummy = torch.arange(TOTAL_TOKENS, device = "cuda", dtype = torch.int32)
 
     without = grouped_gemm(
-        X = X, W = W, m_sizes = m_sizes, topk = 1,
-        permute_x = False, permute_y = False, autotune = True,
+        X = X,
+        W = W,
+        m_sizes = m_sizes,
+        topk = 1,
+        permute_x = False,
+        permute_y = False,
+        autotune = True,
     )
     with_dummy = grouped_gemm(
-        X = X, W = W, m_sizes = m_sizes, topk = 1, gather_indices = dummy,
-        permute_x = False, permute_y = False, autotune = True,
+        X = X,
+        W = W,
+        m_sizes = m_sizes,
+        topk = 1,
+        gather_indices = dummy,
+        permute_x = False,
+        permute_y = False,
+        autotune = True,
     )
 
     assert without.shape == (TOTAL_TOKENS, N)
@@ -132,8 +143,14 @@ def test_backward_matches_the_dummy_index_workaround():
         torch.manual_seed(0)
         X, W, m_sizes = _operands("cuda", requires_grad = True)
         grouped_gemm(
-            X = X, W = W, m_sizes = m_sizes, topk = 1, gather_indices = gather_indices,
-            permute_x = False, permute_y = False, autotune = True,
+            X = X,
+            W = W,
+            m_sizes = m_sizes,
+            topk = 1,
+            gather_indices = gather_indices,
+            permute_x = False,
+            permute_y = False,
+            autotune = True,
         ).sum().backward()
         grads[name] = (X.grad, W.grad)
 
