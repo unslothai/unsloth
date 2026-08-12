@@ -17,7 +17,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -79,13 +79,15 @@ class OAuthFlow:
     interval: float = 5.0
     status: Literal["pending", "connected", "error", "cancelled"] = "pending"
     message: str = ""
+
+    marker: str = ""
     consumed: bool = False
     server: asyncio.AbstractServer | None = field(default=None, repr=False)
     task: asyncio.Task | None = field(default=None, repr=False)
 
     cleanup_task: asyncio.Task | None = field(default=None, repr=False)
 
-    persist_bundle: Callable[[str, dict[str, Any]], None] | None = field(
+    persist_bundle: Callable[[str, dict[str, Any]], Awaitable[None] | None] | None = field(
         default=None, repr=False
     )
 
@@ -133,7 +135,13 @@ async def _prune_flows() -> None:
 
 async def _expire_and_remove_flow(flow: OAuthFlow) -> None:
     """Expire a pending flow at its deadline, then discard terminal metadata."""
-    await asyncio.sleep(max(0.0, flow.expires_at - time.time()))
+    while flow.status == "pending" and time.time() < flow.expires_at:
+        await asyncio.sleep(min(0.5, max(0.0, flow.expires_at - time.time())))
+        if flow.marker and not oauth_flow_marker_is_current(
+            flow.provider_id, flow.marker
+        ):
+            await cancel_flow(flow.id)
+            return
     if _flows.get(flow.id) is not flow:
         return
     if flow.status == "pending":
@@ -156,9 +164,14 @@ async def shutdown_flows() -> None:
         await cancel_flow(flow_id)
 
 
-def mark_reauthorization_required(provider_id: str) -> None:
+def mark_reauthorization_required(
+    provider_id: str, expected_access_token: str | None = None
+) -> None:
     bundle = load_oauth_bundle(provider_id)
-    if bundle:
+    if bundle and (
+        expected_access_token is None
+        or secrets.compare_digest(bundle["access_token"], expected_access_token)
+    ):
         bundle["reauthorization_required"] = True
         save_oauth_bundle(provider_id, bundle)
 
@@ -288,10 +301,12 @@ async def _exchange_code(
         })
         bundle = _validate_token_payload(body)
         if flow.persist_bundle is None or flow.status != "pending":
-            raise CodexAuthError("Authorization flow was cancelled before credentials were saved.")
-        # No await between the cancellation check and this synchronous write: a
-        # disconnect in this worker cannot interleave and resurrect credentials.
-        flow.persist_bundle(flow.provider_id, bundle)
+            raise CodexAuthError(
+                "Authorization flow was cancelled before credentials were saved."
+            )
+        persisted = flow.persist_bundle(flow.provider_id, bundle)
+        if persisted is not None:
+            await persisted
     except Exception:
         flow.status = "error"
         flow.message = "ChatGPT authorization failed. Please reconnect."
@@ -334,13 +349,16 @@ async def _loopback_handler(flow: OAuthFlow, reader: asyncio.StreamReader, write
 
 async def _start_browser_flow(
     provider_id: str,
-    persist_bundle: Callable[[str, dict[str, Any]], None],
+    persist_bundle: Callable[[str, dict[str, Any]], Awaitable[None] | None],
+    marker: str = "",
 ) -> OAuthFlow:
     verifier, challenge = create_pkce()
     flow = OAuthFlow(
         id=secrets.token_urlsafe(24), provider_id=provider_id, method="browser",
         created_at=time.time(), expires_at=time.time() + _FLOW_TTL_SECONDS,
         state=secrets.token_urlsafe(32), verifier=verifier,
+
+        marker=marker,
         persist_bundle=persist_bundle,
     )
     bound_port: int | None = None
@@ -448,7 +466,8 @@ async def _device_poll(flow: OAuthFlow) -> None:
 
 async def _start_device_flow(
     provider_id: str,
-    persist_bundle: Callable[[str, dict[str, Any]], None],
+    persist_bundle: Callable[[str, dict[str, Any]], Awaitable[None] | None],
+    marker: str = "",
 ) -> OAuthFlow:
     try:
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=False, trust_env=False) as client:
@@ -470,6 +489,8 @@ async def _start_device_flow(
         device_auth_id=str(device_auth_id), user_code=str(user_code), verification_url=str(verification_url),
         interval=max(1.0, min(float(body.get("interval", 5)), 30.0)),
         redirect_uri=OPENAI_CODEX_DEVICE_REDIRECT_URI,
+
+        marker=marker,
         persist_bundle=persist_bundle,
     )
     flow.task = asyncio.create_task(_device_poll(flow))
@@ -479,7 +500,8 @@ async def _start_device_flow(
 async def start_flow(
     provider_id: str,
     method: Literal["browser", "device"],
-    persist_bundle: Callable[[str, dict[str, Any]], None],
+    persist_bundle: Callable[[str, dict[str, Any]], Awaitable[None] | None],
+    marker: str = "",
 ) -> OAuthFlow:
     async with _flows_lock:
 
@@ -488,9 +510,9 @@ async def start_flow(
             if old.provider_id == provider_id and old.status == "pending":
                 await cancel_flow(old.id)
         flow = await (
-            _start_browser_flow(provider_id, persist_bundle)
+            _start_browser_flow(provider_id, persist_bundle, marker)
             if method == "browser"
-            else _start_device_flow(provider_id, persist_bundle)
+            else _start_device_flow(provider_id, persist_bundle, marker)
         )
         _flows[flow.id] = flow
 
@@ -513,8 +535,22 @@ def safe_flow(flow: OAuthFlow) -> dict[str, Any]:
 
 def get_flow(provider_id: str, flow_id: str) -> OAuthFlow:
     flow = _flows.get(flow_id)
-    if flow is None or flow.provider_id != provider_id:
-        raise CodexAuthError("Authorization flow was not found or expired.")
+    if flow is not None and flow.provider_id == provider_id and (
+        flow.server is None
+        and flow.task is None
+        and flow.persist_bundle is None
+    ):
+        persisted = _load_persisted_oauth_flow(provider_id, flow_id)
+        if persisted is None:
+            _flows.pop(flow_id, None)
+            raise CodexAuthError("Authorization flow was not found or expired.")
+        flow = persisted
+        _flows[flow.id] = flow
+    elif flow is None or flow.provider_id != provider_id:
+        flow = _load_persisted_oauth_flow(provider_id, flow_id)
+        if flow is None:
+            raise CodexAuthError("Authorization flow was not found or expired.")
+        _flows[flow.id] = flow
     if time.time() >= flow.expires_at and flow.status == "pending":
         flow.status = "error"
         flow.message = "Authorization expired. Start a new connection."
@@ -578,12 +614,137 @@ def delete_oauth_bundle(provider_id: str) -> None:
     )
 
 
+def _oauth_flow_record(provider_id: str) -> dict[str, Any] | None:
+    raw = credential_secrets.get_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND, provider_id
+    )
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return {"marker": raw, "status": "pending"}
+    return value if isinstance(value, dict) else None
+
+
+def save_oauth_flow_marker(
+    provider_id: str, marker: str, flow: OAuthFlow | None = None
+) -> None:
+    value = marker
+    if flow is not None:
+        value = json.dumps(
+            {
+                "marker": marker,
+                "flow_id": flow.id,
+                "method": flow.method,
+                "created_at": flow.created_at,
+                "expires_at": flow.expires_at,
+                "state": flow.state,
+                "verifier": flow.verifier,
+                "redirect_uri": flow.redirect_uri,
+                "authorization_url": flow.authorization_url,
+                "verification_url": flow.verification_url,
+                "user_code": flow.user_code,
+                "device_auth_id": flow.device_auth_id,
+                "interval": flow.interval,
+                "status": flow.status,
+                "message": flow.message,
+            },
+            separators=(",", ":"),
+        )
+    credential_secrets.upsert_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
+        provider_id,
+        value,
+    )
+
+
+def set_oauth_flow_marker_status(provider_id: str, marker: str, status: str) -> None:
+    record = _oauth_flow_record(provider_id)
+    if not record or record.get("marker") != marker:
+        return
+    if "flow_id" not in record:
+        delete_oauth_flow_marker(provider_id, marker)
+        return
+    record["status"] = status
+
+    if status != "pending":
+        record["terminal_at"] = time.time()
+        for key in ("state", "verifier", "device_auth_id", "user_code"):
+            record[key] = ""
+    credential_secrets.upsert_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
+        provider_id,
+        json.dumps(record, separators=(",", ":")),
+    )
+
+
+def _load_persisted_oauth_flow(provider_id: str, flow_id: str) -> OAuthFlow | None:
+    record = _oauth_flow_record(provider_id)
+    if not record or record.get("flow_id") != flow_id:
+        return None
+    method = record.get("method")
+    status = record.get("status")
+    if method not in {"browser", "device"} or status not in {
+        "pending", "connected", "error", "cancelled"
+    }:
+        return None
+    try:
+        return OAuthFlow(
+            id=flow_id,
+            provider_id=provider_id,
+            method=method,
+            created_at=float(record["created_at"]),
+            expires_at=float(record["expires_at"]),
+            state=str(record.get("state", "")),
+            verifier=str(record.get("verifier", "")),
+            redirect_uri=str(record.get("redirect_uri", "")),
+            authorization_url=str(record.get("authorization_url", "")),
+            verification_url=str(record.get("verification_url", "")),
+            user_code=str(record.get("user_code", "")),
+            device_auth_id=str(record.get("device_auth_id", "")),
+            interval=float(record.get("interval", 5.0)),
+            status=status,
+            message=str(record.get("message", "")),
+            marker=str(record.get("marker", "")),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def oauth_flow_marker_is_current(provider_id: str, marker: str) -> bool:
+    record = _oauth_flow_record(provider_id)
+    return bool(record and record.get("marker") == marker)
+
+
+
+def oauth_flow_marker_matches(provider_id: str, marker: str) -> bool:
+    record = _oauth_flow_record(provider_id)
+    return bool(
+        record
+        and record.get("marker") == marker
+        and record.get("status", "pending") == "pending"
+    )
+
+
+def delete_oauth_flow_marker(provider_id: str, marker: str | None = None) -> None:
+    if marker is not None:
+        record = _oauth_flow_record(provider_id)
+        if not record or record.get("marker") != marker:
+            return
+    credential_secrets.delete_secret(
+        credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
+        provider_id,
+    )
+
 
 
 async def resolve_access(
     provider_id: str,
     *,
     force_refresh: bool = False,
+
+    expected_access_token: str | None = None,
 ) -> tuple[str, str]:
     lock = _refresh_locks.setdefault(provider_id, asyncio.Lock())
     async with lock:
@@ -602,6 +763,14 @@ async def resolve_access(
             bundle = load_oauth_bundle(provider_id)
             if not bundle:
                 raise CodexAuthError("ChatGPT connection requires authorization.")
+
+            if (
+                expected_access_token is not None
+                and not secrets.compare_digest(
+                    bundle["access_token"], expected_access_token
+                )
+            ):
+                return bundle["access_token"], bundle["account_id"]
             if (
                 not force_refresh
                 and bundle["expires_at"] > time.time() + _REFRESH_SKEW_SECONDS

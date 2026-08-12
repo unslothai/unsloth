@@ -23,6 +23,8 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   pruneExternalProviderApiKeys,
   removeExternalProviderApiKey,
+
+  setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
@@ -138,6 +140,10 @@ export async function syncExternalProvidersFromBackend(
     listProviderRegistry(),
     listProviderConfigs(),
   ]);
+
+  for (const entry of registryRows) {
+    setProviderModelCapabilities(entry.provider_type, entry.model_capabilities);
+  }
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
     saveLegacyKey: migrateProviderApiKey,

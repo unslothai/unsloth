@@ -3,9 +3,11 @@
 
 import base64
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import importlib.util
+
+import inspect
 from pathlib import Path
 import sys
 
@@ -385,6 +387,7 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
     spec.loader.exec_module(auth_route)
 
     seen = []
+    markers = {}
     monkeypatch.setattr(auth_route, "_provider", lambda _provider: {"provider_type": "openai_codex"})
     monkeypatch.setattr(
         codex_auth.credential_secrets,
@@ -397,15 +400,52 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
         seen.append(("guard", credential))
         yield
 
-    monkeypatch.setattr(auth_route, "current_credential_write", guard)
-    monkeypatch.setattr(codex_auth, "save_oauth_bundle", lambda scope, bundle: seen.append((scope, bundle)))
+    @asynccontextmanager
+    async def oauth_guard(_provider_id):
+        yield
 
-    async def fake_start(provider_id, method, persist):
-        assert seen == ["warmed"]
-        persist(provider_id, {"access_token": "not-returned"})
+    monkeypatch.setattr(auth_route, "current_credential_write", guard)
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
+    monkeypatch.setattr(
+        codex_auth,
+        "save_oauth_flow_marker",
+        lambda scope, marker, _flow=None: markers.__setitem__(scope, marker),
+    )
+
+    monkeypatch.setattr(
+        codex_auth,
+        "set_oauth_flow_marker_status",
+        lambda scope, marker, _status: markers.pop(scope, None)
+        if markers.get(scope) == marker
+        else None,
+    )
+    monkeypatch.setattr(
+        codex_auth,
+        "oauth_flow_marker_matches",
+        lambda scope, marker: markers.get(scope) == marker,
+    )
+    monkeypatch.setattr(
+        codex_auth,
+        "delete_oauth_flow_marker",
+        lambda scope, marker=None: markers.pop(scope, None)
+        if marker is None or markers.get(scope) == marker
+        else None,
+    )
+    monkeypatch.setattr(
+        codex_auth,
+        "save_oauth_bundle",
+        lambda scope, bundle: seen.append((scope, bundle)),
+    )
+
+    async def fake_start(provider_id, method, persist, marker):
+        assert seen[0] == "warmed"
+        assert inspect.iscoroutinefunction(persist)
+
+        assert markers[provider_id] == marker
+        await persist(provider_id, {"access_token": "not-returned"})
         return OAuthFlow(
             id="opaque", provider_id=provider_id, method=method,
-            created_at=1, expires_at=2,
+            created_at=1, expires_at=2, marker=marker,
         )
 
     monkeypatch.setattr(codex_auth, "start_flow", fake_start)
@@ -414,8 +454,9 @@ def test_oauth_start_captures_generation_guarded_persistence(monkeypatch):
         credential=("alice", "generation-1"), via_api_key=False,
     ))
     assert result["flow_id"] == "opaque"
-    assert seen[1] == ("guard", ("alice", "generation-1"))
-    assert seen[2][0] == "provider"
+    assert ("guard", ("alice", "generation-1")) in seen
+    assert any(item[0] == "provider" for item in seen if isinstance(item, tuple))
+    assert markers == {}
     assert "not-returned" not in json.dumps(result)
 
 
@@ -599,6 +640,28 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
 
 
 
+def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypatch):
+    bundle = {
+        "access_token": "new-access",
+        "refresh_token": "new-refresh",
+        "expires_at": time.time() + 600,
+        "account_id": "account",
+    }
+    saved = []
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _provider: bundle.copy())
+    monkeypatch.setattr(
+        codex_auth,
+        "save_oauth_bundle",
+        lambda _provider, value: saved.append(value),
+    )
+
+    codex_auth.mark_reauthorization_required("provider", "old-access")
+    assert saved == []
+    codex_auth.mark_reauthorization_required("provider", "new-access")
+    assert saved[-1]["reauthorization_required"] is True
+
+
+
 def test_expired_flow_is_removed_after_terminal_retention(monkeypatch):
     flow = OAuthFlow(
         id="expired-flow",
@@ -703,28 +766,32 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
             line
             async for line in tool_loop.stream_codex_with_studio_tools(
                 client,
-                provider_id="provider",
-                thread_id="thread",
-                session_id="sandbox",
-                messages=[{"role": "user", "content": "calculate"}],
-                model="gpt-5.6-sol",
-                reasoning_effort="medium",
-                tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "python",
-                            "description": "Run Python",
-                            "parameters": {"type": "object"},
-                        },
-                    }
-                ],
-                max_tool_calls=2,
-                tool_call_timeout=30,
-                permission_mode="off",
-                confirm_tool_calls=False,
-                bypass_permissions=False,
-                rag_scope=None,
+                run=tool_loop.CodexRunContext(
+                    provider_id="provider",
+                    thread_id="thread",
+                    session_id="sandbox",
+                    messages=[{"role": "user", "content": "calculate"}],
+                    model="gpt-5.6-sol",
+                    reasoning_effort="medium",
+                ),
+                policy=tool_loop.CodexToolPolicy(
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "python",
+                                "description": "Run Python",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ],
+                    max_calls=2,
+                    timeout=30,
+                    permission_mode="off",
+                    confirm_calls=False,
+                    bypass_permissions=False,
+                    rag_scope=None,
+                ),
                 cancel_event=threading.Event(),
             )
         ]
@@ -733,6 +800,12 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
     assert executed[0][0:2] == ("python", {"code": "print(6 * 7)"})
     assert any('"type":"tool_start"' in line for line in lines)
     assert any('"type":"tool_end"' in line and '"result":"42"' in line for line in lines)
+
+    assert any(
+        '"provenance":{"source":"local","round_id":1}' in line
+        for line in lines
+        if '"type":"tool_start"' in line or '"type":"tool_end"' in line
+    )
     assert any("The result is 42." in line for line in lines)
     assert client.messages[1][-1] == {
         "role": "tool",
@@ -772,19 +845,23 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
             line
             async for line in tool_loop.stream_codex_with_studio_tools(
                 client,
-                provider_id="provider",
-                thread_id="thread",
-                session_id="session",
-                messages=[{"role": "user", "content": "go"}],
-                model="gpt-5.6-sol",
-                reasoning_effort="medium",
-                tools=[{"type": "function", "function": {"name": "python"}}],
-                max_tool_calls=1,
-                tool_call_timeout=30,
-                permission_mode="off",
-                confirm_tool_calls=False,
-                bypass_permissions=False,
-                rag_scope=None,
+                run=tool_loop.CodexRunContext(
+                    provider_id="provider",
+                    thread_id="thread",
+                    session_id="session",
+                    messages=[{"role": "user", "content": "go"}],
+                    model="gpt-5.6-sol",
+                    reasoning_effort="medium",
+                ),
+                policy=tool_loop.CodexToolPolicy(
+                    tools=[{"type": "function", "function": {"name": "python"}}],
+                    max_calls=1,
+                    timeout=30,
+                    permission_mode="off",
+                    confirm_calls=False,
+                    bypass_permissions=False,
+                    rag_scope=None,
+                ),
                 cancel_event=threading.Event(),
             )
         ]

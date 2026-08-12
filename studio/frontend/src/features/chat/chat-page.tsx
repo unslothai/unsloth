@@ -137,6 +137,8 @@ import {
   buildExternalModelId,
   isExternalModelId,
   parseExternalModelId,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
@@ -2220,9 +2222,11 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // ChatGPT/Codex uses Studio's local tool loop. Other external providers
-      // remain limited to their provider-hosted capabilities below.
-      supportsTools: provider?.providerType === "openai_codex",
+      supportsTools:
+        providerModelSupportsStudioTools(
+          provider?.providerType,
+          selection.modelId,
+        ) === true,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -2771,9 +2775,11 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // ChatGPT/Codex function calls are executed by Studio's local tool
-          // loop; other external providers keep provider-hosted tools only.
-          supportsTools: selectedProvider?.providerType === "openai_codex",
+          supportsTools:
+            providerModelSupportsStudioTools(
+              selectedProvider?.providerType,
+              selectedExternal?.modelId,
+            ) === true,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,

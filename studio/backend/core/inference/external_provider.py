@@ -22,6 +22,9 @@ import structlog
 
 from core.inference.openai_responses_shared import (
     normalize_function_schema,
+
+    responses_function_call,
+    responses_function_output,
     response_event_type,
 )
 
@@ -4724,11 +4727,7 @@ class ExternalProviderClient:
                     _output_text = content if isinstance(content, str) else ""
                 if _call_id:
                     input_items.append(
-                        {
-                            "type": "function_call_output",
-                            "call_id": _call_id,
-                            "output": _output_text,
-                        }
+                        responses_function_output(_call_id, _output_text)
                     )
                 continue
 
@@ -4791,12 +4790,9 @@ class ExternalProviderClient:
                         skipped_server_builtin_call_ids.add(_call_id_out)
                         continue
                     input_items.append(
-                        {
-                            "type": "function_call",
-                            "call_id": _call_id_out,
-                            "name": _fn["name"],
-                            "arguments": _args_raw,
-                        }
+                        responses_function_call(
+                            _call_id_out, _fn["name"], _args_raw
+                        )
                     )
                 # Assistant text already emitted above (in order) so we don't
                 # fall through to the generic content branches.

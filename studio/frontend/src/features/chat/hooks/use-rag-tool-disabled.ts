@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { parseExternalModelId } from "../external-providers";
+import {
+  parseExternalModelId,
+  providerModelSupportsStudioTools,
+} from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
@@ -20,6 +23,10 @@ export function useRagToolDisabled(): boolean {
     ? providers.find((provider) => provider.id === externalSelection.providerId)
     : undefined;
   const externalWithoutStudioTools =
-    externalSelection !== null && externalProvider?.providerType !== "openai_codex";
+    externalSelection !== null &&
+    providerModelSupportsStudioTools(
+      externalProvider?.providerType,
+      externalSelection.modelId,
+    ) !== true;
   return modelLoaded && (externalWithoutStudioTools || !supportsTools);
 }

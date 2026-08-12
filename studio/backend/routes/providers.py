@@ -318,38 +318,50 @@ async def delete_provider_config(
 ):
     """Idempotently delete a saved provider and its installation credential."""
     require_ui_session(via_api_key)
-
-    # Release port 1455 and stop device polling before deleting persistence.
-    # Otherwise a deleted provider can leave an in-memory OAuth flow behind and
-    # the next connection attempt appears to hang while the stale flow owns it.
     await openai_codex_auth.cancel_provider_flows(provider_id)
-
-    # Decryption must not open the auth DB after the generation guard locks it.
     credential_secrets.get_or_create_credential_encryption_key()
-    with current_credential_write(credential):
-        existing_api_key = credential_secrets.get_provider_api_key(provider_id)
-        existing_oauth = credential_secrets.get_secret(
-            credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id
-        )
-        credential_secrets.delete_provider_api_key(provider_id)
-        credential_secrets.delete_secret(credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id)
-        try:
-            providers_db.delete_provider(provider_id)
-        except Exception:
+
+    async with openai_codex_auth.provider_oauth_write_guard(provider_id):
+        with current_credential_write(credential):
+            existing_api_key = credential_secrets.get_provider_api_key(provider_id)
+            existing_oauth = credential_secrets.get_secret(
+                credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id
+            )
+
+            existing_oauth_flow = credential_secrets.get_secret(
+                credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND, provider_id
+            )
+            credential_secrets.delete_provider_api_key(provider_id)
+            credential_secrets.delete_secret(
+                credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id
+            )
+            credential_secrets.delete_secret(
+                credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND, provider_id
+            )
             try:
-                if existing_api_key:
-                    credential_secrets.save_provider_api_key(provider_id, existing_api_key)
-                if existing_oauth:
-                    credential_secrets.upsert_secret(
-                        credential_secrets.OPENAI_CODEX_OAUTH_KIND,
-                        provider_id,
-                        existing_oauth,
-                    )
+                providers_db.delete_provider(provider_id)
             except Exception:
-                logger.exception(
-                    "provider.delete_credential_rollback_failed", provider_id = provider_id
-                )
-            raise
+                try:
+                    if existing_api_key:
+                        credential_secrets.save_provider_api_key(provider_id, existing_api_key)
+                    if existing_oauth:
+                        credential_secrets.upsert_secret(
+                            credential_secrets.OPENAI_CODEX_OAUTH_KIND,
+                            provider_id,
+                            existing_oauth,
+                        )
+
+                    if existing_oauth_flow:
+                        credential_secrets.upsert_secret(
+                            credential_secrets.OPENAI_CODEX_OAUTH_FLOW_KIND,
+                            provider_id,
+                            existing_oauth_flow,
+                        )
+                except Exception:
+                    logger.exception(
+                        "provider.delete_credential_rollback_failed", provider_id = provider_id
+                    )
+                raise
 
 
 def _bind_saved_provider_target(payload):

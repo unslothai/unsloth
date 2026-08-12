@@ -20,6 +20,8 @@ class ProviderRegistryEntry(BaseModel):
     default_models: list[str] = Field(
         default_factory = list, description = "Well-known model IDs for this provider"
     )
+
+    model_capabilities: dict[str, dict[str, bool]] = Field(default_factory = dict)
     supports_streaming: bool = Field(
         True, description = "Whether this provider supports SSE streaming"
     )

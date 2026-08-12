@@ -2,30 +2,32 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const adapterPath = fileURLToPath(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-);
-const source = readFileSync(adapterPath, "utf8");
-const start = source.indexOf("const rawDeltaToolCalls = (");
-const end = source.indexOf("if (!delta && !reasoning)", start);
-assert.ok(start >= 0 && end > start, "OpenAI tool-call stream handler was not found");
-const handler = source.slice(start, end);
+import { resolveToolCallPartId } from "../src/features/chat/tool-call-id.ts";
 
-test("a Codex tool delta and Studio execution events share one card id", () => {
-  assert.match(
-    handler,
-    /const stablePartId = stableId\s*\? resolveToolPartId\(stableId\)/,
+test("a Codex delta and execution events resolve to one card id", () => {
+  const ids = new Map<string, string>();
+  let sequence = 0;
+  const createId = () => `call-1:run-${++sequence}`;
+
+  const deltaId = resolveToolCallPartId(ids, "call-1", undefined, "", createId);
+  const startId = resolveToolCallPartId(ids, "call-1", undefined, "", createId);
+  const endId = resolveToolCallPartId(ids, "call-1", undefined, "", createId);
+
+  assert.equal(deltaId, startId);
+  assert.equal(startId, endId);
+  assert.equal(sequence, 1);
+});
+
+test("confirmation ids and empty backend ids keep their existing identity", () => {
+  const ids = new Map<string, string>();
+  assert.equal(
+    resolveToolCallPartId(ids, "call-1", "approval-1", "", () => "new"),
+    "approval-1",
   );
-  assert.match(
-    handler,
-    /toolCallId === stablePartId/,
-  );
-  assert.match(
-    handler,
-    /const callId =\s*stablePartId \|\| `tool_call_/,
+  assert.equal(
+    resolveToolCallPartId(ids, "", undefined, "last-card", () => "new"),
+    "last-card",
   );
 });

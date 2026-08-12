@@ -24,6 +24,26 @@ def normalize_function_schema(schema: Any) -> dict[str, Any]:
     return normalized
 
 
+def responses_function_call(
+    call_id: str, name: str, arguments: str
+) -> dict[str, Any]:
+    return {
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": arguments,
+    }
+
+
+def responses_function_output(call_id: str, output: str) -> dict[str, Any]:
+    return {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output,
+    }
+
+
+
 def response_event_type(event: Any, event_name: str = "") -> str:
     """Return a validated Responses event type from JSON or the SSE event field."""
     if not isinstance(event, dict):

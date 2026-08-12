@@ -17,7 +17,7 @@ const {
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision } = await import(
+const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
   "../src/features/chat/external-providers.ts"
 );
 
@@ -78,6 +78,12 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
 });
 
 test("ChatGPT subscription models expose Studio-owned search and code tools", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.4": { vision: true, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
   for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol"]) {
     const caps = getExternalReasoningCapabilities("openai_codex", model);
     assert.equal(caps.supportsReasoning, true, model);
@@ -90,6 +96,11 @@ test("ChatGPT subscription models expose Studio-owned search and code tools", ()
 
 
 test("ChatGPT subscription vision gating follows the curated model", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
   assert.equal(
     providerModelSupportsVision("openai_codex", "gpt-5.3-codex-spark"),
     false,

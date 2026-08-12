@@ -17,6 +17,8 @@ export interface ProviderRegistryEntry {
   display_name: string;
   base_url: string;
   default_models: string[];
+
+  model_capabilities?: Record<string, { vision?: boolean; studio_tools?: boolean }>;
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;

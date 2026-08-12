@@ -25,14 +25,15 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-terra",
         ],
 
-        "vision_models": [
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.5",
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-        ],
+        "model_capabilities": {
+            "gpt-5.3-codex-spark": {"vision": False, "studio_tools": True},
+            "gpt-5.4": {"vision": True, "studio_tools": True},
+            "gpt-5.4-mini": {"vision": True, "studio_tools": True},
+            "gpt-5.5": {"vision": True, "studio_tools": True},
+            "gpt-5.6-luna": {"vision": True, "studio_tools": True},
+            "gpt-5.6-sol": {"vision": True, "studio_tools": True},
+            "gpt-5.6-terra": {"vision": True, "studio_tools": True},
+        },
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
@@ -405,6 +406,8 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "display_name": info["display_name"],
                 "base_url": info["base_url"],
                 "default_models": info["default_models"],
+
+                "model_capabilities": info.get("model_capabilities", {}),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),

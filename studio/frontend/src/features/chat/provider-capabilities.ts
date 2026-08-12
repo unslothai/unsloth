@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { providerModelSupportsStudioTools } from "./external-providers";
+
 /**
  * Per-provider sampling parameter capability matrix.
  *
@@ -222,9 +224,12 @@ export function providerSupportsBuiltinWebSearch(
     }
     return true;
   }
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
+
   return (
     providerType === "openai" ||
-    providerType === "openai_codex" ||
     providerType === "anthropic" ||
     providerType === "openrouter" ||
     providerType === "kimi"
@@ -350,9 +355,9 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
-  // Every curated Codex model can emit function calls; Studio executes the
-  // python/terminal functions locally rather than requesting hosted shell.
-  if (providerType === "openai_codex") return true;
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
 
   if (providerType === "openai") {
     if (!isOpenAICloudBaseUrl(baseUrl)) return false;

@@ -26,6 +26,9 @@ from core.inference.openai_codex_auth import (
 )
 from core.inference.openai_responses_shared import (
     normalize_function_schema,
+
+    responses_function_call,
+    responses_function_output,
     response_event_type,
     responses_usage_to_chat,
 )
@@ -74,7 +77,7 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
             call_id = _codex_call_id(message.get("tool_call_id"))
             if call_id:
                 output = content if isinstance(content, str) else json.dumps(content)
-                items.append({"type": "function_call_output", "call_id": call_id, "output": output})
+                items.append(responses_function_output(call_id, output))
             continue
         if role == "assistant":
             extra = message.get("extra_content")
@@ -92,7 +95,11 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                         arguments = json.dumps(arguments)
                     call_id = _codex_call_id(call.get("id"))
                     if call_id:
-                        items.append({"type": "function_call", "call_id": call_id, "name": function["name"], "arguments": arguments})
+                        items.append(
+                            responses_function_call(
+                                call_id, function["name"], arguments
+                            )
+                        )
             output_parts: list[dict[str, Any]] = []
             if isinstance(content, str) and content:
                 output_parts.append({"type": "output_text", "text": content, "annotations": []})
@@ -286,6 +293,8 @@ async def _validated_stream_response(
     refresh_access: Callable[[], Awaitable[tuple[str, str]]] | None,
 ):
     refreshed = False
+
+    token = headers.get("Authorization", "").removeprefix("Bearer ")
     for attempt in range(_MAX_TRANSIENT_RETRIES + 1):
         yielded = False
         try:
@@ -315,6 +324,7 @@ async def _validated_stream_response(
                         raise CodexReauthorizationError(
                             "ChatGPT authorization expired. Reconnect this connection.",
                             status=401,
+                            metadata={"access_token": token},
                         ) from exc
                     headers["Authorization"] = f"Bearer {token}"
                     headers["chatgpt-account-id"] = account_id
@@ -324,6 +334,7 @@ async def _validated_stream_response(
                     raise CodexReauthorizationError(
                         "ChatGPT authorization expired. Reconnect this connection.",
                         status=401,
+                        metadata={"access_token": token},
                     )
                 retryable = (
                     response.status_code in _RETRYABLE_STATUSES

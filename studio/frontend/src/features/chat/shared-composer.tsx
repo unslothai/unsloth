@@ -110,6 +110,8 @@ import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
   providerModelSupportsVision,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -785,13 +787,14 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Codex subscription models use Studio's local search_knowledge_base loop.
-  // Other external providers still cannot use local document retrieval.
-  const codexUsesStudioTools =
-    selectedExternalProvider?.providerType === "openai_codex";
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
   const ragDisabled =
-    modelLoaded && ((!codexUsesStudioTools && isExternalModel) || !supportsTools);
-  const showRagPill = !isExternalModel || codexUsesStudioTools;
+    modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
+  const showRagPill = !isExternalModel || externalUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
   // collapse too: the labelled row is wider than a phone-width composer.

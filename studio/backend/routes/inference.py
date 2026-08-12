@@ -10988,11 +10988,12 @@ async def _proxy_to_external_provider(
             resolve_access,
         )
         from core.inference.openai_codex_client import (
+
+            OpenAICodexClient,
             CodexTransportError,
 
             CodexQuotaError,
             CodexReauthorizationError,
-            OpenAICodexClient,
         )
 
         api_key_token = _request_api_key_token(request)
@@ -11014,7 +11015,9 @@ async def _proxy_to_external_provider(
         if model not in info.get("default_models", []):
             raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
 
-        model_supports_vision = model in info.get("vision_models", [])
+        model_supports_vision = bool(
+            info.get("model_capabilities", {}).get(model, {}).get("vision")
+        )
         if not model_supports_vision:
             for message in payload.messages:
                 if isinstance(message.content, list) and any(
@@ -11054,13 +11057,40 @@ async def _proxy_to_external_provider(
 
         async def _codex_stream():
             async def _refresh_codex_access() -> tuple[str, str]:
-                return await resolve_access(payload.provider_id, force_refresh=True)
+                return await resolve_access(
+                    payload.provider_id,
+                    force_refresh=True,
+                    expected_access_token=access_token,
+                )
 
-            client = OpenAICodexClient(
-                access_token,
-                account_id,
-                refresh_access=_refresh_codex_access,
+            from core.inference.openai_codex_tool_loop import (
+                CodexRunContext,
+                CodexToolPolicy,
+                stream_codex_with_studio_tools,
+
             )
+
+            run = CodexRunContext(
+                provider_id = payload.provider_id,
+                thread_id = payload.thread_id,
+                session_id = payload.session_id,
+                messages = chat_messages,
+                model = model,
+                reasoning_effort = payload.reasoning_effort,
+            )
+            policy = CodexToolPolicy(
+                tools = studio_tool_payloads,
+                max_calls = (
+                    payload.max_tool_calls_per_message
+                    if payload.max_tool_calls_per_message is not None
+                    else 25
+                ),
+                timeout = payload.tool_call_timeout or 300,
+                permission_mode = payload.permission_mode or "auto",
+                confirm_calls = _permission_mode_confirm(payload),
+                bypass_permissions = bool(payload.bypass_permissions),
+                rag_scope = payload.rag_scope,
+            ) if studio_tool_payloads else None
             should_cancel = False
             with _CANCEL_LOCK:
                 now = time.monotonic()
@@ -11081,51 +11111,35 @@ async def _proxy_to_external_provider(
                     await asyncio.sleep(0.1)
 
             disconnect_task = asyncio.create_task(_watch_disconnect())
+
+            client = OpenAICodexClient(
+                access_token,
+                account_id,
+                refresh_access=_refresh_codex_access,
+            )
             try:
                 # Closing the upstream response from the client's watcher makes
                 # cancellation immediate even while no SSE line is arriving.
-                if studio_tool_payloads:
-                    from core.inference.openai_codex_tool_loop import (
-                        stream_codex_with_studio_tools,
-                    )
-
-                    generator = stream_codex_with_studio_tools(
+                generator = (
+                    stream_codex_with_studio_tools(
                         client,
-                        provider_id = payload.provider_id,
-                        thread_id = payload.thread_id,
-                        session_id = payload.session_id,
-                        messages = chat_messages,
-                        model = model,
-                        reasoning_effort = payload.reasoning_effort,
-                        tools = studio_tool_payloads,
-                        max_tool_calls = (
-                            payload.max_tool_calls_per_message
-                            if payload.max_tool_calls_per_message is not None
-                            else 25
-                        ),
-                        tool_call_timeout = (
-                            payload.tool_call_timeout
-                            if payload.tool_call_timeout is not None
-                            else 300
-                        ),
-                        permission_mode = payload.permission_mode or "auto",
-                        confirm_tool_calls = _permission_mode_confirm(payload),
-                        bypass_permissions = bool(payload.bypass_permissions),
-                        rag_scope = payload.rag_scope,
-                        cancel_event = cancel_event,
+                        run=run,
+                        policy=policy,
+                        cancel_event=cancel_event,
                     )
-                else:
-                    generator = client.stream(
-                        provider_id = payload.provider_id,
-                        thread_id = payload.thread_id,
-                        messages = chat_messages,
-                        model = model,
-                        max_tokens = _effective_max_tokens(payload),
-                        reasoning_effort = payload.reasoning_effort,
-                        tools = tool_payloads,
-                        tool_choice = payload.tool_choice,
-                        cancel_event = cancel_event,
+                    if policy
+                    else client.stream(
+                        provider_id=run.provider_id,
+                        thread_id=run.thread_id,
+                        messages=run.messages,
+                        model=run.model,
+                        max_tokens=_effective_max_tokens(payload),
+                        reasoning_effort=run.reasoning_effort,
+                        tools=tool_payloads,
+                        tool_choice=payload.tool_choice,
+                        cancel_event=cancel_event,
                     )
+                )
                 async for line in generator:
                     if cancel_event.is_set() or await request.is_disconnected():
                         await generator.aclose()
@@ -11141,7 +11155,10 @@ async def _proxy_to_external_provider(
                 )
 
                 async with provider_oauth_write_guard(payload.provider_id):
-                    mark_reauthorization_required(payload.provider_id)
+                    mark_reauthorization_required(
+                        payload.provider_id,
+                        expected_access_token=exc.metadata.get("access_token"),
+                    )
                 yield "data: " + json.dumps({"error": {"message": str(exc), "type": "authentication_error"}}) + "\n\n"
                 yield "data: [DONE]\n\n"
             except CodexQuotaError as exc:
@@ -11169,6 +11186,8 @@ async def _proxy_to_external_provider(
                 yield "data: " + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}}) + "\n\n"
                 yield "data: [DONE]\n\n"
             finally:
+
+                await client.close()
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions=True)
 
@@ -11179,7 +11198,6 @@ async def _proxy_to_external_provider(
                             bucket.discard(cancel_event)
                             if not bucket:
                                 _CANCEL_REGISTRY.pop(key, None)
-                await client.close()
 
         return StreamingResponse(
             _codex_stream(), media_type = "text/event-stream",

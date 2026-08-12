@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+
+from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -69,28 +71,51 @@ def _normalized_call(call: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+@dataclass(frozen=True)
+class CodexRunContext:
+    provider_id: str
+    thread_id: str | None
+    session_id: str | None
+    messages: list[dict[str, Any]]
+    model: str
+    reasoning_effort: str | None
+
+
+@dataclass(frozen=True)
+class CodexToolPolicy:
+    tools: list[dict[str, Any]]
+    max_calls: int
+    timeout: int
+    permission_mode: str
+    confirm_calls: bool
+    bypass_permissions: bool
+    rag_scope: dict[str, Any] | None
+
+
 async def stream_codex_with_studio_tools(
     client: OpenAICodexClient,
     *,
-    provider_id: str,
-    thread_id: str | None,
-    session_id: str | None,
-    messages: list[dict[str, Any]],
-    model: str,
-    reasoning_effort: str | None,
-    tools: list[dict[str, Any]],
-    max_tool_calls: int,
-    tool_call_timeout: int,
-    permission_mode: str,
-    confirm_tool_calls: bool,
-    bypass_permissions: bool,
-    rag_scope: dict[str, Any] | None,
+    run: CodexRunContext,
+    policy: CodexToolPolicy,
     cancel_event: threading.Event,
 ) -> AsyncIterator[str]:
     """Stream Codex, execute requested Studio tools, and continue until a final answer."""
-    conversation = [dict(message) for message in messages]
-    remaining = max_tool_calls
+    conversation = [dict(message) for message in run.messages]
+    remaining = policy.max_calls
     unlimited = remaining >= 9999
+    provider_id = run.provider_id
+    thread_id = run.thread_id
+    session_id = run.session_id
+    model = run.model
+    reasoning_effort = run.reasoning_effort
+    tools = policy.tools
+    tool_call_timeout = policy.timeout
+    permission_mode = policy.permission_mode
+    confirm_tool_calls = policy.confirm_calls
+    bypass_permissions = policy.bypass_permissions
+    rag_scope = policy.rag_scope
+
+    round_id = 0
 
     while not cancel_event.is_set():
         by_index: dict[int, dict[str, Any]] = {}
@@ -156,6 +181,8 @@ async def stream_codex_with_studio_tools(
         if finish_reason != "tool_calls" or not calls:
             return
 
+        round_id += 1
+
         assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": "".join(assistant_text),
@@ -194,6 +221,8 @@ async def stream_codex_with_studio_tools(
                     "tool_name": name,
                     "tool_call_id": call_id,
                     "arguments": arguments,
+
+                    "provenance": {"source": "local", "round_id": round_id},
                     "approval_id": approval_id if within_budget else "",
                     "awaiting_confirmation": needs_confirmation and within_budget,
                 }
@@ -240,6 +269,8 @@ async def stream_codex_with_studio_tools(
                     "tool_call_id": call_id,
                     "arguments": arguments,
                     "result": result_text,
+
+                    "provenance": {"source": "local", "round_id": round_id},
                 }
             )
             conversation.append(

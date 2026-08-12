@@ -55,11 +55,30 @@ import {
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
+
+import {
+  addCodexReasoning,
+
+  codexLocalToolRoundId,
+  codexReasoningForToolCalls,
+  readCodexReasoning,
+
+  shouldReplayAssistantReasoning,
+
+  startsNewCodexToolRound,
+  type CodexReasoningLedger,
+} from "../codex-reasoning";
+
+import { resolveToolCallPartId } from "../tool-call-id";
+
+import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   reasoningCapsFromLoad,
@@ -1152,32 +1171,18 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
-function collectAssistantCodexReasoning(message: RunMessage): unknown[] | undefined {
-  const metadata = (message as { metadata?: unknown }).metadata;
-  if (!metadata || typeof metadata !== "object") return undefined;
-  const custom = (metadata as { custom?: unknown }).custom;
-  if (!custom || typeof custom !== "object") return undefined;
-  const reasoning = (custom as Record<string, unknown>).openaiCodexReasoning;
-  return Array.isArray(reasoning) && reasoning.length > 0 ? reasoning : undefined;
-}
-
-function attachAssistantCodexReasoning(
-  messages: SerializedMessage[],
+function setAssistantCodexReasoning(
+  message: SerializedMessage,
   reasoning: unknown[] | undefined,
 ): void {
   if (!reasoning) return;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message.role !== "assistant") continue;
-    const extra =
-      message.extra_content &&
-      typeof message.extra_content === "object" &&
-      !Array.isArray(message.extra_content)
-        ? (message.extra_content as Record<string, unknown>)
-        : {};
-    message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
-    return;
-  }
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
 }
 
 
@@ -1220,12 +1225,18 @@ function serializeAssistantReplayMessages(
   }
 
   const imageParts = collectImageParts(message);
+
+  const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
   const messages: SerializedMessage[] = [];
   const pendingTextParts: string[] = [];
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let imagePartsPending = imageParts.length > 0;
+
+  let pendingLocalToolRoundId: number | null = null;
 
   const flushAssistantAndToolResults = (force = false): void => {
     const textContent = sanitizeAssistantReplayText(
@@ -1235,13 +1246,16 @@ function serializeAssistantReplayMessages(
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
-    const reasoningOnlyTurnIsComplete =
-      message.status?.type !== "incomplete" &&
-      readIncompleteInfo((message as { metadata?: unknown }).metadata) === null;
-    const hasReasoningContent =
-      includeReasoningContent &&
-      reasoningContent.length > 0 &&
-      (hasContent || hasToolCalls || reasoningOnlyTurnIsComplete);
+    const incomplete =
+      message.status?.type === "incomplete" ||
+      readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null;
+    const hasReasoningContent = shouldReplayAssistantReasoning({
+      enabled: includeReasoningContent,
+      reasoningContent,
+      hasContent,
+      hasToolCalls,
+      incomplete,
+    });
 
     if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
       return;
@@ -1266,6 +1280,16 @@ function serializeAssistantReplayMessages(
       assistantMessage.reasoning_content = reasoningContent;
     }
 
+    if (hasToolCalls) {
+      setAssistantCodexReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+    }
+
     messages.push(assistantMessage);
     if (pendingToolResults.length > 0) {
       messages.push(...pendingToolResults);
@@ -1276,6 +1300,8 @@ function serializeAssistantReplayMessages(
     pendingToolCalls = [];
     pendingToolResults = [];
     imagePartsPending = false;
+
+    pendingLocalToolRoundId = null;
   };
 
   for (const part of message.content ?? []) {
@@ -1305,7 +1331,18 @@ function serializeAssistantReplayMessages(
         continue;
       }
 
-      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+
+      const provenance = getToolReplayProvenance(toolPart);
+      const localRoundId = codexLocalToolRoundId(provenance);
+      if (
+        pendingToolCalls.length > 0 &&
+        startsNewCodexToolRound(pendingLocalToolRoundId, localRoundId)
+      ) {
+        flushAssistantAndToolResults();
+      }
+      if (localRoundId !== null) pendingLocalToolRoundId = localRoundId;
+      const flushLocalPair =
+        localRoundId === null && shouldFlushCompletedLocalToolPair(toolPart);
       if (flushLocalPair && pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
@@ -1327,10 +1364,12 @@ function serializeAssistantReplayMessages(
     collectAssistantTextThoughtSignature(message),
   );
 
-  attachAssistantCodexReasoning(
-    messages,
-    collectAssistantCodexReasoning(message),
-  );
+  const finalAssistant = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "assistant");
+  if (finalAssistant) {
+    setAssistantCodexReasoning(finalAssistant, codexReasoning?.final);
+  }
   return messages;
 }
 
@@ -3595,62 +3634,27 @@ export function createOpenAIStreamAdapter(
             "Deep research requires a selected local model or ChatGPT/Codex subscription.",
           );
         }
-        const model = researchExternalSelection?.modelId ?? selectedCheckpoint;
-        const inferenceRequest: {
-          model: string;
-          providerId?: string;
-          providerType?: "openai_codex";
-          externalModel?: string;
-          temperature?: number;
-          topP?: number;
-          maxTokens?: number;
-          enableThinking?: boolean;
-          reasoningEffort?: string;
-        } = {
-          model,
-          ...(researchExternalSelection && researchExternalProvider
-            ? {
-                providerId: researchExternalProvider.id,
-                providerType: "openai_codex" as const,
-                externalModel: researchExternalSelection.modelId,
-              }
-            : {}),
-        };
-        if (
-          Number.isFinite(params.temperature) &&
-          params.temperature >= 0 &&
-          params.temperature <= 2
-        ) {
-          inferenceRequest.temperature = params.temperature;
-        }
-        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
-          inferenceRequest.topP = params.topP;
-        }
-        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
-          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
-        }
         const reasoningRequested =
           runtime.reasoningAlwaysOn ||
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
-        if (
-          runtime.reasoningStyle === "enable_thinking" ||
-          runtime.reasoningStyle === "enable_thinking_effort"
-        ) {
-          inferenceRequest.enableThinking = reasoningRequested;
-        }
-        if (
-          reasoningRequested &&
-          (runtime.reasoningStyle === "reasoning_effort" ||
-            runtime.reasoningStyle === "enable_thinking_effort")
-        ) {
-          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
-          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
-          // this model lacks is dropped by llama.cpp and the run falls back to the default.
-          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
-            runtime.reasoningEffort,
-            runtime.reasoningEffortLevels,
-          );
-        }
+        const inferenceRequest = buildResearchInferenceRequest({
+          checkpoint: selectedCheckpoint,
+          external:
+            researchExternalSelection && researchExternalProvider
+              ? {
+                  providerId: researchExternalProvider.id,
+                  modelId: researchExternalSelection.modelId,
+                }
+              : undefined,
+          temperature: params.temperature,
+          topP: params.topP,
+          maxTokens: params.maxTokens,
+          reasoningRequested,
+          reasoningStyle: runtime.reasoningStyle,
+          reasoningEffort: runtime.reasoningEffort,
+          reasoningEffortLevels: runtime.reasoningEffortLevels,
+          clampReasoningEffort: clampReasoningEffortToLevels,
+        });
         const researchProjectId = await resolveProjectId(
           resolvedThreadId,
           readThreadRecord,
@@ -3997,8 +4001,11 @@ export function createOpenAIStreamAdapter(
           )
         : null;
 
-      const codexUsesStudioTools =
-        externalProvider?.providerType === "openai_codex";
+      const externalUsesStudioTools =
+        providerModelSupportsStudioTools(
+          externalProvider?.providerType,
+          externalSelection?.modelId,
+        ) === true;
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -4321,8 +4328,9 @@ export function createOpenAIStreamAdapter(
         const imageGateReason = getImageInputUnavailableReason({
           activeModel,
           isExternalModel: isExternalRequest,
-          externalSupportsVision: providerTypeSupportsVision(
+          externalSupportsVision: providerModelSupportsVision(
             externalProvider?.providerType,
+            externalSelection?.modelId,
           ),
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
@@ -4511,7 +4519,8 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
-      let latestCodexReasoning: unknown[] | undefined;
+      let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let codexRoundToolCallIds: string[] = [];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -4520,7 +4529,7 @@ export function createOpenAIStreamAdapter(
       // lose why it was short. The terminal yields overwrite or clear it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
-        openaiCodexReasoning: latestCodexReasoning,
+        openaiCodexReasoning: codexReasoningLedger,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -4563,22 +4572,14 @@ export function createOpenAIStreamAdapter(
       // key is unique; every tool_start/output/args/end resolves the same id via
       // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
-      const resolveToolPartId = (backendToolCallId: string): string => {
-        if (!backendToolCallId) {
-          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
-        }
-        const confirmationId =
-          toolConfirmationIdsByBackendId.get(backendToolCallId);
-        if (confirmationId) {
-          return confirmationId;
-        }
-        let partId = toolPartIdByBackendId.get(backendToolCallId);
-        if (!partId) {
-          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
-          toolPartIdByBackendId.set(backendToolCallId, partId);
-        }
-        return partId;
-      };
+      const resolveToolPartId = (backendToolCallId: string): string =>
+        resolveToolCallPartId(
+          toolPartIdByBackendId,
+          backendToolCallId,
+          toolConfirmationIdsByBackendId.get(backendToolCallId),
+          toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
+          () => `${backendToolCallId}:${crypto.randomUUID()}`,
+        );
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -4799,11 +4800,11 @@ export function createOpenAIStreamAdapter(
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
             mcp:
-              (!isExternalRequest || codexUsesStudioTools) &&
+              (!isExternalRequest || externalUsesStudioTools) &&
               supportsTools &&
               mcpEnabledForChat,
             docs:
-              (!isExternalRequest || codexUsesStudioTools) &&
+              (!isExternalRequest || externalUsesStudioTools) &&
               supportsTools &&
               (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
@@ -5004,7 +5005,7 @@ export function createOpenAIStreamAdapter(
                 ),
               ),
 
-              ...(codexUsesStudioTools && resolvedThreadId
+              ...(externalUsesStudioTools && resolvedThreadId
                 ? { thread_id: resolvedThreadId }
                 : {}),
               // Forward only sampling knobs the provider accepts.
@@ -5014,7 +5015,7 @@ export function createOpenAIStreamAdapter(
                 : {}),
               // ChatGPT/Codex function calls are executed by Studio. Other
               // external providers keep their provider-hosted tool envelope.
-              ...(codexUsesStudioTools &&
+              ...(externalUsesStudioTools &&
               supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
@@ -5852,8 +5853,16 @@ export function createOpenAIStreamAdapter(
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
                 if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
-                  latestCodexReasoning = codexReasoning;
+                  codexReasoningLedger = addCodexReasoning(
+                    codexReasoningLedger,
+                    codexReasoning,
+                    codexRoundToolCallIds,
+                  );
                 }
+              }
+
+              if (chunk.choices?.[0]?.finish_reason) {
+                codexRoundToolCallIds = [];
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -5918,6 +5927,13 @@ export function createOpenAIStreamAdapter(
                   let existing = stablePartId
                     ? toolCallParts.find((p) => p.toolCallId === stablePartId)
                     : undefined;
+
+                  if (
+                    stablePartId &&
+                    !codexRoundToolCallIds.includes(stablePartId)
+                  ) {
+                    codexRoundToolCallIds.push(stablePartId);
+                  }
                   if (!existing && idx !== undefined) {
                     existing = toolCallParts.find(
                       (p) => (p as PositionedToolCallPart)._delta_index === idx,
@@ -5962,6 +5978,10 @@ export function createOpenAIStreamAdapter(
                   } else {
                     const callId =
                       stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+
+                    if (!codexRoundToolCallIds.includes(callId)) {
+                      codexRoundToolCallIds.push(callId);
+                    }
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -6206,7 +6226,7 @@ export function createOpenAIStreamAdapter(
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
 
-              openaiCodexReasoning: latestCodexReasoning,
+              openaiCodexReasoning: codexReasoningLedger,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
