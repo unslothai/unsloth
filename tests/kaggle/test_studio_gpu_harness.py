@@ -1242,9 +1242,7 @@ def test_an_explicit_studio_home_install_wins_over_the_canonical_one(tmp_path, m
     fake_home = tmp_path / "home"
     canonical = fake_home / ".unsloth" / "llama.cpp"
     canonical.mkdir(parents = True)
-    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
-        json.dumps({"install_kind": "linux-cpu"})
-    )
+    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"install_kind": "linux-cpu"}))
     monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
 
     studio_home = tmp_path / "studio_home"
