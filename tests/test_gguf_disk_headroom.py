@@ -191,7 +191,7 @@ def test_the_helper_is_called_before_quantizing(save_mod):
     assert source.index("_free_merge_if_disk_is_tight(") < source.index("def _quantize_one")
 
 
-# ---- the four things reclamation must never do ----------------------------
+# ---- what reclamation must never do ---------------------------------------
 
 
 def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod):
