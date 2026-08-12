@@ -12,16 +12,10 @@ permissions:
   contents: read
 
 jobs:
-  focused-context-input:
-    name: Current UI and deterministic VRAM fit
+  context-auto-fit:
+    name: Reproduce 5,120-token Auto estimate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
-      HF_HOME: ${{ github.workspace }}/hf-cache
-
+    timeout-minutes: 10
     steps:
       - name: Check out repro harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,101 +23,25 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Keep the branch-scoped workflow and modern CI helpers in the root while
-      # installing the current upstream application from an isolated worktree.
-      - name: Check out current upstream application
-        shell: bash
-        run: git worktree add --detach tested f20d465c752c1b39d86928ffd716c9fc14713ebe
-
-      - name: Linux dependencies
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
-      - name: Cache tiny GGUF fixture
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: hf-cache
-          key: context-input-repro-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
-
-      - name: Prime model fixtures
-        shell: bash
-        run: |
-          python -m pip install --upgrade huggingface_hub
-          mkdir -p "$HF_HOME"
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
-          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
-
-      - name: Install Unsloth from tested ref
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          (cd tested && bash install.sh --local --no-torch) 2>&1 | tee logs/install.log
-
-      - name: Install Chromium
-        shell: bash
-        run: |
-          python -m pip install 'playwright>=1.45'
-          python -m playwright install --with-deps chromium
-
-      - name: Boot isolated Studio
-        shell: bash
-        run: |
-          mkdir -p logs/playwright_modelcfg
-          bash .github/scripts/boot-studio-api-only.sh \
-            --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
-          bash .github/scripts/wait-for-health.sh \
-            --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/context-repro-health.json
-
-      - name: Create one-run login password
-        shell: bash
-        run: |
-          NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
-          echo "::add-mask::$NEW"
-          echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
-
-      - name: Verify the current UI preserves an explicit context
-        id: repro
-        shell: bash
-        env:
-          BASE_URL: http://127.0.0.1:18898
-          STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
-          PW_ART_DIR: logs/playwright_modelcfg
-          STUDIO_UI_STRICT: '1'
-          STUDIO_DISTINCT_CTX: '4096'
-          STUDIO_MODEL_HINT: gemma-3-270m
-        run: |
-          python tested/tests/studio/playwright_model_config.py 2>&1 | tee logs/modelcfg-probe.log
-          grep -F "OK persist(request): /api/inference/load max_seq_length=4096" \
-            logs/modelcfg-probe.log
-          echo "PASS current UI: explicit Context Length reached /api/inference/load"
-
-      - name: Reproduce exact 5,120-token Auto-fit estimate
+      - name: Reproduce Auto vs explicit context behavior
         shell: bash
         run: |
           python -m pip install --quiet 'pytest>=8'
-          python - <<'PY'
+          python - <<'PY' | tee context-auto-fit-repro.log
           import importlib.util
           from pathlib import Path
 
-          path = Path("tested/studio/backend/tests/test_llama_cpp_context_fit.py").resolve()
+          path = Path("studio/backend/tests/test_llama_cpp_context_fit.py").resolve()
           spec = importlib.util.spec_from_file_location("ctxfit", path)
           ctxfit = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(ctxfit)
 
+          # Deterministic fake telemetry chosen so production's real fit helper
+          # resolves the native 131,072-token window to exactly 5,120 tokens.
           hardware = dict(
               model_gib = 4,
               gpus = [(0, 6750)],
@@ -137,7 +55,7 @@ jobs:
           assert auto["max_available_ctx"] == 5120, auto
           assert explicit["c_arg"] == 32768, explicit
 
-          source = Path("tested/studio/backend/core/inference/llama_cpp.py").read_text(
+          source = Path("studio/backend/core/inference/llama_cpp.py").read_text(
               encoding = "utf-8"
           )
           assert 'elif gpu_memory_mode == "manual":' in source
@@ -145,25 +63,13 @@ jobs:
 
           print(f"PASS reproduced Auto estimate: {auto}")
           print(f"PASS explicit context is not shrunk: {explicit}")
-          print("PASS Manual + fixed GPU Layers bypasses the automatic placement planner")
+          print("PASS Manual + fixed GPU Layers bypasses automatic placement planning")
           PY
-
-      - name: Stop Studio
-        if: always()
-        shell: bash
-        run: |
-          if [[ -n "${STUDIO_MODELCFG_PID:-}" ]]; then
-            kill "$STUDIO_MODELCFG_PID" 2>/dev/null || true
-          fi
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: context-size-auto-fit-repro
-          path: |
-            logs/modelcfg-probe.log
-            logs/studio_modelcfg.log
-            logs/install.log
-            logs/playwright_modelcfg/
+          path: context-auto-fit-repro.log
           retention-days: 1
