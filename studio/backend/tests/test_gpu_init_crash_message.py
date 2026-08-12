@@ -566,6 +566,7 @@ class TestAutoVulkanCpuFallbackGate:
             "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
         )
 
+
 class TestCpuIsolatedReplay:
     @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
     def test_env_projector_counts_as_a_vision_launch(self, name):
