@@ -77,6 +77,11 @@ jobs:
       UNSLOTH_PROBE_ROOT: 'C:\Users\Public\issue-8490-application-control'
       UNSLOTH_PROBE_USER: 'AppLockerProbe'
       UNSLOTH_PROBE_PASSWORD: 'Us8490!Probe'
+      # Not --tauri: the desktop mode refuses UNSLOTH_STUDIO_HOME, and the pinned home is
+      # what makes the file the deny rule names the file the installer actually creates.
+      # The blocked call site is the same in both modes, and the shell path additionally
+      # exercises the PATH shim and the launch instructions this fix changed.
+      UNSLOTH_SKIP_AUTOSTART: '1'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,7 +97,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path logs | Out-Null
 
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-            -File .\install.ps1 --tauri --no-torch *>&1 |
+            -File .\install.ps1 --no-torch *>&1 |
             Tee-Object -FilePath logs\baseline-install.log
           $installerExit = $LASTEXITCODE
           $global:LASTEXITCODE = 0
@@ -262,9 +267,10 @@ jobs:
           # the probe user's environment block, so without this install.ps1 would
           # resolve that user's own profile and install outside the deny rule.
           $env:UNSLOTH_STUDIO_HOME = '__HOME__'
+          $env:UNSLOTH_SKIP_AUTOSTART = '1'
           Set-Location -LiteralPath '__REPO__'
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-            -File .\install.ps1 --tauri --no-torch *>&1
+            -File .\install.ps1 --no-torch *>&1
           exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 })
           '@
           # Two statements, not a chain with the dot at end of line: this step
