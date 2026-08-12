@@ -100,6 +100,9 @@ def test_shim_injects_studio_prepare_on_http_retry(monkeypatch):
     _requires_shared()
     for var in ("UNSLOTH_DISABLE_XET", "UNSLOTH_STABLE_DOWNLOADS", "HF_HUB_DISABLE_XET"):
         monkeypatch.delenv(var, raising = False)
+    # This seam checks the Xet -> HTTP transition, not the independently configurable
+    # number of Xet retries (newer Zoo releases default to two).
+    monkeypatch.setenv("UNSLOTH_XET_ATTEMPTS", "1")
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
 
     seen_disable_xet = []
@@ -595,6 +598,32 @@ def test_importing_child_should_disable_xet_stays_light(monkeypatch):
     # And nothing heavy was imported as a side effect.
     assert "transformers" not in sys.modules, "importing the shim must not import transformers"
     assert "unsloth_zoo" not in sys.modules, "importing the shim must not import unsloth_zoo"
+
+
+def test_first_download_dispatch_loads_zoo_once(monkeypatch):
+    """Import stays light, but a real download dispatch activates the shared Zoo helper."""
+    import utils.hf_xet_fallback as shim
+
+    calls: list[str] = []
+
+    class _FakeShared:
+        @staticmethod
+        def hf_hub_download_with_xet_fallback(*args, **kwargs):
+            calls.append("download")
+            return "/cache/model.bin"
+
+    monkeypatch.setattr(shim, "_shared", _FakeShared, raising = False)
+    monkeypatch.setattr(
+        shim, "_load_shared", lambda: calls.append("load") or True, raising = True
+    )
+
+    assert (
+        shim.hf_hub_download_with_xet_fallback(
+            "org/model", "model.bin", None, cache_dir = "/cache"
+        )
+        == "/cache/model.bin"
+    )
+    assert calls == ["load", "download"]
 
 
 def test_start_watchdog_drops_kwargs_the_installed_zoo_cannot_take(monkeypatch):

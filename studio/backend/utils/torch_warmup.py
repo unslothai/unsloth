@@ -15,10 +15,10 @@ Contract:
   * idempotent -- one thread per process, repeat calls are no-ops
   * never fatal -- a failed stage is logged and left cold, retried by whoever needs it
   * no half-initialised state -- stages delegate to the module owning the cache
-    (utils.hardware, model_config, hf_xet_fallback), which caches under a lock and
-    only on success, so a racing request waits rather than sees a partial
-  * same end state -- same imports, order and call sites as `import main`. A stage
-    shortcutting to a bare `import x` can behave differently; see _warm_unsloth_zoo.
+    (utils.hardware, model_config), which caches under a lock and only on success,
+    so a racing request waits rather than sees a partial
+  * optional GPU consumers stay cold -- Hub downloads load the Xet/Unsloth Zoo
+    integration on demand, and RAG operations load their embedding backend on demand
 
 This does NOT make torch-dependent endpoints cheap while it runs: anything reaching
 get_device() blocks until the hardware stage finishes, so `async def` handlers on
@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.machinery
-import importlib.util
 import os
 import sys
 import threading
@@ -50,14 +49,6 @@ _thread: Optional[threading.Thread] = None
 _thread_epoch: Optional[int] = None
 _status: dict = {"started": False, "finished": False, "stages": {}}
 
-
-def _torch_installed() -> bool:
-    """True if torch is importable without importing it, so torch-requiring stages are
-    skipped on a --no-torch install rather than logging an error for a missing-on-purpose dep."""
-    try:
-        return importlib.util.find_spec("torch") is not None
-    except (ImportError, ValueError):
-        return False
 
 
 def _is_extension_module(name: str) -> bool:
@@ -141,7 +132,6 @@ _STAGE_PACKAGE = {
     "hardware": "torch",
     "transformers": "transformers",
     "datasets": "datasets",
-    "unsloth_zoo": "unsloth_zoo",
 }
 
 
@@ -172,7 +162,6 @@ def _warm_hardware(epoch: Optional[int] = None) -> None:
 
 
 def _warm_transformers() -> None:
-    # Ahead of unsloth_zoo: that is the eager order, and unsloth_zoo patches it on import.
     from utils.models.model_config import _detection_sets
     _detection_sets()
 
@@ -182,35 +171,9 @@ def _warm_datasets() -> None:
     importlib.import_module("datasets")
 
 
-def _warm_unsloth_zoo() -> None:
-    """Prime the download stall watchdog, the way the eager import primed it.
 
-    Through utils.hf_xet_fallback, not a bare ``import unsloth_zoo``: the edge this
-    replaces was orchestrator.py's ``from utils.hf_xet_fallback import
-    DownloadStallError``, and the shim does more. When unsloth_zoo's GPU init raises it
-    retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 and injects triton/bitsandbytes stubs;
-    a bare import skips that retry, so a host whose bitsandbytes cannot find libcudart
-    would fail a stage startup used to complete.
-
-    Skipped without torch: unsloth_zoo hard-requires it and the shim degrades to stubs.
-    """
-    if not _torch_installed():
-        return
-    # Private deliberately: the exact function the eager import drove. The public names
-    # reach it only via an attribute whose degraded fallback looks like success.
-    from utils.hf_xet_fallback import _load_shared
-
-    if not _load_shared():
-        # Downloads still work on the degraded stubs, but the stage is cold and
-        # warm_status() must say so. Purge so the next importer re-runs __init__ clean;
-        # the shim's negative cache stays pinned, as the raise site and `except` must
-        # resolve to one DownloadStallError class or the stall handler is bypassed.
-        purge_partial_import("unsloth_zoo")
-        raise RuntimeError("unsloth_zoo unavailable; the download stall watchdog stays degraded")
-
-
-# _STAGES follows the eager import order: transformers before unsloth_zoo (which patches
-# it on import), datasets between them because that is where `import main` reached it.
+# Keep metadata and framework registries ready without importing optional GPU consumers.
+# Unsloth Zoo is loaded by utils.hf_xet_fallback only when a Hub operation needs it.
 def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection
     # -- lazily that is some request, and sync helpers call the getter inline from async
@@ -224,7 +187,6 @@ _STAGES = (
     ("inference_backend", _warm_inference_backend),
     ("transformers", _warm_transformers),
     ("datasets", _warm_datasets),
-    ("unsloth_zoo", _warm_unsloth_zoo),
 )
 
 
