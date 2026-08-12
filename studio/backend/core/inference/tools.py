@@ -8952,19 +8952,9 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # below, which both tools carry.
     ("Execute Python code in a sandbox and", "Execute Python code and"),
     # POSIX: real absolute paths DO resolve with the sandbox off, so a blanket
-    # denial is wrong. The two named conventions stay denied, because they are
-    # still handled specially: _build_bypass_env keeps _SANDBOX_SITE_DIR on
-    # PYTHONPATH, so sandbox_site/sitecustomize.py goes on healing an absent
-    # /mnt/data or /tmp/outputs onto the workdir in bypass runs too. Promising
-    # that every absolute path resolves would make the model report a write to
-    # /mnt/data that actually landed in the working directory. The tail differs
-    # per tool, see _FULL_ACCESS_ABSENT_PREFIX_TAIL.
-    (
-        "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
-        ". The code sandbox is disabled, so absolute paths on the machine running "
-        "Unsloth Studio do resolve; /mnt/data and /tmp/outputs are still not real "
-        "there{tail}",
-    ),
+    # denial is wrong -- but so is a blanket promise, and by different amounts
+    # per tool, so the clause itself comes from _FULL_ACCESS_POSIX_CLAUSE.
+    ("; absolute paths like /mnt/data or /tmp/outputs do not exist.", "{clause}"),
     # Windows already says where the code runs and never denies absolute paths,
     # so there is nothing false to remove; state the capability instead. "the
     # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
@@ -8978,14 +8968,34 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 )
 
 
-# sitecustomize.py is a CPython startup hook, so the /mnt/data heal reaches the
-# python tool and any Python the terminal tool launches -- but NOT a plain shell
-# redirect, where `printf x > /mnt/data/out` on a host without /mnt/data simply
-# fails. Telling terminal its writes are redirected would have the model report a
-# command that errored as having landed in the working directory.
-_FULL_ACCESS_ABSENT_PREFIX_TAIL = {
-    "python": ", and writes to them are redirected into the working directory.",
-    "terminal": ", so write to the working directory instead.",
+# What "absolute paths work" actually means under bypass, per tool.
+#
+# _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize.py
+# still loads. It is a CPython startup hook, which is what splits the two tools:
+# it patches the python tool (and any Python the terminal tool launches), while a
+# plain shell redirect gets nothing. Measured against the shim:
+#
+#   python, parent exists   -> writes the real absolute path
+#   python, parent missing  -> CREATE is redirected to <cwd>/<basename>, and the
+#                              requested path is never made (this covers the
+#                              /mnt/data family and any other invented root)
+#   terminal, parent missing -> the shell just fails, no redirect
+#
+# So python must not promise that every absolute path resolves (the model would
+# report a write that went elsewhere), and terminal must not promise a redirect
+# it never gets (it would report an errored command as having landed).
+_FULL_ACCESS_POSIX_CLAUSE = {
+    "python": (
+        ". The code sandbox is disabled, so absolute paths under a directory that "
+        "exists do resolve on the machine running Unsloth Studio; creating a file "
+        "under a directory that does not exist, /mnt/data and /tmp/outputs "
+        "included, silently redirects it into the working directory instead."
+    ),
+    "terminal": (
+        ". The code sandbox is disabled, so absolute paths on the machine running "
+        "Unsloth Studio do resolve; /mnt/data and /tmp/outputs are still not real "
+        "there, so write to the working directory instead."
+    ),
 }
 
 
@@ -9001,9 +9011,9 @@ def _to_full_access(description: str, tool_name: str) -> str:
     workdir is the per-session dir either way (_build_bypass_env repoints HOME /
     TMPDIR / TEMP / TMP at it), and so is the download-link note.
     """
-    tail = _FULL_ACCESS_ABSENT_PREFIX_TAIL[tool_name]
+    clause = _FULL_ACCESS_POSIX_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
-        description = description.replace(sandboxed, full_access.format(tail = tail))
+        description = description.replace(sandboxed, full_access.format(clause = clause))
     return description
 
 

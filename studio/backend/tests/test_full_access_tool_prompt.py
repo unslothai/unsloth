@@ -117,13 +117,16 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     # paths resolve" would have the model report a write that went elsewhere.
     if platform != "win32":
         assert "/mnt/data" in full
-        # sitecustomize is a CPython startup hook: it heals an absent /mnt/data
-        # for python (and any python terminal launches), but a plain shell
-        # redirect just fails, so only python may promise the redirect.
+        # sitecustomize is a CPython startup hook: it patches python (and any
+        # python terminal launches), while a plain shell redirect gets nothing.
         if tool_name == "python":
-            assert "redirected into the working directory" in full
+            # Measured: parent exists -> real path; parent missing -> <cwd>/base.
+            # So the promise has to be conditional, never blanket.
+            assert "absolute paths under a directory that exists do resolve" in full
+            assert "silently redirects it into the working directory" in full
+            assert "absolute paths on the machine running Unsloth Studio do resolve" not in full
         else:
-            assert "redirected" not in full
+            assert "redirect" not in full
             assert "write to the working directory instead" in full
     # True in both modes, so untouched.
     assert "persists for this conversation" in full
