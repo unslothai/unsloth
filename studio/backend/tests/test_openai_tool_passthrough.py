@@ -519,7 +519,6 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
-
     def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
         from routes import inference as inference_route
 

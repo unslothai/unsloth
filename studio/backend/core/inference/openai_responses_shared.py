@@ -15,7 +15,6 @@ def _normalize_schema_node(schema: Any) -> Any:
     normalized = dict(schema)
     for key in (
         "additionalProperties",
-
         "additionalItems",
         "contains",
         "contentSchema",
@@ -55,9 +54,7 @@ def _normalize_schema_node(schema: Any) -> Any:
             }
 
     schema_type = normalized.get("type")
-    if schema_type == "object" or (
-        isinstance(schema_type, list) and "object" in schema_type
-    ):
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         properties = normalized.get("properties")
         normalized["properties"] = properties if isinstance(properties, dict) else {}
     return normalized

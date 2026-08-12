@@ -116,11 +116,8 @@ async def stream_codex_with_studio_tools(
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
 
-
     skip_autoinject = (
-        confirm_tool_calls
-        and not bypass_permissions
-        and permission_mode not in ("auto", "off")
+        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
     )
     autoinject = None if skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if autoinject:

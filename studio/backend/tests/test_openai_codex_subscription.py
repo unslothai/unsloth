@@ -171,9 +171,7 @@ def test_responses_conversion_replays_only_opaque_reasoning_and_normalizes_tools
     )
     assert combinators["$defs"]["row"]["properties"] == {}
     assert combinators["properties"]["choice"]["anyOf"][0]["properties"] == {}
-    assert (
-        combinators["properties"]["choice"]["anyOf"][1]["items"]["properties"] == {}
-    )
+    assert combinators["properties"]["choice"]["anyOf"][1]["items"]["properties"] == {}
 
 
 def test_responses_conversion_stably_shortens_oversized_tool_call_ids():
@@ -439,7 +437,6 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
     assert exchange_data["redirect_uri"] == OPENAI_CODEX_DEVICE_REDIRECT_URI
     assert flow.status == "connected"
     assert len(persisted) == 1
-
 
 
 def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
@@ -969,7 +966,6 @@ def test_transient_refresh_failure_does_not_require_reauthorization(monkeypatch)
     assert not isinstance(error.value, CodexReauthorizationError)
 
 
-
 def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
 
@@ -1028,9 +1024,7 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
                     reasoning_effort = "medium",
                 ),
                 policy = tool_loop.CodexToolPolicy(
-                    tools = [
-                        {"type": "function", "function": {"name": "search_knowledge_base"}}
-                    ],
+                    tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
                     max_calls = 2,
                     timeout = 30,
                     permission_mode = "auto",
@@ -1045,7 +1039,6 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
     lines = asyncio.run(run())
     assert lines[0] == 'data: {"type":"status","text":"Searching documents"}'
     assert client.messages[0][-2:] == injected_messages
-
 
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):

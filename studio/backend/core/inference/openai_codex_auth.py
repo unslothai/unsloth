@@ -703,7 +703,10 @@ def save_oauth_flow_marker(
 
 
 def set_oauth_flow_marker_status(
-    provider_id: str, marker: str, status: str, message: str = ""
+    provider_id: str,
+    marker: str,
+    status: str,
+    message: str = "",
 ) -> None:
     record = _oauth_flow_record(provider_id)
     if not record or record.get("marker") != marker:
@@ -731,9 +734,7 @@ async def _persist_terminal_flow(flow: OAuthFlow) -> None:
         return
     try:
         async with provider_oauth_write_guard(flow.provider_id):
-            set_oauth_flow_marker_status(
-                flow.provider_id, flow.marker, flow.status, flow.message
-            )
+            set_oauth_flow_marker_status(flow.provider_id, flow.marker, flow.status, flow.message)
     except CodexAuthError:
         # Keep the originating worker's terminal state even if another credential
         # write holds the cross-worker lock long enough for this best-effort update.

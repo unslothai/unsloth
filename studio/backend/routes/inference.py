@@ -10972,7 +10972,6 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
 
-
     codex_studio_tool_loop = (
         provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
     )
