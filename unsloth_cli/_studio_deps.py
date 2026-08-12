@@ -206,7 +206,7 @@ def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
 
 
 def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
-    """Installed versions and duplicate canonical names inside another venv.
+    """Installed versions and metadata conflicts inside another venv.
 
     importlib.metadata reports the running interpreter only, so a foreign
     site-packages has to be handed to the finder explicitly. Keep multiplicity
@@ -225,10 +225,11 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
             name = dist.metadata.get("Name")
             if name:
                 canonical = _canonical(name)
-                if canonical in found:
+                version = dist.version or ""
+                if not version or canonical in found:
                     conflicts.add(canonical)
-                else:
-                    found[canonical] = dist.version or ""
+                if canonical not in found:
+                    found[canonical] = version
                 continue
         except Exception:
             pass

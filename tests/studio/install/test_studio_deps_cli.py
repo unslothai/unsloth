@@ -140,6 +140,7 @@ def cross_venv(tmp_path, monkeypatch):
         malformed_unrelated_metadata = False,
         malformed_core_metadata = False,
         nameless_core_metadata = False,
+        versionless_core_metadata = False,
         editable_requirements = False,
     ):
         caller = tmp_path / "caller_venv"
@@ -187,6 +188,12 @@ def cross_venv(tmp_path, monkeypatch):
             nameless.mkdir()
             (nameless / "METADATA").write_text(
                 "Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8"
+            )
+        if versionless_core_metadata:
+            versionless = managed_site / "unsloth-2.0.dist-info"
+            versionless.mkdir()
+            (versionless / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: unsloth\n", encoding = "utf-8"
             )
         checkout_requirements = None
         if editable_requirements:
@@ -299,6 +306,14 @@ def test_malformed_core_metadata_is_a_foreign_conflict(cross_venv):
 
 def test_nameless_core_metadata_is_a_foreign_conflict(cross_venv):
     state = cross_venv(nameless_core_metadata = True)
+
+    assert state["ok"] is False
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_versionless_core_metadata_is_a_foreign_conflict(cross_venv):
+    state = cross_venv(versionless_core_metadata = True)
 
     assert state["ok"] is False
     assert state["manifest_ok"] is False
