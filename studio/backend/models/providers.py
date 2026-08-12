@@ -20,6 +20,8 @@ class ProviderRegistryEntry(BaseModel):
     default_models: list[str] = Field(
         default_factory = list, description = "Well-known model IDs for this provider"
     )
+
+    model_capabilities: dict[str, dict[str, bool]] = Field(default_factory = dict)
     supports_streaming: bool = Field(
         True, description = "Whether this provider supports SSE streaming"
     )
@@ -29,6 +31,10 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+
+    auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    base_url_editable: bool = True
+    model_ids_editable: bool = True
     model_list_mode: Literal["remote", "curated"] = Field(
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
@@ -104,6 +110,9 @@ class ProviderResponse(BaseModel):
     is_enabled: bool = Field(True, description = "Whether this provider is enabled")
 
     has_api_key: bool = Field(False, description = "Whether this caller has a saved API key")
+
+    auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
+    auth_status: Literal["disconnected", "connected", "reauthorization_required"] = "disconnected"
     models: list[str] = Field(
         default_factory = list,
         description = "Enabled model IDs for this connection",
