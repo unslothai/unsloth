@@ -3309,6 +3309,9 @@ exit 0
                 } catch {}
             }
         }
+        # Set outside the scan: only the WMI arm fills it, but the lookup further down reads
+        # it on every AMD path, including the amd-smi ones that never enter the block.
+        $wmiAmdNames = @()
         if (-not $HasROCm) {
             try {
                 # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
@@ -3323,8 +3326,16 @@ exit 0
                     Where-Object { $_.Name -match "AMD|Radeon" })
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
-                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
-                if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+                $wmiAdapters = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })
+                $wmiGpu = $wmiAdapters[0]
+                if ($wmiGpu) {
+                    $ROCmGpuLabel = $wmiGpu.Name
+                    # Every adapter's name, not just the chosen one: only the peer list can
+                    # tell "this host has no ROCm-capable GPU" apart from "this host's FIRST
+                    # adapter is not the ROCm-capable one". Read by the unsupported lookup
+                    # below; nothing here picks an arch, so the choice above is untouched.
+                    $wmiAmdNames = @($wmiAdapters | ForEach-Object { $_.Name })
+                }
             } catch {}
         }
         # GPU name → gfx arch for AMD generations ROCm PyTorch does NOT cover: RDNA 1
@@ -3335,10 +3346,13 @@ exit 0
         # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Polaris 11/12 (RX
         # 460/550/560) is excluded on purpose: a different die, and this table's value
         # is that it never guesses.
+        # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
+        # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
+        # omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
         $unsupportedNameArchTable = @(
             @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT";      A = "gfx1010" }  # RDNA 1
-            @{ P = "RX 5500";                                 A = "gfx1012" }  # RDNA 1
+            @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+            @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
             @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)";          A = "gfx803"  }  # Polaris 10/20/30
         )
         $ROCmUnsupportedGfxArch = $null
@@ -3386,11 +3400,29 @@ exit 0
                 #    only changes what we PRINT -- $ROCmGfxArch stays null, so the CPU
                 #    fallback is reached by exactly the same path as before and no row
                 #    in this table can make an arch installable.
+                #    Only when NO adapter on the host is covered. $wmiGpu takes index 0 and
+                #    has no runtime-selection logic, so on a host pairing an RX 5700 with an
+                #    RX 7900 the label is the 5700 and the wording below -- that neither the
+                #    HIP SDK nor UNSLOTH_ROCM_GFX_ARCH can help -- would be false: masking to
+                #    the 7900 and setting gfx1100 installs the bundled-runtime wheels. Such a
+                #    host keeps the arch-unknown arm, which says exactly that. Reporting only:
+                #    $ROCmGfxArch stays null either way, so torch still goes to CPU here.
+                #    studio/setup.ps1 already scores every adapter (Get-GfxArchFromGpuName
+                #    over $script:ROCmGpuLabels) before it reaches its own lookup.
                 if (-not $ROCmGfxArch) {
-                    foreach ($row in $unsupportedNameArchTable) {
-                        if ($ROCmGpuLabel -match $row.P) {
-                            $ROCmUnsupportedGfxArch = $row.A
-                            break
+                    $coveredPeer = $false
+                    foreach ($peerName in $wmiAmdNames) {
+                        foreach ($row in $nameArchTable) {
+                            if ($peerName -match $row.P) { $coveredPeer = $true; break }
+                        }
+                        if ($coveredPeer) { break }
+                    }
+                    if (-not $coveredPeer) {
+                        foreach ($row in $unsupportedNameArchTable) {
+                            if ($ROCmGpuLabel -match $row.P) {
+                                $ROCmUnsupportedGfxArch = $row.A
+                                break
+                            }
                         }
                     }
                 }

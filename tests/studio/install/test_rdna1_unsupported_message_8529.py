@@ -27,6 +27,7 @@ import importlib.util
 import io
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -82,6 +83,18 @@ _RDNA1_NAMES = [
     ("AMD Radeon Pro 5600M", "gfx1011"),
     ("AMD Radeon RX 5500 XT", "gfx1012"),
     ("Navi 14 [Radeon RX 5500/5500M / Pro 5500M]", "gfx1012"),
+    # The professional boards LLVM's table omits. Die confirmed from libdrm
+    # data/amdgpu.ids ("7312, 00, AMD Radeon Pro W5700", "7341, 00, AMD Radeon Pro
+    # W5500", "7340, CF, AMD Radeon RX 5300") read against pci.ids, which names 7312
+    # and 7310 Navi 10 and 7340/7341/7347/734f Navi 14, and the kernel's amdgpu PCI
+    # table, which files those ids under CHIP_NAVI10 / CHIP_NAVI14.
+    ("AMD Radeon Pro W5700", "gfx1010"),
+    ("Navi 10 [Radeon Pro W5700X]", "gfx1010"),
+    ("AMD Radeon Pro W5500", "gfx1012"),
+    ("AMD Radeon Pro W5500M", "gfx1012"),
+    ("Navi 14 [Radeon Pro W5300M]", "gfx1012"),
+    ("AMD Radeon RX 5300", "gfx1012"),
+    ("AMD Radeon RX 5300M", "gfx1012"),
 ]
 
 # Cards the supported table owns, plus a non-AMD one. A hit here would print
@@ -93,6 +106,12 @@ _NOT_RDNA1_NAMES = [
     "AMD Radeon RX 6800 XT",
     "AMD Radeon 8060S Graphics",
     "NVIDIA GeForce RTX 4090",
+    # The workstation boards that DO have wheels, now that this table names W-series
+    # parts: "W5700" must not be read out of "W7500", nor "W5500" out of "W6500".
+    "AMD Radeon PRO W7500",
+    "AMD Radeon PRO W7900",
+    "AMD Radeon PRO W6500",
+    "AMD Radeon PRO W6400",
 ]
 
 
@@ -508,6 +527,107 @@ class TestAdviceIsNotEmittedForRdna1:
         assert needle in src, "studio/setup.sh: unsupported arm not found"
         assert fallthrough in src, "studio/setup.sh: plain AMD ROCm arm not found"
         assert src.index(needle) < src.index(fallthrough)
+
+
+# ── studio/setup.sh on a host with no ROCm userspace at all ──────────────────
+
+
+def _run_setup_kfd_lookup(gpu_name: str, lspci_lines: "list[str] | None", tmp_path) -> str:
+    """Run studio/setup.sh's report-side lookup with a scripted lspci.
+
+    `lspci_lines is None` means the binary is absent, which is the other half of
+    the KFD-only host: amdgpu exposes /dev/kfd, no ROCm userspace is installed.
+    """
+    src = _SETUP_SH.read_text(encoding = "utf-8")
+    body = "\n".join(
+        _sh_function_body(src, name)
+        for name in ("_setup_unsupported_gfx_from_name", "_setup_unsupported_gfx_any")
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    # PATH is bin_dir and nothing else, so "lspci absent" really is absent rather than
+    # the host's own lspci answering. The shell itself has to be linked in for that.
+    real_sh = shutil.which("sh")
+    assert real_sh, "no POSIX sh on this host"
+    (bin_dir / "sh").symlink_to(real_sh)
+    for _tool in ("grep", "cat"):
+        _found = shutil.which(_tool)
+        assert _found, f"no {_tool} on this host"
+        (bin_dir / _tool).symlink_to(_found)
+    if lspci_lines is not None:
+        fake = bin_dir / "lspci"
+        printed = "\n".join(lspci_lines)
+        fake.write_text(f'#!/bin/sh\ncat <<"LSPCI_EOF"\n{printed}\nLSPCI_EOF\n', encoding = "utf-8")
+        fake.chmod(0o755)
+    env = dict(os.environ, PATH = str(bin_dir))
+    out = subprocess.run(
+        ["sh", "-c", f'{body}\n_setup_unsupported_gfx_any "$1" || true\n', "sh", gpu_name],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.DEVNULL,
+        text = True,
+        timeout = 30,
+        env = env,
+    )
+    return out.stdout.strip()
+
+
+_KFD_NAVI10 = [
+    "0a:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] "
+    "Navi 10 [Radeon RX 5600 OEM/5600 XT / 5700/5700 XT] [1002:731f] (rev c1)"
+]
+_KFD_POLARIS = [
+    "01:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] "
+    "Ellesmere [Radeon RX 470/480/570/570X/580/580X/590] [1002:67df] (rev e7)"
+]
+_KFD_NAVI31 = [
+    "03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] "
+    "Navi 31 [Radeon RX 7900 XT/7900 XTX/7900M] [1002:744c] (rev cc)"
+]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
+class TestSetupShKfdOnlyHost:
+    """The KFD sysfs fallback marks the host AMD without rocminfo or amd-smi, so it
+    leaves _setup_mkt empty -- and a host with no ROCm userspace is exactly the one
+    #8529 and #8458 describe. Handed "", the lookup used to fall through to the plain
+    "AMD ROCm" report on a machine that has no ROCm."""
+
+    def test_the_kfd_host_is_diagnosed_from_lspci(self, tmp_path):
+        assert _run_setup_kfd_lookup("", _KFD_NAVI10, tmp_path) == "gfx1010"
+
+    def test_polaris_on_the_kfd_host_is_diagnosed_too(self, tmp_path):
+        assert _run_setup_kfd_lookup("", _KFD_POLARIS, tmp_path) == "gfx803"
+
+    def test_a_covered_card_is_never_claimed_from_lspci(self, tmp_path):
+        """The scope guard: an RX 7900 with no ROCm installed is a missing runtime,
+        not an uncovered generation, and must keep the plain report."""
+        assert _run_setup_kfd_lookup("", _KFD_NAVI31, tmp_path) == ""
+
+    def test_no_lspci_is_not_an_error(self, tmp_path):
+        assert _run_setup_kfd_lookup("", None, tmp_path) == ""
+
+    def test_a_reported_name_still_decides(self, tmp_path):
+        """rocminfo/amd-smi named the card; lspci is not consulted behind their back."""
+        assert _run_setup_kfd_lookup("AMD Radeon RX 5500 XT", _KFD_NAVI10, tmp_path) == "gfx1012"
+
+    def test_a_reported_name_we_do_not_know_claims_nothing(self, tmp_path):
+        assert _run_setup_kfd_lookup("AMD Radeon Graphics", _KFD_NAVI10, tmp_path) == ""
+
+    def test_the_report_site_uses_the_lspci_aware_lookup(self):
+        src = _normalised(_SETUP_SH)
+        assert (
+            'elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then' in src
+        ), "studio/setup.sh: the gpu report no longer goes through the lspci-aware lookup"
+
+    def test_the_lspci_name_never_reaches_the_routing_table(self):
+        """Routing must stay byte-identical. The supported inference table keys on
+        _setup_mkt, which feeds --rocm-gfx into the prebuilt and whisper commands, so
+        the lspci read must not be written back into it."""
+        src = _normalised(_SETUP_SH)
+        assigns = re.findall(r"^\s*_setup_mkt=(.*)$", src, re.MULTILINE)
+        assert assigns, "studio/setup.sh: no _setup_mkt assignment found"
+        for rhs in assigns:
+            assert "lspci" not in rhs, f"_setup_mkt fed from lspci: {rhs!r}"
 
 
 # ── The shell copies, executed rather than parsed ────────────────────────────

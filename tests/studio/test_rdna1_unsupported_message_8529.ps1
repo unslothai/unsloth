@@ -61,6 +61,21 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "Radeon Pro V520 -> gfx1011"     ((Resolve-Unsupported "AMD Radeon Pro V520") -eq 'gfx1011')
     Check "Radeon Pro 5600M -> gfx1011"    ((Resolve-Unsupported "AMD Radeon Pro 5600M") -eq 'gfx1011')
     Check "RX 5500 XT -> gfx1012"          ((Resolve-Unsupported "AMD Radeon RX 5500 XT") -eq 'gfx1012')
+    # The professional boards LLVM's table omits, mapped from libdrm data/amdgpu.ids
+    # ("7312 AMD Radeon Pro W5700", "7341 AMD Radeon Pro W5500", "7340,CF AMD Radeon
+    # RX 5300") read against pci.ids, which files 7312/7310 under Navi 10 and
+    # 7340/7341/7347/734f under Navi 14.
+    Check "Radeon Pro W5700 -> gfx1010"    ((Resolve-Unsupported "AMD Radeon Pro W5700") -eq 'gfx1010')
+    Check "Radeon Pro W5700X -> gfx1010"   ((Resolve-Unsupported "AMD Radeon Pro W5700X") -eq 'gfx1010')
+    Check "Radeon Pro W5500 -> gfx1012"    ((Resolve-Unsupported "AMD Radeon Pro W5500") -eq 'gfx1012')
+    Check "Radeon Pro W5500M -> gfx1012"   ((Resolve-Unsupported "AMD Radeon Pro W5500M") -eq 'gfx1012')
+    Check "Radeon Pro W5300M -> gfx1012"   ((Resolve-Unsupported "AMD Radeon Pro W5300M") -eq 'gfx1012')
+    Check "RX 5300 -> gfx1012"             ((Resolve-Unsupported "AMD Radeon RX 5300") -eq 'gfx1012')
+    Check "RX 5300M -> gfx1012"            ((Resolve-Unsupported "AMD Radeon RX 5300M") -eq 'gfx1012')
+    # The W-series that DOES have wheels: "W5700" must not be read out of "W7500".
+    Check "PRO W7500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W7500"))
+    Check "PRO W6500 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W6500"))
+    Check "PRO W6400 unclaimed"            ($null -eq (Resolve-Unsupported "AMD Radeon PRO W6400"))
 
     # --- Polaris, the second card in the cluster (#8458) ----------------------
     # #8458 is an RX 580: Polaris 20, gfx803, also pre-RDNA 2 and also with no
@@ -261,6 +276,72 @@ $unconditional = @($assignments | Where-Object {
 })
 Check "the unsupported-arch state is initialised outside every conditional" ($unconditional.Count -gt 0)
 
+# install.ps1's WMI fallback takes adapter [0] and has no runtime-selection logic, so on a
+# host pairing an RX 5700 with an RX 7900 the label is the 5700. Saying "nothing can enable
+# ROCm here" would then be false -- masking to the 7900 and setting gfx1100 installs the
+# bundled-runtime wheels. Such a host must keep the arch-unknown arm. Run the REAL block:
+# pulled out by AST rather than retyped, so gutting the guard in install.ps1 fails this.
+Write-Host ""
+Write-Host "=== install.ps1 mixed-adapter guard ==="
+$installPath = Join-Path $root "install.ps1"
+$installAst = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$null, [ref]$null)
+$guardBlocks = @($installAst.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.IfStatementAst] -and
+    $n.Extent.Text.Contains('$unsupportedNameArchTable') -and
+    $n.Extent.Text.Contains('$ROCmUnsupportedGfxArch') -and
+    $n.Extent.Text.Contains('$wmiAmdNames')
+}, $true) | Sort-Object { $_.Extent.Text.Length })
+# Requiring $wmiAmdNames is what makes this load-bearing: delete the peer scan and no
+# block matches, so this check fails rather than the cases below quietly going vacuous.
+Check "the unsupported lookup block consults the peer list" ($guardBlocks.Count -gt 0)
+
+# The cases below inject $wmiAmdNames, so they cannot see whether anything FILLS it.
+# Assert the producer separately: the WMI scan must build it from the adapter list it
+# indexed, not from the single chosen adapter.
+$peerAssign = @($installAst.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$wmiAmdNames' -and
+    $n.Right.Extent.Text.Contains('$wmiAdapters')
+}, $true))
+Check "the WMI scan fills the peer list from every adapter" ($peerAssign.Count -eq 1)
+
+Invoke-Expression (Get-AssignmentSource $installPath '$nameArchTable')
+Invoke-Expression (Get-AssignmentSource $installPath '$unsupportedNameArchTable')
+
+# Driven at SCRIPT scope on purpose. Invoke-Expression inside a function would let the
+# block's own `$ROCmUnsupportedGfxArch = $row.A` land in that function's scope, so every
+# "claims nothing" case would pass without the guard existing at all.
+$guardCases = @(
+    # The reporter's host: one RDNA 1 card, nothing else. The verdict must still be reached.
+    @{ N = "lone RX 5700 XT is still named gfx1010"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT"); E = 'gfx1010' }
+    # The mixed host: adapter 0 is the 5700, adapter 1 has wheels. Stay quiet and keep the
+    # arch-unknown arm, which points at the override that really does work there.
+    @{ N = "RX 5700 beside an RX 7900 XTX claims nothing"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 7900 XTX"); E = $null }
+    @{ N = "RX 580 beside an RX 9070 XT claims nothing"
+       L = "AMD Radeon RX 580"; A = @("AMD Radeon RX 580", "AMD Radeon RX 9070 XT"); E = $null }
+    # Two uncovered cards are still an uncovered host.
+    @{ N = "RX 5700 XT beside an RX 580 is still named"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon RX 580"); E = 'gfx1010' }
+    # A peer we cannot map is not a covered peer; it is the unknown the arm already handles.
+    @{ N = "RX 5700 XT beside an unmappable Radeon is still named"
+       L = "AMD Radeon RX 5700 XT"; A = @("AMD Radeon RX 5700 XT", "AMD Radeon Graphics"); E = 'gfx1010' }
+    # The amd-smi paths never enter the WMI scan, so the peer list is empty there.
+    @{ N = "an empty peer list does not suppress the verdict"
+       L = "AMD Radeon RX 5700 XT"; A = @(); E = 'gfx1010' }
+)
+$guardSource = $guardBlocks[0].Extent.Text
+foreach ($case in $guardCases) {
+    $ROCmGfxArch = $null
+    $ROCmUnsupportedGfxArch = $null
+    $ROCmGpuLabel = $case.L
+    $wmiAmdNames = @($case.A)
+    Invoke-Expression $guardSource
+    Check $case.N ($ROCmUnsupportedGfxArch -eq $case.E)
+}
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }

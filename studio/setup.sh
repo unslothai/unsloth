@@ -1815,8 +1815,9 @@ if [ "$_setup_nvidia_usable" != true ]; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
         # missing but the kernel exposes the GPU, so the source-build gate
-        # below does not drop them to a CPU llama.cpp build. No gfx arch is
-        # available from this path; name-based inference handles it.
+        # below does not drop them to a CPU llama.cpp build. Neither a gfx arch
+        # nor a marketing name is available from this path, so the report below
+        # reads lspci rather than _setup_mkt when it needs to name the card.
         _setup_amd_detected=true
     fi
 fi
@@ -1875,18 +1876,46 @@ elif [ "$_setup_amd_detected" = true ]; then
     # selects a wheel index or prebuilt, and must never make an arch installable.
     # Order is load-bearing: `case` has no negative lookahead, so the RDNA 1 arms must
     # precede Polaris or *"RX 570"* would swallow an "RX 5700 XT".
+    # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
+    # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
+    # omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
     _setup_unsupported_gfx_from_name() {
         case "$1" in
             *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
-            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*) echo gfx1010 ;;  # RDNA 1
-            *"RX 5500"*) echo gfx1012 ;;  # RDNA 1
+            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*|*"Radeon Pro W5700"*) echo gfx1010 ;;  # RDNA 1 (Navi 10)
+            *"RX 5500"*|*"RX 5300"*|*"Radeon Pro W5500"*|*"Radeon Pro W5300"*) echo gfx1012 ;;  # RDNA 1 (Navi 14)
             *"RX 470"*|*"RX 480"*|*"RX 570"*|*"RX 580"*|*"RX 590"*) echo gfx803 ;;  # Polaris 10/20/30
             *) return 1 ;;
         esac
     }
+    # The KFD sysfs fallback above detects the GPU with neither rocminfo nor amd-smi, so
+    # it leaves _setup_mkt empty and the lookup would be handed "" -- and a runtime-less
+    # host is precisely the one this report exists for. lspci still names the card there,
+    # the same source install.sh's _infer_linux_unsupported_amd_gfx_arch already reads.
+    # Deliberately NOT written back into _setup_mkt: the supported table above keys on
+    # that variable and would start inferring an arch on the KFD path, which feeds
+    # --rocm-gfx into the prebuilt and whisper commands. This one is messaging only.
+    _setup_unsupported_gfx_any() {
+        if [ -n "$1" ]; then
+            _setup_unsupported_gfx_from_name "$1"
+            return
+        fi
+        command -v lspci >/dev/null 2>&1 || return 1
+        _setup_unsup_pci=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        while IFS= read -r _setup_unsup_ln; do
+            [ -n "$_setup_unsup_ln" ] || continue
+            if _setup_unsup_hit=$(_setup_unsupported_gfx_from_name "$_setup_unsup_ln"); then
+                echo "$_setup_unsup_hit"
+                return 0
+            fi
+        done <<EOF
+$_setup_unsup_pci
+EOF
+        return 1
+    }
     if [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
-    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_from_name "$_setup_mkt"); then
+    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
         step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU

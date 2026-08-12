@@ -1045,10 +1045,13 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # Every pattern that could prefix an RDNA 1 name carries a (?!0) guard, so "RX 570"
 # cannot swallow "RX 5700" nor "RX 550" "RX 5500". First match wins and the RDNA 1
 # rows are first, but each row is written to be correct on its own regardless.
+# Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
+# cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
+# omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
-    (r"RX 5700|RX 5600|Radeon Pro 5600 XT", "gfx1010"),  # RDNA 1
-    (r"RX 5500", "gfx1012"),  # RDNA 1
+    (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro W5700", "gfx1010"),  # RDNA 1 (Navi 10)
+    (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),  # RDNA 1 (Navi 14)
     (r"RX 4[78]0(?!0)|RX 5[789]0(?!0)", "gfx803"),  # Polaris 10/20/30
 ]
 

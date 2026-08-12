@@ -2414,10 +2414,13 @@ if (-not $HasNvidiaSmi) {
     # The (?!0) guards stop "RX 570" swallowing an "RX 5700". Polaris 11/12 (RX
     # 460/550/560) is excluded on purpose: a different die, and this table's value is
     # that it never guesses.
+    # Provenance: LLVM's AMDGPU processor lists, plus libdrm data/amdgpu.ids
+    # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
+    # omits (W5700, W5500, W5300M, RX 5300). No name here is guessed.
     $unsupportedNameArchTable = @(
         @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
-        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT";      A = "gfx1010" }  # RDNA 1
-        @{ P = "RX 5500";                                 A = "gfx1012" }  # RDNA 1
+        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
+        @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300";        A = "gfx1012" }  # RDNA 1 (Navi 14)
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)";          A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
