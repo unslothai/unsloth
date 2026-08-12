@@ -496,6 +496,35 @@ def test_lint_rejects_python_startup_env(tmp_path, key):
     assert key in proc.stderr
 
 
+def test_lint_rejects_expansion_in_the_interpreter_token(tmp_path):
+    """Bash substitutes before the trusted-path test can mean anything."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "run: python3 scripts/lint_workflow_triggers.py",
+            'run: |\n          "/usr/$(printf bin)/python3" '
+            "scripts/lint_workflow_triggers.py",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "does not cover every PR" in proc.stderr
+
+
+def test_lint_rejects_a_containerized_host(tmp_path):
+    """A PR-selected image controls the shell and environment."""
+    (wf := tmp_path / "wf").mkdir()
+    (wf / "host.yml").write_text(
+        _host_workflow().replace(
+            "    runs-on: ubuntu-latest\n",
+            "    runs-on: ubuntu-latest\n    container: alpine:latest\n",
+        )
+    )
+    proc = _run(wf, require_host = True)
+    assert proc.returncode == 1
+    assert "container" in proc.stderr
+
+
 def test_lint_rejects_a_host_job_with_needs(tmp_path):
     """A skipped prerequisite skips the lint job without failing the run."""
     wf = tmp_path / "wf"

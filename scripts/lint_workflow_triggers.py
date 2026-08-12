@@ -109,6 +109,8 @@ def _is_trusted_python(token: str) -> bool:
     A relative `./python3` would resolve inside the checkout, where a PR can
     add an executable of that name.
     """
+    if any(op in token for op in _SHELL_OPERATORS):
+        return False        # a substitution runs before the path is used
     path = PurePosixPath(token)
     if not _PYTHON_BASENAME.fullmatch(path.name):
         return False
@@ -253,6 +255,12 @@ def _lint_steps(yaml_doc) -> list[tuple[dict, dict, bool, list[str]]]:
             enforcing, problems = _lint_step_report(str(step.get("run") or ""))
             if not (enforcing or problems):
                 continue
+            if job.get("container") is not None:
+                enforcing = False
+                problems.append(
+                    "its lint job runs in a 'container:', a PR-selected image "
+                    "that controls the shell and environment"
+                )
             shell = _effective_run_setting(yaml_doc, job, step, "shell")
             if shell is not None and shell not in SAFE_SHELLS:
                 enforcing = False
