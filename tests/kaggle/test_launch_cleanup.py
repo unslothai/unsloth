@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """A killed launcher must not leave a Kaggle kernel billing.
 
 `release()` deletes every kernel the process pushed, and it is the budget
@@ -237,3 +240,130 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
     entries = json.loads(inflight.read_text())
     assert [e["slug"] for e in entries] == ["me/k-9"]
     assert not _deletions(tmp_path), "SIGKILL cannot have run our handler"
+
+
+def _failing_kaggle(bin_dir: Path, record: Path) -> None:
+    """A `kaggle` that records the call and then refuses, like a transient
+    API rejection. `subprocess.run` does not raise on that, so nothing but the
+    return code separates it from a delete that worked."""
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+
+def test_a_delete_kaggle_refuses_is_not_recorded_as_reclaimed(tmp_path, monkeypatch):
+    """A nonzero exit means the kernel may still be running and still
+    billing. Dropping its registry entry would leave nothing to reclaim it."""
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    _failing_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    launch._inflight_write([{"slug": "me/orphan", "pid": dead.pid, "at": 0}])
+
+    assert launch.sweep_orphans() == []
+    assert [e["slug"] for e in launch._inflight_read()] == ["me/orphan"]
+
+
+def test_a_release_kaggle_refuses_is_not_marked_released(tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    _failing_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    launch._inflight_add("me/k-1")
+    result = {"kernels": [{"slug": "me/k-1", "released": False}]}
+
+    class A:
+        keep_kernel = False
+
+    launch.release_kernels(result, A())
+    assert result["kernels"][0]["released"] is False
+    assert [e["slug"] for e in launch._inflight_read()] == ["me/k-1"]
+
+
+def test_a_successful_release_is_still_recorded(tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    _fake_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    launch._inflight_add("me/k-1")
+    result = {"kernels": [{"slug": "me/k-1", "released": False}]}
+
+    class A:
+        keep_kernel = False
+
+    launch.release_kernels(result, A())
+    assert result["kernels"][0]["released"] is True
+    assert launch._inflight_read() == []
+
+
+def test_a_deliberately_kept_kernel_is_not_swept_away_later(tmp_path, monkeypatch):
+    """--keep-kernel left the entry naming a pid that dies with the launcher,
+    so the next invocation called it an orphan and deleted exactly what the
+    flag asked to keep."""
+    monkeypatch.setattr(launch, "INFLIGHT", tmp_path / "inflight.json")
+    _fake_kaggle(tmp_path / "bin", tmp_path / "kaggle_calls.txt")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    launch._inflight_add("me/kept")
+    result = {"kernels": [{"slug": "me/kept", "released": False}]}
+
+    class A:
+        keep_kernel = True
+
+    launch.release_kernels(result, A())
+    assert not _deletions(tmp_path)
+    # The owner is now gone, which is what makes the next sweep interested.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    entries = launch._inflight_read()
+    entries[0]["pid"] = dead.pid
+    launch._inflight_write(entries)
+
+    assert launch.sweep_orphans() == []
+    assert not _deletions(tmp_path)
+    assert [e["slug"] for e in launch._inflight_read()] == ["me/kept"]
+
+
+def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
+    """SIGTERM between the first successful push and the end of the push loop
+    used to find no kernel list at all, and left a running kernel behind."""
+    body = "\n".join(
+        [
+            "",
+            "        launch._api = lambda: object()",
+            "        launch.sweep_orphans = lambda: []",
+            "        calls = []",
+            "        def _push(notebook, user, kernel_timeout_sec, accelerator='NvidiaTeslaT4'):",
+            "            calls.append(notebook)",
+            "            if len(calls) == 1:",
+            "                return {'ok': True, 'slug': 'me/k-1'}",
+            "            print('READY', flush=True)",
+            "            time.sleep(60)",
+            "        launch.push = _push",
+            "        sys.argv = ['launch.py', '--notebook', 'a.ipynb', '--notebook', 'b.ipynb',",
+            f"                    '--user', 'me', '--outdir', {str(tmp_path / 'out')!r}]",
+            "        launch.main()",
+        ]
+    )
+    proc = _runner(tmp_path, body)
+    try:
+        for _ in range(50):
+            if proc.stdout.readline().strip() == "READY":
+                break
+        else:
+            raise AssertionError("the second push never started")
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout = 30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert any(
+        "me/k-1" in c for c in _deletions(tmp_path)
+    ), "the kernel pushed before the signal was left running"

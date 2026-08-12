@@ -198,6 +198,21 @@ def _inflight_drop(slug: str) -> None:
     _inflight_write([e for e in _inflight_read() if e.get("slug") != slug])
 
 
+def _inflight_mark_kept(slug: str) -> None:
+    """Flag a kernel as deliberately retained, so no later sweep reclaims it.
+
+    ``--keep-kernel`` leaves the kernel up on purpose. Its registry entry
+    still names this process, and this process is about to exit, so the next
+    launcher would see a dead owner, call it an orphan and delete the very
+    thing the flag asked to keep.
+    """
+    entries = _inflight_read()
+    for entry in entries:
+        if entry.get("slug") == slug:
+            entry["keep"] = True
+    _inflight_write(entries)
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -225,6 +240,10 @@ def sweep_orphans() -> list[str]:
         slug, pid = entry.get("slug"), entry.get("pid")
         if not slug:
             continue
+        if entry.get("keep"):
+            # --keep-kernel asked for this one to stay up.
+            keep.append(entry)
+            continue
         if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
             keep.append(entry)
             continue
@@ -232,15 +251,24 @@ def sweep_orphans() -> list[str]:
             keep.append(entry)
             continue
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
                 capture_output = True,
                 text = True,
                 timeout = 180,
             )
-            reclaimed.append(slug)
         except Exception:  # noqa: BLE001
             keep.append(entry)  # try again next time rather than forget it
+            continue
+        # A nonzero exit does NOT raise, so the return code is the only thing
+        # that separates "reclaimed" from "Kaggle refused and the kernel is
+        # still running and still billing". Forgetting the entry there is how
+        # one bills to its ceiling unnoticed.
+        if proc.returncode == 0:
+            reclaimed.append(slug)
+        else:
+            _log(f"could not delete orphan {slug} (rc={proc.returncode}); keeping the record")
+            keep.append(entry)
     _inflight_write(keep)
     return reclaimed
 
@@ -517,22 +545,32 @@ def release_kernels(result: dict, args) -> None:
     used-hours figure DOWN.
     """
     if getattr(args, "keep_kernel", False):
+        for entry in result.get("kernels") or []:
+            if entry.get("slug"):
+                _inflight_mark_kept(entry["slug"])
         return
     for entry in result.get("kernels") or []:
         slug = entry.get("slug")
         if not slug or entry.get("released"):
             continue
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 ["kaggle", "kernels", "delete", slug, "-y"],
                 capture_output = True,
                 text = True,
                 timeout = 180,
             )
-            entry["released"] = True
-            _inflight_drop(slug)
         except Exception:  # noqa: BLE001
             _log(f"could not delete {slug}; it may keep billing")
+            continue
+        # `subprocess.run` does not raise on a nonzero exit, so without this
+        # check a refused delete was recorded as released and dropped from the
+        # registry -- leaving a running kernel nothing would ever reclaim.
+        if proc.returncode != 0:
+            _log(f"kaggle refused to delete {slug} (rc={proc.returncode}); it may keep billing")
+            continue
+        entry["released"] = True
+        _inflight_drop(slug)
 
 
 def _install_release_handlers(result: dict, args) -> None:
@@ -646,7 +684,13 @@ def main() -> int:
     # Push everything first. See this file's docstring: waiting between
     # pushes would serialise sessions Kaggle runs happily in parallel, and
     # would put an hour between the control leg and the canary leg.
+    # Published to `result` BEFORE the loop, not after it. The signal handlers
+    # and atexit read `result["kernels"]`, and a SIGTERM between the first
+    # successful push and the end of the loop would otherwise find no list at
+    # all and leave an already-running kernel behind. Same list object, so
+    # every append below is visible to them immediately.
     kernels: list[dict] = []
+    result["kernels"] = kernels
     for notebook in args.notebook:
         _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
         pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
@@ -663,7 +707,6 @@ def main() -> int:
             _log(f"pushed as {pushed['slug']}")
         else:
             _log(f"push failed for {notebook}: {entry['push_error']}")
-    result["kernels"] = kernels
 
     live = [k for k in kernels if k["slug"]]
     if not live:
