@@ -710,6 +710,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # How far each Cursor session has been imported. Deleting a message drops the
+    # only other record of it, so without this a re-import cannot tell a turn the
+    # user removed from one Cursor has since appended, and would write it back.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cursor_import_sessions (
+            session_id TEXT NOT NULL PRIMARY KEY,
+            transcript_updated_at INTEGER NOT NULL,
+            turns_imported INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -4828,5 +4840,45 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def get_cursor_import_mark(session_id: str) -> Optional[dict]:
+    """How far a Cursor session was imported, or None if it never was."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT transcript_updated_at, turns_imported
+            FROM cursor_import_sessions WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "transcriptUpdatedAt": row["transcript_updated_at"],
+            "turnsImported": row["turns_imported"],
+        }
+    finally:
+        conn.close()
+
+
+def record_cursor_import_mark(session_id: str, transcript_updated_at: int, turns: int) -> None:
+    """Record a Cursor session as imported through its first *turns* messages."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO cursor_import_sessions (session_id, transcript_updated_at, turns_imported)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                transcript_updated_at = excluded.transcript_updated_at,
+                turns_imported = MAX(excluded.turns_imported, cursor_import_sessions.turns_imported)
+            """,
+            (session_id, int(transcript_updated_at), int(turns)),
+        )
+        conn.commit()
     finally:
         conn.close()

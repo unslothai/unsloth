@@ -10,9 +10,11 @@ transcripts, and keying on the slug means a second import updates the same rows
 instead of duplicating them.
 
 A re-import is expected -- it is how new conversations arrive -- so anything the
-user has since changed in Studio wins: a renamed chat keeps its name, an
-archived project stays archived, and a chat deleted after an earlier import is
-not resurrected.
+user has since changed in Studio wins. A renamed chat keeps its name, an
+archived project stays archived, a chat moved to Recents or to another project
+stays where it was put, a chat deleted after an earlier import is not
+resurrected, and an edited or deleted message is left as Studio has it: what a
+second import writes is the turns Cursor appended since the first.
 
 Writes go through the storage layer rather than the HTTP API, so the import
 works the same whether or not a server is in front of it.
@@ -31,7 +33,7 @@ from core.cursor_import.discovery import (
     CursorWorkspace,
     list_cursor_workspaces,
 )
-from core.cursor_import.transcripts import read_transcript
+from core.cursor_import.transcripts import CursorTranscript, read_transcript
 from loggers import get_logger
 from storage import studio_db
 
@@ -98,39 +100,88 @@ def _import_transcript(
         summary.skipped += 1
         return False
 
-    # A title, a rename and an archive are the user's to keep: the transcript's
-    # first prompt never changes, so a re-import has nothing better to say than
-    # whatever the chat is already called in Studio.
     existing = studio_db.get_chat_thread(thread_id) or {}
     if dry_run:
         summary.new_chats += 0 if existing else 1
-        summary.messages += len(transcript.messages)
+        summary.messages += len(_messages_to_write(transcript, existing))
         return True
 
     try:
-        studio_db.upsert_chat_thread(
-            {
-                "id": thread_id,
-                "title": existing.get("title") or transcript.title,
-                "modelType": existing.get("modelType") or _IMPORTED_MODEL_TYPE,
-                "modelId": existing.get("modelId") or _IMPORTED_MODEL_ID,
-                "projectId": project_id,
-                "archived": bool(existing.get("archived")),
-                "createdAt": transcript.created_at_ms,
-                "updatedAt": transcript.updated_at_ms,
-            }
-        )
+        studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id = project_id))
     except studio_db.ChatThreadDeletedError:
         # Deleted in Studio after an earlier import. Recreating it would undo a
         # deliberate deletion.
         summary.skipped += 1
         return False
 
-    studio_db.sync_chat_messages(thread_id, transcript.messages, prune_missing = False)
+    pending = _messages_to_write(transcript, existing)
+    if pending:
+        studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
+    studio_db.record_cursor_import_mark(
+        session_id, transcript.updated_at_ms, len(transcript.messages)
+    )
     if not existing:
         summary.new_chats += 1
-    summary.messages += len(transcript.messages)
+    summary.messages += len(pending)
     return True
+
+
+def _thread_row(transcript: CursorTranscript, existing: dict, *, project_id: str) -> dict:
+    """The thread to store, with everything Studio owns carried over.
+
+    ``upsert_chat_thread`` writes every column it is handed and nulls the ones it
+    is not, so an existing row is the base rather than a set of fields to pick
+    from: a chat continued here can hold a code-execution container, a compare
+    pair or a fork origin, none of which the transcript knows about and all of
+    which a re-import would otherwise drop.
+
+    What the transcript decides is therefore only what a first import needs. The
+    title stays as Studio has it, since the opening prompt never changes and the
+    user may have renamed the chat; the project stays as Studio has it too,
+    including ``None`` for a chat moved to Recents; and the time is the later of
+    the two, so continuing a conversation here does not send it back down the
+    sidebar on the next import.
+    """
+    return {
+        **existing,
+        "id": transcript.thread_id,
+        "title": existing.get("title") or transcript.title,
+        "modelType": existing.get("modelType") or _IMPORTED_MODEL_TYPE,
+        "modelId": existing.get("modelId") or _IMPORTED_MODEL_ID,
+        "projectId": existing.get("projectId") if existing else project_id,
+        "archived": bool(existing.get("archived")),
+        "createdAt": existing.get("createdAt") or transcript.created_at_ms,
+        "updatedAt": max(transcript.updated_at_ms, int(existing.get("updatedAt") or 0)),
+    }
+
+
+def _messages_to_write(transcript: CursorTranscript, existing_thread: dict) -> list[dict]:
+    """The turns Cursor has appended since the last import, and only those.
+
+    A turn already imported is left alone. Rewriting it would undo an edit made
+    in Studio, and there is nothing to gain: a session's earlier turns are
+    settled by the time Cursor appends the next one.
+
+    Which turns those are cannot be read off the message rows, since a turn the
+    user deleted here leaves nothing behind to tell it from one never imported.
+    The ledger holds the count instead, so a deleted message stays deleted while
+    genuinely new turns still arrive. It is only trusted while the chat is still
+    in Studio: with the thread gone -- history cleared, or a fresh database -- the
+    session is imported whole again.
+    """
+    if not existing_thread:
+        return list(transcript.messages)
+    mark = studio_db.get_cursor_import_mark(transcript.session_id)
+    if mark is None:
+        # Imported before this ledger existed. Its rows are the only record of
+        # how far it got, and rewriting them would overwrite any edit made
+        # since, so the chat keeps what it has and picks up new turns from here.
+        return []
+    if transcript.updated_at_ms <= mark["transcriptUpdatedAt"]:
+        return []
+    # A transcript is a single chain, so the first message written already
+    # records the one before it as its parent.
+    return transcript.messages[mark["turnsImported"] :]
 
 
 def _import_workspace(
