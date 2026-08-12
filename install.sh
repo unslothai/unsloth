@@ -4343,8 +4343,8 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
-# Prefer a gfx agent because rocminfo lists the CPU first. Keep the first-name fallback for APUs
-# without a gfx token; name-based arch inference uses it. Keep in sync with studio/setup.sh.
+# Emit every gfx agent's marketing name in device order. Keep the first-name fallback for APUs
+# without a gfx token, since name-based arch inference uses it. Keep in sync with studio/setup.sh.
 _rocminfo_gpu_marketing_name() {
     awk -F': ' '
         /^[[:space:]]*Name:/ {
@@ -4354,11 +4354,15 @@ _rocminfo_gpu_marketing_name() {
         /^[[:space:]]*Marketing Name:/ {
             mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
             if (mkt == "") next
-            if (is_gpu) { print mkt; printed = 1; exit }
+            if (is_gpu) { print mkt; printed = 1; next }
             if (first == "") first = mkt
         }
         END { if (!printed && first != "") print first }
     '
+}
+
+_select_visible_gpu_line() {
+    awk -v idx="$1" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }'
 }
 
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
@@ -4368,28 +4372,46 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     # Probe gfx arch for the display label, honouring HIP_VISIBLE_DEVICES
     _ensure_rocm_probe_env
     _gpu_disp_gfx_all=""
-    _gpu_disp_mkt=""
+    _gpu_disp_mkt_all=""
+    _gpu_probe_kind=""
     if command -v rocminfo >/dev/null 2>&1; then
-        _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _gpu_disp_mkt=$(rocminfo 2>/dev/null | _rocminfo_gpu_marketing_name || true)
+        _gpu_probe_kind=rocminfo
+        _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | awk \
+            '$1 == "Name:" && $2 ~ /^gfx[1-9][0-9a-z][0-9a-z][0-9a-z]?$/ { print $2 }' || true)
+        _gpu_disp_mkt_all=$(rocminfo 2>/dev/null | _rocminfo_gpu_marketing_name || true)
     fi
     if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_probe_kind=amd-smi
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_gpu_disp_gfx_all" ] && \
             _gpu_disp_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
-    if [ -z "$_gpu_disp_mkt" ] && command -v amd-smi >/dev/null 2>&1; then
-        _gpu_disp_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    if [ -z "$_gpu_disp_mkt_all" ] && command -v amd-smi >/dev/null 2>&1; then
+        _gpu_disp_mkt_all=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2) print $2}' || true)
     fi
-    _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    _gpu_vis=""
+    _gpu_vis_name=""
+    if [ "${HIP_VISIBLE_DEVICES+x}" = x ]; then
+        _gpu_vis="$HIP_VISIBLE_DEVICES"
+        _gpu_vis_name=HIP_VISIBLE_DEVICES
+    elif [ "${ROCR_VISIBLE_DEVICES+x}" = x ]; then
+        _gpu_vis="$ROCR_VISIBLE_DEVICES"
+        _gpu_vis_name=ROCR_VISIBLE_DEVICES
+    elif [ "${CUDA_VISIBLE_DEVICES+x}" = x ]; then
+        _gpu_vis="$CUDA_VISIBLE_DEVICES"
+        _gpu_vis_name=CUDA_VISIBLE_DEVICES
+    fi
     _gpu_vis_idx=0
     if [ -n "$_gpu_vis" ] && [ "$_gpu_vis" != "-1" ]; then
         _gpu_first="${_gpu_vis%%,*}"
         case "$_gpu_first" in ''|*[!0-9]*) ;; *) _gpu_vis_idx=$_gpu_first ;; esac
     fi
-    _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | awk -v idx="$_gpu_vis_idx" \
-        'NF && !seen[$0]++ { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
+    if [ "$_gpu_probe_kind" = rocminfo ] && [ "$_gpu_vis_name" = ROCR_VISIBLE_DEVICES ]; then
+        _gpu_vis_idx=0
+    fi
+    _gpu_disp_gfx=$(printf '%s\n' "$_gpu_disp_gfx_all" | _select_visible_gpu_line "$_gpu_vis_idx")
+    _gpu_disp_mkt=$(printf '%s\n' "$_gpu_disp_mkt_all" | _select_visible_gpu_line "$_gpu_vis_idx")
     # UNSLOTH_ROCM_GFX_ARCH env override (mirrors install.ps1)
     if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
         _gpu_disp_gfx="${UNSLOTH_ROCM_GFX_ARCH}"

@@ -11,6 +11,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
+import ast
 import glob
 import importlib.util
 import json
@@ -2745,6 +2746,75 @@ def _ensure_cpu_torch() -> None:
     )
 
 
+def _installed_torch_build_metadata() -> tuple[str, str]:
+    """Read the active interpreter's torch version and HIP marker without importing torch."""
+    version_file = Path(sysconfig.get_path("purelib")) / "torch" / "version.py"
+    try:
+        tree = ast.parse(version_file.read_text(encoding = "utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        return "", ""
+
+    values: dict[str, object] = {}
+    for node in tree.body:
+        name = None
+        value = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                name = target.id
+                value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value = node.value
+        if name not in {"__version__", "hip"} or value is None:
+            continue
+        try:
+            values[name] = ast.literal_eval(value)
+        except (ValueError, TypeError):
+            continue
+
+    version = values.get("__version__")
+    hip = values.get("hip")
+    return (
+        version if isinstance(version, str) else "",
+        hip if isinstance(hip, str) else "",
+    )
+
+
+def _rocm_fast_path_needs_repair(*, assume_amd_detected: bool = False) -> bool:
+    """Whether skipping the dependency pass would strand a repairable Linux AMD torch."""
+    if NO_TORCH or not IS_LINUX:
+        return False
+    if platform.machine().lower() not in {"x86_64", "amd64"}:
+        return False
+    if _TORCH_BACKEND in {"cuda", "cpu", "xpu"}:
+        return False
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return False
+
+    rocm_pin = _explicit_rocm_torch_index_url()
+    inferred_gfx = _infer_linux_amd_gfx_arch() if rocm_pin is None else None
+    if rocm_pin is None:
+        if not assume_amd_detected:
+            if _has_usable_nvidia_gpu():
+                return False
+            if not _has_rocm_gpu() and not inferred_gfx:
+                return False
+        if _detect_rocm_version() is None and not inferred_gfx:
+            return False
+
+    installed_version, hip = _installed_torch_build_metadata()
+    if not installed_version and not hip:
+        return False
+    if "+xpu" in installed_version.lower():
+        return False
+
+    is_rocm = bool(hip) or "+rocm" in installed_version.lower()
+    if not is_rocm:
+        return True
+    return bool(rocm_pin and _rocm_pin_family_mismatch(rocm_pin, installed_version))
+
+
 def _ensure_rocm_torch() -> None:
     """Reinstall torch with ROCm wheels when the venv received CPU-only torch.
 
@@ -4730,4 +4800,10 @@ def install_python_stack() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--rocm-fast-path-needs-repair"]:
+        if sys.argv[1:] != ["--rocm-fast-path-needs-repair", "--amd-detected"]:
+            sys.exit(2)
+        # Exit 3 means a successful "no repair" decision. Exit 1 remains available for an
+        # import or startup failure, so setup.sh can distinguish that from a negative result.
+        sys.exit(0 if _rocm_fast_path_needs_repair(assume_amd_detected = True) else 3)
     sys.exit(install_python_stack())

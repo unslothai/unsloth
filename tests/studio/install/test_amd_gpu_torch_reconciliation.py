@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import importlib.util
 import pathlib
 import subprocess
+import sys
 
 import pytest
 
@@ -14,6 +16,13 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_SH = REPO_ROOT / "install.sh"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
+STACK_PATH = REPO_ROOT / "studio" / "install_python_stack.py"
+
+STACK_SPEC = importlib.util.spec_from_file_location("amd_reconciliation_stack", STACK_PATH)
+assert STACK_SPEC is not None and STACK_SPEC.loader is not None
+stack = importlib.util.module_from_spec(STACK_SPEC)
+sys.modules[STACK_SPEC.name] = stack
+STACK_SPEC.loader.exec_module(stack)
 
 # rocminfo lists the CPU before the discrete GPU.
 ROCMINFO_DISCRETE = """\
@@ -39,6 +48,21 @@ Agent 1
   Name:                    AMD Ryzen AI Max+ 395 w/ Radeon 8060S
   Marketing Name:          AMD Ryzen AI Max+ 395 w/ Radeon 8060S
   Device Type:             CPU
+"""
+
+ROCMINFO_MULTI_GPU = """\
+*******
+Agent 1
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+*******
+Agent 2
+*******
+  Name:                    gfx1151
+  Marketing Name:          AMD Radeon 8060S
+  Device Type:             GPU
 """
 
 
@@ -90,101 +114,133 @@ def test_no_rocminfo_output_yields_no_name(tmp_path, script, fn):
     assert _run_marketing_name(tmp_path, script, fn, "") == ""
 
 
-# ── setup.sh: the dependency fast path must repair a non-ROCm wheel on an AMD host ──
+@pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
+def test_multi_gpu_probe_preserves_one_name_per_device(tmp_path, script, fn):
+    assert _run_marketing_name(tmp_path, script, fn, ROCMINFO_MULTI_GPU).splitlines() == [
+        "AMD Radeon RX 7900 XTX",
+        "AMD Radeon 8060S",
+    ]
 
 
-def _extract_amd_escape() -> str:
-    """Extract the ROCm leaf predicate and its fast-path arm."""
-    src = SETUP_SH.read_text(encoding = "utf-8")
-    start = src.find("        _setup_rocm_family_leaf() {")
-    assert start >= 0, "setup.sh lost the AMD escape's ROCm-family predicate"
-    arm = src.find('substep "AMD GPU detected but installed PyTorch is not a ROCm build', start)
-    assert arm > start, "setup.sh lost the AMD dependency-pass escape"
-    end = src.find("\n        fi\n", arm)
-    assert end > arm, "the AMD escape is not fi-terminated at its own indent"
-    return src[start : end + len("\n        fi\n")]
+@pytest.mark.parametrize(
+    "script, fn",
+    [
+        (INSTALL_SH, "_select_visible_gpu_line"),
+        (SETUP_SH, "_setup_select_visible_line"),
+    ],
+    ids = MARKETING_IDS,
+)
+def test_visible_device_index_selects_the_matching_name(tmp_path, script, fn):
+    probe = tmp_path / "select.sh"
+    probe.write_text(_extract_function(script, fn) + f"\nprintf '%s\\n' first second | {fn} 1\n")
+    result = subprocess.run(["bash", str(probe)], capture_output = True, text = True, timeout = 30)
+    assert result.stdout.strip() == "second"
 
 
-def _run_amd_escape(tmp_path, **state) -> str:
-    """Run the escape with the fast path's inputs preset; report the resulting decision."""
+# The dependency fast path delegates to the same Python implementation that performs repair.
+
+
+def _repair_needed(
+    monkeypatch,
+    *,
+    version = "2.11.0+cpu",
+    hip = "",
+    **state,
+):
     defaults = {
-        "_SKIP_PYTHON_DEPS": "true",
-        "_setup_pin_leaf": "",
-        "_setup_pin_ver": "2.11.0+cpu",
-        "_setup_pin_is_xpu": "false",
-        "_setup_nvidia_usable": "false",
-        "_setup_amd_detected": "true",
+        "NO_TORCH": False,
+        "IS_LINUX": True,
+        "_TORCH_BACKEND": "",
+        "machine": "x86_64",
+        "unknown_pin": None,
+        "rocm_pin": None,
+        "nvidia": False,
+        "amd": True,
+        "assume_amd_detected": False,
+        "inferred_gfx": None,
+        "rocm_version": (7, 2),
     }
     defaults.update(state)
-    assigns = "\n".join(f"{k}='{v}'" for k, v in defaults.items())
-    probe = tmp_path / "escape.sh"
-    probe.write_text(
-        "substep() { :; }\n"
-        + assigns
-        + "\n"
-        + _extract_amd_escape()
-        + '\necho "$_SKIP_PYTHON_DEPS"\n'
+    monkeypatch.setattr(stack, "NO_TORCH", defaults["NO_TORCH"])
+    monkeypatch.setattr(stack, "IS_LINUX", defaults["IS_LINUX"])
+    monkeypatch.setattr(stack, "_TORCH_BACKEND", defaults["_TORCH_BACKEND"])
+    monkeypatch.setattr(stack.platform, "machine", lambda: defaults["machine"])
+    monkeypatch.setattr(
+        stack, "_explicit_unknown_family_torch_index_url", lambda: defaults["unknown_pin"]
     )
-    return subprocess.run(
-        ["bash", str(probe)], capture_output = True, text = True, timeout = 30
-    ).stdout.strip()
+    monkeypatch.setattr(stack, "_explicit_rocm_torch_index_url", lambda: defaults["rocm_pin"])
+    monkeypatch.setattr(stack, "_has_usable_nvidia_gpu", lambda: defaults["nvidia"])
+    monkeypatch.setattr(stack, "_has_rocm_gpu", lambda: defaults["amd"])
+    monkeypatch.setattr(stack, "_infer_linux_amd_gfx_arch", lambda: defaults["inferred_gfx"])
+    monkeypatch.setattr(stack, "_detect_rocm_version", lambda: defaults["rocm_version"])
+    monkeypatch.setattr(stack, "_installed_torch_build_metadata", lambda: (version, hip))
+    return stack._rocm_fast_path_needs_repair(assume_amd_detected = defaults["assume_amd_detected"])
+
+
+@pytest.mark.parametrize("version", ["2.11.0+cpu", "2.10.0", "2.10.0+cu128"])
+def test_non_rocm_wheel_on_an_amd_host_forces_the_pass(monkeypatch, version):
+    assert _repair_needed(monkeypatch, version = version)
+
+
+def test_untagged_hip_build_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(monkeypatch, version = "2.11.0", hip = "7.2.0")
 
 
 @pytest.mark.parametrize(
-    "torch_version",
-    ["2.11.0+cpu", "2.10.0", "2.10.0+cu128"],
-    ids = ["cpu-wheel", "pypi-cuda-wheel", "cuda-wheel"],
+    "state",
+    [
+        {"NO_TORCH": True},
+        {"machine": "aarch64"},
+        {"nvidia": True},
+        {"amd": False},
+        {"unknown_pin": "https://mirror/whl/rocm-private"},
+    ],
+    ids = ["no-torch", "aarch64", "nvidia", "no-amd", "custom-pin"],
 )
-def test_non_rocm_wheel_on_an_amd_host_forces_the_pass(tmp_path, torch_version):
-    """#8473 / #7275: only the dependency pass installs ROCm torch, so it has to run."""
-    assert _run_amd_escape(tmp_path, _setup_pin_ver = torch_version) == "false"
+def test_unrepairable_or_user_selected_states_keep_the_fast_path(monkeypatch, state):
+    assert not _repair_needed(monkeypatch, **state)
 
 
-def test_rocm_wheel_keeps_the_fast_path(tmp_path):
-    assert _run_amd_escape(tmp_path, _setup_pin_ver = "2.11.0+rocm7.2.3") == "true"
+def test_unreadable_rocm_without_an_inferred_arch_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(monkeypatch, rocm_version = None)
 
 
-def test_absent_torch_keeps_the_fast_path(tmp_path):
-    """A GGUF-only (no-torch) venv has no wheel to repair and must not pay a pass every update."""
-    assert _run_amd_escape(tmp_path, _setup_pin_ver = "") == "true"
+def test_inferred_arch_allows_repair_without_a_rocm_version(monkeypatch):
+    assert _repair_needed(monkeypatch, rocm_version = None, inferred_gfx = "gfx1151")
 
 
-def test_no_amd_gpu_keeps_the_fast_path(tmp_path):
-    assert _run_amd_escape(tmp_path, _setup_amd_detected = "false") == "true"
+def test_setup_can_reuse_its_amd_vendor_verdict(monkeypatch):
+    """The delegated decision must not repeat NVIDIA or AMD hardware probes."""
+    assert _repair_needed(monkeypatch, assume_amd_detected = True, nvidia = True, amd = False)
 
 
-def test_usable_nvidia_keeps_the_fast_path(tmp_path):
-    """A mixed host classified as NVIDIA takes the CUDA route; this escape must not fire."""
-    assert _run_amd_escape(tmp_path, _setup_nvidia_usable = "true") == "true"
+def test_explicit_rocm_family_mismatch_forces_the_pass(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        version = "2.10.0+rocm6.4",
+        rocm_pin = "https://download.pytorch.org/whl/rocm7.2",
+    )
 
 
-@pytest.mark.parametrize("leaf", ["cpu", "cu128", "xpu"], ids = ["cpu", "cu128", "xpu"])
-def test_explicit_non_rocm_pin_is_respected(tmp_path, leaf):
-    """An index pin is the user's answer for this host, not something to repair."""
-    assert _run_amd_escape(tmp_path, _setup_pin_leaf = leaf) == "true"
+def test_matching_explicit_rocm_family_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.10.0+rocm6.4",
+        rocm_pin = "https://download.pytorch.org/whl/rocm6.4",
+    )
 
 
-@pytest.mark.parametrize(
-    "leaf",
-    ["simple", "rocm-current", "rocm7.2-private", "rocm7.", "rocm7.2.1", "gfx-private"],
-    ids = ["simple", "rocm-current", "rocm-private", "rocm-partial", "rocm-triple", "gfx-private"],
-)
-def test_unknown_family_pin_does_not_loop_the_dependency_pass(tmp_path, leaf):
-    """_ensure_rocm_torch declines a verbatim pin, so forcing the pass would repair nothing."""
-    assert _run_amd_escape(tmp_path, _setup_pin_leaf = leaf) == "true"
-
-
-@pytest.mark.parametrize(
-    "leaf",
-    ["", "rocm7.2", "rocm6", "gfx1201", "gfx120x-all"],
-    ids = ["unpinned", "rocm-dotted", "rocm-major", "gfx", "gfx-suffixed"],
-)
-def test_rocm_pins_still_repair(tmp_path, leaf):
-    assert _run_amd_escape(tmp_path, _setup_pin_leaf = leaf) == "false"
-
-
-def test_xpu_wheel_is_left_to_the_xpu_escapes(tmp_path):
-    assert _run_amd_escape(tmp_path, _setup_pin_is_xpu = "true") == "true"
+def test_active_interpreter_metadata_ignores_a_stale_python_tree(tmp_path, monkeypatch):
+    active = tmp_path / "python3.12" / "site-packages"
+    stale = tmp_path / "python3.10" / "site-packages"
+    (active / "torch").mkdir(parents = True)
+    (stale / "torch").mkdir(parents = True)
+    (active / "torch" / "version.py").write_text(
+        "from typing import Optional\n__version__ = '2.11.0'\nhip: Optional[str] = '7.2.0'\n"
+    )
+    (stale / "torch" / "version.py").write_text("__version__ = '2.10.0+cpu'\n")
+    monkeypatch.setattr(stack.sysconfig, "get_path", lambda _name: str(active))
+    assert stack._installed_torch_build_metadata() == ("2.11.0", "7.2.0")
 
 
 def test_escape_precedes_the_dependency_pass_it_controls():
@@ -199,9 +255,22 @@ def test_escape_precedes_the_dependency_pass_it_controls():
     )
 
 
-def test_escape_reads_the_wheel_not_the_runtime():
-    """Reinstalling cannot fix a driver or permission fault, so the escape must not key on it."""
-    assert "torch.cuda.is_available()" not in _extract_amd_escape()
+def test_fast_path_probe_reads_metadata_without_importing_torch():
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    start = source.index("def _rocm_fast_path_needs_repair(")
+    end = source.index("\ndef _ensure_rocm_torch()", start)
+    assert "import torch" not in source[start:end]
+
+
+def test_shell_bounds_and_diagnoses_the_delegated_probe():
+    source = SETUP_SH.read_text(encoding = "utf-8")
+    start = source.index("            _setup_rocm_repair_rc=3")
+    block = source[start : start + 2500]
+    assert 'timeout 45 "$VENV_DIR/bin/python"' in block
+    assert "--rocm-fast-path-needs-repair --amd-detected" in block
+    assert 'verbose_substep "ROCm reconciliation probe failed' in block
+    stack_source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "else 3" in stack_source
 
 
 # ── setup.sh: the GPU summary must report the runtime answer ──
@@ -221,3 +290,11 @@ def test_summary_probes_torch_and_has_a_warning_arm():
     assert (
         'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block
     ), "a GPU torch cannot use must not be reported as a healthy ROCm install"
+
+
+def test_summary_reports_an_intentional_all_hidden_mask_separately():
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    assert "HIP_VISIBLE_DEVICES+x" in src
+    assert "ROCR_VISIBLE_DEVICES+x" in src
+    assert "CUDA_VISIBLE_DEVICES+x" in src
+    assert 'substep "$_setup_vis_name intentionally hides every AMD device from PyTorch."' in src
