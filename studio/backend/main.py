@@ -766,6 +766,13 @@ async def lifespan(app: FastAPI):
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
 
+    # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
+    # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
+    # warm keeps importing for a stopped lifespan. Retiring twice is harmless; getattr for tests.
+    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
+    if _invalidate_detection is not None:
+        _invalidate_detection()
+
     from core.inference.openai_codex_auth import shutdown_flows
 
     await shutdown_flows()
@@ -774,13 +781,6 @@ async def lifespan(app: FastAPI):
         stop_auto_sync()
     except Exception as exc:
         _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
-
-    # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
-    # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
-    # warm keeps importing for a stopped lifespan. Retiring twice is harmless; getattr for tests.
-    _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
-    if _invalidate_detection is not None:
-        _invalidate_detection()
 
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
