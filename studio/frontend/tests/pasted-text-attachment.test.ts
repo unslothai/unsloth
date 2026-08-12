@@ -13,10 +13,11 @@ import {
   isPastedTextContent,
   isPastedTextFile,
   pasteLongTextAsFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
   pastedTextFileName,
   pastedTextPreview,
   shouldAttachPastedText,
-  unwrapAttachmentText,
 } from "../src/features/chat/utils/pasted-text.ts";
 
 type ClipboardStub = {
@@ -133,26 +134,70 @@ test("pasted text files are recognised by identity", () => {
 });
 
 test("the sent wrapper is what marks a paste after the File is gone", () => {
-  const pasted = attachmentContentText("Deploy log.txt", "body", true);
-  const attached = attachmentContentText("notes.txt", "body", false);
+  const pasted = attachmentContentText("Deploy log.txt", "body", true, 4);
+  const attached = attachmentContentText("notes.txt", "body", false, 4);
 
   assert.equal(
     pasted,
-    "<pasted_text name=Deploy log.txt>\nbody\n</pasted_text>",
+    "<pasted_text name=Deploy log.txt bytes=4>\nbody\n</pasted_text>",
   );
+  // Only the paste is tagged and sized; a real attachment keeps its wrapper.
   assert.equal(attached, "<attachment name=notes.txt>\nbody\n</attachment>");
-  // This is the marker a reloaded message still has, so it decides the chip.
   assert.equal(isPastedTextContent(pasted), true);
   assert.equal(isPastedTextContent(attached), false);
   assert.equal(isPastedTextContent(undefined), false);
   assert.equal(isPastedTextContent("pasted_text elsewhere in the body"), false);
-  // Both wrappers unwrap, and a mismatched pair is left alone.
-  assert.equal(unwrapAttachmentText(pasted), "body");
-  assert.equal(unwrapAttachmentText(attached), "body");
+});
+
+test("the chip size is read off the header, never measured", () => {
+  const pasted = attachmentContentText("Deploy log.txt", "body", true, 12_483);
+  assert.equal(pastedTextContentBytes(pasted), 12_483);
+  // A name that itself looks like the size must not win over the real one.
   assert.equal(
-    unwrapAttachmentText("<attachment name=x.txt>\nbody\n</pasted_text>"),
-    "<attachment name=x.txt>\nbody\n</pasted_text>",
+    pastedTextContentBytes(
+      attachmentContentText("x bytes=5.txt", "body", true, 99),
+    ),
+    99,
   );
+  assert.equal(pastedTextContentBytes(undefined), undefined);
+  assert.equal(
+    pastedTextContentBytes(attachmentContentText("a.txt", "body", true)),
+    undefined,
+  );
+  assert.equal(
+    pastedTextContentBytes(attachmentContentText("a.txt", "body", false, 4)),
+    undefined,
+  );
+});
+
+test("previewing sent content never materialises the body", () => {
+  const body = "line one\nline two";
+  const pasted = attachmentContentText("a.txt", body, true, 17);
+  assert.deepEqual(pastedTextContentPreview(pasted), {
+    text: body,
+    remaining: 0,
+  });
+  assert.deepEqual(
+    pastedTextContentPreview(attachmentContentText("a.txt", body, false)),
+    { text: body, remaining: 0 },
+  );
+
+  const huge = "z".repeat(PASTED_TEXT_PREVIEW_MAX_CHARS + 40);
+  const cut = pastedTextContentPreview(
+    attachmentContentText("a.txt", huge, true, huge.length),
+  );
+  assert.equal(cut.text.length, PASTED_TEXT_PREVIEW_MAX_CHARS);
+  assert.equal(cut.remaining, 40);
+
+  // Unwrapped or truncated content still previews rather than throwing.
+  assert.deepEqual(pastedTextContentPreview("bare text"), {
+    text: "bare text",
+    remaining: 0,
+  });
+  assert.deepEqual(pastedTextContentPreview("<pasted_text name=a.txt>\nbody"), {
+    text: "body",
+    remaining: 0,
+  });
 });
 
 test("the preview is capped, and says how much it is holding back", () => {
@@ -282,10 +327,4 @@ test("native image and file payloads stay on the file paste path", () => {
     pasteLongTextAsFile(richText, () => {}),
     true,
   );
-});
-
-test("previews leave unwrapped text alone", () => {
-  const text = "line one\nline two";
-  assert.equal(unwrapAttachmentText(text), text);
-  assert.equal(unwrapAttachmentText(""), "");
 });

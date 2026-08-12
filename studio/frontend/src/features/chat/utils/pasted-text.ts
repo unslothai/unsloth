@@ -98,20 +98,62 @@ export function isPastedTextFile(file: File | undefined): boolean {
 }
 
 /**
- * Wraps an attachment for the model. A paste gets its own tag, which is also
- * the only marker that survives a reload, since the File does not.
+ * Wraps an attachment for the model. A paste gets its own tag and its size,
+ * the only markers that survive a reload, since the File does not.
  */
 export function attachmentContentText(
   name: string,
   text: string,
   pasted: boolean,
+  bytes?: number,
 ): string {
-  const tag = pasted ? PASTED_TEXT_TAG : "attachment";
-  return `<${tag} name=${name}>\n${text}\n</${tag}>`;
+  if (!pasted) return `<attachment name=${name}>\n${text}\n</attachment>`;
+  const size = bytes === undefined ? "" : ` bytes=${bytes}`;
+  return `<${PASTED_TEXT_TAG} name=${name}${size}>\n${text}\n</${PASTED_TEXT_TAG}>`;
 }
 
 export function isPastedTextContent(text: string | undefined): boolean {
   return text?.startsWith(`<${PASTED_TEXT_TAG} name=`) === true;
+}
+
+// Header only. Sizing a sent paste any other way means walking every byte of
+// it during render, which is what the chip must never do.
+const PASTED_TEXT_BYTES_RE = /^<pasted_text name=[^\n>]* bytes=(\d+)>/;
+const PASTED_TEXT_HEADER_SCAN_CHARS = 1024;
+
+export function pastedTextContentBytes(
+  content: string | undefined,
+): number | undefined {
+  if (content === undefined) return undefined;
+  const bytes = PASTED_TEXT_BYTES_RE.exec(
+    content.slice(0, PASTED_TEXT_HEADER_SCAN_CHARS),
+  )?.[1];
+  return bytes === undefined ? undefined : Number(bytes);
+}
+
+/**
+ * Previews wrapped content without unwrapping it: the body can be megabytes,
+ * and only the opening is ever rendered.
+ */
+export function pastedTextContentPreview(content: string): {
+  text: string;
+  remaining: number;
+} {
+  const headerEnd = content.indexOf("\n");
+  if (headerEnd === -1) return pastedTextPreview(content);
+
+  const start = headerEnd + 1;
+  const closing = `\n</${content.startsWith("<attachment ") ? "attachment" : PASTED_TEXT_TAG}>`;
+  const end = content.endsWith(closing)
+    ? content.length - closing.length
+    : content.length;
+
+  const length = Math.max(end - start, 0);
+  const taken = Math.min(length, PASTED_TEXT_PREVIEW_MAX_CHARS);
+  return {
+    text: content.slice(start, start + taken),
+    remaining: length - taken,
+  };
 }
 
 function clipboardHasFiles(clipboardData: DataTransfer): boolean {
@@ -190,14 +232,6 @@ export function pasteLongTextAsFile(
     onError?.();
   }
   return true;
-}
-
-const ATTACHMENT_WRAPPER_RE =
-  /^<(attachment|pasted_text) name=[^\n>]*>\n([\s\S]*)\n<\/\1>$/;
-
-/** Strips the wrapper TextAttachmentAdapter adds on send, for previews. */
-export function unwrapAttachmentText(text: string): string {
-  return ATTACHMENT_WRAPPER_RE.exec(text)?.[2] ?? text;
 }
 
 /** Renders an opening rather than the whole paste, which can be megabytes. */

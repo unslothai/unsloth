@@ -21,8 +21,9 @@ import {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   isPastedTextContent,
   isPastedTextFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
   pastedTextPreview,
-  unwrapAttachmentText,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { cn } from "@/lib/utils";
@@ -45,7 +46,6 @@ import {
   type PropsWithChildren,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -186,6 +186,7 @@ const AttachmentThumb: FC = () => {
 type PastedTextAttachment = {
   readonly file?: File;
   readonly sentText?: string;
+  readonly sentBytes?: number;
 };
 
 // Long pastes arrive as a synthetic .txt and render as a chip, not a tile.
@@ -203,17 +204,22 @@ const usePastedTextAttachment = (): PastedTextAttachment | null => {
         ? isPastedTextFile(file)
         : isPastedTextContent(sentText);
       if (!pasted) return null;
-      return { file, sentText };
+      return { file, sentText, sentBytes: pastedTextContentBytes(sentText) };
     }),
   );
 };
 
-const readPastedText = async ({
-  file,
-  sentText,
-}: PastedTextAttachment): Promise<string> => {
-  if (file) return await file.text();
-  return unwrapAttachmentText(sentText ?? "");
+/** Only the composer inlines, and there the File is always still around. */
+const readPastedText = async ({ file }: PastedTextAttachment): Promise<string> =>
+  file ? await file.text() : "";
+
+const readPastedTextPreview = async (
+  attachment: PastedTextAttachment,
+): Promise<{ text: string; remaining: number }> => {
+  if (attachment.sentText !== undefined) {
+    return pastedTextContentPreview(attachment.sentText);
+  }
+  return pastedTextPreview(await readPastedText(attachment));
 };
 
 const PastedTextPreviewDialog: FC<
@@ -228,11 +234,11 @@ const PastedTextPreviewDialog: FC<
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    readPastedText(attachment)
-      // Laying out megabytes in one text node locks the page, so show an
-      // opening. The attachment itself still holds everything.
+    // Laying out megabytes in one text node locks the page, so show an
+    // opening. The attachment itself still holds everything.
+    readPastedTextPreview(attachment)
       .then((value) => {
-        if (!cancelled) setPreview(pastedTextPreview(value));
+        if (!cancelled) setPreview(value);
       })
       .catch(() => {
         if (!cancelled) setPreview({ text: "", remaining: 0 });
@@ -275,13 +281,9 @@ const PastedTextAttachmentUI: FC<{
       mountedRef.current = false;
     };
   }, []);
-  // Measured once per mount: sizing a sent paste walks the whole string.
-  const bytes = useMemo(
-    () =>
-      attachment.file?.size ??
-      new Blob([unwrapAttachmentText(attachment.sentText ?? "")]).size,
-    [attachment],
-  );
+  // Read off the header, never measured: the paste can be megabytes and this
+  // runs while the thread is trying to paint.
+  const bytes = attachment.file?.size ?? attachment.sentBytes;
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -338,7 +340,7 @@ const PastedTextAttachmentUI: FC<{
         <span className="truncate text-[11px] text-muted-foreground">
           {/* Hover swaps the size for the action. */}
           <span className={isComposer ? "group-hover:hidden" : undefined}>
-            {formatBytes(bytes)}
+            {bytes === undefined ? "Pasted text" : formatBytes(bytes)}
           </span>
           {isComposer ? (
             <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">

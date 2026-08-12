@@ -328,12 +328,13 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          // A pasted file gets its own tag, the one marker that outlives the
-          // File once the message is stored.
+          // A pasted file gets its own tag and size, the markers that outlive
+          // the File once the message is stored.
           text: attachmentContentText(
             attachment.name,
             text,
             isPastedTextFile(attachment.file),
+            attachment.file.size,
           ),
         },
       ],

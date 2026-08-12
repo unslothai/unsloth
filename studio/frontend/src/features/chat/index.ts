@@ -151,9 +151,10 @@ export {
   isPastedTextContent,
   isPastedTextFile,
   pasteLongTextAsFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
   pastedTextPreview,
   shouldAttachPastedText,
-  unwrapAttachmentText,
 } from "./utils/pasted-text";
 export {
   deleteStoredChatThreads,
