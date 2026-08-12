@@ -125,6 +125,9 @@ export function ChatSearchDialog() {
           />
           <CommandPrimitive.Input
             placeholder="Search chats..."
+            // Controlled: reopening inside the exit animation reuses the mounted tree, so
+            // cmdk would otherwise keep the previous text while the filter state is clear.
+            value={query}
             onValueChange={setQuery}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
