@@ -63,6 +63,7 @@ function writePinned(pinned: string[]): void {
 interface PinnedModelsState {
   pinned: string[];
   togglePinned: (repoId: string, quant?: string) => void;
+  movePinned: (fromKey: string, toKey: string) => void;
 }
 
 export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
@@ -75,6 +76,16 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];
+      writePinned(next);
+      return { pinned: next };
+    }),
+  movePinned: (fromKey, toKey) =>
+    set((state) => {
+      const from = state.pinned.indexOf(fromKey);
+      const to = state.pinned.indexOf(toKey);
+      if (from < 0 || to < 0 || from === to) return state;
+      const next = [...state.pinned];
+      next.splice(to, 0, ...next.splice(from, 1));
       writePinned(next);
       return { pinned: next };
     }),

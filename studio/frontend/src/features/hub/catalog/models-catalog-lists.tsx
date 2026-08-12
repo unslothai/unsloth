@@ -16,7 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Ref } from "react";
 import type { HubFailure } from "@/features/hub/lib/network";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   inventoryRowMatches,
   scoreInventoryRow,
@@ -307,6 +307,10 @@ export function DownloadedList({
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
+  const movePinned = usePinnedModelsStore((s) => s.movePinned);
+  // Ref, not state: dragenter can fire before a dragstart re-render commits.
+  const dragPinKeyRef = useRef<string | null>(null);
+  const [dragPinKey, setDragPinKey] = useState<string | null>(null);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
     const merged: InventoryItem[] = [
@@ -481,15 +485,51 @@ export function DownloadedList({
               paddingBottom: rowHeightPx - cellHeightPx,
             }}
           >
-            {pinnedItems.map((item) => (
-              <div
-                key={`${item.variant}-${item.row.id}`}
-                className="min-w-0"
-                style={{ height: cellHeightPx }}
-              >
-                {renderInventoryRow(item)}
-              </div>
-            ))}
+            {pinnedItems.map((item) => {
+              const itemPinKey = item.row.repoId
+                ? pinKey(item.row.repoId)
+                : null;
+              return (
+                <div
+                  key={`${item.variant}-${item.row.id}`}
+                  className="min-w-0"
+                  style={{
+                    height: cellHeightPx,
+                    opacity:
+                      dragPinKey && dragPinKey === itemPinKey ? 0.4 : undefined,
+                  }}
+                  draggable={itemPinKey != null}
+                  onDragStart={(event) => {
+                    if (!itemPinKey) return;
+                    event.dataTransfer.effectAllowed = "move";
+                    // Firefox will not start a drag without data.
+                    event.dataTransfer.setData("text/plain", itemPinKey);
+                    dragPinKeyRef.current = itemPinKey;
+                    setDragPinKey(itemPinKey);
+                  }}
+                  onDragEnd={() => {
+                    dragPinKeyRef.current = null;
+                    setDragPinKey(null);
+                  }}
+                  onDragOver={(event) => {
+                    if (dragPinKeyRef.current) event.preventDefault();
+                  }}
+                  onDragEnter={() => {
+                    const dragKey = dragPinKeyRef.current;
+                    if (dragKey && itemPinKey && dragKey !== itemPinKey) {
+                      movePinned(dragKey, itemPinKey);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    dragPinKeyRef.current = null;
+                    setDragPinKey(null);
+                  }}
+                >
+                  {renderInventoryRow(item)}
+                </div>
+              );
+            })}
           </div>
           {unpinnedItems.length > 0 && (
             <div className="px-1 pb-2 pt-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">
