@@ -153,6 +153,11 @@ pub async fn check_install_status() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
+    if let Err(error) = process::apply_managed_cli_context_tokio(&mut cmd) {
+        warn!("Install check: no usable working directory: {}", error);
+        return false;
+    }
+
     #[cfg(windows)]
     {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);

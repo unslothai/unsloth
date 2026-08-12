@@ -7,6 +7,7 @@ download, then roll back), and the CLI guard must name the folder and how to get
 
 from __future__ import annotations
 
+import importlib.util
 import ntpath
 import os
 import re
@@ -20,6 +21,18 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 CLI_INIT = REPO_ROOT / "unsloth_cli" / "__init__.py"
+
+
+def _load_guard_module():
+    """Load the guard by path: importing the package would drag in typer and every command."""
+    path = REPO_ROOT / "unsloth_cli" / "_system_dir_guard.py"
+    spec = importlib.util.spec_from_file_location("unsloth_cli_system_dir_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_system_dir_guard = _load_guard_module()
 
 
 # ── install.ps1: relocate before doing any work ──
@@ -306,9 +319,65 @@ def test_relocation_block_fails_fast_when_every_candidate_is_a_system_directory(
 # ── unsloth_cli: the message the user actually reads ──
 
 
-class _FakeExit(Exception):
-    def __init__(self, code: int = 0):
-        self.code = code
+def _guard_outcome(
+    cwd: str | None,
+    argv: list[str] | None = None,
+    userprofile: str = r"C:\Users\me",
+    public: str | None = None,
+    environ_extra: dict[str, str] | None = None,
+    chdir_error: OSError | None = None,
+    getcwd_error: OSError | None = None,
+    makedirs_error: OSError | None = None,
+) -> tuple[str | None, str | None, list[str]]:
+    """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
+    environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile}
+    if public is not None:
+        environ["PUBLIC"] = public
+    if environ_extra:
+        environ.update(environ_extra)
+
+    # ntpath for the path semantics, with expanduser pinned: the real one reads the host's
+    # HOME, and on Windows "~" is USERPROFILE, SYSTEM's included.
+    fake_path = types.SimpleNamespace(
+        normcase = ntpath.normcase,
+        normpath = ntpath.normpath,
+        join = ntpath.join,
+        isabs = ntpath.isabs,
+        expanduser = lambda _p: userprofile,
+    )
+
+    chdir_calls: list[str] = []
+    # The guard re-reads the directory after moving, so the fake has to move too.
+    current = {"cwd": cwd}
+
+    def _chdir(target):
+        chdir_calls.append(target)
+        if chdir_error is not None:
+            raise chdir_error
+        current["cwd"] = target
+
+    def _getcwd():
+        if getcwd_error is not None:
+            raise getcwd_error
+        return current["cwd"]
+
+    def _makedirs(target, exist_ok = False):
+        if makedirs_error is not None:
+            raise makedirs_error
+
+    message, colour, fatal = _system_dir_guard.check_working_directory(
+        (argv or ["unsloth", "studio", "setup"])[1:],
+        environ,
+        "win32",
+        getcwd = _getcwd,
+        chdir = _chdir,
+        pathmod = fake_path,
+        sep = "\\",
+        expanduser = lambda _p: userprofile,
+        makedirs = _makedirs,
+    )
+    assert fatal == (colour == "red"), "only a red message may stop the command"
+    return message, colour, chdir_calls
 
 
 def _run_cli_guard(
@@ -317,49 +386,9 @@ def _run_cli_guard(
     userprofile: str = r"C:\Users\me",
     public: str | None = None,
 ) -> tuple[str | None, int | None]:
-    """Exec the CLI's win32 guard block with ntpath semantics; returns (message, exit code)."""
-    src = CLI_INIT.read_text(encoding = "utf-8")
-    start = src.index('    if (\n        _sys.platform == "win32"\n    ):')
-    end = src.index("\n\n", src.index("raise typer.Exit(code = 1)", start))
-    block = "\n".join(
-        line[4:] if line.startswith("    ") else line for line in src[start:end].split("\n")
-    )
-
-    captured: dict[str, object] = {}
-
-    def _secho(
-        message,
-        fg = None,
-        err = False,
-    ):
-        captured["message"] = message
-
-    environ = {"WINDIR": r"C:\Windows", "USERPROFILE": userprofile}
-    if public is not None:
-        environ["PUBLIC"] = public
-    fake_typer = types.SimpleNamespace(secho = _secho, Exit = _FakeExit)
-    # ntpath for the path semantics, with expanduser pinned: the real one reads the host's
-    # HOME, and on Windows "~" is USERPROFILE, SYSTEM's included.
-    fake_path = types.SimpleNamespace(
-        normcase = ntpath.normcase,
-        normpath = ntpath.normpath,
-        join = ntpath.join,
-        expanduser = lambda _p: userprofile,
-    )
-    fake_os = types.SimpleNamespace(
-        path = fake_path,
-        sep = "\\",
-        getcwd = lambda: cwd,
-        environ = environ,
-    )
-    fake_sys = types.SimpleNamespace(platform = "win32", argv = argv or ["unsloth", "studio", "setup"])
-
-    namespace = {"_os": fake_os, "_sys": fake_sys, "typer": fake_typer}
-    try:
-        exec(compile(block, "cli_guard", "exec"), namespace)
-    except _FakeExit as exit_signal:
-        return captured.get("message"), exit_signal.code
-    return captured.get("message"), None
+    """(message, exit code) for a hand-typed command, which is never relocated."""
+    message, colour, _ = _guard_outcome(cwd, argv, userprofile, public)
+    return message, 1 if colour == "red" else None
 
 
 @pytest.mark.parametrize(
@@ -471,3 +500,248 @@ def test_cli_guard_message_repeats_the_actual_command():
     assert (
         'unsloth train --model "my model"' in message
     ), "the retry line must reproduce the invoked command, re-quoting arguments with spaces"
+
+
+# ── "Run Unsloth at login" (issue #8510): the desktop cannot choose its own cwd ──
+#
+# Windows registers login startup as an HKCU Run value, which carries no working
+# directory, so Unsloth Desktop and every CLI child it spawns start in System32.
+# The commands it runs take no path from the user, so they move out of the folder
+# instead of refusing and leaving the user with a tray icon and no server.
+
+_RELOCATED = r"C:\Users\me\.unsloth"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["unsloth", "studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"],
+        ["unsloth", "studio", "--api-only"],
+        ["unsloth", "studio", "provision-desktop-auth"],
+        ["unsloth", "studio", "desktop-capabilities", "--json"],
+        # The command that upgrades a desktop too old to set the marker; without
+        # it such a user gets a working backend and no way to update from the tray.
+        ["unsloth", "studio", "update"],
+        ["unsloth", "studio", "--help"],
+    ],
+)
+def test_cli_guard_relocates_a_desktop_managed_command(argv: list[str]):
+    message, colour, chdir_calls = _guard_outcome(r"C:\Windows\System32", argv = argv)
+    assert colour == "yellow", f"{argv} must continue, not exit"
+    assert chdir_calls == [_RELOCATED]
+    assert message is not None and _RELOCATED in message
+
+
+def test_cli_guard_lands_where_the_desktop_puts_its_children():
+    """studio/src-tauri/src/process.rs pins ~/.unsloth; both halves must agree, or the
+    cwd-relative ./models scan finds different folders depending on which half ran."""
+    _, _, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32", argv = ["unsloth", "studio", "--api-only"]
+    )
+    assert chdir_calls == [_RELOCATED]
+
+
+def test_cli_guard_relocates_when_the_desktop_marks_the_child():
+    """Newer desktop builds set the marker; the argv rules above cover older ones."""
+    message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "run", "some-model"],
+        environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
+    )
+    assert colour == "yellow"
+    assert chdir_calls == [_RELOCATED]
+    assert message is not None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["unsloth", "train", "--dataset", "data.json"],
+        ["unsloth", "export", "--output", "out"],
+        ["unsloth", "studio", "setup"],
+        ["unsloth", "start", "claude"],
+        # `studio run` declares its own --api-only and takes user paths, so it
+        # must not be mistaken for the desktop's backend launch.
+        ["unsloth", "studio", "run", "--model", "./local.gguf", "--api-only"],
+        ["unsloth", "studio", "run", "--api-only"],
+        # The top-level alias for `studio run`, same reasoning.
+        ["unsloth", "run", "--api-only"],
+    ],
+)
+def test_cli_guard_still_refuses_commands_that_take_relative_paths(argv: list[str]):
+    """Relocating these would silently resolve the user's own relative paths elsewhere."""
+    message, colour, chdir_calls = _guard_outcome(r"C:\Windows\System32", argv = argv)
+    assert colour == "red"
+    assert chdir_calls == [], "a user command must never be moved out from under its paths"
+    assert message is not None
+
+
+def test_cli_guard_marker_must_be_exactly_one():
+    _, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "train"],
+        environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "yes"},
+    )
+    assert colour == "red", "only the value the desktop sets authorises a move"
+
+
+def test_cli_guard_fails_closed_when_the_chdir_fails():
+    message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        chdir_error = PermissionError("denied"),
+    )
+    assert colour == "red", "a failed move must not continue in the system folder"
+    assert chdir_calls == [_RELOCATED]
+    assert message is not None
+
+
+def test_cli_guard_fails_closed_when_the_work_dir_cannot_be_created():
+    """Studio has to write under the home anyway, and the Rust half stops here too."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        makedirs_error = PermissionError("denied"),
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+
+
+def test_cli_guard_never_relocates_into_the_public_profile():
+    """A SYSTEM or service profile must not send one account's caches, scans and
+    outputs into a folder every other account on the machine can write."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        userprofile = r"C:\Windows\System32\config\systemprofile",
+        public = r"C:\Users\Public",
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+
+
+def test_cli_guard_still_suggests_the_public_profile_to_a_person():
+    """It is a fine folder to type by hand, just not one to be moved into silently."""
+    message, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "train"],
+        userprofile = r"C:\Windows\System32\config\systemprofile",
+        public = r"C:\Users\Public",
+    )
+    assert colour == "red"
+    assert message is not None
+    assert _cd_line(message, "PowerShell") == "cd 'C:\\Users\\Public'"
+
+
+@pytest.mark.parametrize("home", [".", r"..\Users\me", r"C:Users\me"])
+def test_cli_guard_rejects_a_home_that_is_not_rooted(home: str):
+    """A relative home resolves against the folder being escaped."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        userprofile = home,
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+
+
+def test_cli_guard_sees_through_an_extended_length_path():
+    r"""\\?\C:\Windows\System32 is the same folder spelled the long way."""
+    _, colour, _ = _guard_outcome(
+        r"\\?\C:\Windows\System32", argv = ["unsloth", "train"]
+    )
+    assert colour == "red"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # A relative repo path here is resolved against the working directory.
+        ["unsloth", "studio", "update", "--local", "./repo"],
+        ["unsloth", "studio", "desktop-capabilities", "--out", "./x"],
+    ],
+)
+def test_cli_guard_only_relocates_the_exact_desktop_argv(argv: list[str]):
+    _, colour, chdir_calls = _guard_outcome(r"C:\Windows\System32", argv = argv)
+    assert colour == "red"
+    assert chdir_calls == []
+
+
+def test_cli_guard_marker_does_not_cover_path_taking_commands():
+    """The marker is inherited by everything the backend spawns, so it authorises
+    the studio commands the desktop runs and nothing else."""
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "train", "--dataset", ".\\data.json"],
+        environ_extra = {"UNSLOTH_DESKTOP_MANAGED": "1"},
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+
+
+def test_cli_guard_fails_closed_when_every_home_is_a_system_directory():
+    message, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        userprofile = r"C:\Windows\System32\config\systemprofile",
+        public = r"C:\Windows\Temp",
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+    assert message is not None
+    # This one is read in the desktop's logs, not a terminal, so it must not tell
+    # the reader to cd somewhere or claim they used "Run as administrator".
+    assert "Run as administrator" not in message
+
+
+def test_cli_guard_reports_a_deleted_working_directory_for_what_it_is():
+    """getcwd() itself raises if the launch directory was removed; that used to be an
+    uncaught traceback, and it must not be described as a Windows system folder."""
+    message, colour, chdir_calls = _guard_outcome(
+        None,
+        argv = ["unsloth", "studio", "--api-only"],
+        getcwd_error = FileNotFoundError("gone"),
+    )
+    assert colour == "red"
+    assert chdir_calls == []
+    assert message is not None
+    assert "cannot determine its current folder" in message
+    assert r"C:\Windows" not in message, "the user was never in a Windows folder"
+
+
+def test_cli_guard_prefers_system_root_over_a_user_settable_windir():
+    """WINDIR can be shadowed from HKCU\\Environment; SystemRoot cannot."""
+    _, colour, _ = _guard_outcome(
+        r"D:\Windows\System32",
+        argv = ["unsloth", "train"],
+        environ_extra = {"SystemRoot": r"D:\Windows", "WINDIR": r"C:\Users\me"},
+    )
+    assert colour == "red", "the real Windows folder must still be caught"
+
+
+def test_cli_guard_does_nothing_off_windows():
+    outcome = _system_dir_guard.check_working_directory(
+        ["studio", "--api-only"],
+        {"WINDIR": r"C:\Windows"},
+        "linux",
+        getcwd = lambda: r"C:\Windows\System32",
+        chdir = lambda _target: pytest.fail("must not move on non-Windows platforms"),
+    )
+    assert outcome == (None, None, False)
+
+
+def test_cli_guard_runs_before_the_command_modules_are_imported():
+    """unsloth_cli.commands.studio resolves STUDIO_HOME at import time, so a chdir in
+    the callback would come too late for a relative UNSLOTH_STUDIO_HOME."""
+    source = CLI_INIT.read_text(encoding = "utf-8")
+    guard_call = source.index("_check_working_directory(_sys.argv[1:]")
+    first_command_import = source.index("from unsloth_cli.commands.")
+    assert guard_call < first_command_import
+    assert source.index("import typer") > guard_call
+
+
+def test_cli_callback_exits_only_on_a_fatal_outcome():
+    """The callback must key the exit on the guard's own fatal flag, not on the colour."""
+    source = CLI_INIT.read_text(encoding = "utf-8")
+    assert "_message, _colour, _fatal = _guard" in source
+    assert "if _fatal:\n        raise typer.Exit(code = 1)" in source

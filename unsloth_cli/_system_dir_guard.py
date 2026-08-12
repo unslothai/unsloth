@@ -1,0 +1,346 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Windows system-folder guard for the `unsloth` console script.
+
+Running from C:\\Windows\\System32 breaks Unsloth: the folder is unwritable for a
+normal user, and cwd-relative paths (the default `./models` scan, an output dir,
+`unsloth_compiled_cache`) would resolve inside the Windows tree.
+
+Two ways in are common. A user opens a terminal with "Run as administrator",
+which starts there. And "Run Unsloth at login" starts Unsloth Desktop from an
+HKCU Run registry value, which cannot carry a working directory, so the desktop
+and every CLI child it spawns inherit System32 (issue #8510).
+
+The first case is a real mistake and still stops with an actionable error. The
+second is not: the desktop's own commands take no paths from the user, so they
+move to ~/.unsloth (the directory the desktop itself pins for its children) and
+carry on rather than leaving the user with a tray icon and no server.
+
+Import-time work here is deliberately limited to `os`: `unsloth_cli/__init__.py`
+runs this before it imports any command module, because several of those resolve
+STUDIO_HOME against the working directory at import time.
+"""
+
+import os as _os
+
+# Set by Unsloth Desktop on every CLI child it owns
+# (studio/src-tauri/src/process.rs, apply_managed_cli_context). Forging it grants
+# nothing: anyone who can set a child's environment can already set its working
+# directory, and the move only ever lands inside the caller's own account.
+DESKTOP_MANAGED_ENV = "UNSLOTH_DESKTOP_MANAGED"
+
+# Same directory studio/src-tauri/src/process.rs pins, so a desktop that predates
+# that fix ends up where a current one would have put it.
+WORK_DIR_NAME = ".unsloth"
+
+
+def windows_root(environ):
+    """Where Windows is installed, for messages.
+
+    SystemRoot first: WINDIR is an ordinary user-settable variable, while
+    SystemRoot comes from the system. install.ps1 reads SystemRoot too.
+    """
+    return windows_roots(environ)[0]
+
+
+def windows_roots(environ):
+    """Every plausible Windows directory, checked together.
+
+    Reading one variable means whichever is read first can be shadowed to point
+    the guard somewhere harmless; checking all of them costs nothing.
+    """
+    roots = []
+    for value in (environ.get("SystemRoot"), environ.get("WINDIR"), r"C:\Windows"):
+        if value and value not in roots:
+            roots.append(value)
+    return roots
+
+
+def _strip_extended_prefix(path):
+    r"""Drop the \\?\ (and \\?\UNC\) form so it compares like an ordinary path."""
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _normalize(path, pathmod):
+    return pathmod.normcase(pathmod.normpath(_strip_extended_prefix(path)))
+
+
+def system_dirs(windir, pathmod = _os.path):
+    """The Windows folders Unsloth refuses to run from."""
+    # SysWOW64 too: a 32-bit elevated shell opens there, same unwritable folder.
+    return [
+        _normalize(pathmod.join(windir, name), pathmod)
+        for name in ("System32", "SysWOW64")
+    ]
+
+
+def is_system_dir(cwd, windir, pathmod = _os.path, sep = _os.sep):
+    """True for a system folder itself or anything under it.
+
+    `windir` may be a single directory or several candidates. The separator keeps
+    the match on a path boundary, so C:\\Windows2\\System32x is an ordinary folder.
+    """
+    if not cwd:
+        return False
+    roots = [windir] if isinstance(windir, str) else list(windir)
+    normalized = _normalize(cwd, pathmod)
+    return any(
+        normalized == directory or normalized.startswith(directory + sep)
+        for root in roots
+        for directory in system_dirs(root, pathmod)
+    )
+
+
+def _is_rooted(path, pathmod):
+    """Absolute, or at least rooted at a drive.
+
+    "." and "C:sub" are resolved against the folder being escaped, so they are no
+    escape at all. A leading separator is drive-relative rather than absolute, but
+    it can never resolve back inside System32.
+    """
+    stripped = _strip_extended_prefix(path)
+    return pathmod.isabs(stripped) or stripped.startswith(("\\", "/"))
+
+
+def _outside_windows(candidate, windirs, pathmod, sep):
+    if not candidate or not _is_rooted(candidate, pathmod):
+        return False
+    norm = _normalize(candidate, pathmod)
+    for windir in windirs:
+        windir_norm = _normalize(windir, pathmod)
+        if norm == windir_norm or norm.startswith(windir_norm + sep):
+            return False
+    return True
+
+
+def safe_user_dir(
+    environ,
+    windir,
+    pathmod = _os.path,
+    sep = _os.sep,
+    expanduser = None,
+    allow_public = False,
+):
+    """First home outside the Windows tree, or None.
+
+    SYSTEM's USERPROFILE is C:\\Windows\\System32\\config\\systemprofile, so a
+    naive pick would send the caller straight back into the rejected folder.
+
+    %PUBLIC% is only offered as a suggestion a human can type. Moving there
+    automatically would put one account's caches, scans and outputs in a folder
+    every other account on the machine can read and write.
+    """
+    if expanduser is None:
+        expanduser = pathmod.expanduser
+    windirs = [windir] if isinstance(windir, str) else list(windir)
+    candidates = [environ.get("USERPROFILE")]
+    if allow_public:
+        candidates.append(environ.get("PUBLIC"))
+    candidates.append(expanduser("~"))
+    for candidate in candidates:
+        if _outside_windows(candidate, windirs, pathmod, sep):
+            return candidate
+    return None
+
+
+# Commands the desktop runs that take no path from a user: Studio resolves its
+# venv, llama.cpp, auth, pid files and logs from UNSLOTH_STUDIO_HOME /
+# ~/.unsloth/studio. `update` is here so a user whose desktop build predates the
+# Rust-side fix can still upgrade out of the situation from the tray.
+#
+# Everything else keeps the hard error. `studio run` in particular declares its
+# own --api-only and takes --model ./x plus a raw llama-server tail, so a silent
+# move would rebase paths the user typed.
+#
+# Matched whole, not on the first word: `studio update --local <path>` resolves
+# that path against the working directory, so only the exact argument vectors the
+# desktop itself issues qualify.
+_STUDIO_COMMANDS = (
+    ("provision-desktop-auth",),
+    ("desktop-capabilities",),
+    ("desktop-capabilities", "--json"),
+    ("update",),
+)
+_HELP_FLAGS = ("-h", "--help", "--version", "-V")
+_API_ONLY_FLAGS = ("--api-only", "-H", "--host", "-p", "--port")
+
+
+def _is_desktop_backend_launch(rest):
+    """`studio --api-only -H 127.0.0.1 -p 8888` and nothing else.
+
+    Matching --api-only anywhere would also match `studio run --model ./m.gguf
+    --api-only`, which is a user command with user paths.
+    """
+    if "--api-only" not in rest:
+        return False
+    expects_value = False
+    for arg in rest:
+        if expects_value:
+            expects_value = False
+            continue
+        if arg not in _API_ONLY_FLAGS:
+            return False
+        expects_value = arg != "--api-only"
+    return True
+
+
+def is_relocatable_invocation(argv, environ):
+    """True when this invocation is desktop-managed or provably cwd-independent.
+
+    The argv arm matters on its own: it fixes users whose installed desktop build
+    predates the Rust-side working-directory fix and so sets no marker.
+    """
+    args = [arg for arg in argv if arg]
+    if not args:
+        return False
+    # Click handles top-level -h/--help/--version eagerly, before the callback
+    # this runs from, so that case never actually arrives here. `studio --help`
+    # does, and printing help is worth as little as it costs.
+    if all(arg in _HELP_FLAGS for arg in args):
+        return True
+    if args[0] != "studio":
+        # The marker is inherited by everything the desktop's backend goes on to
+        # spawn, so it authorises the studio commands the desktop actually runs
+        # and nothing else. Rebasing `train --dataset .\data.json` under a stray
+        # marker would be worse than the refusal it replaced.
+        return False
+    if environ.get(DESKTOP_MANAGED_ENV) == "1":
+        return True
+    rest = args[1:]
+    if rest and all(arg in _HELP_FLAGS for arg in rest):
+        return True
+    if _is_desktop_backend_launch(rest):
+        return True
+    return tuple(rest) in _STUDIO_COMMANDS
+
+
+def relocation_target(
+    environ,
+    windir,
+    pathmod = _os.path,
+    sep = _os.sep,
+    expanduser = None,
+    makedirs = _os.makedirs,
+):
+    """Where a desktop-managed command should run instead, or None."""
+    home = safe_user_dir(environ, windir, pathmod, sep, expanduser)
+    if not home:
+        return None
+    work_dir = pathmod.join(home, WORK_DIR_NAME)
+    try:
+        makedirs(work_dir, exist_ok = True)
+    except OSError:
+        # A home this process cannot write to is a broken profile, and Studio
+        # needs to write there anyway. Stop, as the Rust half does, rather than
+        # starting somewhere that will fail later and less clearly.
+        return None
+    return work_dir
+
+
+def blocked_message(cwd, argv, environ, windir, pathmod = _os.path, sep = _os.sep, expanduser = None):
+    """The error shown to someone who ran Unsloth from a system folder by hand."""
+    # allow_public here only: a person can sensibly `cd C:\Users\Public`, but
+    # relocating there automatically would share one account's state with every
+    # other account on the machine.
+    home = safe_user_dir(environ, windir, pathmod, sep, expanduser, allow_public = True)
+    if home:
+        # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments.
+        # PowerShell single quotes are verbatim ('' escapes an apostrophe); cmd
+        # needs double quotes once extensions are off. " is not legal in a path.
+        home_ps = "'" + home.replace("'", "''") + "'"
+        home_cmd = '"' + home + '"'
+        cd_lines = (
+            f"    cd {home_ps}          (PowerShell)\n"
+            f"    cd /d {home_cmd}       (cmd.exe)\n"
+        )
+    else:
+        cd_lines = f"    (any folder outside {windir if isinstance(windir, str) else windir[0]})\n"
+    rendered_argv = " ".join((f'"{arg}"' if " " in arg else arg) for arg in argv)
+    retry = ("unsloth " + rendered_argv).rstrip()
+    return (
+        f"Unsloth cannot run from {cwd}\n"
+        "\n"
+        "That is a Windows system folder. Windows blocks writes here, and any\n"
+        "relative path you pass would resolve inside the Windows folder.\n"
+        "Opening a terminal with 'Run as administrator' starts you in a folder like\n"
+        "this one, which is how most people end up here.\n"
+        "\n"
+        "Change to a normal folder and run the command again:\n"
+        f"{cd_lines}"
+        f"    {retry}"
+    )
+
+
+def check_working_directory(
+    argv,
+    environ,
+    platform,
+    getcwd = _os.getcwd,
+    chdir = _os.chdir,
+    pathmod = _os.path,
+    sep = _os.sep,
+    expanduser = None,
+    makedirs = _os.makedirs,
+):
+    """Decide what to do about the current working directory.
+
+    Returns (message, colour, fatal). `fatal` is the caller's cue to exit 1;
+    a message with fatal False is a warning printed after a successful move.
+    """
+    if platform != "win32":
+        return None, None, False
+
+    windirs = windows_roots(environ)
+    windir = windirs[0]
+    try:
+        cwd = getcwd()
+    except OSError:
+        # The launch directory was deleted or its drive went away. There is
+        # nothing to compare and nothing to go back to, so say that plainly
+        # rather than naming a Windows folder the user was never in.
+        return (
+            "Unsloth cannot determine its current folder. It may have been deleted,\n"
+            "or it may be on a drive that is no longer available.\n"
+            "Change to a folder that exists and run the command again."
+        ), "red", True
+
+    if not is_system_dir(cwd, windirs, pathmod, sep):
+        return None, None, False
+
+    if not is_relocatable_invocation(argv, environ):
+        return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
+
+    target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs)
+    if target is not None:
+        try:
+            chdir(target)
+        except OSError:
+            target = None
+        else:
+            # Confirm the move landed outside the Windows tree instead of
+            # trusting chdir not to have raised.
+            try:
+                if is_system_dir(getcwd(), windirs, pathmod, sep):
+                    target = None
+            except OSError:
+                target = None
+    if target is None:
+        # Fail closed: no usable folder outside the Windows tree, so continuing
+        # would break later and less clearly than stopping here does. This text
+        # reaches the desktop's own logs, so it describes that case, not a shell.
+        return (
+            f"Unsloth cannot run from {cwd}, and no folder outside {windir} was\n"
+            "available to run from instead. Check that the user profile for this\n"
+            "account exists and is writable."
+        ), "red", True
+
+    return (
+        f"Unsloth was started from {cwd}, which is a Windows system folder,\n"
+        f"so it switched to {target} instead.\n"
+        "This happens when Unsloth Desktop is started by 'Run Unsloth at login'."
+    ), "yellow", False

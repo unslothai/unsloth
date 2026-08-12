@@ -936,6 +936,138 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     find_unsloth_binary_in_studio_dir(&studio)
 }
 
+/// Marker the desktop sets on every CLI child it owns. The Python CLI reads it to
+/// tell a desktop-managed launch from a user typing the same command in a shell.
+pub(crate) const DESKTOP_MANAGED_ENV: &str = "UNSLOTH_DESKTOP_MANAGED";
+
+/// Windows registers "run at login" as an HKCU Run value, which cannot carry a
+/// working directory, so the app starts in C:\Windows\system32 and every child
+/// inherits it. The Python CLI refuses to run from there, which is why a login
+/// start produced a tray icon and no backend. Pick the directory explicitly
+/// rather than passing on whatever the launcher happened to give us.
+pub(crate) fn managed_cli_working_dir_from(
+    home: Option<std::path::PathBuf>,
+    windirs: &[std::path::PathBuf],
+) -> Result<std::path::PathBuf, String> {
+    let home = home.ok_or_else(|| "Could not determine the home directory".to_string())?;
+
+    // A service or SYSTEM account reports a home under the Windows tree
+    // (C:\Windows\System32\config\systemprofile); handing that to the child
+    // walks straight back into the folder the CLI rejects.
+    if is_inside_windows_dir(&home, windirs) {
+        return Err(format!(
+            "Home directory {} is inside the Windows directory",
+            home.display()
+        ));
+    }
+
+    if !home.is_dir() {
+        return Err(format!("Home directory {} is not usable", home.display()));
+    }
+
+    // Same directory the installer already runs from, so no new state location
+    // is introduced and ~/.unsloth stays the one Unsloth-owned working root.
+    let work_dir = home.join(".unsloth");
+    if !work_dir.exists() {
+        std::fs::create_dir_all(&work_dir)
+            .map_err(|e| format!("Failed to create {}: {}", work_dir.display(), e))?;
+    }
+    if !work_dir.is_dir() {
+        return Err(format!("{} is not a directory", work_dir.display()));
+    }
+    Ok(work_dir)
+}
+
+// Windows path comparison: case-insensitive, either separator, no trailing one,
+// and without the \\?\ extended-length form. Applied on every platform so the
+// check stays unit-testable from Linux CI.
+fn normalize_windows_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\");
+    let text = match text.strip_prefix("\\\\?\\UNC\\") {
+        Some(rest) => format!("\\\\{rest}"),
+        None => text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string(),
+    };
+    text.trim_end_matches('\\').to_lowercase()
+}
+
+fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
+    let normalized = normalize_windows_path(path);
+    windirs.iter().any(|windir| {
+        let root = normalize_windows_path(windir);
+        // "c:" (from a WINDIR of "C:\") would match the whole drive, so require
+        // something under a drive letter before treating it as the Windows tree.
+        root.len() > 2 && (normalized == root || normalized.starts_with(&(root.clone() + "\\")))
+    })
+}
+
+/// Directory a desktop-spawned `unsloth` CLI child should run from.
+///
+/// Only overrides the inherited directory when that directory is unusable, which
+/// on Windows means a system folder: `./models` and other cwd-relative defaults
+/// keep resolving where a manually launched desktop resolved them, and only the
+/// login-start case moves. Resolved per call so a roaming or network profile that
+/// becomes available a moment after login recovers without restarting the app.
+///
+/// The replacement never falls back to a temp directory: that would scatter state
+/// and hide a broken profile.
+pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
+    let windirs = windows_roots();
+    if let Ok(cwd) = std::env::current_dir() {
+        if !is_inside_windows_dir(&cwd, &windirs) {
+            return Ok(cwd);
+        }
+    }
+    managed_cli_working_dir_from(dirs::home_dir(), &windirs)
+}
+
+/// Every plausible Windows directory, empty off Windows.
+///
+/// All of them, not the first one found: reading a single variable means whoever
+/// can set it can point the check somewhere harmless. WINDIR in particular is an
+/// ordinary variable that anything writing HKCU\Environment can shadow.
+fn windows_roots() -> Vec<std::path::PathBuf> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for value in [
+        std::env::var("SystemRoot").ok(),
+        std::env::var("WINDIR").ok(),
+        Some(r"C:\Windows".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let root = std::path::PathBuf::from(value);
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    roots
+}
+
+/// Pin the working directory and mark the child as desktop-managed.
+/// Leaves every other part of the command (env scrubbing, creation flags,
+/// ownership handshake) to the caller.
+pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
+    apply_managed_cli_context_at(cmd, &managed_cli_working_dir()?);
+    Ok(())
+}
+
+pub(crate) fn apply_managed_cli_context_at(cmd: &mut Command, work_dir: &std::path::Path) {
+    cmd.current_dir(work_dir);
+    cmd.env(DESKTOP_MANAGED_ENV, "1");
+}
+
+pub(crate) fn apply_managed_cli_context_tokio(
+    cmd: &mut tokio::process::Command,
+) -> Result<(), String> {
+    let work_dir = managed_cli_working_dir()?;
+    cmd.current_dir(work_dir);
+    cmd.env(DESKTOP_MANAGED_ENV, "1");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,6 +1269,26 @@ pub fn start_backend(
         }
     };
 
+    // A precondition like resolve_backend_binary above, so it runs before any
+    // ownership or job state is touched.
+    let work_dir = match managed_cli_working_dir() {
+        Ok(work_dir) => work_dir,
+        Err(error) => {
+            let msg = format!(
+                "Failed to pick a working directory for the backend: {}",
+                error
+            );
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                None,
+                "resolve_working_directory",
+                &msg,
+            );
+            return Err(msg);
+        }
+    };
+
     let args = backend_args(port);
     let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
     let pending_owner = match crate::desktop_backend_owner::new_pending_owner() {
@@ -1157,6 +1309,8 @@ pub fn start_backend(
     cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    apply_managed_cli_context_at(&mut cmd, &work_dir);
 
     #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
@@ -2216,6 +2370,302 @@ fn stop_backend_inner(
     }
 
     result
+}
+
+// A login-started desktop on Windows inherits C:\Windows\system32 as its working
+// directory (issue #8510), and every CLI child inherited it too, where the Python
+// CLI refuses to run. These pin the replacement directory and the fact that each
+// command actually carries it.
+#[cfg(test)]
+mod managed_cli_working_dir_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_normal_home_yields_the_unsloth_directory_and_creates_it() {
+        let home = scratch("cwd-normal-home");
+        let resolved = managed_cli_working_dir_from(Some(home.clone()), &[])
+            .expect("a normal home must resolve");
+        assert_eq!(resolved, home.join(".unsloth"));
+        assert!(resolved.is_dir(), "the working directory must exist");
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn an_existing_working_directory_is_reused() {
+        let home = scratch("cwd-existing");
+        fs::create_dir_all(home.join(".unsloth")).unwrap();
+        let resolved = managed_cli_working_dir_from(Some(home.clone()), &[]).unwrap();
+        assert_eq!(resolved, home.join(".unsloth"));
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn a_home_with_spaces_and_non_ascii_survives_intact() {
+        let base = scratch("cwd-unicode");
+        let home = base.join("Jane O'Brien ünïcode");
+        fs::create_dir_all(&home).unwrap();
+        let resolved = managed_cli_working_dir_from(Some(home.clone()), &[]).unwrap();
+        assert_eq!(resolved, home.join(".unsloth"));
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn a_missing_home_is_an_error_rather_than_a_fallback() {
+        let error = managed_cli_working_dir_from(None, &[]).unwrap_err();
+        assert!(
+            error.contains("home directory"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_home_that_does_not_exist_is_rejected() {
+        let home = scratch("cwd-absent").join("gone");
+        let error = managed_cli_working_dir_from(Some(home), &[]).unwrap_err();
+        assert!(error.contains("not usable"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn a_file_masquerading_as_a_home_is_rejected() {
+        let base = scratch("cwd-file-home");
+        let home = base.join("home-is-a-file");
+        fs::write(&home, b"not a directory").unwrap();
+        let error = managed_cli_working_dir_from(Some(home), &[]).unwrap_err();
+        assert!(error.contains("not usable"), "unexpected error: {error}");
+        fs::remove_dir_all(&base).ok();
+    }
+
+    // The SYSTEM account's profile is C:\Windows\System32\config\systemprofile, so
+    // trusting the home API here would hand the child the folder it just rejected.
+    #[test]
+    fn a_home_inside_the_windows_directory_is_rejected() {
+        let windir = PathBuf::from("C:\\Windows");
+        for home in [
+            "C:\\Windows",
+            "C:\\Windows\\System32\\config\\systemprofile",
+            "C:\\Windows\\",
+        ] {
+            let error = managed_cli_working_dir_from(Some(PathBuf::from(home)), &[windir.clone()])
+                .unwrap_err();
+            assert!(
+                error.contains("inside the Windows directory"),
+                "{home} must be rejected, got: {error}"
+            );
+        }
+    }
+
+    // The separator keeps the match on a path boundary, so a profile that merely
+    // starts with the same letters as the Windows directory is not rejected.
+    #[test]
+    fn a_home_that_merely_shares_a_prefix_with_the_windows_directory_is_allowed() {
+        let error = managed_cli_working_dir_from(
+            Some(PathBuf::from(r"C:\Windows2\Users\jane")),
+            &[PathBuf::from(r"C:\Windows")],
+        )
+        .unwrap_err();
+        assert!(
+            !error.contains("inside the Windows directory"),
+            "C:\\Windows2 is a normal folder, got: {error}"
+        );
+    }
+
+    // A WINDIR of "C:\" would otherwise swallow the whole drive.
+    #[test]
+    fn a_drive_root_windows_directory_does_not_reject_every_home() {
+        let error = managed_cli_working_dir_from(
+            Some(PathBuf::from(r"C:\Users\me")),
+            &[PathBuf::from("C:\\")],
+        )
+        .unwrap_err();
+        assert!(
+            !error.contains("inside the Windows directory"),
+            "unexpected rejection: {error}"
+        );
+    }
+
+    #[test]
+    fn forward_slashes_and_case_do_not_hide_the_windows_directory() {
+        let error = managed_cli_working_dir_from(
+            Some(PathBuf::from("c:/WINDOWS/System32/config/systemprofile")),
+            &[PathBuf::from(r"C:\Windows")],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("inside the Windows directory"),
+            "got: {error}"
+        );
+    }
+
+    // \\?\C:\Windows\... is the same folder spelled the long way; the Python
+    // guard strips the prefix too.
+    #[test]
+    fn an_extended_length_path_does_not_hide_the_windows_directory() {
+        let error = managed_cli_working_dir_from(
+            Some(PathBuf::from(
+                r"\\?\C:\Windows\System32\config\systemprofile",
+            )),
+            &[PathBuf::from(r"C:\Windows")],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("inside the Windows directory"),
+            "got: {error}"
+        );
+    }
+
+    // The pin exists to replace an unusable directory, not to relocate every
+    // launch: a desktop started from a project folder keeps resolving ./models
+    // and other cwd-relative defaults there, on every platform.
+    #[test]
+    fn a_usable_inherited_directory_is_kept() {
+        assert_eq!(
+            managed_cli_working_dir().expect("the test's own directory is usable"),
+            std::env::current_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn only_a_windows_directory_counts_as_unusable() {
+        let windirs = [PathBuf::from(r"C:\Windows")];
+        assert!(is_inside_windows_dir(
+            std::path::Path::new(r"C:\Windows\System32"),
+            &windirs
+        ));
+        assert!(!is_inside_windows_dir(
+            std::path::Path::new(r"D:\projects\llm"),
+            &windirs
+        ));
+        assert!(!is_inside_windows_dir(
+            std::path::Path::new("/home/me"),
+            &windirs
+        ));
+    }
+
+    #[test]
+    fn a_configured_command_carries_the_directory_and_the_marker() {
+        let work_dir = scratch("cwd-command-shape");
+
+        let mut cmd = Command::new("unsloth");
+        apply_managed_cli_context_at(&mut cmd, &work_dir);
+        assert_eq!(cmd.get_current_dir(), Some(work_dir.as_path()));
+        assert!(
+            cmd.get_envs()
+                .any(|(key, value)| key == DESKTOP_MANAGED_ENV && value == Some("1".as_ref())),
+            "the desktop marker must be set"
+        );
+        fs::remove_dir_all(&work_dir).ok();
+    }
+
+    #[test]
+    fn a_configured_tokio_command_carries_the_directory_and_the_marker() {
+        let expected = managed_cli_working_dir().expect("home must resolve");
+        let mut tokio_cmd = tokio::process::Command::new("unsloth");
+        apply_managed_cli_context_tokio(&mut tokio_cmd).expect("context must apply");
+        assert_eq!(
+            tokio_cmd.as_std().get_current_dir(),
+            Some(expected.as_path())
+        );
+        assert!(
+            tokio_cmd
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == DESKTOP_MANAGED_ENV && value == Some("1".as_ref())),
+            "the desktop marker must be set on tokio commands too"
+        );
+    }
+
+    // The marker only helps if the Python side reads the same name; a rename on
+    // either side degrades silently to argv matching, which is the fallback path.
+    #[test]
+    fn the_marker_name_matches_the_python_guard() {
+        let guard = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../unsloth_cli/_system_dir_guard.py");
+        let source = fs::read_to_string(&guard).expect("the Python guard must be readable");
+        assert!(
+            source.contains(&format!("DESKTOP_MANAGED_ENV = \"{DESKTOP_MANAGED_ENV}\"")),
+            "{} must define the same marker name",
+            guard.display()
+        );
+    }
+
+    // Configuring a child must not move the desktop process itself: a global chdir
+    // would change relative path resolution for dialogs, the updater and cleanup.
+    #[test]
+    fn configuring_a_child_leaves_the_parent_directory_alone() {
+        let before = std::env::current_dir().unwrap();
+        let work_dir = scratch("cwd-parent-untouched");
+        let mut cmd = Command::new("unsloth");
+        apply_managed_cli_context_at(&mut cmd, &work_dir);
+        assert_eq!(std::env::current_dir().unwrap(), before);
+        fs::remove_dir_all(&work_dir).ok();
+    }
+
+    #[test]
+    fn backend_args_are_unchanged_by_the_working_directory_fix() {
+        assert_eq!(
+            backend_args(8888),
+            vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
+        );
+    }
+
+    // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:
+    // a child must observe the chosen directory rather than the launcher's.
+    #[cfg(windows)]
+    #[test]
+    fn a_spawned_child_runs_from_the_resolved_directory_on_windows() {
+        let expected = scratch("cwd-spawned-child-win");
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/C", "cd"]).stdout(Stdio::piped());
+        apply_managed_cli_context_at(&mut cmd, &expected);
+        let output = cmd.output().expect("spawn test child");
+        let reported = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        assert_eq!(
+            normalize_windows_path(std::path::Path::new(&reported)),
+            normalize_windows_path(&expected)
+        );
+        fs::remove_dir_all(&expected).ok();
+    }
+
+    // The end of the chain the bug actually broke: the child must observe the chosen
+    // directory, including through the unix process-group wrapper used by start_backend.
+    #[cfg(unix)]
+    #[test]
+    fn a_spawned_child_runs_from_the_resolved_directory() {
+        let expected = scratch("cwd-spawned-child");
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "pwd -P"]).stdout(Stdio::piped());
+        apply_managed_cli_context_at(&mut cmd, &expected);
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let mut child = wrap.spawn().expect("spawn test child");
+        let mut out = String::new();
+        std::io::Read::read_to_string(child.stdout().as_mut().unwrap(), &mut out).unwrap();
+        let _ = child.wait();
+
+        assert_eq!(
+            std::fs::canonicalize(out.trim()).unwrap(),
+            std::fs::canonicalize(&expected).unwrap()
+        );
+    }
 }
 
 // The race this pins is not visible from the type system, so it uses real processes

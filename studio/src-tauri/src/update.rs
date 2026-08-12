@@ -97,6 +97,16 @@ fn spawn_update(
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
+    // to run from; the Windows branch above reaches the same guard through the
+    // managed interpreter, so pin the directory for both.
+    crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
+        format!(
+            "Failed to pick a working directory for the update: {}",
+            error
+        )
+    })?;
+
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 

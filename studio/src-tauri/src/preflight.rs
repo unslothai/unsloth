@@ -67,9 +67,12 @@ fn choose_preflight(managed: ManagedProbe, backend: BackendProbe) -> DesktopPref
             },
             ManagedProbe::Stale { bin, reason } => DesktopPreflightResult {
                 disposition: DesktopPreflightDisposition::ManagedStale,
+                // Reinstalling cannot conjure up a home directory, and the repair
+                // itself needs the same one, so do not offer to run it.
+                can_auto_repair: release_auto_repair()
+                    && reason != managed::WORKING_DIRECTORY_UNAVAILABLE,
                 reason: Some(reason),
                 port: None,
-                can_auto_repair: release_auto_repair(),
                 managed_bin: Some(bin),
             },
             ManagedProbe::Missing => DesktopPreflightResult {

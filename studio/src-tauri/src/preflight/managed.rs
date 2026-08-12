@@ -14,6 +14,9 @@ use tokio::process::Command;
 // 3: the cached capability gained studio_install_ok / studio_install_reason.
 const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
 
+/// The install is fine; the directory its children must run from is not reachable.
+pub(super) const WORKING_DIRECTORY_UNAVAILABLE: &str = "working_directory_unavailable";
+
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
 const HASHED_MARKER_MAX_BYTES: u64 = 64 * 1024;
@@ -307,6 +310,14 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     let mut cmd = Command::new(bin);
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
 
+    if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
+        info!(
+            "Managed preflight probe {:?} has no usable working directory: {}",
+            args, error
+        );
+        return false;
+    }
+
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
@@ -355,6 +366,14 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
     cmd.args(["studio", "desktop-capabilities", "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+
+    if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
+        info!(
+            "Managed desktop-capabilities probe has no usable working directory: {}",
+            error
+        );
+        return None;
+    }
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
@@ -453,6 +472,22 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
 
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
+
+    // A home that is not mounted yet (roaming or network profile at login) makes
+    // every probe below fail. That is not a broken install, so report it under its
+    // own reason: "cli_unusable" would send the user through an automatic repair
+    // that needs the same directory and fails the same way.
+    if let Err(error) = crate::process::managed_cli_working_dir() {
+        info!(
+            "Managed preflight: no usable working directory for {:?}: {}",
+            bin, error
+        );
+        return ManagedProbe::Stale {
+            bin,
+            reason: WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+        };
+    }
+
     // Always verify the managed CLI actually launches before trusting the cache.
     // A matching capability fingerprint does not prove the binary can still run:
     // its venv interpreter or a runtime dependency can be broken while the
