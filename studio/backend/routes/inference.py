@@ -3112,12 +3112,13 @@ def _full_access_tip(code_tools: list[str]) -> str:
     else:
         subject = "The " + " and ".join(code_tools) + " tools run"
     return (
-        subject + " on the machine running Unsloth Studio, with the code sandbox "
-        "and the approval prompts disabled, so you can inspect and change the real "
-        "files and system there. That machine is not always the device the user is "
-        "viewing this on: Studio can be served remotely. When asked what you can "
-        "see or do on it, check with a tool call instead of assuming you are "
-        "isolated from it."
+        subject + " where Unsloth Studio is running, with the code sandbox and the "
+        "approval prompts disabled, so you can inspect and change whatever that "
+        "process can reach. That is not necessarily the device the user is viewing "
+        "this on, and it may be a remote host or a container that mounts only some "
+        "of its host's paths. When asked what you can see or do, check with a tool "
+        "call rather than assuming you are isolated from it, and report what the "
+        "call actually returned rather than what a whole machine would hold."
     )
 
 

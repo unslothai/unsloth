@@ -8956,7 +8956,8 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # here; Windows already has one.
     (
         "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
-        ". This runs on the machine running Unsloth Studio.{clause}",
+        ". This runs wherever Unsloth Studio is running, which may be a remote host "
+        "or a container with only some paths mounted.{clause}",
     ),
     # Windows already says where the code runs and never denies absolute paths,
     # so there is nothing false to remove; state the capability instead. "the
@@ -8965,7 +8966,9 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # Studio, which is then not the device the user is looking at.
     (
         " You are on Windows, and this runs on the user's own machine.",
-        " You are on Windows, and this runs on the machine running Unsloth Studio.{clause}",
+        " You are on Windows, and this runs wherever Unsloth Studio is running, "
+        "which may be a remote host or a container with only some paths "
+        "mounted.{clause}",
     ),
 )
 

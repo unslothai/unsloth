@@ -69,7 +69,10 @@ def test_full_access_descriptions_drop_the_isolation_claim(tool):
     # The one claim that is outright false with the sandbox off.
     assert "do not exist" not in description
     assert "sandbox is disabled" in description
-    assert "machine running Unsloth Studio" in description
+    assert "wherever Unsloth Studio is running" in description
+    # Docker is a documented deployment, where only mounted paths are visible,
+    # so the reach is the Studio process's, not a whole machine's.
+    assert "container with only some paths mounted" in description
     # The remote modes (--secure / -H 0.0.0.0, README) put the tools on the host
     # serving Studio, not on the device the user is looking at, so the prompt
     # must not claim the two are the same.
@@ -113,6 +116,7 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     assert "sandbox is disabled" in full
     assert "do resolve" in full
     assert "user's own machine" not in full
+    assert "wherever Unsloth Studio is running" in full
     # _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize
     # still heals these onto the workdir under Full access. A blanket "absolute
     # paths resolve" would have the model report a write that went elsewhere.
@@ -231,23 +235,27 @@ def test_nudge_is_unchanged_without_full_access():
 
 def test_nudge_states_the_environment_under_full_access():
     nudge = _build_tool_action_nudge(tools = _CODE_TOOLS, model_name = "test-8B", full_access = True)
-    assert "machine running Unsloth Studio" in nudge
+    assert "where Unsloth Studio is running" in nudge
     assert "code sandbox and the approval prompts disabled" in nudge
+    # Containerized Studio sees only its mounts, so the claim is scoped to what
+    # the process can reach rather than to the machine.
+    assert "whatever that process can reach" in nudge
+    assert "container that mounts only some" in nudge
     # Scoped to the two local tools: execute_tool passes disable_sandbox to
     # python/terminal only, web_search is a network call, and an MCP tool may run
     # on a remote server, so an unqualified "tool calls run here" is wrong when
     # any of those are enabled alongside.
-    assert nudge.count("The python and terminal tools run on") == 1
+    assert nudge.count("The python and terminal tools run where") == 1
 
 
 @pytest.mark.parametrize(
     ("enabled", "expected"),
     [
-        (["python"], "The python tool runs on"),
-        (["terminal"], "The terminal tool runs on"),
-        (["python", "terminal"], "The python and terminal tools run on"),
+        (["python"], "The python tool runs where"),
+        (["terminal"], "The terminal tool runs where"),
+        (["python", "terminal"], "The python and terminal tools run where"),
         # Order comes from _LOCAL_CODE_TOOLS, not from the caller's list.
-        (["terminal", "python"], "The python and terminal tools run on"),
+        (["terminal", "python"], "The python and terminal tools run where"),
     ],
     ids = ["python_only", "terminal_only", "both", "reversed"],
 )
@@ -258,11 +266,11 @@ def test_the_tip_names_only_the_selected_code_tools(enabled, expected):
     nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", full_access = True)
     assert expected in nudge
     for absent in {"python", "terminal"} - set(enabled):
-        assert f"The {absent} tool runs on" not in nudge
-        assert f"and {absent} tools run on" not in nudge
+        assert f"The {absent} tool runs where" not in nudge
+        assert f"and {absent} tools run where" not in nudge
     # Studio can be served remotely, so the tools' host is not necessarily the
     # device in front of the user.
-    assert "not always the device the user is viewing this on" in nudge
+    assert "not necessarily the device the user is viewing this on" in nudge
     # The actual reported failure: the model asserted isolation instead of
     # checking, so the nudge has to redirect that guess to a tool call.
     assert "check with a tool call" in nudge
@@ -296,7 +304,7 @@ def test_full_access_tip_needs_a_code_tool():
     """web_search alone runs nothing locally, so the sandbox sentence would be
     noise (and false)."""
     nudge = _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B", full_access = True)
-    assert "machine running Unsloth Studio" not in nudge
+    assert "where Unsloth Studio is running" not in nudge
     assert nudge == _build_tool_action_nudge(tools = _WEB_ONLY, model_name = "test-8B")
 
 
