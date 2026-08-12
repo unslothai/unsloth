@@ -212,10 +212,9 @@ def _save_pretrained_gguf(
         max_shard_size = max_shard_size,
         temporary_location = temporary_location,
         maximum_memory_usage = maximum_memory_usage,
-        # transformer_dir is the SentenceTransformer's own 0_Transformer module, written in
-        # step 1 and uploaded in step 7, not a throwaway on the way to the GGUF. Reclaiming
-        # it on a tight disk would hand back a folder that no longer loads as a
-        # SentenceTransformer, so the merge stays and a short disk fails loudly instead.
+        # transformer_dir is the ST's own 0_Transformer module (written in step 1, uploaded
+        # in step 7), not a throwaway: reclaiming it would hand back a folder that no longer
+        # loads as a SentenceTransformer, so a short disk fails loudly instead.
         merge_is_disposable = False,
     )
 

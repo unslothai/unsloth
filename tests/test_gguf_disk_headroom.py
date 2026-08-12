@@ -3,33 +3,24 @@
 
 """A GGUF export that holds three copies of the model at once.
 
-`Nemotron-3-Nano-30B-A3B` trained, ran inference, merged to 16-bit, and then
-died in llama-quantize at tensor 88 of 401:
+`Nemotron-3-Nano-30B-A3B` merged to 16-bit and then died in llama-quantize at
+tensor 88 of 401 with `failed to quantize: basic_ios::clear: iostream error`.
+That message is not about the model: it is llama.cpp's own
+`fout.exceptions(std::ofstream::failbit)` firing on a write with nowhere to go.
+The arithmetic, measured on a 132GB Colab G4 disk: a 63GB intermediate 16-bit
+merge, a 60GB BF16 GGUF, and a Q4_K_M needing about 18GB. 141GB into 132GB.
 
-    llama_model_quantize: failed to quantize: basic_ios::clear: iostream error
-
-That message is not about the model. It is llama.cpp's own
-
-    fout.exceptions(std::ofstream::failbit); // fail fast on write errors
-
-firing on a write that had nowhere to go. The arithmetic, measured on a 132GB
-Colab G4 disk: a 63GB intermediate 16-bit merge, a 60GB BF16 GGUF, and a
-Q4_K_M needing about 18GB. 141GB into 132GB.
-
-The first suspicion was the filename -- unsloth passes `initial_files[0]`, and
-for this model that was `...BF16-00001-of-00002.gguf`, the first shard of a
-split. That is a red herring, and worth writing down so it is not re-derived:
+The filename was a red herring, worth writing down so it is not re-derived:
+unsloth passes `initial_files[0]`, here `...BF16-00001-of-00002.gguf`, but
 llama.cpp's `llama_model_quantize_impl` walks `ml.weights_map` across every
 input shard and, with `keep_split` false, collapses them into a single output.
 Handing it shard one is correct usage.
 
-The intermediate merge is what is actually wasted. It is written, converted to
-GGUF, and then never read again -- llama-quantize reads the GGUF. So when the
-quants will not fit, those bytes are the ones to reclaim.
-
-Two properties matter and are tested here: it frees when the room is not there,
-and it does NOT free when the room is there. The second is the one that keeps
-this from becoming a surprise for anyone who wanted the merge kept.
+The intermediate merge is what is actually wasted: written, converted, then
+never read again, since llama-quantize reads the GGUF. Two properties are
+tested here -- it frees when the room is not there, and it does NOT free when
+the room is there. The second is what keeps this from surprising anyone who
+wanted the merge kept.
 """
 
 from __future__ import annotations
@@ -65,11 +56,10 @@ def _layout(tmp_path, merge_gb, base_gb):
     gguf = tmp_path / "model_gguf"
     merge.mkdir()
     gguf.mkdir()
-    # Sparse files: the sizes are what the code reads, and writing 60GB of
-    # zeroes to prove a point about disk space would be its own joke.
-    # The names `save_pretrained` really writes: a `-NNNNN-of-NNNNN` set, which
-    # is what the reclamation matches on. `model-00001.safetensors` is not a
-    # shape transformers ever produces.
+    # Sparse files: only the sizes are read, and writing 60GB of zeroes to prove a
+    # point about disk space would be its own joke. The names are the
+    # `-NNNNN-of-NNNNN` set `save_pretrained` really writes, which is what the
+    # reclamation matches on; `model-00001.safetensors` is not a shape it produces.
     merge_shards = list(_split(merge_gb))
     for i, gb in enumerate(merge_shards):
         name = f"model-{i + 1:05d}-of-{len(merge_shards):05d}.safetensors"
@@ -111,9 +101,9 @@ def _reclaim(
 ):
     """Call the helper the way `save_to_gguf` does for a merge it wrote itself.
 
-    `merge_is_disposable` defaults to off in the helper so that a caller who
-    points it at a real checkpoint keeps it; every test below that is about the
-    reclamation itself has to opt in, exactly like the real call site.
+    The helper defaults `merge_is_disposable` off so a caller pointing it at a
+    real checkpoint keeps it, so every test about the reclamation itself has to
+    opt in, exactly like the real call site.
     """
     kwargs.setdefault("merge_is_disposable", True)
     return save_mod._free_merge_if_disk_is_tight(
@@ -150,11 +140,9 @@ def test_config_and_tokenizer_survive(tmp_path, monkeypatch, save_mod):
 
 
 def test_more_quants_need_more_room(tmp_path, monkeypatch, save_mod):
-    """Every output stays on disk, so three of them is three times the room.
-    A disk that fits one and not three must still be treated as tight.
-
-    Off a 60GB BF16 base one Q4_K_M is about 21GB, while Q4_K_M + Q5_K_M + Q8_0
-    together are about 81GB, so 50GB free fits the first and not the three."""
+    """Every output stays on disk, so a disk that fits one quant and not three is
+    still tight. Off a 60GB BF16 base one Q4_K_M is about 21GB and
+    Q4_K_M + Q5_K_M + Q8_0 about 81GB, so 50GB free fits the first, not the three."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 50)
     assert _reclaim(save_mod, merge, gguf, bases) == 0
@@ -219,12 +207,10 @@ def test_the_helper_is_called_before_quantizing(save_mod):
 def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod):
     """The one that would have been a data-loss bug.
 
-    A non-PEFT `save_pretrained_gguf` does not write an intermediate at all --
-    `unsloth_save_pretrained_gguf` points the converter straight at the local
-    directory the model was loaded from. On a tight disk, reclaiming there
-    deletes the user's own model, and an ordinary export would have eaten its
-    own input. Only a merge this export wrote is disposable, so the flag is off
-    unless the caller says otherwise.
+    A non-PEFT `save_pretrained_gguf` writes no intermediate at all: it points
+    the converter straight at the local directory the model was loaded from, so
+    reclaiming there on a tight disk would eat the user's own model. Only a merge
+    this export wrote is disposable, so the flag is off unless the caller says so.
     """
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
@@ -376,12 +362,9 @@ def test_a_separate_output_filesystem_is_left_alone(tmp_path, monkeypatch, save_
     merge_real = os.path.realpath(merge)
 
     def stat_on_another_device(path, *args, **kwargs):
-        """Real `stat_result`, one field changed.
-
-        `os.path.isdir` goes through the same `os.stat`, so a stand-in object
-        has to keep `st_mode` and the rest intact or the helper never reaches
-        the device comparison this test is about.
-        """
+        """Real `stat_result`, one field changed. `os.path.isdir` goes through the
+        same `os.stat`, so `st_mode` and the rest have to stay intact or the helper
+        never reaches the device comparison this test is about."""
         st = real_stat(path, *args, **kwargs)
         if os.path.realpath(path) != merge_real:
             return st
@@ -483,11 +466,10 @@ def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch
 
 
 def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, save_mod):
-    """`-NNNNN-of-NNNNN` under an unrelated stem is not something
-    `save_pretrained` writes, and transformers does not clear it either: its own
-    stale-shard sweep requires the name to start with `model` / `pytorch_model`
-    as well as to have the shard shape. So a file like this was put here by the
-    user, and this helper deletes permanently."""
+    """`-NNNNN-of-NNNNN` under an unrelated stem is not something `save_pretrained`
+    writes, and transformers does not clear it either: its stale-shard sweep wants
+    the `model` / `pytorch_model` stem as well as the shard shape. So the user put
+    it here, and this helper deletes permanently."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "backup-00001-of-00002.safetensors"
     theirs.write_bytes(b"not ours")
@@ -499,10 +481,9 @@ def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, 
 
 def test_a_checkpoint_in_the_other_serialization_is_not_the_merge(tmp_path, monkeypatch, save_mod):
     """A disposable merge is always safetensors: the PEFT branch goes through
-    unsloth_zoo's safetensors rewrite, and the non-PEFT fallback calls
-    `save_pretrained` with no arguments. So a `pytorch_model.bin` next to it came
-    from an earlier save in the other serialization, and transformers' own stale
-    sweep leaves it too, since the name does not start with `model`."""
+    unsloth_zoo's safetensors rewrite and the non-PEFT fallback calls
+    `save_pretrained` with no arguments. So a `pytorch_model.bin` beside it came
+    from an earlier save, which transformers' stale sweep leaves alone too."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     theirs = Path(merge) / "pytorch_model.bin"
     theirs.write_bytes(b"an earlier save the export cannot put back")

@@ -234,8 +234,8 @@ def _merge_weights(tmp_path):
 
 
 def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp_path):
-    """End to end through save_to_gguf: the flag has to survive the trip from
-    the export down to the reclamation, not just exist at both ends."""
+    """End to end: the flag has to survive the trip from save_to_gguf down to the
+    reclamation, not just exist at both ends."""
     _Harness(monkeypatch, tmp_path)
     weights = _merge_weights(tmp_path)
     _tight_disk(monkeypatch)
@@ -244,8 +244,8 @@ def test_a_disposable_merge_is_reclaimed_when_the_disk_is_tight(monkeypatch, tmp
 
 
 def test_a_merge_the_caller_owns_survives_the_same_export(monkeypatch, tmp_path):
-    """Same tight disk, default flag: nothing is deleted. This is the default
-    every existing caller of save_to_gguf gets."""
+    """Same tight disk, default flag: nothing is deleted, which is what every
+    existing caller of save_to_gguf gets."""
     _Harness(monkeypatch, tmp_path)
     weights = _merge_weights(tmp_path)
     _tight_disk(monkeypatch)
