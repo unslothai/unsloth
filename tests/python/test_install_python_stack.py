@@ -290,12 +290,10 @@ class TestPinnedIndexClearsUvEnv:
 class TestSdistOnlyBuildArgs:
     """A hardened user config must not be able to fail the extras step.
 
-    unslothai/unsloth#8530: `no-build = true` in ~/.config/uv/uv.toml (and
-    `only-binary = :all:` in ~/.config/pip/pip.conf) makes every wheel-less requirement
-    in extras.txt unresolvable, so `unsloth studio update` died at "unsloth extras".
-    A PACKAGE-SCOPED --no-binary overrides that policy for those names only, leaving the
-    user's binary-only policy in force for every other requirement -- verified against
-    uv 0.10 and pip 26: dropping one name from the flags makes that name refused again.
+    #8530: `no-build = true` (uv.toml) or `only-binary = :all:` (pip.conf) makes every
+    wheel-less requirement in extras.txt unresolvable, so the install died at "unsloth
+    extras". A PACKAGE-SCOPED --no-binary overrides that for those names only -- verified
+    against uv 0.10 and pip 26: drop one name and that name is refused again.
     """
 
     def test_emits_no_binary_for_every_sdist_only_package(self):
@@ -341,10 +339,9 @@ class TestSdistOnlyBuildArgs:
         """extras.txt pins MeCab==0.996.5 on macOS cp314+, which ships only an sdist.
 
         MeCab is a C extension, so an unconditional exemption would force a
-        compiler-dependent source build on every other host, which is a worse bug than
-        the one being fixed. Verified against uv 0.10: 0.996.5 is refused under
-        `no-build = true` for macOS cp314 and resolves with --no-binary MeCab, while
-        0.996.13 still comes from a wheel elsewhere.
+        compiler-dependent build on every other host -- a worse bug than the one being
+        fixed. Verified against uv 0.10: 0.996.5 is refused under `no-build = true` for
+        macOS cp314 and resolves with --no-binary MeCab; 0.996.13 stays a wheel elsewhere.
         """
         with (
             mock.patch.object(ips, "IS_MACOS", is_macos),
@@ -426,11 +423,10 @@ class TestSdistOnlyBuildArgs:
 class TestHardenedPipConfigRelaxation:
     """`require-hashes = true` in pip.conf killed the pip FALLBACK in #8530.
 
-    Every requirements file the installer ships is pinned but unhashed, so hash-required
-    mode can never be satisfied. pip applies env vars AFTER config files, so
-    PIP_REQUIRE_HASHES=0 in the child env overrides it while pip.conf's index-url,
-    trusted-host, cert and proxy settings all stay in force. There is no command-line
-    equivalent, which is why this one knob is handled through the environment.
+    Every requirements file we ship is pinned but unhashed, so hash-required mode can
+    never be satisfied. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
+    in the child env overrides it while pip.conf's index-url, trusted-host, cert and
+    proxy stay in force. It has no command-line equivalent, hence the env var.
     """
 
     HOSTILE = {
