@@ -541,3 +541,49 @@ class TestBuildPipCmdUpgradeIntent:
     def test_commands_without_the_flag_are_untouched(self):
         cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
         assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
+
+
+class TestRequirementFilterNormalisesNames:
+    """The skip sets are written PEP 503 style; requirement files are not.
+    extras-no-deps.txt says `pytorch_tokenizers` and no-torch-runtime.txt says
+    `hf_transfer`, and a raw-text filter let both through -- on Windows on ARM the
+    install then tried to build them from source (issue #8495)."""
+
+    @staticmethod
+    def _filtered(tmp_path, body: str, skip: set[str]) -> str:
+        req = tmp_path / "reqs.txt"
+        req.write_text(body, encoding = "utf-8")
+        return ips._filter_requirements(req, skip).read_text(encoding = "utf-8")
+
+    def test_underscore_spelling_is_matched(self, tmp_path):
+        out = self._filtered(
+            tmp_path,
+            'pytorch_tokenizers<=1.4.1; sys_platform != "darwin"\nnumpy==2.5.2\n',
+            {"pytorch-tokenizers"},
+        )
+        assert "pytorch_tokenizers" not in out
+        assert "numpy==2.5.2" in out
+
+    def test_hyphen_spelling_is_matched(self, tmp_path):
+        out = self._filtered(tmp_path, "hf-transfer==0.1.9\nnumpy==2.5.2\n", {"hf_transfer"})
+        assert "hf-transfer" not in out
+        assert "numpy==2.5.2" in out
+
+    def test_prefix_matching_is_still_broad(self, tmp_path):
+        """Documenting existing behaviour, not endorsing it: the original filter
+        matched any line STARTING with a skip entry, so `datasets` also drops a
+        hypothetical `datasets-extra`. That arm is kept because callers have always
+        been able to pass a prefix rather than a distribution name, and narrowing it
+        here would silently change what the no-torch and Windows filters remove.
+        The canonical-name arm added alongside it is what catches the underscore
+        spellings; it only ever removes more, never less."""
+        out = self._filtered(tmp_path, "datasets==4.3.0\ndatasets-extra==1.0\n", {"datasets"})
+        assert "datasets==4.3.0" not in out
+        assert "datasets-extra==1.0" not in out
+
+    def test_comments_and_flags_are_left_alone(self, tmp_path):
+        body = "# datasets is dropped below\n--no-binary :all:\ndatasets==4.3.0\n"
+        out = self._filtered(tmp_path, body, {"datasets"})
+        assert "# datasets is dropped below" in out
+        assert "--no-binary :all:" in out
+        assert "datasets==4.3.0" not in out

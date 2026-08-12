@@ -3878,11 +3878,32 @@ def _bootstrap_uv() -> bool:
     return True
 
 
+def _canonical_requirement_name(line: str) -> str:
+    """PEP 503 name of a requirement line, or "" when there is none.
+
+    The skip sets are written with hyphens, and requirement files are not:
+    extras-no-deps.txt says ``pytorch_tokenizers`` and no-torch-runtime.txt says
+    ``hf_transfer``. Comparing the raw text let both through the filter and the
+    install then tried to build them from source.
+    """
+    bare = line.split("#")[0].strip()
+    if not bare or bare.startswith("-"):
+        return ""
+    return re.split(r"[=<>!~;\[ ]", bare)[0].strip().lower().replace("_", "-")
+
+
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
     """Return a temp copy, adjacent when writable, with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
+    canonical_skip = {pkg.lower().replace("_", "-") for pkg in skip}
     filtered = [
-        line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
+        line
+        for line in lines
+        # The startswith arm is kept as well: callers have always been able to name a
+        # prefix rather than a distribution, and dropping it here would silently
+        # re-admit whatever relied on that.
+        if _canonical_requirement_name(line) not in canonical_skip
+        and not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     # Beside the source so relative -r/-c includes resolve; a read-only tree
     # (root-owned install, non-root user) falls back rather than aborting.
