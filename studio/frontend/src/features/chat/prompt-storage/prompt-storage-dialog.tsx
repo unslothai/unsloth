@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { PRODUCT_NAME } from "@/config/branding";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
@@ -1420,7 +1421,7 @@ function ExportModal({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold leading-none">Training Style</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    ShareGPT format for Unsloth fine-tuning
+                    ShareGPT format for {PRODUCT_NAME} fine-tuning
                   </p>
                   <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}
@@ -1934,10 +1935,14 @@ export function PromptStorageDialog({
   const [promptLists, setPromptLists] = useState<PromptListEntry[]>([]);
 
   const refreshEntries = useCallback(async () => {
-    try { setPromptEntries(await listPromptEntries()); } catch {}
+    try { setPromptEntries(await listPromptEntries()); } catch {
+      // Prompt storage is optional; retain the last successfully loaded list.
+    }
   }, []);
   const refreshLists = useCallback(async () => {
-    try { setPromptLists(await listPromptLists()); } catch {}
+    try { setPromptLists(await listPromptLists()); } catch {
+      // Prompt storage is optional; retain the last successfully loaded list.
+    }
   }, []);
 
   useEffect(() => {

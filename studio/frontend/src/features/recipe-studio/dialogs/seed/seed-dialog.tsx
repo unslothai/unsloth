@@ -32,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PRODUCT_NAME } from "@/config/branding";
 import {
   type KeyboardEvent,
   type ReactElement,
@@ -339,8 +340,8 @@ export function GithubRepoSeedForm({
         />
         <p id={tokenHelpId} className="text-xs text-muted-foreground">
           {usingEnvToken
-            ? "Unsloth detected a server env token, so saved/shared recipes can leave this blank."
-            : "Blank is safest for saved/shared recipes because Unsloth will read the server environment at run time."}
+            ? `${PRODUCT_NAME} detected a server env token, so saved/shared recipes can leave this blank.`
+            : `Blank is safest for saved/shared recipes because ${PRODUCT_NAME} will read the server environment at run time.`}
         </p>
         {hasToken && (
           <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300">
@@ -455,8 +456,8 @@ export function GithubRepoSeedForm({
       </fieldset>
 
       <p className="text-xs text-muted-foreground">
-        Backed by Unsloth's built-in <code>github_repo</code> seed reader. Large
-        repos can take minutes, so start with small limits for previews.
+        Backed by the built-in <code>github_repo</code> seed reader. Large repos
+        can take minutes, so start with small limits for previews.
       </p>
     </div>
   );

@@ -8,6 +8,7 @@ import {
   ChevronDownStandardIcon,
   ChevronUpStandardIcon,
 } from "@/lib/chevron-icons";
+import { PRODUCT_NAME } from "@/config/branding";
 import { cn } from "@/lib/utils";
 import { CheckmarkCircle02Icon, Flag02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -67,7 +68,7 @@ function formatGitHubSourceSummary(
       typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
         ? ` ~${formatMetricValue(source.retry_after_sec)}s`
         : "";
-    return `Waiting for GitHub rate limit${wait}. Unsloth will resume automatically.`;
+    return `Waiting for GitHub rate limit${wait}. ${PRODUCT_NAME} will resume automatically.`;
   }
   if (source.status === "retrying") {
     return source.message ?? "GitHub request failed; retrying automatically.";

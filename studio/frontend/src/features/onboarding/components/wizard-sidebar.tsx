@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { PRODUCT_NAME } from "@/config/branding";
 import { STEPS } from "@/config/training";
 import { markOnboardingDone } from "@/features/auth";
 import { useTrainingConfigStore } from "@/features/training";
@@ -17,17 +18,11 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
   return (
     <aside className="w-full shrink-0 bg-muted/70 p-4 md:w-64 md:p-6">
       <div className="flex items-center gap-3 py-1 md:py-2">
-        {/* Logo lockup follows the UI font size at half rate:
-            base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
-        <img
-          src={`${import.meta.env.BASE_URL}sticker.png`}
-          alt="Unsloth"
-          className="size-[calc(40px+0.5rem*var(--ui-font-scale,1))]"
-        />
-        <div className="flex flex-col">
-          <span className="font-semibold text-[calc(10px+0.5rem*var(--ui-font-scale,1))] leading-tight">Unsloth</span>
-          <span className="text-[calc(4px+0.5rem*var(--ui-font-scale,1))] text-muted-foreground">Studio</span>
-        </div>
+        {/* Typographic wordmark, no upstream mark (ADR 0000 decision 4). Follows
+            the UI font size at half rate: base + (root scale - 1) * 8px. */}
+        <span className="font-semibold text-[calc(12px+0.5rem*var(--ui-font-scale,1))] leading-tight">
+          {PRODUCT_NAME}
+        </span>
       </div>
       <div className="mt-3 md:mt-0">
         <Progress value={progress} className="h-1.5" />

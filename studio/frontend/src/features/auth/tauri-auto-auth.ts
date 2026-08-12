@@ -1,6 +1,7 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import { isTauri } from "@/lib/api-base";
 import {
   hasAuthToken,
@@ -25,8 +26,12 @@ type TauriAutoAuthOptions = {
 let pending: { promise: Promise<boolean>; force: boolean } | null = null;
 let lastTauriAuthFailure: string | null = null;
 
-const TAURI_AUTH_FAILURE_FALLBACK =
-  "Desktop authentication failed. Update or repair the managed Unsloth install, then restart Unsloth.";
+/**
+ * Shown when desktop auto-auth fails without a specific reason. Exported
+ * because `hooks/use-tauri-backend.ts` shows the same fallback for the
+ * `tauri-auth-failed` window event; one literal keeps the two in step.
+ */
+export const TAURI_AUTH_FAILURE_FALLBACK = `Desktop authentication failed. Update or repair the managed ${PRODUCT_NAME} install, then restart ${PRODUCT_NAME}.`;
 const BACKEND_NOT_READY_MESSAGE = "Backend is not ready";
 
 function authFailureMessage(error: unknown): string {
@@ -98,8 +103,7 @@ export function tauriAutoAuth(
   if (!isTauri) return Promise.resolve(false);
   const force = options.force === true;
   if (!pending || (force && !pending.force)) {
-    let promise: Promise<boolean>;
-    promise = doTauriAutoAuth({ force }).finally(() => {
+    const promise = doTauriAutoAuth({ force }).finally(() => {
       if (pending?.promise === promise) pending = null;
     });
     pending = { promise, force };

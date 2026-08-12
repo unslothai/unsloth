@@ -3,7 +3,12 @@
 
 export { LoginPage } from "./login-page";
 export { ChangePasswordPage } from "./change-password-page";
-export { authFetch, logout, refreshSession } from "./api";
+export {
+  BACKEND_UNREACHABLE_MESSAGE,
+  authFetch,
+  logout,
+  refreshSession,
+} from "./api";
 export {
   AUTH_SESSION_CLEARED_EVENT,
   clearAuthTokens,
@@ -19,6 +24,7 @@ export {
   storeAuthTokens,
 } from "./session";
 export {
+  TAURI_AUTH_FAILURE_FALLBACK,
   clearTauriAuthFailure,
   getTauriAuthFailure,
   tauriAutoAuth,

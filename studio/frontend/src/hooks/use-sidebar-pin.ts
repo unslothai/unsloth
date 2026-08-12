@@ -41,7 +41,9 @@ function setPinnedGlobal(next: boolean) {
   pinnedValue = next;
   try {
     window.localStorage.setItem(PINNED_KEY, String(next));
-  } catch {}
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
   listeners.forEach((cb) => cb());
 }
 

@@ -271,6 +271,7 @@ function useDictation(
       // single-chat active thread.
       session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
+      // Recent prompts are an optional convenience; keep the composer usable.
       startingRef.current = false;
       notifyStudioDictationUnavailable();
       return;
@@ -553,6 +554,7 @@ export function SharedComposer({
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Recent prompts are an optional convenience; keep the composer usable.
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
@@ -806,9 +808,6 @@ export function SharedComposer({
   const { pillRowRef, pillCompact } = useComposerPillFit(
     isMobile || pillCount > 4,
   );
-  // Backwards-compatible alias for call sites still referencing
-  // `toolsDisabled` (rare; both pills used it before).
-  const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore(
     (s) => s.clearPendingAudio,

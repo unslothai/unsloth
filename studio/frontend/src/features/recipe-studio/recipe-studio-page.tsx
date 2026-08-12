@@ -360,7 +360,6 @@ export function RecipeStudioPage({
     validateResult,
     cancelExecution,
     loadExecutionDatasetPage,
-    runPreview,
     runFull,
     copyRecipe,
     importRecipe,

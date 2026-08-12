@@ -1,0 +1,461 @@
+{
+  "generated_by": "scripts/rag-platform/capture-fixtures.mjs",
+  "captured_against": {
+    "base_url": "http://127.0.0.1",
+    "source_image": "infiniflow/ragflow:v0.26.4",
+    "proxy_scheme": "python",
+    "api_version": "v1"
+  },
+  "redaction": {
+    "policy": "Secrets never reach this file. Keys matching api_key/secret/token/password/credential and the Authorization header are replaced with placeholders; the throwaway account's e-mail and password are replaced wherever they appear in any string value.",
+    "placeholders": [
+      "<redacted:authorization>",
+      "<redacted:email>",
+      "<redacted:password>"
+    ]
+  },
+  "interactions": [
+    {
+      "name": "dataset.create",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/datasets",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": {
+          "name": "fixture-dataset-17sud5j1"
+        }
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": {
+            "artifact_task_finish_at": null,
+            "artifact_task_id": null,
+            "avatar": null,
+            "chunk_count": 0,
+            "chunk_method": "naive",
+            "create_date": "2026-08-12T10:40:16",
+            "create_time": 1786502416419,
+            "created_by": "268e23de95f711f19ddc01863fe3cc05",
+            "description": null,
+            "document_count": 0,
+            "embedding_model": "",
+            "graphrag_task_finish_at": null,
+            "graphrag_task_id": null,
+            "id": "26b7007495f711f19ddc01863fe3cc05",
+            "language": "English",
+            "mindmap_task_finish_at": null,
+            "mindmap_task_id": null,
+            "name": "fixture-dataset-17sud5j1",
+            "pagerank": 0,
+            "parser_config": {
+              "auto_keywords": 0,
+              "auto_questions": 0,
+              "children_delimiter": "",
+              "chunk_token_num": 512,
+              "delimiter": "\n",
+              "graphrag": {
+                "batch_chunk_token_size": 4096,
+                "build_subgraph_min_timeout_seconds": 600,
+                "build_subgraph_timeout_per_chunk_seconds": 300,
+                "community_timeout_seconds": 1800,
+                "entity_types": [
+                  "organization",
+                  "person",
+                  "geo",
+                  "event",
+                  "category"
+                ],
+                "lock_acquire_timeout_seconds": 600,
+                "merge_timeout_seconds": 180,
+                "method": "light",
+                "resolution_timeout_seconds": 1800,
+                "retry_attempts": 2,
+                "retry_backoff_max_seconds": 60,
+                "retry_backoff_seconds": 2,
+                "use_graphrag": true
+              },
+              "html4excel": false,
+              "image_context_size": 0,
+              "layout_recognize": "DeepDOC",
+              "llm_id": "",
+              "parent_child": {
+                "children_delimiter": "\n",
+                "use_parent_child": false
+              },
+              "raptor": {
+                "max_cluster": 64,
+                "max_token": 256,
+                "prompt": "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n      {cluster_content}\nThe above is the content you need to summarize.",
+                "random_seed": 0,
+                "threshold": 0.1,
+                "use_raptor": true
+              },
+              "table_context_size": 0,
+              "topn_tags": 3
+            },
+            "permission": "me",
+            "pipeline_id": null,
+            "raptor_task_finish_at": null,
+            "raptor_task_id": null,
+            "similarity_threshold": 0.2,
+            "skill_task_finish_at": null,
+            "skill_task_id": null,
+            "status": "1",
+            "tenant_embd_id": null,
+            "tenant_id": "268e23de95f711f19ddc01863fe3cc05",
+            "token_num": 0,
+            "update_date": "2026-08-12T10:40:16",
+            "update_time": 1786502416419,
+            "vector_similarity_weight": 0.3
+          }
+        }
+      }
+    },
+    {
+      "name": "dataset.list",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/datasets?page=1&page_size=10",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": null
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": [
+            {
+              "artifact_task_finish_at": null,
+              "artifact_task_id": null,
+              "avatar": null,
+              "chunk_count": 0,
+              "chunk_method": "naive",
+              "create_date": "2026-08-12T10:40:16",
+              "create_time": 1786502416419,
+              "created_by": "268e23de95f711f19ddc01863fe3cc05",
+              "description": null,
+              "document_count": 0,
+              "embedding_model": "",
+              "graphrag_task_finish_at": null,
+              "graphrag_task_id": null,
+              "id": "26b7007495f711f19ddc01863fe3cc05",
+              "language": "English",
+              "mindmap_task_finish_at": null,
+              "mindmap_task_id": null,
+              "name": "fixture-dataset-17sud5j1",
+              "nickname": "Fixture Capture",
+              "pagerank": 0,
+              "parser_config": {
+                "auto_keywords": 0,
+                "auto_questions": 0,
+                "children_delimiter": "",
+                "chunk_token_num": 512,
+                "delimiter": "\n",
+                "graphrag": {
+                  "batch_chunk_token_size": 4096,
+                  "build_subgraph_min_timeout_seconds": 600,
+                  "build_subgraph_timeout_per_chunk_seconds": 300,
+                  "community_timeout_seconds": 1800,
+                  "entity_types": [
+                    "organization",
+                    "person",
+                    "geo",
+                    "event",
+                    "category"
+                  ],
+                  "lock_acquire_timeout_seconds": 600,
+                  "merge_timeout_seconds": 180,
+                  "method": "light",
+                  "resolution_timeout_seconds": 1800,
+                  "retry_attempts": 2,
+                  "retry_backoff_max_seconds": 60,
+                  "retry_backoff_seconds": 2,
+                  "use_graphrag": true
+                },
+                "html4excel": false,
+                "image_context_size": 0,
+                "layout_recognize": "DeepDOC",
+                "llm_id": "",
+                "parent_child": {
+                  "children_delimiter": "\n",
+                  "use_parent_child": false
+                },
+                "raptor": {
+                  "max_cluster": 64,
+                  "max_token": 256,
+                  "prompt": "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n      {cluster_content}\nThe above is the content you need to summarize.",
+                  "random_seed": 0,
+                  "threshold": 0.1,
+                  "use_raptor": true
+                },
+                "table_context_size": 0,
+                "topn_tags": 3
+              },
+              "permission": "me",
+              "pipeline_id": null,
+              "raptor_task_finish_at": null,
+              "raptor_task_id": null,
+              "similarity_threshold": 0.2,
+              "skill_task_finish_at": null,
+              "skill_task_id": null,
+              "status": "1",
+              "tenant_avatar": null,
+              "tenant_embd_id": null,
+              "tenant_id": "268e23de95f711f19ddc01863fe3cc05",
+              "token_num": 0,
+              "update_date": "2026-08-12T10:40:16",
+              "update_time": 1786502416419,
+              "vector_similarity_weight": 0.3
+            }
+          ],
+          "total_datasets": 1
+        }
+      }
+    },
+    {
+      "name": "dataset.get",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/datasets/26b7007495f711f19ddc01863fe3cc05",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": null
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": {
+            "artifact_task_finish_at": null,
+            "artifact_task_id": null,
+            "avatar": null,
+            "chunk_count": 0,
+            "chunk_method": "naive",
+            "connectors": [],
+            "create_date": "2026-08-12T10:40:16",
+            "create_time": 1786502416419,
+            "created_by": "268e23de95f711f19ddc01863fe3cc05",
+            "description": null,
+            "document_count": 0,
+            "embedding_model": "",
+            "graphrag_task_finish_at": null,
+            "graphrag_task_id": null,
+            "id": "26b7007495f711f19ddc01863fe3cc05",
+            "language": "English",
+            "mindmap_task_finish_at": null,
+            "mindmap_task_id": null,
+            "name": "fixture-dataset-17sud5j1",
+            "pagerank": 0,
+            "parser_config": {
+              "auto_keywords": 0,
+              "auto_questions": 0,
+              "children_delimiter": "",
+              "chunk_token_num": 512,
+              "delimiter": "\n",
+              "graphrag": {
+                "batch_chunk_token_size": 4096,
+                "build_subgraph_min_timeout_seconds": 600,
+                "build_subgraph_timeout_per_chunk_seconds": 300,
+                "community_timeout_seconds": 1800,
+                "entity_types": [
+                  "organization",
+                  "person",
+                  "geo",
+                  "event",
+                  "category"
+                ],
+                "lock_acquire_timeout_seconds": 600,
+                "merge_timeout_seconds": 180,
+                "method": "light",
+                "resolution_timeout_seconds": 1800,
+                "retry_attempts": 2,
+                "retry_backoff_max_seconds": 60,
+                "retry_backoff_seconds": 2,
+                "use_graphrag": true
+              },
+              "html4excel": false,
+              "image_context_size": 0,
+              "layout_recognize": "DeepDOC",
+              "llm_id": "",
+              "parent_child": {
+                "children_delimiter": "\n",
+                "use_parent_child": false
+              },
+              "raptor": {
+                "max_cluster": 64,
+                "max_token": 256,
+                "prompt": "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n      {cluster_content}\nThe above is the content you need to summarize.",
+                "random_seed": 0,
+                "threshold": 0.1,
+                "use_raptor": true
+              },
+              "table_context_size": 0,
+              "topn_tags": 3
+            },
+            "permission": "me",
+            "pipeline_id": null,
+            "raptor_task_finish_at": null,
+            "raptor_task_id": null,
+            "similarity_threshold": 0.2,
+            "size": 0,
+            "skill_task_finish_at": null,
+            "skill_task_id": null,
+            "status": "1",
+            "tenant_embd_id": null,
+            "tenant_id": "268e23de95f711f19ddc01863fe3cc05",
+            "token_num": 0,
+            "update_date": "2026-08-12T10:40:16",
+            "update_time": 1786502416419,
+            "vector_similarity_weight": 0.3
+          }
+        }
+      }
+    },
+    {
+      "name": "dataset.update",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/datasets/26b7007495f711f19ddc01863fe3cc05",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": {
+          "description": "captured by scripts/rag-platform/capture-fixtures.mjs"
+        }
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": {
+            "artifact_task_finish_at": null,
+            "artifact_task_id": null,
+            "avatar": null,
+            "chunk_count": 0,
+            "chunk_method": "naive",
+            "connectors": [],
+            "create_date": "2026-08-12T10:40:16",
+            "create_time": 1786502416419,
+            "created_by": "268e23de95f711f19ddc01863fe3cc05",
+            "description": "captured by scripts/rag-platform/capture-fixtures.mjs",
+            "document_count": 0,
+            "embedding_model": "",
+            "graphrag_task_finish_at": null,
+            "graphrag_task_id": null,
+            "id": "26b7007495f711f19ddc01863fe3cc05",
+            "language": "English",
+            "mindmap_task_finish_at": null,
+            "mindmap_task_id": null,
+            "name": "fixture-dataset-17sud5j1",
+            "pagerank": 0,
+            "parser_config": {
+              "auto_keywords": 0,
+              "auto_questions": 0,
+              "children_delimiter": "",
+              "chunk_token_num": 512,
+              "delimiter": "\n",
+              "graphrag": {
+                "batch_chunk_token_size": 4096,
+                "build_subgraph_min_timeout_seconds": 600,
+                "build_subgraph_timeout_per_chunk_seconds": 300,
+                "community_timeout_seconds": 1800,
+                "entity_types": [
+                  "organization",
+                  "person",
+                  "geo",
+                  "event",
+                  "category"
+                ],
+                "lock_acquire_timeout_seconds": 600,
+                "merge_timeout_seconds": 180,
+                "method": "light",
+                "resolution_timeout_seconds": 1800,
+                "retry_attempts": 2,
+                "retry_backoff_max_seconds": 60,
+                "retry_backoff_seconds": 2,
+                "use_graphrag": true
+              },
+              "html4excel": false,
+              "image_context_size": 0,
+              "layout_recognize": "DeepDOC",
+              "llm_id": "",
+              "parent_child": {
+                "children_delimiter": "\n",
+                "use_parent_child": false
+              },
+              "raptor": {
+                "max_cluster": 64,
+                "max_token": 256,
+                "prompt": "Please summarize the following paragraphs. Be careful with the numbers, do not make things up. Paragraphs as following:\n      {cluster_content}\nThe above is the content you need to summarize.",
+                "random_seed": 0,
+                "threshold": 0.1,
+                "use_raptor": true
+              },
+              "table_context_size": 0,
+              "topn_tags": 3
+            },
+            "permission": "me",
+            "pipeline_id": null,
+            "raptor_task_finish_at": null,
+            "raptor_task_id": null,
+            "similarity_threshold": 0.2,
+            "skill_task_finish_at": null,
+            "skill_task_id": null,
+            "status": "1",
+            "tenant_embd_id": null,
+            "tenant_id": "268e23de95f711f19ddc01863fe3cc05",
+            "token_num": 0,
+            "update_date": "2026-08-12T10:40:16",
+            "update_time": 1786502416443,
+            "vector_similarity_weight": 0.3
+          }
+        }
+      }
+    },
+    {
+      "name": "dataset.not_found",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/datasets/00000000000000000000000000000000",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": null
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 102,
+          "message": "User '268e23de95f711f19ddc01863fe3cc05' lacks permission for dataset '00000000000000000000000000000000'"
+        }
+      }
+    }
+  ]
+}

@@ -1,25 +1,29 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import { hubTokenHeader } from "../lib/hub-token-header";
 import { abortError, withAbort } from "../lib/abort-signals";
 import type { TransportMode } from "./constants";
 
+// One literal for both 405 branches below, so the two cannot drift apart.
+const METHOD_NOT_ALLOWED_HINT = `the ${PRODUCT_NAME} backend did not accept this API method. Restart ${PRODUCT_NAME} so the frontend and backend are on the same build.`;
+
 function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
     const detail = (body as { detail?: unknown }).detail;
     const formatted = formatFastApiDetail(detail);
     if (status === 405) {
-      return `${formatted || "Method Not Allowed"} - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.`;
+      return `${formatted || "Method Not Allowed"} - ${METHOD_NOT_ALLOWED_HINT}`;
     }
     if (formatted) return formatted;
     const message = (body as { message?: unknown }).message;
     if (typeof message === "string" && message) return message;
   }
   if (status === 405) {
-    return "Method Not Allowed - the Unsloth backend did not accept this API method. Restart Unsloth so the frontend and backend are on the same build.";
+    return `Method Not Allowed - ${METHOD_NOT_ALLOWED_HINT}`;
   }
   return `Request failed (${status})`;
 }

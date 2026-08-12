@@ -1,4 +1,4 @@
-import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
+import type { ExportedMessageRepository } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
 
 type ThreadImportExport = {
@@ -12,7 +12,11 @@ type ContentPart = { type: "text" | "reasoning" | "tool"; text: string };
  * Extracts only the editable text and reasoning from a message,
  * ignoring structured parts like tool calls that cannot be edited as plain text.
  */
-export function extractTaggedText(content: any): string {
+function isContentPart(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export function extractTaggedText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return "";
 
@@ -20,14 +24,15 @@ export function extractTaggedText(content: any): string {
   const close = "\u003E"; // >
 
   return content
-    .map((part: any) => {
+    .map((part: unknown) => {
       if (typeof part === 'string') return part;
-      if (!part) return "";
+      if (!isContentPart(part)) return "";
 
       // Only extract text from 'text' or 'reasoning' parts.
       // Tool calls/responses are ignored here so they aren't accidentally
       // deleted or corrupted by the user in the textarea.
-      const text = part.text || part.content || "";
+      const rawText = part.text || part.content || "";
+      const text = typeof rawText === "string" ? rawText : "";
       if (!text) return "";
 
       switch (part.type) {
@@ -98,22 +103,22 @@ export async function updateThreadMessage(args: {
     if (m.message.id !== messageId) return m;
 
     const originalContent = m.message.content;
-    let finalContent: any[] = [];
+    let finalContent: unknown[] = [];
 
     if (Array.isArray(originalContent)) {
-      const firstEditableIndex = originalContent.findIndex((part: any) =>
-        part.type === 'text' || part.type === 'reasoning'
+      const firstEditableIndex = originalContent.findIndex((part: unknown) =>
+        isContentPart(part) && (part.type === 'text' || part.type === 'reasoning')
       );
 
       if (firstEditableIndex === -1) {
-        const nonEditableParts = originalContent.filter((part: any) =>
-          part.type !== 'text' && part.type !== 'reasoning'
+        const nonEditableParts = originalContent.filter((part: unknown) =>
+          !isContentPart(part) || (part.type !== 'text' && part.type !== 'reasoning')
         );
         finalContent = [...parsedEditableContent, ...nonEditableParts];
       } else {
         const before = originalContent.slice(0, firstEditableIndex);
-        const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) =>
-          part.type !== 'text' && part.type !== 'reasoning'
+        const after = originalContent.slice(firstEditableIndex + 1).filter((part: unknown) =>
+          !isContentPart(part) || (part.type !== 'text' && part.type !== 'reasoning')
         );
         finalContent = [...before, ...parsedEditableContent, ...after];
       }

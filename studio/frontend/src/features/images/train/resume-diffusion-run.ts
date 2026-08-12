@@ -51,6 +51,9 @@ export function buildDiffusionResumePayload(
     resumed_from_job_id: _replacedJobId,
     ...inherited
   } = config;
+  void _replacedToken;
+  void _replacedCheckpoint;
+  void _replacedJobId;
   return {
     ...inherited,
     // Re-stated because the narrowing above proved them present, which `Partial` cannot carry.

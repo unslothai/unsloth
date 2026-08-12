@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1.7
+
+# Build the missing Go server from the exact source tag that corresponds to the
+# pinned upstream runtime image. The wrapper script validates the tag commit and
+# supplies a clean `git archive` as this build context.
+FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm AS go-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+ENV GOPROXY="https://proxy.golang.org,direct"
+
+WORKDIR /src
+COPY . .
+COPY --from=rag-platform-assets pdf-oxide-adapter-nocgo.go \
+  /src/internal/deepdoc/parser/pdf/pdfoxide/pdf_oxide_adapter_nocgo.go
+COPY --from=rag-platform-assets rag-analyzer-nocgo.go \
+  /src/internal/binding/rag_analyzer_nocgo.go
+COPY --from=rag-platform-assets rag-analyzer-nocgo_test.go \
+  /src/internal/binding/rag_analyzer_nocgo_owned_test.go
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/.cache/go-tmp \
+    CGO_ENABLED=0 go test ./internal/binding \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+      GOTMPDIR=/root/.cache/go-tmp \
+      go build -p=2 -trimpath -ldflags="-s -w" \
+      -o /src/bin/ragflow_server cmd/ragflow_server.go \
+    && test -x /src/bin/ragflow_server
+
+# Preserve every upstream runtime layer. Add the executable the upstream
+# Dockerfile's `COPY bin bin` intended to ship and the runtime key wrapper.
+FROM --platform=linux/amd64 infiniflow/ragflow:v0.26.4
+
+COPY --from=go-builder /src/bin/ragflow_server /ragflow/bin/ragflow_server
+COPY --from=rag-platform-assets backend-entrypoint.sh /usr/local/bin/rag-platform-entrypoint
+
+RUN rm -f /ragflow/conf/private.pem /ragflow/conf/public.pem \
+    && chmod 0755 /usr/local/bin/rag-platform-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/rag-platform-entrypoint"]
+
+LABEL org.opencontainers.image.title="Rag Platform backend" \
+      org.opencontainers.image.version="0.26.4" \
+      org.opencontainers.image.base.name="infiniflow/ragflow:v0.26.4" \
+      org.opencontainers.image.revision="cb93883f3f8c975eecb2fed81210effeb3bdb06f" \
+      io.rag-platform.go-profile="pure-go"

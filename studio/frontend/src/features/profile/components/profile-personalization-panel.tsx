@@ -10,6 +10,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { PRODUCT_NAME } from "@/config/branding";
 import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
@@ -88,7 +89,7 @@ export function ProfilePersonalizationPanel() {
   const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
-  const previewName = draftName.trim() || sessionSub || "Unsloth";
+  const previewName = draftName.trim() || sessionSub || PRODUCT_NAME;
 
   useEffect(() => {
     const previous = lastDisplayNameRef.current;
@@ -385,7 +386,7 @@ export function ProfilePersonalizationPanel() {
                 }
               }}
               autoComplete="off"
-              placeholder={sessionSub || "Unsloth"}
+              placeholder={sessionSub || PRODUCT_NAME}
               className="h-9 w-full rounded-full text-sm"
             />
           </div>

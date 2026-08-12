@@ -60,7 +60,6 @@ import {
   CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
-  supportsProviderPromptCaching,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,

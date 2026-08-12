@@ -1,0 +1,261 @@
+####################################################################
+# Rag Platform — owned Docker Compose deployment layer
+#
+# Owns: Compose project name, container name, service identifiers,
+# image alias, network name, new volume names and the host-side
+# log/config directory names.
+#
+# Does NOT own and never rewrites: the upstream backend source tree,
+# container-internal paths (/ragflow/...), Python/Go import or package
+# names, upstream environment variable NAMES, or the existing upstream
+# data volumes.
+#
+# The upstream stack is pulled in with `include:` rather than copied, so
+# there is a single source of truth for the infrastructure services and
+# `git pull upstream main` on the backend cannot silently drift from this
+# file. Relative paths inside an included file resolve against that
+# file's own directory (verified with `docker compose config`), so the
+# base file's ./init.sql, ./service_conf.yaml.template and ./entrypoint.sh
+# keep pointing into <backend>/docker/ with no upstream edits.
+#
+# Run through ./platform-compose.sh, which supplies both env files in
+# the required order and validates the backend path.
+####################################################################
+
+include:
+  # Hard-fails with a named variable instead of a confusing "no such file"
+  # when the backend checkout cannot be located.
+  - path: ${RAG_PLATFORM_BACKEND_DIR:?RAG_PLATFORM_BACKEND_DIR must point at the rag-backend checkout}/docker/docker-compose-base.yml
+
+services:
+  # -------------------------------------------------------------
+  # Owned backend service — CPU
+  # -------------------------------------------------------------
+  # Mirrors the upstream `ragflow-cpu` service definition but under an
+  # owned identity. The upstream service is left untouched and inactive:
+  # its `cpu` profile is not part of the owned COMPOSE_PROFILES.
+  platform-backend-cpu:
+    profiles:
+      - platform-cpu
+    # Owned image alias. `build-backend-image.sh` preserves the pinned upstream
+    # runtime image and adds the Go server compiled from the matching v0.26.4
+    # source tag. Source commit, base digest, pure-Go profile and compatibility
+    # adapters are recorded in THIRD_PARTY_NOTICES.md. The tag is never `latest`.
+    image: rag-platform-backend:0.26.4
+    # The source image publishes a single-architecture manifest
+    # (application/vnd.docker.distribution.manifest.v2+json, linux/amd64;
+    # `docker manifest inspect` shows no arm64 variant). Without this key
+    # Compose treats the platform difference on an arm64 host as a missing
+    # image and tries to pull `rag-platform-backend`, which is a local-only
+    # alias and does not exist in any registry: "pull access denied for
+    # rag-platform-backend". Pinning the image's real platform makes the
+    # local alias resolve and is a no-op on an amd64 host. On arm64 the
+    # backend therefore runs emulated.
+    platform: linux/amd64
+    # Owned container name. Also the CPU/GPU mutual exclusion: both owned
+    # backend services claim this name, so enabling platform-cpu and
+    # platform-gpu together fails at `docker compose config` time with
+    # `container name "rag-platform-backend" is already in use`.
+    container_name: rag-platform-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      platform-storage-init:
+        condition: service_completed_successfully
+    command:
+      - --enable-adminserver
+      - --init-model-provider-tables
+    ports:
+      - ${SVR_WEB_HTTP_PORT}:80
+      - ${SVR_WEB_HTTPS_PORT}:443
+      - ${SVR_HTTP_PORT}:9380 # Python API
+      - ${ADMIN_SVR_HTTP_PORT}:9381 # Python admin
+      - ${SVR_MCP_PORT}:9382 # MCP
+      - ${GO_ADMIN_PORT}:9383 # Go admin
+      - ${GO_HTTP_PORT}:9384 # Go API
+    volumes:
+      # Owned host-side directory name. The container-side path is
+      # upstream's and is deliberately unchanged.
+      - ./rag-platform-logs:/ragflow/logs
+      # Runtime-generated signing/encryption key material lives in an owned
+      # Docker volume, never in either Git worktree or an image layer.
+      - rag_platform_keys:/rag-platform/keys
+      # Owned method-aware hybrid map. The entrypoint copies this file to
+      # ragflow.conf after selecting API_PROXY_SCHEME=hybrid.
+      - ./rag-platform.hybrid.conf:/etc/nginx/conf.d/ragflow.conf.hybrid:ro
+      # Upstream's own compose file additionally bind-mounts the checkout's
+      # docker/entrypoint.sh and docker/service_conf.yaml.template over the
+      # image copies. That is only safe when the checkout and the image are
+      # the same version. This deployment pins image v0.26.4 while the
+      # checkout tracks upstream main (968 commits ahead of the v0.26.4 tag),
+      # and the two files have diverged incompatibly:
+      #
+      #   * entrypoint.sh — v0.26.4 runs the model-provider migration inline
+      #     (tools/scripts/mysql_migration.py); main delegates to
+      #     tools/scripts/run_migrations.sh, which does not exist in the
+      #     v0.26.4 image. With `set -e` at the top of the script, mounting
+      #     main's copy makes --init-model-provider-tables abort the
+      #     entrypoint, and `restart: unless-stopped` turns that into a crash
+      #     loop ("tools/scripts/run_migrations.sh: No such file or
+      #     directory", observed).
+      #   * service_conf.yaml.template — main adds sections for services this
+      #     image has no code to read (serenedb, clickhouse, otel, ingestor)
+      #     and drops the task_executor block v0.26.4 expects.
+      #
+      # So the image's own matching copies are used. Both remain configurable
+      # through the environment: the template is env-substituted at start
+      # (${MYSQL_DBNAME}, ${MINIO_BUCKET}, ${MINIO_PREFIX_PATH}, ...) and the
+      # entrypoint reads API_PROXY_SCHEME, so nothing in the owned layer
+      # depends on replacing either file. Re-add these binds only when the
+      # pinned image tag and the checkout are on the same version.
+    env_file:
+      # Later wins. The upstream file carries the credentials and every
+      # unowned default; the owned file overrides only what Rag Platform
+      # names (proxy scheme, DB/bucket naming, sizing).
+      - ${RAG_PLATFORM_BACKEND_DIR}/docker/.env
+      - ./.env.rag-platform
+    networks:
+      - ragflow
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # -------------------------------------------------------------
+  # Owned backend service — GPU
+  # -------------------------------------------------------------
+  # Upstream's `ragflow-gpu` publishes neither 9383 nor 9384, so with
+  # API_PROXY_SCHEME=hybrid the Go admin and Go API would run inside the
+  # container yet be unreachable from the host — the exact
+  # runtime-disabled situation Faz 0 forbids. The owned GPU service
+  # publishes the full four-service port set so hybrid parity holds on
+  # both device profiles.
+  platform-backend-gpu:
+    profiles:
+      - platform-gpu
+    image: rag-platform-backend:0.26.4
+    # Same single-architecture manifest as the CPU service above.
+    platform: linux/amd64
+    container_name: rag-platform-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      platform-storage-init:
+        condition: service_completed_successfully
+    command:
+      - --enable-adminserver
+      - --init-model-provider-tables
+    ports:
+      - ${SVR_WEB_HTTP_PORT}:80
+      - ${SVR_WEB_HTTPS_PORT}:443
+      - ${SVR_HTTP_PORT}:9380
+      - ${ADMIN_SVR_HTTP_PORT}:9381
+      - ${SVR_MCP_PORT}:9382
+      - ${GO_ADMIN_PORT}:9383
+      - ${GO_HTTP_PORT}:9384
+    volumes:
+      # Image-shipped entrypoint.sh and service_conf.yaml.template are used
+      # deliberately; see the CPU service above for why the checkout's copies
+      # must not be bind-mounted over this pinned image.
+      - ./rag-platform-logs:/ragflow/logs
+      - rag_platform_keys:/rag-platform/keys
+      - ./rag-platform.hybrid.conf:/etc/nginx/conf.d/ragflow.conf.hybrid:ro
+    env_file:
+      - ${RAG_PLATFORM_BACKEND_DIR}/docker/.env
+      - ./.env.rag-platform
+    networks:
+      - ragflow
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # -------------------------------------------------------------
+  # Owned object-store bootstrap
+  # -------------------------------------------------------------
+  # MINIO_BUCKET puts the backend in single-bucket mode, where it never
+  # creates the bucket itself: rag/utils/minio_conn.py health() only calls
+  # bucket_exists(), and put() skips make_bucket() whenever a default
+  # bucket is configured ("bucket must already exist - we don't have
+  # permission to create buckets"). Without this one-shot job the first
+  # upload and the storage health check both fail.
+  # Idempotent: `mc mb --ignore-existing` is a no-op on re-runs.
+  platform-storage-init:
+    profiles:
+      - platform-cpu
+      - platform-gpu
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z
+    container_name: rag-platform-storage-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - ${RAG_PLATFORM_BACKEND_DIR}/docker/.env
+      - ./.env.rag-platform
+    entrypoint:
+      - sh
+      - -c
+      # Credentials arrive through the environment and are referenced by
+      # name only ($$VAR reaches the shell, not Compose), so no secret is
+      # written into this file, into the process arguments, or into the
+      # log line below.
+      - |
+        set -e
+        mc alias set platform "http://$$MINIO_HOST:9000" "$$MINIO_USER" "$$MINIO_PASSWORD" > /dev/null 2>&1
+        mc mb --ignore-existing "platform/$$MINIO_BUCKET" > /dev/null
+        echo "object store ready: bucket=$$MINIO_BUCKET prefix=$$MINIO_PREFIX_PATH"
+    networks:
+      - ragflow
+    restart: "no"
+
+  # -------------------------------------------------------------
+  # Owned MySQL bootstrap override
+  # -------------------------------------------------------------
+  # Only the init script is overridden. Compose merges service volumes by
+  # container target, so this bind replaces the base file's
+  # ./init.sql:/data/application/init.sql entirely (verified with
+  # `docker compose config`), and mysql --init-file then creates the
+  # rag_platform schema instead of the upstream default.
+  #
+  # This is required because nothing in the application creates the
+  # database: api.db.db_models.init_database_tables creates TABLES inside
+  # an existing schema, and no CREATE DATABASE statement exists anywhere
+  # in the backend's Python or Go sources.
+  mysql:
+    volumes:
+      - ./rag-platform-config/init.sql:/data/application/init.sql
+
+networks:
+  # Renames the network declared by the included base file. Without an
+  # explicit name Compose would derive `rag-platform_ragflow` from the
+  # project name and the upstream key.
+  ragflow:
+    name: rag-platform-network
+    driver: bridge
+
+volumes:
+  # Owned names for the volumes this deployment creates. They are new
+  # volumes on a fresh installation, not renames of populated ones — an
+  # existing installation must migrate its data before adopting these
+  # names, so silent re-pointing is deliberately not automated.
+  esdata01:
+    name: rag-platform-es-data
+  mysql_data:
+    name: rag-platform-mysql-data
+  minio_data:
+    name: rag-platform-minio-data
+  redis_data:
+    name: rag-platform-redis-data
+  nats_data:
+    name: rag-platform-nats-data
+  rag_platform_keys:
+    name: rag-platform-key-material

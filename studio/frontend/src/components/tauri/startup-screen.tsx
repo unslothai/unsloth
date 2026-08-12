@@ -8,6 +8,7 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Spinner } from "@/components/ui/spinner";
+import { PRODUCT_NAME, PRODUCT_WORDMARK } from "@/config/branding";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
@@ -99,17 +100,12 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 function Logo() {
   return (
     <div className="flex items-center justify-center gap-3">
-      <img
-        src="/sticker.png"
-        alt=""
-        aria-hidden="true"
-        className="h-[60px] w-[60px] object-contain"
-      />
+      {/* Typographic wordmark, no upstream mark (ADR 0000 decision 4). */}
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
         style={{ fontFamily: '"Hellix", sans-serif' }}
       >
-        unsloth
+        {PRODUCT_WORDMARK}
       </span>
     </div>
   );
@@ -165,7 +161,7 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
           className="text-ui-13 font-semibold tracking-[-0.01em] text-muted-foreground"
           style={{ fontFamily: '"Hellix", sans-serif' }}
         >
-          To install Unsloth, click Get Started.
+          To install {PRODUCT_NAME}, click Get Started.
         </p>
         <ActionButton onClick={onInstall}>
           Get Started
@@ -276,7 +272,7 @@ function ClosingContent() {
       <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
         <p className="text-sm font-bold text-foreground" aria-live="polite">
-          Closing Unsloth Desktop...
+          Closing {PRODUCT_NAME} Desktop...
         </p>
         <p className="text-sm text-muted-foreground">Shutting down the backend.</p>
       </div>

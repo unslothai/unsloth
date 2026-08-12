@@ -1,6 +1,7 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import type { TourStep } from "@/features/tour";
 
 export function buildChatTourSteps({
@@ -27,9 +28,9 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          Selects what’s loaded for inference. Recommended is Unsloth’s curated
-          base models; On Device is your downloads and fine-tuned outputs (LoRA
-          adapters and full finetunes).
+          Selects what’s loaded for inference. Recommended is {PRODUCT_NAME}’s
+          curated base models; On Device is your downloads and fine-tuned
+          outputs (LoRA adapters and full finetunes).
         </>
       ),
     },
@@ -39,8 +40,8 @@ export function buildChatTourSteps({
       title: "Find a model",
       body: (
         <>
-          Search Unsloth’s models, or hit Search Hub for all of Hugging Face.
-          Switch Recommended and On Device, filter by format, and sort by
+          Search {PRODUCT_NAME}’s models, or hit Search Hub for all of Hugging
+          Face. Switch Recommended and On Device, filter by format, and sort by
           trending or recent. An OOM tag means it won’t fit in your VRAM.
         </>
       ),

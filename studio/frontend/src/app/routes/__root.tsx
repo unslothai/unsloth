@@ -1,6 +1,7 @@
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { branding } from "@/config/branding";
 import {
   FEATURE_API_MONITOR,
   FEATURE_IMAGES,
@@ -143,7 +144,7 @@ export const Route = createRootRoute({
 const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
 
 // Fallback when no matched route declares a `staticData.title`.
-const DEFAULT_DOCUMENT_TITLE = "Unsloth";
+const DEFAULT_DOCUMENT_TITLE = branding.documentTitle;
 
 function RootLayout() {
   const t = useT();

@@ -9,6 +9,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import { usePlatformStore } from "@/config/env";
 import { MODEL_TYPES } from "@/config/training";
 import {
@@ -80,7 +81,7 @@ export function ModelTypeStep(): ReactElement {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h2 className="text-lg font-semibold">Welcome to Unsloth</h2>
+        <h2 className="text-lg font-semibold">Welcome to {PRODUCT_NAME}</h2>
         <p className="text-sm text-muted-foreground">
           Choose a path - fine-tune LLMs, vision, embedding, audio models or
           just chat.{" "}

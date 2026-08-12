@@ -49,7 +49,7 @@ const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
 const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 // A definition line renders as nothing at all.
-const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
+const DEFINITION = /^ {0,3}\[((?:[^[\]\\]|\\.)+)\]:/;
 // CommonMark: a backslash escapes ASCII punctuation.
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 // Private-use sentinels park code spans, so document text cannot contain them.

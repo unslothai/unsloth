@@ -2,6 +2,7 @@
 
 
 import { useEffect, useRef, useState } from "react";
+import { PRODUCT_NAME } from "@/config/branding";
 import { isTauri } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
@@ -492,7 +493,7 @@ export function useTauriUpdate(isExternalServer = false) {
     if (cleanupRearmedRef.current) return true;
     if (await resumeCleanup()) return true;
     setError(
-      "Crash cleanup could not be re-armed. Restart Unsloth before continuing.",
+      `Crash cleanup could not be re-armed. Restart ${PRODUCT_NAME} before continuing.`,
     );
     setStatus("error");
     return false;

@@ -11,6 +11,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { PRODUCT_NAME } from "@/config/branding";
 import { usePlatformStore } from "@/config/env";
 import {
   loadRemoteAccess,
@@ -206,10 +207,13 @@ function RemotePasswordRow({
   if (!(isTauri && status)) {
     return null;
   }
+  // "unsloth" below is the literal login username (HIDDEN_LOGIN_USERNAME in
+  // features/auth/components/auth-form.tsx), not the product name; renaming it
+  // would tell users to type a username that does not exist.
   return (
     <SettingsRow
       label="Remote password"
-      description="Remote browsers sign in as unsloth. The Unsloth Desktop App keeps signing in automatically."
+      description={`Remote browsers sign in as unsloth. The ${PRODUCT_NAME} Desktop App keeps signing in automatically.`}
     >
       <ChangePasswordDialog initial={status.passwordPending} onDone={onDone} />
     </SettingsRow>
@@ -372,8 +376,8 @@ export function RemoteAccessSection() {
               <AccessStatus status={status} />
             </div>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth and its APIs from other devices through a secure,
-              temporary Cloudflare URL.
+              Use {PRODUCT_NAME} and its APIs from other devices through a
+              secure, temporary Cloudflare URL.
             </p>
           </div>
         </div>
@@ -400,7 +404,7 @@ export function RemoteAccessSection() {
 
         <SettingsRow
           label="Start automatically"
-          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+          description={`Create a new remote URL each time ${PRODUCT_NAME} starts. Stopping remote access now won’t turn this off.`}
         >
           <Switch
             checked={status?.autoStart ?? false}

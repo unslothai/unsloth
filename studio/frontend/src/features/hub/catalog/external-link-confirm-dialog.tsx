@@ -12,6 +12,7 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { PRODUCT_NAME } from "@/config/branding";
 import { openLink } from "@/lib/open-link";
 import { LinkSquare02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -48,8 +49,8 @@ export function ExternalLinkConfirmDialog() {
           </AlertDialogMedia>
           <AlertDialogTitle>Open external link</AlertDialogTitle>
           <AlertDialogDescription>
-            You are about to leave Unsloth and open this page in your browser.
-            Only continue if you trust the destination.
+            You are about to leave {PRODUCT_NAME} and open this page in your
+            browser. Only continue if you trust the destination.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {pendingUrl && (

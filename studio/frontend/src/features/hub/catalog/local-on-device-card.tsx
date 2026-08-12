@@ -12,6 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -477,9 +478,10 @@ export function LocalOnDeviceCard({
             className="mt-[1px] size-3.5 shrink-0"
           />
           <span>
-            This looks like an older Hub cache. It may use a format that Unsloth
-            no longer loads (missing config or unsupported quantization). You
-            can still keep it on disk, or delete it to free space.
+            This looks like an older Hub cache. It may use a format that{" "}
+            {PRODUCT_NAME} no longer loads (missing config or unsupported
+            quantization). You can still keep it on disk, or delete it to free
+            space.
           </span>
         </div>
       )}

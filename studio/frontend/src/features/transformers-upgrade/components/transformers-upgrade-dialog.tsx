@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { PRODUCT_NAME } from "@/config/branding";
 import { cn } from "@/lib/utils";
 import { PackageIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -82,9 +83,9 @@ export function TransformersUpgradeDialog() {
                     <>
                       Even the latest transformers release on PyPI does not
                       support it yet: the architecture is only available on the
-                      transformers development branch (main), and Unsloth does
-                      not install development builds. Support arrives with the
-                      next transformers release on PyPI.
+                      transformers development branch (main), and {PRODUCT_NAME}{" "}
+                      does not install development builds. Support arrives with
+                      the next transformers release on PyPI.
                     </>
                   ) : (
                     <>

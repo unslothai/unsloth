@@ -232,6 +232,9 @@ export function TrainingMemoryParams(): ReactElement {
             {isMac ? (
               <SelectItem value="mlx">MLX</SelectItem>
             ) : (
+              // Both entries name the library providing the gradient-checkpointing
+              // kernel, not this product; "unsloth" is also the wire value the
+              // backend expects (gradient_checkpointing in training/api/models-api.ts).
               <SelectItem value="unsloth">Unsloth</SelectItem>
             )}
           </SelectContent>

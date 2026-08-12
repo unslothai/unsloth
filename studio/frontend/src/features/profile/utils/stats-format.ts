@@ -233,7 +233,7 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} خطوة",
     },
   },
-} satisfies Record<Locale, Record<LexicalProfileCountUnit, CountTemplate>>;
+} satisfies Record<string, Record<LexicalProfileCountUnit, CountTemplate>>;
 
 type ProfileCountLocale = Locale;
 

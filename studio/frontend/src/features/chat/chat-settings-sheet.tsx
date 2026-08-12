@@ -42,6 +42,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import { usePlatformStore } from "@/config/env";
 import {
   NumericValueInput,
@@ -1698,8 +1699,8 @@ function AutoHealToolCallsToggle() {
           Auto-Healing Tool Calls
         </span>
         <InfoHint>
-          Unsloth auto-fixes broken tool calls so inference output is never
-          broken.
+          {PRODUCT_NAME} auto-fixes broken tool calls so inference output is
+          never broken.
         </InfoHint>
       </div>
       <Switch
@@ -1747,11 +1748,10 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, every local Unsloth tool call pauses for your approval
-            before it runs (the "Ask for approval" level). When off, tool calls
-            run without prompts inside the sandbox (the "Run automatically"
-            level).
-            Provider-hosted tools are not gated here.
+            When on, every local {PRODUCT_NAME} tool call pauses for your
+            approval before it runs (the "Ask for approval" level). When off,
+            tool calls run without prompts inside the sandbox (the "Run
+            automatically" level). Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
         {permissionMode === "full" ? (
@@ -1780,8 +1780,8 @@ function BypassPermissionsToggle() {
           Tool permissions
         </span>
         <InfoHint>
-          Choose how Unsloth approves tool calls before they run. Full access
-          disables confirmations and the code sandbox.
+          Choose how {PRODUCT_NAME} approves tool calls before they run. Full
+          access disables confirmations and the code sandbox.
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}

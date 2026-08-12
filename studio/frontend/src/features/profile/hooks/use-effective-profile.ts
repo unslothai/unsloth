@@ -1,6 +1,7 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import { getAuthToken } from "@/features/auth";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { useUserProfileStore } from "../stores/user-profile-store";
@@ -16,7 +17,7 @@ export function useEffectiveProfile() {
   const addressName = nickname.trim() || dn.split(/\s+/)[0] || sessionSub || "";
   return {
     sessionSub,
-    displayTitle: dn || "Unsloth",
+    displayTitle: dn || PRODUCT_NAME,
     addressName,
     avatarDataUrl,
   };

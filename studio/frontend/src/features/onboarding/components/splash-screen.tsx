@@ -4,6 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { MascotImg } from "@/components/mascot-img";
+import { PRODUCT_NAME } from "@/config/branding";
 import { motion } from "motion/react";
 
 interface SplashScreenProps {
@@ -46,7 +47,7 @@ export function SplashScreen({
           }}
         >
           <h1 className="text-2xl font-semibold tracking-tight">
-            Unsloth
+            {PRODUCT_NAME}
           </h1>
           <p className="text-sm text-muted-foreground">Train and run LLMs locally</p>
         </motion.div>

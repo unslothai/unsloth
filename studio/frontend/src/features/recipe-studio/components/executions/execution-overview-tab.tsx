@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { PRODUCT_NAME } from "@/config/branding";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import type { ModelUsageRow } from "./executions-view-helpers";
@@ -41,7 +42,7 @@ function formatSourceMessage(execution: RecipeExecutionRecord): string {
       typeof source.retry_after_sec === "number" && source.retry_after_sec > 0
         ? ` Waiting ~${formatMetricValue(source.retry_after_sec)}s.`
         : "";
-    return `Waiting for GitHub rate limit. Unsloth will resume automatically.${wait}`;
+    return `Waiting for GitHub rate limit. ${PRODUCT_NAME} will resume automatically.${wait}`;
   }
   return source.message ?? "Crawling GitHub source.";
 }

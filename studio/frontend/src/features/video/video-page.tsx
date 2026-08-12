@@ -48,6 +48,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { EXPORT_FILE_PREFIX } from "@/config/branding";
 import { FEATURE_IMAGES } from "@/config/disabled-features";
 import { usePlatformStore } from "@/config/env";
 import { ParamSlider } from "@/features/chat";
@@ -193,7 +194,7 @@ const VIDEO_LINK_REFRESH_MS = 6 * 60 * 60 * 1000;
 // Videos loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
-// Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
+// Export filename, e.g. RagPlatform_video_20260624-143005_123.mp4.
 type VideoExportFormat = "mp4" | "webm" | "gif";
 
 function exportFilename(
@@ -206,7 +207,7 @@ function exportFilename(
     ? "unknown"
     : `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
       `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
-  return `Unsloth_video_${stamp}_${video.seed}.${format}`;
+  return `${EXPORT_FILE_PREFIX}_video_${stamp}_${video.seed}.${format}`;
 }
 
 function saveLink(href: string, filename: string) {

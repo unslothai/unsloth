@@ -86,16 +86,12 @@ function SourceTitle({ className, ...props }: ComponentProps<"span">) {
   );
 }
 
-export type SourceProps = Omit<BadgeProps, "asChild"> &
-  ComponentProps<"a"> & {
-    asChild?: boolean;
-  };
+export type SourceProps = Omit<BadgeProps, "asChild"> & ComponentProps<"a">;
 
 function Source({
   className,
   variant,
   size,
-  asChild = false,
   href,
   onClick,
   ...props

@@ -8,6 +8,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PRODUCT_NAME } from "@/config/branding";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
@@ -672,7 +673,7 @@ export function ApiMonitorPage(): ReactElement {
             API
           </h1>
           <p className="text-sm text-muted-foreground">
-            Live traffic through Unsloth&apos;s OpenAI-compatible server.
+            Live traffic through {PRODUCT_NAME}&apos;s OpenAI-compatible server.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">

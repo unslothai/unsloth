@@ -1,6 +1,14 @@
 
 
 
+// Relative with an explicit extension: `pnpm i18n:check` runs this tree under
+// `node --experimental-strip-types`, which has no Vite path aliases.
+import {
+  PRODUCT_NAME,
+  PRODUCT_SLUG,
+  PRODUCT_WORDMARK,
+} from "../../config/branding.ts";
+
 export const en = {
   picker: {
     onDevice: "On Device",
@@ -46,8 +54,8 @@ export const en = {
   },
   shell: {
     beta: "BETA",
-    brand: "unsloth",
-    product: "Unsloth",
+    brand: PRODUCT_WORDMARK,
+    product: PRODUCT_NAME,
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
     resize: {
@@ -56,7 +64,7 @@ export const en = {
       drag: "Drag to resize",
     },
     aria: {
-      home: "Unsloth home",
+      home: `${PRODUCT_NAME} home`,
       closeSidebar: "Close sidebar",
       openSidebar: "Open sidebar",
       resizeSidebar: "Resize or collapse sidebar",
@@ -133,7 +141,7 @@ export const en = {
     title: "Settings",
     dialog: {
       title: "Settings",
-      description: "Manage your Unsloth preferences.",
+      description: `Manage your ${PRODUCT_NAME} preferences.`,
       closeAriaLabel: "Close settings",
       searchPlaceholder: "Search settings…",
       searchNoResults: "No settings found.",
@@ -210,7 +218,7 @@ export const en = {
         microphoneGrantDescription: "Allow mic access to show device names",
         allowMicrophone: "Allow microphone",
         micAccessBlocked:
-          "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+          `Microphone access was blocked. Allow microphone access for this ${PRODUCT_NAME} page, then try again.`,
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",
@@ -299,7 +307,7 @@ export const en = {
     },
     general: {
       title: "General",
-      description: "Global preferences for Unsloth.",
+      description: `Global preferences for ${PRODUCT_NAME}.`,
       account: "Account",
       huggingFaceToken: "Hugging Face token",
       huggingFaceTokenDescription:
@@ -310,7 +318,7 @@ export const en = {
       checkingToken: "Checking token...",
       tokenValidated: "Token validated",
       password: "Password",
-      passwordDescription: "Change the password for this Unsloth account.",
+      passwordDescription: `Change the password for this ${PRODUCT_NAME} account.`,
       passwordDialog: {
         trigger: "Change password",
         title: "Change password",
@@ -319,7 +327,10 @@ export const en = {
         setTrigger: "Set remote password",
         setTitle: "Set remote password",
         setDescription:
-          "Choose the password remote browsers sign in with as unsloth (at least {minLength} characters). The Unsloth Desktop App keeps signing in automatically.",
+          // "unsloth" here is the literal login username (`HIDDEN_LOGIN_USERNAME`
+          // in features/auth/components/auth-form.tsx), not the product name.
+          // Renaming it would tell users to type a username that does not exist.
+          `Choose the password remote browsers sign in with as unsloth (at least {minLength} characters). The ${PRODUCT_NAME} Desktop App keeps signing in automatically.`,
         setSubmit: "Set password",
         setting: "Setting...",
         setDone: "Password set.",
@@ -396,7 +407,7 @@ export const en = {
         sectionTitle: "Permissions",
         bypassLabel: "Tool permissions",
         bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+          `How ${PRODUCT_NAME} approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.`,
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -409,9 +420,9 @@ export const en = {
       },
       startup: {
         sectionTitle: "Startup",
-        launchAtLogin: "Run Unsloth at login",
+        launchAtLogin: `Run ${PRODUCT_NAME} at login`,
         launchAtLoginDescription:
-          "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+          `Start ${PRODUCT_NAME} in the background when you log in. It stays in the menu bar or system tray until you open it.`,
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -457,19 +468,19 @@ export const en = {
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
         confirmDescription:
-          "Clears local-only preferences and reloads Unsloth. Chats, API access, and DB-backed settings are kept.",
+          `Clears local-only preferences and reloads ${PRODUCT_NAME}. Chats, API access, and DB-backed settings are kept.`,
         confirmAction: "Reset and reload",
       },
     },
     profile: {
       title: "Profile",
-      description: "How your profile appears in Unsloth.",
+      description: `How your profile appears in ${PRODUCT_NAME}.`,
       changePicture: "Change profile picture",
       uploadPhoto: "Upload photo",
       removePhoto: "Remove",
       pictureOptions: "Profile picture options",
       displayName: "Display name",
-      nickname: "What should Unsloth call you?",
+      nickname: `What should ${PRODUCT_NAME} call you?`,
       nicknamePlaceholder: "Nickname",
       nicknameSaved: "Preferred name saved",
       avatarShape: "Avatar shape",
@@ -493,10 +504,10 @@ export const en = {
       stats: {
         title: "Your stats",
         subtitle:
-          "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
+          `Everything below is counted from your own history. Nothing is collected or sent to ${PRODUCT_NAME}.`,
         retry: "Try again",
         privacyNote:
-          "Stats are computed from the chat and training history held by your Unsloth install. Nothing is collected, and nothing is sent to Unsloth or any third party.",
+          `Stats are computed from the chat and training history held by your ${PRODUCT_NAME} install. Nothing is collected, and nothing is sent to ${PRODUCT_NAME} or any third party.`,
         emptyChats:
           "No chats yet. Start a conversation and your stats will fill in here.",
         lifetimeTokens: "Lifetime tokens",
@@ -549,7 +560,7 @@ export const en = {
     },
     appearance: {
       title: "Appearance",
-      description: "How Unsloth looks on this device.",
+      description: `How ${PRODUCT_NAME} looks on this device.`,
       theme: {
         title: "Theme",
         label: "Color scheme",
@@ -560,7 +571,7 @@ export const en = {
       },
       palette: {
         label: "Color palette",
-        description: "Colors used across Unsloth, in light and dark mode.",
+        description: `Colors used across ${PRODUCT_NAME}, in light and dark mode.`,
         standard: "Standard",
         classic: "Classic",
         minimal: "Minimal",
@@ -618,7 +629,7 @@ export const en = {
         },
         uiFontSize: {
           label: "UI font size",
-          description: "Adjust the base size used for the Unsloth UI.",
+          description: `Adjust the base size used for the ${PRODUCT_NAME} UI.`,
         },
         codeFontSize: {
           label: "Code font size",
@@ -648,7 +659,7 @@ export const en = {
       language: {
         title: "Language",
         label: "Display language",
-        description: "The language used by Unsloth.",
+        description: `The language used by ${PRODUCT_NAME}.`,
         autoDetect: "Auto detect",
       },
       layout: {
@@ -675,7 +686,7 @@ export const en = {
     },
     resources: {
       title: "System",
-      description: "Monitor this Unsloth server's hardware and storage.",
+      description: `Monitor this ${PRODUCT_NAME} server's hardware and storage.`,
       liveUpdates: "Live updates",
       floatingWindow: "Floating window",
       disableOverlay: "Disable overlay",
@@ -769,7 +780,7 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        `connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by ${PRODUCT_NAME}, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.`,
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
@@ -792,11 +803,11 @@ export const en = {
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+        `Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in ${PRODUCT_NAME}.`,
       subagent: {
         title: "Use a local model as a subagent",
         description:
-          "Keep {agent} on its current model and delegate selected tasks to this local Unsloth model.",
+          `Keep {agent} on its current model and delegate selected tasks to this local ${PRODUCT_NAME} model.`,
         setupCommand: "Setup command",
         copySetupCommand: "Copy subagent setup command",
         usagePrompt: "Then in {agent}, type:",
@@ -826,7 +837,7 @@ export const en = {
       options: {
         title: "Common options",
         description:
-          "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
+          `${PRODUCT_NAME} flags are parsed first; anything it doesn't recognize is passed straight through to the agent.`,
         model:
           "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
         contextLength:
@@ -836,10 +847,12 @@ export const en = {
         tensorParallel: "Toggle tensor-parallel across multiple GPUs.",
         serve: "Enable or disable the automatic local server.",
         launch: "Launch the agent, or just print the command and environment.",
-        persist: "Keep Unsloth-managed agent storage between runs.",
+        persist: `Keep ${PRODUCT_NAME}-managed agent storage between runs.`,
         asSubagent:
-          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
-        apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+          `Keep the parent on its current model and register ${PRODUCT_NAME} as a local subagent (Claude Code, Codex, and OpenCode).`,
+        // UNSLOTH_API_KEY is the literal environment variable name the CLI reads.
+        // Renaming it in copy would tell users to set a variable nothing consumes.
+        apiKey: `Provide your ${PRODUCT_NAME} API key (or set UNSLOTH_API_KEY).`,
         yolo: "Skip approval prompts. Use only in trusted environments.",
       },
       remote: {
@@ -850,7 +863,7 @@ export const en = {
       passthrough: {
         title: "Passing agent arguments",
         description:
-          "Arguments after the Unsloth flags are forwarded to the agent itself, so native commands like resume still work:",
+          `Arguments after the ${PRODUCT_NAME} flags are forwarded to the agent itself, so native commands like resume still work:`,
       },
       dryRun: {
         title: "Preview without launching",
@@ -1009,7 +1022,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description: "Access Unsloth via the OpenAI-compatible API.",
+      description: `Access ${PRODUCT_NAME} via the OpenAI-compatible API.`,
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       accessTokens: "Access tokens",
@@ -1039,7 +1052,7 @@ export const en = {
       osWindows: "Windows",
       secureHttps: "Secure HTTPS",
       secureHttpsHint:
-        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth with --secure to expose only this HTTPS link.",
+        `The 0.0.0.0 port is still reachable globally. For full security, launch ${PRODUCT_NAME} with --secure to expose only this HTTPS link.`,
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
@@ -1070,7 +1083,7 @@ export const en = {
     about: {
       title: "About",
       description: "Docs, release notes, feedback, and build info.",
-      studioVersion: "Unsloth Version",
+      studioVersion: `${PRODUCT_NAME} Version`,
       packageVersion: "Package Version",
       desktopAppVersion: "Desktop App Version",
       desktopAppVersionUnavailable: "Unavailable",
@@ -1089,6 +1102,10 @@ export const en = {
       reportIssue: "Report an issue",
       license: {
         sectionTitle: "License",
+        // These two labels name the UPSTREAM projects whose licences these rows
+        // link to (about-tab.tsx renders each beside its unslothai/unsloth
+        // LICENSE URL). Per ADR 0000 decision 3 the attribution must point at
+        // the real upstream, so the labels keep the upstream name.
         studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open source under the GNU AGPL v3.0.",
@@ -1097,19 +1114,19 @@ export const en = {
         libraryDescription: "Licensed under Apache 2.0.",
       },
       dangerZone: "Danger zone",
-      shutDownStudio: "Shut down Unsloth",
+      shutDownStudio: `Shut down ${PRODUCT_NAME}`,
       shutDownStudioDescription:
-        "Stops the Unsloth server and ends your session.",
+        `Stops the ${PRODUCT_NAME} server and ends your session.`,
       shutDown: "Shut down",
       update: {
-        title: "Update Unsloth",
+        title: `Update ${PRODUCT_NAME}`,
         commandText: "{label} text",
         copied: "Copied",
         copyCommand: "Copy command",
         commandCopied: "{label} copied",
         copyNamedCommand: "Copy {label}",
-        checkingInstall: "Checking how Unsloth was installed...",
-        installIntro: "To install or update Unsloth:",
+        checkingInstall: `Checking how ${PRODUCT_NAME} was installed...`,
+        installIntro: `To install or update ${PRODUCT_NAME}:`,
         localUpdateHeading: "Local update",
         installCommandUnix: "macOS/Linux install command",
         installCommandWindows: "Windows install command",
@@ -1123,7 +1140,7 @@ export const en = {
           "Source or VCS package install detected. Reinstall from the original local path or Git URL.",
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
-        restartAfterUpdate: "Restart Unsloth after updating.",
+        restartAfterUpdate: `Restart ${PRODUCT_NAME} after updating.`,
         desktopManaged:
           "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
         desktopReady: "Desktop app updates",
@@ -1142,7 +1159,7 @@ export const en = {
         desktopCheckFailedDescription: "Check your connection and try again.",
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
-          "Unsloth will continue checking automatically.",
+          `${PRODUCT_NAME} will continue checking automatically.`,
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
@@ -1150,7 +1167,7 @@ export const en = {
         updateNow: "Update now",
         openReleasePage: "Open release page",
         unknownInstall:
-          "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
+          `Could not detect how ${PRODUCT_NAME} was installed. For installer or PyPI installs, use the commands above.`,
         localCheckout:
           "For local checkout installs, run the local installer from that checkout:",
         docs: "Install docs:",
@@ -1668,7 +1685,7 @@ export const en = {
       },
       startFailed: "Failed to start training",
       startUnconfirmed:
-        "Unsloth couldn't confirm whether training started. Checking status in the background.",
+        `${PRODUCT_NAME} couldn't confirm whether training started. Checking status in the background.`,
       stopFailed: "Failed to stop training",
       trainingStillActiveTitle: "Training still active",
       stopBeforeConfig: "Stop training first, then return to configuration.",
@@ -1878,7 +1895,9 @@ export const en = {
       preparing: "Preparing",
       left: "{eta} left",
       downloaded: "{size} downloaded",
-      terminalStart: "> unsloth training starts...",
+      // Decorative terminal line, not a real command — nothing runs
+      // `<slug> training`, so this is prose and gets the product slug.
+      terminalStart: `> ${PRODUCT_SLUG} training starts...`,
       preparingResources: "> Preparing model and dataset...",
       gettingReady: "> We are getting everything ready for your run...",
       waitingForFirstStep: "> {message} | waiting for first step... ({step})",

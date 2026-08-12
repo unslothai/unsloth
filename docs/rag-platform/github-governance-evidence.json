@@ -1,0 +1,55 @@
+{
+  "captured_at": "2026-08-12",
+  "source": "GitHub REST API readback",
+  "repositories": {
+    "acrbaran/rag-frontend": {
+      "default_branch": "main",
+      "branch_protection": {
+        "strict_status_checks": true,
+        "required_status_checks": ["Phase 0 gate", "Dependency review"],
+        "pull_request_required": true,
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews": true,
+        "conversation_resolution_required": true,
+        "admins_enforced": true,
+        "linear_history_required": true,
+        "force_push_allowed": false,
+        "deletion_allowed": false
+      },
+      "security": {
+        "secret_scanning": "enabled",
+        "secret_scanning_push_protection": "enabled",
+        "dependabot_alerts": "enabled",
+        "dependabot_security_updates": "enabled"
+      },
+      "required_check_source": ".github/workflows/phase-0.yml"
+    },
+    "acrbaran/rag-backend": {
+      "default_branch": "main",
+      "branch_protection": {
+        "strict_status_checks": true,
+        "required_status_checks": ["Phase 0 gate", "Dependency review"],
+        "pull_request_required": true,
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews": true,
+        "conversation_resolution_required": true,
+        "admins_enforced": true,
+        "linear_history_required": true,
+        "force_push_allowed": false,
+        "deletion_allowed": false
+      },
+      "security": {
+        "secret_scanning": "enabled",
+        "secret_scanning_push_protection": "enabled",
+        "dependabot_alerts": "enabled",
+        "dependabot_security_updates": "enabled"
+      },
+      "required_check_source": ".github/workflows/rag-platform-governance.yml"
+    }
+  },
+  "delivery": {
+    "commit_created": false,
+    "push_performed": false,
+    "note": "Workflow definitions are present in the Phase 0 working trees. Commit and push were deliberately not performed."
+  }
+}

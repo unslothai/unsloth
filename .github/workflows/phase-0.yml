@@ -1,0 +1,91 @@
+name: Phase 0
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: phase-0-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  phase-0-gate:
+    name: Phase 0 gate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out frontend
+        uses: actions/checkout@v6
+        with:
+          path: rag-frontend
+
+      - name: Check out pinned backend source
+        uses: actions/checkout@v6
+        with:
+          repository: acrbaran/rag-backend
+          ref: v0.26.4
+          fetch-depth: 0
+          path: rag-backend
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+          cache-dependency-path: rag-frontend/studio/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: rag-frontend/studio/frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: rag-frontend/studio/frontend
+        run: npm run lint:all
+
+      - name: Typecheck
+        working-directory: rag-frontend/studio/frontend
+        run: npm run typecheck
+
+      - name: Check locale parity
+        working-directory: rag-frontend/studio/frontend
+        run: npm run i18n:check
+
+      - name: Check generated contracts
+        working-directory: rag-frontend
+        run: |
+          node scripts/rag-platform/proxy-config.mjs --check
+          node scripts/rag-platform/route-inventory.mjs --backend ../rag-backend --backend-ref v0.26.4 --check
+          node scripts/rag-platform/coverage-matrix.mjs --check
+          node scripts/rag-platform/contract-matrix.mjs --check
+
+      - name: Check source branding
+        working-directory: rag-frontend
+        run: node scripts/rag-platform/branding-scan.mjs
+
+      - name: Build frontend
+        working-directory: rag-frontend/studio/frontend
+        run: npm run build
+
+      - name: Check build branding
+        working-directory: rag-frontend
+        run: node scripts/rag-platform/branding-scan.mjs --build
+
+      - name: Check patch whitespace
+        working-directory: rag-frontend
+        run: git diff --check HEAD
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out frontend
+        uses: actions/checkout@v6
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+

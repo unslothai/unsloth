@@ -118,7 +118,9 @@ export function createPanelWidthStore({
       storedWidth = stored;
       try {
         window.localStorage.setItem(key, String(stored));
-      } catch {}
+      } catch {
+        // Storage may be unavailable in privacy-restricted browser contexts.
+      }
     }
     recompute();
   }

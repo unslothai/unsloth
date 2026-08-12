@@ -2021,9 +2021,6 @@ const Composer: FC<{
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
-  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
-  const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -2414,16 +2411,15 @@ const Composer: FC<{
         }
         // A drain for a target the composer has already left must not touch the
         // flag: cleanup cleared it, and the live target may have set it again.
-        if (disposed) {
-          return;
-        }
-        const pending =
-          useNativeIntentStore.getState().pendingImageAttachments[targetKey]
-            ?.length ?? 0;
-        if (pending > 0) {
-          void drainPendingImages();
-        } else {
-          setMaterializingDroppedImages(false);
+        if (!disposed) {
+          const pending =
+            useNativeIntentStore.getState().pendingImageAttachments[targetKey]
+              ?.length ?? 0;
+          if (pending > 0) {
+            void drainPendingImages();
+          } else {
+            setMaterializingDroppedImages(false);
+          }
         }
       }
     };
@@ -4540,6 +4536,7 @@ const ComposerToolsMenu: FC<{
       const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
       setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
+      // Recent prompts are an optional convenience; keep the composer usable.
     }
   }, []);
 

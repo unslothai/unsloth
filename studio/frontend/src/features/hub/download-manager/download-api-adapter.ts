@@ -1,6 +1,7 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import { getHfToken } from "../stores/hf-token-store";
 import { toast } from "@/lib/toast";
 import {
@@ -208,7 +209,8 @@ export async function effectiveTransportMode(
     return preferred;
   }
   const reason =
-    capabilities.xet.reason ?? "Unsloth will use HTTP downloads instead.";
+    capabilities.xet.reason ??
+    `${PRODUCT_NAME} will use HTTP downloads instead.`;
   if (lastXetUnavailableWarningReason !== reason) {
     lastXetUnavailableWarningReason = reason;
     toast.warning("Xet download transport unavailable", {

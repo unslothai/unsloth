@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
+import { PRODUCT_NAME } from "@/config/branding";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { formatMetricValue } from "./executions-view-helpers";
@@ -45,7 +46,10 @@ function formatGitHubSourceMessage(execution: RecipeExecutionRecord): string {
     return "Collecting repository threads before rows are available.";
   }
   if (source.status === "rate_limited") {
-    return source.message ?? "Waiting for GitHub rate limit. Unsloth will resume automatically.";
+    return (
+      source.message ??
+      `Waiting for GitHub rate limit. ${PRODUCT_NAME} will resume automatically.`
+    );
   }
   return source.message ?? "Collecting repository threads before rows are available.";
 }

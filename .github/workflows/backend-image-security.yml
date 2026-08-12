@@ -1,0 +1,99 @@
+name: Backend image security
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/backend-image-security.yml
+      - infra/rag-platform/Dockerfile.backend-with-go
+      - infra/rag-platform/backend-entrypoint.sh
+      - infra/rag-platform/build-backend-image.sh
+      - infra/rag-platform/pdf-oxide-adapter-nocgo.go
+      - infra/rag-platform/rag-analyzer-nocgo.go
+      - infra/rag-platform/rag-analyzer-nocgo_test.go
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  security-events: write
+
+concurrency:
+  group: backend-image-security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-image-security:
+    name: Backend image security
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out frontend deployment source
+        uses: actions/checkout@v6
+        with:
+          path: rag-frontend
+
+      - name: Check out protected backend release tag
+        uses: actions/checkout@v6
+        with:
+          repository: acrbaran/rag-backend
+          ref: v0.26.4
+          fetch-depth: 0
+          path: rag-backend
+
+      - name: Verify protected backend source
+        working-directory: rag-backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'v0.26.4^{commit}')" = cb93883f3f8c975eecb2fed81210effeb3bdb06f
+
+      - name: Build derived backend image
+        working-directory: rag-frontend
+        env:
+          RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+          RAG_PLATFORM_BUILD_PROVENANCE: mode=max
+        run: infra/rag-platform/build-backend-image.sh
+
+      - name: Capture image digest
+        id: image
+        shell: bash
+        run: echo "digest=$(docker image inspect rag-platform-backend:0.26.4 --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: rag-platform-backend:0.26.4
+          artifact-name: rag-platform-backend.spdx.json
+          output-file: rag-platform-backend.spdx.json
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: rag-platform-backend:0.26.4
+          format: sarif
+          output: rag-platform-backend.trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Upload scan result
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: rag-platform-backend.trivy.sarif
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: rag-platform-backend
+          subject-digest: ${{ steps.image.outputs.digest }}
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-platform-backend-security-evidence
+          path: |
+            rag-platform-backend.spdx.json
+            rag-platform-backend.trivy.sarif
+          if-no-files-found: error

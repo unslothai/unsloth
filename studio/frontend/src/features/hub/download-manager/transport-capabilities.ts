@@ -5,6 +5,8 @@
 // load, so anything defined there is untestable. That is how a normalizer silently dropping the
 // backend's Auto verdict shipped green.
 
+import { PRODUCT_NAME } from "@/config/branding";
+
 export interface DownloadTransportCapability {
   available: boolean | null;
   reason: string | null;
@@ -23,7 +25,7 @@ export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabili
   http: { available: true, reason: null },
   xet: {
     available: null,
-    reason: "Couldn't verify Xet support with the Unsloth backend.",
+    reason: `Couldn't verify Xet support with the ${PRODUCT_NAME} backend.`,
   },
   // Unknown backend state: stay on Xet, the download-time ladder still falls back to HTTP.
   auto_resolves_to: "xet",

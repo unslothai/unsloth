@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { PRODUCT_NAME } from "@/config/branding";
 import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
@@ -392,8 +393,8 @@ function GpuMemorySettings({
           <InfoHint>
             <div className="flex flex-col gap-1.5">
               <div>
-                <span className="font-medium">Default:</span> Unsloth fits the
-                model and context to your GPUs.
+                <span className="font-medium">Default:</span> {PRODUCT_NAME}{" "}
+                fits the model and context to your GPUs.
               </div>
               <div>
                 <span className="font-medium">Manual:</span> set GPU Layers
@@ -476,9 +477,9 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              By default, Unsloth chooses GPUs automatically. Editing this list
-              makes the checked GPUs the explicit candidate pool. At least one
-              GPU must stay selected.
+              By default, {PRODUCT_NAME} chooses GPUs automatically. Editing
+              this list makes the checked GPUs the explicit candidate pool. At
+              least one GPU must stay selected.
             </InfoHint>
           </div>
           <div className="flex flex-col gap-2">
@@ -1456,8 +1457,8 @@ export function ModelConfigPage({
                 />
               ) : null}
               <p className="text-ui-11 leading-relaxed text-muted-foreground">
-                Unsloth automatically fits the context to your device, using the
-                full context when memory allows.
+                {PRODUCT_NAME} automatically fits the context to your device,
+                using the full context when memory allows.
               </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&

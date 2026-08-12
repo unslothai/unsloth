@@ -1,6 +1,8 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
+
 export type RemoteAccessState =
   | "off"
   | "starting"
@@ -123,11 +125,13 @@ export function remoteAccessBlockMessage(
 ): string | null {
   switch (reason) {
     case "server_starting":
-      return "Unsloth is still starting.";
+      return `${PRODUCT_NAME} is still starting.`;
     case "admin_password_change_required":
       return isDesktop
         ? "Set a remote password before exposing this server."
-        : "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
+        : // `unsloth studio reset-password` is the literal CLI command; it keeps
+          // the upstream name because that is what the binary answers to.
+          "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
     case "explicitly_disabled":
       return "This launch used --no-cloudflare. Restart without it to enable remote access.";
     case "launch_managed":

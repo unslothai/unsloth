@@ -1,4 +1,6 @@
-export const INITIAL_STARTUP_MESSAGE = "Starting Unsloth...";
+import { PRODUCT_NAME } from "@/config/branding";
+
+export const INITIAL_STARTUP_MESSAGE = `Starting ${PRODUCT_NAME}...`;
 export const MODELS_STARTUP_MESSAGE = "Loading models...";
 export const SERVER_STARTUP_MESSAGE = "Nearly done...";
 export const STATUS_MESSAGE_ROTATION_MS = 5_000;
@@ -18,7 +20,7 @@ const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
     subtitle: "Creating your local environment.",
   },
   {
-    title: "Installing Unsloth...",
+    title: `Installing ${PRODUCT_NAME}...`,
     subtitle: "Setting up local AI tools...",
   },
   {

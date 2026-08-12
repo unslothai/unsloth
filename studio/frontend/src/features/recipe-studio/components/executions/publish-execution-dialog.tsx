@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { PRODUCT_NAME } from "@/config/branding";
 import { toastError, toastSuccess } from "@/shared/toast";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { copyTextToClipboard } from "../../executions/execution-helpers";
@@ -59,7 +60,7 @@ function buildDefaultDescription(execution: RecipeExecutionRecord | null): strin
     typeof records === "number" && records > 0
       ? ` It contains ${records.toLocaleString()} generated records.`
       : "";
-  return `${runName} was generated with Unsloth Recipe Studio.${recordPart}`;
+  return `${runName} was generated with ${PRODUCT_NAME} Recipe Studio.${recordPart}`;
 }
 
 export function PublishExecutionDialog({

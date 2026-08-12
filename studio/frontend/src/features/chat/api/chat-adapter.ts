@@ -19,6 +19,7 @@ import {
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import { PRODUCT_NAME } from "@/config/branding";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
@@ -2316,7 +2317,7 @@ async function ensureDefaultModelDownloaded(
   };
   const totalLabel = formatDownloadBytes(expectedBytes);
   const description =
-    `Unsloth couldn’t find an existing model. Unsloth is now getting ` +
+    `${PRODUCT_NAME} couldn’t find an existing model. ${PRODUCT_NAME} is now getting ` +
     `${DEFAULT_CHAT_MODEL_LABEL} ready for use. You can stop the download or ` +
     `manage models later in the 'Model hub'`;
   setToast(
@@ -3376,11 +3377,7 @@ export function createOpenAIStreamAdapter(
         ) {
           return;
         }
-        try {
-          await updateStoredChatThread(resolvedThreadId, { modelId });
-        } catch (error) {
-          throw error;
-        }
+        await updateStoredChatThread(resolvedThreadId, { modelId });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -3404,21 +3401,10 @@ export function createOpenAIStreamAdapter(
       ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
-          try {
-            await waitForModelReady(abortSignal);
-          } catch (error) {
-            throw error;
-          }
+          await waitForModelReady(abortSignal);
         }
         if (!runtime.params.checkpoint) {
-          let resolution: Awaited<
-            ReturnType<typeof resolveQueuedEmptyLocalModel>
-          >;
-          try {
-            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
-          } catch (error) {
-            throw error;
-          }
+          const resolution = await resolveQueuedEmptyLocalModel(abortSignal);
           queuedEmptyModelRuntime = resolution.modelRuntime;
           if (!resolution.loaded) {
             // A reported failure already names the model; generic advice buries it.

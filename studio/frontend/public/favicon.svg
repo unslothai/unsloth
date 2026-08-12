@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Rag Platform">
+  <!--
+    Rag Platform tab mark. ADR 0000 decision 4: a typographic treatment, never a
+    recoloured upstream mark. A wordmark is illegible at 16px, so the tab carries
+    the "R" letterform alone; every other surface renders the full name as text.
+    Drawn as strokes rather than <text> so it does not depend on a font being
+    installed when the browser rasterises the icon.
+    --primary from src/index.css (#17b88b).
+  -->
+  <rect width="32" height="32" rx="7" fill="#17b88b" />
+  <g
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="3"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M11 23.5 V8.5 H16.5 a3.75 3.75 0 0 1 0 7.5 H11" />
+    <path d="M15 16 L20.5 23.5" />
+  </g>
+</svg>

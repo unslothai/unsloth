@@ -20,6 +20,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import {
   ParamSlider,
   useChatModelRuntime,
@@ -379,7 +380,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
               />
               <ToggleRow
                 label="Auto-healing tool calls"
-                info="Unsloth auto-fixes broken tool calls so inference output is never broken."
+                info={`${PRODUCT_NAME} auto-fixes broken tool calls so inference output is never broken.`}
                 checked={autoHealToolCalls}
                 onCheckedChange={setAutoHealToolCalls}
               />

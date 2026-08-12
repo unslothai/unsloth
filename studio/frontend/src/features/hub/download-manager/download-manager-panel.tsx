@@ -195,7 +195,10 @@ export function DownloadManagerPanel({
     hydrateDownloadManager();
   }, [enabled]);
 
-  const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
+  const selectOrderedJobKeys = useMemo(
+    () => createOrderedJobKeysSelector(),
+    [],
+  );
   const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
   const activeCount = useDownloadManagerStore(selectActiveJobCount);
 

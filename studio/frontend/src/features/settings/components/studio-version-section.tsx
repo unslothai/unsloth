@@ -1,6 +1,7 @@
 
 
 
+import { PRODUCT_NAME } from "@/config/branding";
 import { getAuthToken, refreshSession } from "@/features/auth";
 import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
@@ -64,7 +65,7 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About. The About
+// Shared product version block, shown in both General and About. The About
 // tab passes llamaCppVersion to surface the installed llama.cpp build alongside
 // the version rows; General omits it, so the row only shows on About. Children
 // are appended below the version rows, for controls that act on them.
@@ -94,7 +95,7 @@ export function StudioVersionSection({
   }, []);
 
   return (
-    <SettingsSection title="Unsloth">
+    <SettingsSection title={PRODUCT_NAME}>
       <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}

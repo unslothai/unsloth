@@ -18,6 +18,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { PRODUCT_NAME } from "@/config/branding";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -93,8 +94,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 
 // Keep spoken preview content independent of the interface locale. The system
 // voice and loaded local model may not support the language used by the UI.
-const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth! This is a preview of the selected voice.";
+const TTS_PREVIEW_TEXT = `Hello from ${PRODUCT_NAME}! This is a preview of the selected voice.`;
 
 /** Source repository shown under a model row. Curated models download from
  * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */

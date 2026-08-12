@@ -17,6 +17,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
+import { EXPORT_FILE_PREFIX } from "@/config/branding";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,7 +39,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -99,7 +99,6 @@ import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
 import {
-  type ControlNetSpecInput,
   type DiffusionControlNetInfo,
   type DiffusionGenerateProgress,
   type DiffusionGenerateResponse,
@@ -347,7 +346,7 @@ const galleryCache: {
 // Images loaded per infinite-scroll page.
 const PAGE_SIZE = 50;
 
-// Export filename, e.g. Unsloth_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
+// Export filename, e.g. RagPlatform_20260624-143005_123.png. Batch siblings share seed + timestamp, so they get a "_<n>" suffix.
 type ImageExportFormat = "png" | "jpeg" | "webp";
 
 function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"): string {
@@ -358,7 +357,7 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
     `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
   const suffix = image.batch_index > 0 ? `_${image.batch_index}` : "";
   const ext = format === "jpeg" ? "jpg" : format;
-  return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
+  return `${EXPORT_FILE_PREFIX}_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
 function saveBlobUrl(href: string, filename: string) {

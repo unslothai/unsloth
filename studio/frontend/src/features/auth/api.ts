@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "@/config/branding";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -7,6 +8,17 @@ import {
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";
+
+/**
+ * Message for "the local Studio server did not answer at all".
+ *
+ * Exported because `isExpectedBackgroundChatStorageError`
+ * (features/chat/utils/chat-history-storage.ts) classifies this failure by exact
+ * message equality. A literal copied into both files would drift the moment
+ * either is reworded, and the drift is silent: background storage errors would
+ * stop being recognised as expected and start surfacing to the user.
+ */
+export const BACKEND_UNREACHABLE_MESSAGE = `${PRODUCT_NAME} isn't running -- please relaunch it.`;
 
 type RefreshResponse = {
   access_token: string;
@@ -105,10 +117,9 @@ function asTransportFailure(err: unknown): unknown {
       { unslothTransportFailure: true },
     );
   }
-  return Object.assign(
-    new Error("Unsloth isn't running -- please relaunch it."),
-    { unslothTransportFailure: true },
-  );
+  return Object.assign(new Error(BACKEND_UNREACHABLE_MESSAGE), {
+    unslothTransportFailure: true,
+  });
 }
 
 async function retryWithCurrentToken(

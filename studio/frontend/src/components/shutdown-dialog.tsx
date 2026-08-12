@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { PRODUCT_NAME } from "@/config/branding";
 
 interface ShutdownDialogProps {
   open: boolean;
@@ -52,7 +53,7 @@ export function ShutdownDialog({
     onAfterShutdown?.();
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;gap:12px">
-        <p style="font-size:calc(1.1rem * var(--ui-font-scale, 1));font-weight:600;margin:0">Unsloth has stopped.</p>
+        <p style="font-size:calc(1.1rem * var(--ui-font-scale, 1));font-weight:600;margin:0">${PRODUCT_NAME} has stopped.</p>
         <p style="font-size:calc(0.9rem * var(--ui-font-scale, 1));color:#888;margin:0">You can now close this tab.</p>
       </div>`;
   };
@@ -61,7 +62,7 @@ export function ShutdownDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Stop Unsloth?</AlertDialogTitle>
+          <AlertDialogTitle>Stop {PRODUCT_NAME}?</AlertDialogTitle>
           <AlertDialogDescription>
             This will shut down the server. Any active training or inference
             jobs will be terminated. You can restart it any time from the

@@ -1,6 +1,7 @@
 
 
 
+import { BACKEND_UNREACHABLE_MESSAGE } from "@/features/auth";
 import {
   buildBackendChatExport,
   clearBackendChats,
@@ -153,7 +154,9 @@ export function isExpectedBackgroundChatStorageError(error: unknown): boolean {
     (error.message === "Invalid or expired token" ||
       error.message === "Not authenticated" ||
       error.message === "Request failed (401)" ||
-      error.message === "Unsloth isn't running -- please relaunch it.")
+      // Shared constant, not a copy: the producer is features/auth/api.ts, and a
+      // reworded literal here would silently stop matching it.
+      error.message === BACKEND_UNREACHABLE_MESSAGE)
   );
 }
 

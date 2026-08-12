@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { PRODUCT_NAME } from "@/config/branding";
 import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";
@@ -121,7 +122,7 @@ export function WebUpdateBanner({
               />
               <div className="min-w-0">
                 <p className="font-heading text-base font-medium text-foreground">
-                  New Unsloth version
+                  New {PRODUCT_NAME} version
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status.currentVersion} &rarr;{" "}

@@ -12,6 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { PRODUCT_NAME } from "@/config/branding";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
@@ -90,7 +91,7 @@ const JAVASCRIPT_TYPES = new Set<ExampleType>([
   "javascriptAdvanced",
 ]);
 
-const PROMPT = "What is Unsloth?";
+const PROMPT = `What is ${PRODUCT_NAME}?`;
 // web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
 const ADV = {

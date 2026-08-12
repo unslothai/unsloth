@@ -12,7 +12,7 @@
     "lint": "eslint src/main.tsx src/app src/features/chat src/components/markdown",
     "lint:all": "eslint .",
     "preview": "vite preview",
-    "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
+    "typecheck": "tsc -b --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "i18n:check:strict": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts --strict",
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",

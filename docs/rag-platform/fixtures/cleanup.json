@@ -1,0 +1,76 @@
+{
+  "generated_by": "scripts/rag-platform/capture-fixtures.mjs",
+  "captured_against": {
+    "base_url": "http://127.0.0.1",
+    "source_image": "infiniflow/ragflow:v0.26.4",
+    "proxy_scheme": "python",
+    "api_version": "v1"
+  },
+  "redaction": {
+    "policy": "Secrets never reach this file. Keys matching api_key/secret/token/password/credential and the Authorization header are replaced with placeholders; the throwaway account's e-mail and password are replaced wherever they appear in any string value.",
+    "placeholders": [
+      "<redacted:authorization>",
+      "<redacted:email>",
+      "<redacted:password>"
+    ]
+  },
+  "interactions": [
+    {
+      "name": "cleanup.chat",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/chats",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": {
+          "ids": [
+            "2a8733cc95f711f19ddc01863fe3cc05"
+          ]
+        }
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": {
+            "success_count": 1
+          },
+          "message": "success"
+        }
+      }
+    },
+    {
+      "name": "cleanup.dataset",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/datasets",
+        "headers": {
+          "Authorization": "<redacted:authorization>"
+        },
+        "body": {
+          "ids": [
+            "26b7007495f711f19ddc01863fe3cc05"
+          ]
+        }
+      },
+      "response": {
+        "http_status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "connection": "keep-alive"
+        },
+        "body": {
+          "code": 0,
+          "data": {
+            "success_count": 1
+          }
+        }
+      }
+    }
+  ]
+}

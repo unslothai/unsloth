@@ -76,7 +76,7 @@ function parseSeedSettings(seedConfigRaw: unknown): Partial<SeedConfig> {
   let local_file_name = "";
   let unstructuredFileIds: string[] = [];
   let unstructuredFileNames: string[] = [];
-  let unstructuredFileSizes: number[] = [];
+  const unstructuredFileSizes: number[] = [];
   let resolved_paths: string[] = [];
   let unstructured_chunk_size = "1200";
   let unstructured_chunk_overlap = "200";

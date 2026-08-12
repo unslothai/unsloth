@@ -8,12 +8,14 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
+import { PRODUCT_NAME } from "@/config/branding";
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
   type CopySupportDiagnosticsResult,
 } from "@/lib/tauri-diagnostics";
 import {
+  TAURI_AUTH_FAILURE_FALLBACK,
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
@@ -64,7 +66,6 @@ interface DesktopPreflightResult {
 
 const MANAGED_STARTUP_POLL_MS = 500;
 
-type TauriInvoke = typeof import("@tauri-apps/api/core").invoke;
 type ManagedStartupResult =
   | { status: "ready"; port: number }
   | { status: "aborted" };
@@ -76,30 +77,32 @@ function wait(ms: number) {
 function externalConflictMessage(preflight: DesktopPreflightResult) {
   if (preflight.reason === "desktop_owned_backend_active") {
     return preflight.port
-      ? `A desktop-owned Unsloth server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
-      : "A desktop-owned Unsloth server for this install is already running. Quit the other desktop app instance, then try again.";
+      ? `A desktop-owned ${PRODUCT_NAME} server for this install is already running on port ${preflight.port}. Quit the other desktop app instance, then try again.`
+      : `A desktop-owned ${PRODUCT_NAME} server for this install is already running. Quit the other desktop app instance, then try again.`;
   }
 
   if (preflight.reason === "desktop_owned_backend_starting") {
-    return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
+    return `The desktop-owned ${PRODUCT_NAME} backend is still starting. Wait a moment, then try again.`;
   }
 
   // Do not describe a backend from an unknown install as terminal-started.
   if (preflight.reason === "ambiguous_root_external_backend_active") {
     return preflight.port
-      ? `An Unsloth server is already running on port ${preflight.port}, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.`
-      : "An Unsloth server is already running, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.";
+      ? `A ${PRODUCT_NAME} server is already running on port ${preflight.port}, and this app cannot confirm which install it belongs to. Stop that server, then reopen ${PRODUCT_NAME}.`
+      : `A ${PRODUCT_NAME} server is already running, and this app cannot confirm which install it belongs to. Stop that server, then reopen ${PRODUCT_NAME}.`;
   }
 
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
-      ? `A desktop-owned Unsloth backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.`
-      : "A desktop-owned Unsloth backend cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.";
+      ? `A desktop-owned ${PRODUCT_NAME} backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen ${PRODUCT_NAME}.`
+      : `A desktop-owned ${PRODUCT_NAME} backend cannot be safely controlled by this desktop app. Stop that backend, then reopen ${PRODUCT_NAME}.`;
   }
 
+  // `unsloth studio update` stays verbatim: it is the CLI command the installed
+  // binary answers to, not the product name the user reads.
   return preflight.port
-    ? `An Unsloth server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
-    : "An Unsloth server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
+    ? `A ${PRODUCT_NAME} server for this install is already running from a terminal on port ${preflight.port}. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`
+    : `A ${PRODUCT_NAME} server for this install is already running from a terminal. Stop that server, or run \`unsloth studio update\` from that terminal before using the desktop app.`;
 }
 
 async function waitForManagedServerPort(
@@ -280,8 +283,8 @@ export function useTauriBackend() {
           } else {
             setBackendError(
               preflight.disposition === "owned_stale"
-                ? "Desktop-owned Unsloth backend is too old for this desktop app. Run `unsloth studio update`, then restart Unsloth."
-                : "Managed Unsloth install is too old. Run `unsloth studio update`.",
+                ? `Desktop-owned ${PRODUCT_NAME} backend is too old for this desktop app. Run \`unsloth studio update\`, then restart ${PRODUCT_NAME}.`
+                : `Managed ${PRODUCT_NAME} install is too old. Run \`unsloth studio update\`.`,
             );
           }
           return;
@@ -337,7 +340,7 @@ export function useTauriBackend() {
       if (msg.includes("already running")) {
         startingRef.current = false;
         setBackendError(
-          "Managed server is already running but did not report a port. Restart Unsloth and try again.",
+          `Managed server is already running but did not report a port. Restart ${PRODUCT_NAME} and try again.`,
         );
         return;
       }
@@ -612,7 +615,9 @@ export function useTauriBackend() {
       register<string>("server-start-timeout", (e) => {
         startingRef.current = false;
         startTimedOutRef.current = true;
-        setBackendError(e.payload || "The Unsloth backend did not start in time");
+        setBackendError(
+          e.payload || `The ${PRODUCT_NAME} backend did not start in time`,
+        );
       });
 
       register<string>("server-log", (e) => {
@@ -656,7 +661,7 @@ export function useTauriBackend() {
       const detail =
         event instanceof CustomEvent && typeof event.detail === "string"
           ? event.detail
-          : "Desktop authentication failed. Update or repair the managed Unsloth install, then restart Unsloth.";
+          : TAURI_AUTH_FAILURE_FALLBACK;
       setAuthFailure(detail);
     };
     window.addEventListener("tauri-auth-failed", onAuthFailed);
