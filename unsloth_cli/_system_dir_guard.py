@@ -163,8 +163,10 @@ def safe_user_dir(
             continue
         # USERPROFILE and ~ can name the public profile themselves, so the check
         # is on the folder, not on which variable it came from.
-        if not allow_public and public and _normalize(candidate, pathmod) == _normalize(
-            public, pathmod
+        if (
+            not allow_public
+            and public
+            and _normalize(candidate, pathmod) == _normalize(public, pathmod)
         ):
             continue
         return candidate
@@ -431,9 +433,7 @@ def check_working_directory(
     if not is_relocatable_invocation(argv, environ):
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
-    target = relocation_target(
-        environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir
-    )
+    target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs, home_isdir)
     if target is not None:
         try:
             # Before moving, or a relative override the caller wrote would end up

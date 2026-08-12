@@ -394,9 +394,8 @@ def _guard_outcome(
         # Only a folder that really holds System32 counts as a Windows directory.
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
         abspath = _abspath,
-        home_isdir = lambda path: ntpath.normcase(path) not in {
-            ntpath.normcase(home) for home in missing_homes
-        },
+        home_isdir = lambda path: ntpath.normcase(path)
+        not in {ntpath.normcase(home) for home in missing_homes},
     )
     if environ_out is not None:
         environ_out.clear()
@@ -835,14 +834,17 @@ def test_safe_user_dir_rejects_the_public_profile_from_either_candidate(public: 
     )
     assert chosen is None
     # A human can still be told about it, which is what allow_public is for.
-    assert _system_dir_guard.safe_user_dir(
-        environ,
-        [r"C:\Windows"],
-        pathmod = ntpath,
-        sep = "\\",
-        expanduser = lambda _p: r"C:\Users\Public",
-        allow_public = True,
-    ) == public
+    assert (
+        _system_dir_guard.safe_user_dir(
+            environ,
+            [r"C:\Windows"],
+            pathmod = ntpath,
+            sep = "\\",
+            expanduser = lambda _p: r"C:\Users\Public",
+            allow_public = True,
+        )
+        == public
+    )
 
 
 def test_cli_guard_resolves_a_drive_relative_override_through_the_os():
