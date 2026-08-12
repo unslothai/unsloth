@@ -50,6 +50,12 @@ import shutil
 
 _CREATE_TRANSFORMER_MODULE_LOCK = threading.RLock()
 
+# Default LoRA targets for BERT-style encoder embedders. Kept as a module-level
+# constant so get_peft_model can tell "caller left the default alone" from "caller
+# asked for these modules" without comparing against an inline literal -- these
+# names do not exist on a decoder VLM and would blow up in get_peft_regex.
+_DEFAULT_TARGET_MODULES = ["query", "key", "value", "dense"]
+
 
 def _normalize_save_method(save_method):
     """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit".
@@ -1496,7 +1502,22 @@ class FastSentenceTransformer(FastModel):
         if hasattr(config, "vision_config"):
             return True
         architectures = getattr(config, "architectures", None) or []
-        return any(str(a).endswith("ForConditionalGeneration") for a in architectures)
+        if any(str(a).endswith("ForConditionalGeneration") for a in architectures):
+            return True
+        # Some loaders hand back a wrapper whose real config sits one level down
+        # (e.g. an ST/PEFT wrapper, or a text_config-style split). Check the usual
+        # nesting spots so the same model is not classified differently at load
+        # time and at LoRA time.
+        for attr in ("config", "text_config"):
+            nested = getattr(config, attr, None)
+            if nested is None or nested is config:
+                continue
+            if hasattr(nested, "vision_config"):
+                return True
+            nested_architectures = getattr(nested, "architectures", None) or []
+            if any(str(a).endswith("ForConditionalGeneration") for a in nested_architectures):
+                return True
+        return False
 
     @staticmethod
     def from_pretrained(
@@ -1737,6 +1758,7 @@ class FastSentenceTransformer(FastModel):
 
             # Store metadata for get_peft_model
             st_model._unsloth_fast_encoder = True
+            st_model._unsloth_is_vlm_embedding = is_vlm_embedding
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
@@ -1935,10 +1957,19 @@ class FastSentenceTransformer(FastModel):
                     **(processor_kwargs or {}),
                 )
             except Exception as e:
-                print(
-                    f"Unsloth Warning: Failed to load AutoProcessor for multimodal "
-                    f"embedding model ({e}). Image inputs may not work."
-                )
+                # Unrecoverable: without a processor the model keeps a text-only
+                # tokenizer that cannot produce `pixel_values`, so training would
+                # fail much later with a confusing error. Fail loudly here instead.
+                raise RuntimeError(
+                    f"Unsloth: Failed to load an AutoProcessor for multimodal embedding "
+                    f"model `{model_name}`: {e}\n"
+                    f"A vision embedding model needs a processor to turn images into "
+                    f"`pixel_values`; the text-only tokenizer cannot. Check that the repo "
+                    f"ships processor files (preprocessor_config.json), that "
+                    f"`trust_remote_code = True` is set if the repo needs it, and that the "
+                    f"image backend (torchvision / Pillow) is installed. Pass "
+                    f"`processor_kwargs` to forward extra processor options."
+                ) from e
 
         from sentence_transformers import SentenceTransformer
 
@@ -1967,6 +1998,10 @@ class FastSentenceTransformer(FastModel):
 
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
+        # Record the load-time VLM decision so get_peft_model reuses it instead of
+        # re-deriving it from `inner_model.config`, which may be a wrapped/nested
+        # config and classify the same checkpoint differently.
+        st_model._unsloth_is_vlm_embedding = is_vlm_embedding
 
         def _save_pretrained_merged(
             self,
@@ -2090,12 +2125,7 @@ class FastSentenceTransformer(FastModel):
     def get_peft_model(
         model,
         r = 16,
-        target_modules = [
-            "query",
-            "key",
-            "value",
-            "dense",
-        ],
+        target_modules = _DEFAULT_TARGET_MODULES,
         lora_alpha = 16,
         lora_dropout = 0.0,
         bias = "none",
@@ -2265,8 +2295,15 @@ class FastSentenceTransformer(FastModel):
             # to unsloth_zoo.peft_utils.get_peft_regex. Only do this for VLMs so the
             # existing text-decoder embedding path (which passes an explicit
             # target_modules list) is byte-for-byte unchanged.
-            inner_config = getattr(inner_model, "config", None)
-            is_vlm_inner = inner_config is not None and hasattr(inner_config, "vision_config")
+            # Single source of truth: from_pretrained records the decision it made
+            # (via _is_vlm_embedding_config on the prefetched AutoConfig) on the model,
+            # so both call sites agree. Only fall back to inspecting the inner config
+            # for models that were not built by FastSentenceTransformer.from_pretrained.
+            is_vlm_inner = getattr(model, "_unsloth_is_vlm_embedding", None)
+            if is_vlm_inner is None:
+                is_vlm_inner = FastSentenceTransformer._is_vlm_embedding_config(
+                    getattr(inner_model, "config", None)
+                )
             extra_peft_kwargs = {}
             if is_vlm_inner:
                 extra_peft_kwargs = dict(
@@ -2279,7 +2316,10 @@ class FastSentenceTransformer(FastModel):
                 # The BERT-oriented default target_modules do not exist on a
                 # decoder VLM. Fall back to None so get_peft_regex builds the
                 # correct regex from the finetune_* flags above.
-                if target_modules == ["query", "key", "value", "dense"]:
+                if target_modules is _DEFAULT_TARGET_MODULES or (
+                    target_modules is not None
+                    and set(target_modules) == set(_DEFAULT_TARGET_MODULES)
+                ):
                     target_modules = None
 
             peft_model = FastModel.get_peft_model(
