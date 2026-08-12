@@ -38,8 +38,7 @@ _SUBPROCESS_RUN_TARGET = "core.inference.llama_cpp.subprocess.run"
 _PRESERVE_ONLY_KWARGS = '{"preserve_thinking": false}'
 _OLD_KWARGS = '{"enable_thinking": false, "preserve_thinking": false}'
 _REASONING_TEMPLATE = (
-    "{% if enable_thinking %}thinking{% endif %}"
-    "{% if preserve_thinking %}history{% endif %}"
+    "{% if enable_thinking %}thinking{% endif %}{% if preserve_thinking %}history{% endif %}"
 )
 
 
@@ -122,11 +121,12 @@ def _backend(style = _REASONING_STYLE, supports_preserve = False):
 
 
 def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path, monkeypatch):
-    assert LlamaCppBackend.probe_server_capabilities(
-        str(tmp_path / _MISSING_BINARY_FILENAME)
-    ).get(
-        _REASONING_CAPABILITY, False
-    ) is False
+    assert (
+        LlamaCppBackend.probe_server_capabilities(str(tmp_path / _MISSING_BINARY_FILENAME)).get(
+            _REASONING_CAPABILITY, False
+        )
+        is False
+    )
     binary = tmp_path / _SERVER_COMMAND
     binary.write_text(_FAKE_BINARY_CONTENT, encoding = _UTF8_ENCODING)
     monkeypatch.setattr(
@@ -147,9 +147,7 @@ def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path
     backend = _backend(supports_preserve = True)
 
     modern_command = [_SERVER_COMMAND]
-    backend._append_launch_reasoning_args(
-        modern_command, True, modern_capabilities
-    )
+    backend._append_launch_reasoning_args(modern_command, True, modern_capabilities)
     assert modern_command == [
         _SERVER_COMMAND,
         _REASONING_FLAG,
@@ -160,14 +158,8 @@ def test_launch_reasoning_args_use_modern_flag_with_old_binary_fallback(tmp_path
     assert _NO_REASONING_PRESERVE_FLAG not in modern_command
 
     old_command = [_SERVER_COMMAND]
-    backend._append_launch_reasoning_args(
-        old_command, False, {_REASONING_CAPABILITY: False}
-    )
-    assert old_command == [
-        _SERVER_COMMAND,
-        _CHAT_TEMPLATE_KWARGS_FLAG,
-        _OLD_KWARGS,
-    ]
+    backend._append_launch_reasoning_args(old_command, False, {_REASONING_CAPABILITY: False})
+    assert old_command == [_SERVER_COMMAND, _CHAT_TEMPLATE_KWARGS_FLAG, _OLD_KWARGS]
 
 
 def test_load_command_uses_reasoning_flag(tmp_path):
