@@ -725,6 +725,7 @@ export function ChatSettingsPanel({
       ? getExternalMaxOutputTokens(
           externalProviderType,
           externalSelection?.modelId,
+          activeExternalProvider?.maxOutputTokens,
         )
       : isGguf && baseContext
         ? baseContext
@@ -760,15 +761,44 @@ export function ChatSettingsPanel({
     };
   }
 
+  useEffect(() => {
+    if (!isExternalModel || params.maxTokens <= maxTokensMax) {
+      return;
+    }
+    const nextParams = { ...params, maxTokens: maxTokensMax };
+    const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
+      ? getPresetSource(activePreset)
+      : "modified";
+    setActivePresetSource(nextSource);
+    onParamsChange(nextParams);
+  }, [
+    activePreset,
+    activePresetBaseline,
+    isExternalModel,
+    maxTokensMax,
+    onParamsChange,
+    params,
+    setActivePresetSource,
+  ]);
+
+  function applyPresetParamsWithinCurrentLimits(
+    presetParams: Parameters<typeof applyPresetParams>[1],
+  ): InferenceParams {
+    const nextParams = applyPresetParams(params, presetParams);
+    if (!isExternalModel) return nextParams;
+    return {
+      ...nextParams,
+      maxTokens: Math.min(nextParams.maxTokens, maxTokensMax),
+    };
+  }
+
   function applyPreset(name: string) {
     if (!settingsHydrated) {
       return;
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange({
-        ...applyPresetParams(params, p.params),
-      });
+      onParamsChange(applyPresetParamsWithinCurrentLimits(p.params));
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
       }
@@ -828,9 +858,9 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange({
-          ...        applyPresetParams(params, fallbackPreset.params),
-        });
+        onParamsChange(
+          applyPresetParamsWithinCurrentLimits(fallbackPreset.params),
+        );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
         }

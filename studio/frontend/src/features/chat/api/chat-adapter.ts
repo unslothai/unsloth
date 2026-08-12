@@ -5004,6 +5004,7 @@ export function createOpenAIStreamAdapter(
                 getExternalMaxOutputTokens(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
+                  externalProvider?.maxOutputTokens,
                 ),
               ),
 

@@ -134,3 +134,37 @@ test("new Anthropic and OpenAI ids keep their max-output cap and code pill", () 
     true,
   );
 });
+
+test("generic Custom connections use only their explicit max-output override", () => {
+  // Model names that resemble known hosted families must not change Custom's cap.
+  assert.equal(getExternalMaxOutputTokens("custom", "gpt-5.6-sol"), 32768);
+  assert.equal(getExternalMaxOutputTokens("custom", "claude-opus-5"), 32768);
+
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "any/provider-model", 131072),
+    131072,
+  );
+  assert.equal(getExternalMaxOutputTokens("custom", null, 65536), 65536);
+
+  // Invalid persisted values fail closed to the conservative default.
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 63), 32768);
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 65536.5), 32768);
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "model", Number.MAX_SAFE_INTEGER + 1),
+    32768,
+  );
+
+  // The override is provider-owned, so values above Studio's context-length
+  // convention remain valid as long as they round-trip safely through JSON.
+  assert.equal(getExternalMaxOutputTokens("custom", "model", 1048577), 1048577);
+  assert.equal(
+    getExternalMaxOutputTokens("custom", "model", Number.MAX_SAFE_INTEGER),
+    Number.MAX_SAFE_INTEGER,
+  );
+});
+
+test("Custom overrides cannot alter documented caps for other providers", () => {
+  assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 64), 128000);
+  assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 64), 128000);
+  assert.equal(getExternalMaxOutputTokens("vllm", "gpt-5.6-sol", 131072), 32768);
+});

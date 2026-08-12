@@ -58,6 +58,7 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
+  CUSTOM_MAX_OUTPUT_TOKENS_MIN,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -162,6 +163,7 @@ export function ChatProvidersSettings({
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
   const [editingProviderId, setEditingProviderId] = useState<string | null>(
     null,
   );
@@ -186,6 +188,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  const isGenericCustomProvider =
+    providerType === LEGACY_CUSTOM_PROVIDER_TYPE;
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
@@ -282,6 +286,7 @@ export function ChatProvidersSettings({
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
+    setMaxOutputTokensDraft("");
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -383,6 +388,7 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft("");
+    setMaxOutputTokensDraft("");
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -460,6 +466,24 @@ export function ChatProvidersSettings({
     return parseOptionalBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
+  }
+
+  function parseMaxOutputTokens(input: string): number | null {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error("Max Tokens limit must be an integer.");
+    }
+    const value = Number(trimmed);
+    if (!Number.isSafeInteger(value)) {
+      throw new Error("Max Tokens limit must be a safe integer.");
+    }
+    if (value < CUSTOM_MAX_OUTPUT_TOKENS_MIN) {
+      throw new Error(
+        `Max Tokens limit must be at least ${CUSTOM_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
+      );
+    }
+    return value;
   }
 
   async function loadModels() {
@@ -663,6 +687,9 @@ export function ChatProvidersSettings({
         isCustomProvider,
         providerType,
       );
+      const maxOutputTokens = isGenericCustomProvider
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -671,6 +698,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens,
         apiKey: apiKey.trim(),
 
       });
@@ -692,6 +720,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens: created.max_output_tokens ?? undefined,
 
         hasApiKey: created.has_api_key,
 
@@ -800,6 +829,10 @@ export function ChatProvidersSettings({
         isEditingCustomProvider,
         existing.providerType,
       );
+      const maxOutputTokens =
+        existing.providerType === LEGACY_CUSTOM_PROVIDER_TYPE
+          ? parseMaxOutputTokens(maxOutputTokensDraft)
+          : undefined;
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -810,6 +843,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
+        maxOutputTokens,
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -837,6 +871,7 @@ export function ChatProvidersSettings({
                 availableModels: manualOnly
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+                maxOutputTokens: updated.max_output_tokens ?? undefined,
 
                 hasApiKey: updated.has_api_key,
                 isReasoningModel: supportsProviderReasoningToggle(
@@ -874,6 +909,7 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
+    setMaxOutputTokensDraft(provider.maxOutputTokens?.toString() ?? "");
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
@@ -1247,6 +1283,49 @@ export function ChatProvidersSettings({
                     placeholder={customProviderBaseUrlPlaceholder(providerType)}
                     className="h-9 text-sm"
                   />
+                </div>
+              ) : null}
+
+              {providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-max-output-tokens"
+                      className="text-sm font-medium"
+                    >
+                      Max Tokens limit
+                    </Label>
+                    <p
+                      id="provider-max-output-tokens-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      Leave blank to use the 32,768-token default.
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    <Input
+                      id="provider-max-output-tokens"
+                      type="number"
+                      inputMode="numeric"
+                      min={CUSTOM_MAX_OUTPUT_TOKENS_MIN}
+                      max={Number.MAX_SAFE_INTEGER}
+                      step={1}
+                      value={maxOutputTokensDraft}
+                      onChange={(event) =>
+                        setMaxOutputTokensDraft(event.target.value)
+                      }
+                      placeholder="32768"
+                      aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
+                      className="h-9 text-sm"
+                    />
+                    <p
+                      id="provider-max-output-tokens-warning"
+                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+                    >
+                      If the upstream provider does not support this value,
+                      requests may fail.
+                    </p>
+                  </div>
                 </div>
               ) : null}
 

@@ -18,6 +18,8 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /** Optional maximum Max Tokens cap for a generic Custom connection. */
+  maxOutputTokens?: number;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -197,6 +199,22 @@ export function providerModelSupportsStudioTools(
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
+export const CUSTOM_MAX_OUTPUT_TOKENS_MIN = 64;
+
+export function normalizeCustomMaxOutputTokens(
+  providerType: string | null | undefined,
+  value: unknown,
+): number | undefined {
+  if (
+    providerType !== LEGACY_CUSTOM_PROVIDER_TYPE ||
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < CUSTOM_MAX_OUTPUT_TOKENS_MIN
+  ) {
+    return undefined;
+  }
+  return value;
+}
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -414,6 +432,10 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    maxOutputTokens: normalizeCustomMaxOutputTokens(
+      providerType,
+      raw.maxOutputTokens,
+    ),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,

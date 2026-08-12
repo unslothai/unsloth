@@ -1975,6 +1975,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const cap = getExternalMaxOutputTokens(
           provider?.providerType,
           parsed?.modelId,
+          provider?.maxOutputTokens,
         );
         if (nextMaxTokens > cap) {
           nextMaxTokens = cap;
