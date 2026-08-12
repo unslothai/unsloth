@@ -5798,8 +5798,19 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         from core.inference.llama_cpp import _gguf_extra_shards
         from utils.models.drafters import dflash_budget_bytes
 
+        # The cache Studio is pointed at right now, not the one huggingface_hub
+        # resolved at import. A user who moved the cache launches llama-server
+        # against the new one, so a bare scan misses the drafter that will load
+        # and falls back to a reserve that can undercount it.
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+
+            _cache_dir: Optional[str] = active_hf_hub_cache()
+        except Exception:
+            _cache_dir = None
+
         sizes: dict[str, int] = {}
-        for cached_repo in scan_cache_dir().repos:
+        for cached_repo in scan_cache_dir(cache_dir = _cache_dir).repos:
             if (cached_repo.repo_id or "").lower() != repo.lower():
                 continue
             # One revision, not every snapshot on disk. llama-server resolves the

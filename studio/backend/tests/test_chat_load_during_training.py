@@ -1936,6 +1936,68 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
         self.assertAlmostEqual(charged, 4.0, places = 6)
 
+    def test_the_cached_drafter_scan_reads_the_cache_studio_is_pointed_at(self):
+        """A user who moved the Hugging Face cache launches llama-server against the
+        new one. Scanning huggingface_hub's import-time default finds nothing there,
+        and the reserve that replaces the measurement can undercount a large cached
+        drafter beside a running training job."""
+        seen = {}
+        cached = SimpleNamespace(
+            repo_id = "org/drafter",
+            revisions = [
+                SimpleNamespace(
+                    refs = {"main"},
+                    last_modified = 2.0,
+                    files = [
+                        SimpleNamespace(file_name = "drafter-Q4_K_M.gguf", size_on_disk = 7 * 1024**3)
+                    ],
+                )
+            ],
+        )
+
+        def fake_scan(cache_dir = None, **kwargs):
+            seen["cache_dir"] = cache_dir
+            return SimpleNamespace(repos = [cached])
+
+        with (
+            patch("huggingface_hub.model_info", side_effect = OSError("no network")),
+            patch("huggingface_hub.scan_cache_dir", side_effect = fake_scan),
+            patch("utils.hf_cache_settings.active_hf_hub_cache", return_value = "/elsewhere/hub"),
+        ):
+            charged = self.route._remote_drafter_repo_bytes("org/drafter", hf_token = None)
+        self.assertEqual(seen["cache_dir"], "/elsewhere/hub")
+        self.assertEqual(charged, 7 * 1024**3)
+
+    def test_underscore_spelled_draft_flags_classify_as_remote(self):
+        """llama.cpp accepts --spec_draft_hf as well as --spec-draft-hf. The value
+        parser normalises the spelling, so a classifier that compares raw tokens
+        calls the repo a local path, charges nothing, and lets the guard admit a
+        load whose drafter is multiple GB."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+            patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 6 * 1024**3),
+        ):
+            charged = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec_draft_hf", "org/drafter"],
+            )
+        self.assertAlmostEqual(charged, 10.0, places = 6)
+
     def test_a_listing_that_carries_no_sizes_still_pays_the_reserve(self):
         """A complete family whose listing omits sizes is not a free drafter, it is
         an unmeasured one: something loads and the guard does not know how big. The
