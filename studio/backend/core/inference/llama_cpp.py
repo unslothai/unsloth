@@ -1772,19 +1772,29 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        with gguf_load_in_flight(hf_repo):
-            if hf_repo and _hub_download_blocks_gguf_load(
-                hf_repo,
-                intent.hf_variant,
-                require_mmproj = bool(
-                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
-                ),
-                hf_token = intent.hf_token,
-            ):
-                raise RuntimeError(
-                    f"'{hf_repo}' is currently being downloaded by the download manager"
-                )
-            return load(self, intent, load_cancel_event = load_cancel_event)
+        try:
+            with gguf_load_in_flight(hf_repo):
+                if hf_repo and _hub_download_blocks_gguf_load(
+                    hf_repo,
+                    intent.hf_variant,
+                    require_mmproj = bool(
+                        intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
+                    ),
+                    hf_token = intent.hf_token,
+                ):
+                    raise RuntimeError(
+                        f"'{hf_repo}' is currently being downloaded by the download manager"
+                    )
+                return load(self, intent, load_cancel_event = load_cancel_event)
+        finally:
+            # A load owns the pending VRAM budget only while it is running. It is
+            # armed before the download so a save landing during those minutes is
+            # answered from what this load captured, but every exit ahead of the
+            # spawn -- a cancelled download, the diffusion runner's own return, a
+            # failed preflight -- would otherwise leave it armed, and the settings
+            # route reads it before is_active. A completed launch has already
+            # moved the value to _vram_fraction_launched, so this is a no-op there.
+            self._vram_fraction_pending = None
 
     return wrapped
 

@@ -437,3 +437,41 @@ class TestPreLaunchWindow:
         assert compact.index("self._vram_fraction_pending=None") < compact.index(
             "raiseRuntimeError(detail)"
         )
+
+
+class TestPendingOwnership:
+    def test_the_load_wrapper_always_releases_the_pending_value(self):
+        # Armed before the download, so every exit ahead of the spawn (a cancelled
+        # download, the diffusion runner's own return, a failed preflight) has to
+        # give it back, and the settings route reads it before is_active. The
+        # decorator already wraps every load_model call, so it is the one place
+        # that sees all of those exits without reindenting the load itself.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        code = [
+            line
+            for line in inspect.getsource(lc._with_gguf_load_marker).splitlines()
+            if not line.strip().startswith("#")
+        ]
+        compact = "".join("".join(code).split())
+        assert "finally:self._vram_fraction_pending=None" in compact
+
+    def test_a_pre_launch_exit_leaves_no_pending_value(self, monkeypatch):
+        # Exercised rather than read: the diffusion path returns before the spawn.
+        import core.inference.llama_cpp as lc
+
+        backend = lc.LlamaCppBackend()
+        backend._audio_probed = True
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.9)
+        monkeypatch.setattr(backend, "adopt_load_intent_if_matched", lambda _intent: False)
+        # Any failure ahead of the spawn will do; the wrapper must still clean up.
+        monkeypatch.setattr(
+            backend,
+            "_find_llama_server_binary",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("no binary")),
+        )
+        with pytest.raises(Exception):
+            backend.load_model(lc.GgufLoadIntent(model_identifier = "owner/repo"))
+        assert backend._vram_fraction_pending is None

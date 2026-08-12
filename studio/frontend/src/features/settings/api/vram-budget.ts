@@ -120,7 +120,15 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
  * talking to an older backend hides the control instead of erroring.
  */
 export async function loadVramBudgetSettings(): Promise<VramBudgetSettings | null> {
-  inFlightVramBudget ??= fetchVramBudgetSettings()
+  // Read behind any open write. A row that remounts right after a drag was
+  // flushed can otherwise issue a GET that reads the old fraction before the PUT
+  // commits and answers after it, repainting the control with the value the
+  // server has just replaced. The subscription cannot untangle that on its own,
+  // because both events are legitimate and only their order is wrong.
+  const pendingWrites =
+    vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
+  inFlightVramBudget ??= pendingWrites
+    .then(fetchVramBudgetSettings)
     .then(publishVramBudget)
     .finally(() => {
       inFlightVramBudget = null;

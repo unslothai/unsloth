@@ -231,3 +231,22 @@ test("Run also waits for a save the debounce already sent", () => {
   // The counter has to come back down however the write ends.
   assert.match(client, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
 });
+
+test("a read waits behind an open write", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  // A remount right after a flushed drag can read before the PUT commits and
+  // answer after it, repainting the row with the value the server just replaced.
+  const read = client.slice(
+    client.indexOf("export async function loadVramBudgetSettings"),
+  );
+  assert.match(read, /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain/);
+  assert.ok(
+    read.indexOf("pendingWrites") < read.indexOf(".then(fetchVramBudgetSettings)"),
+    "the fetch must be chained behind the open writes, not raced with them",
+  );
+});
