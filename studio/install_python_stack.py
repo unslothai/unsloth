@@ -3628,6 +3628,40 @@ NO_TORCH_SKIP_PACKAGES = {
     "librosa",
 }
 
+# Requirements that ship NO wheel on PyPI at any version, so the installer has always
+# built them from source. ``antlr4-python3-runtime`` arrives transitively, via
+# ``omegaconf==2.3.1`` pinning it below the 4.13.2 wheel.
+#
+# A user-level ``no-build = true`` (~/.config/uv/uv.toml) or ``only-binary = :all:``
+# (~/.config/pip/pip.conf) makes every one of them unresolvable and takes the whole
+# extras step down with it -- unslothai/unsloth#8530. A PACKAGE-SCOPED --no-binary
+# overrides that global policy for these names only: verified against uv 0.10 and pip
+# 26 that `--no-binary openai-whisper` resolves under `no-build = true` /
+# `only-binary = :all:` while every other requirement still comes from a wheel. That
+# keeps the user's binary-only policy in force everywhere it can actually be honoured,
+# which a blanket --no-build/:none: override would not.
+#
+# Keep in sync with the `nobuild` allowlists that assert the same contract in CI:
+# .github/scripts/clean-machine-assert.sh and .github/scripts/assert-nobuild.ps1.
+SDIST_ONLY_PACKAGES = (
+    "openai-whisper",
+    "argbind",
+    "randomname",
+    "antlr4-python3-runtime",
+)
+
+
+def _sdist_only_build_args() -> list[str]:
+    """``--no-binary`` for each wheel-less requirement, for uv and pip alike.
+
+    Naming a package that the resolution never reaches is harmless (verified), so this
+    is safe next to the NO_TORCH / Windows requirement filtering.
+    """
+    args: list[str] = []
+    for name in SDIST_ONLY_PACKAGES:
+        args += ["--no-binary", name]
+    return args
+
 
 def _select_flash_attn_version(torch_mm: str) -> str | None:
     return flash_attn_package_version(torch_mm)
@@ -3910,6 +3944,42 @@ def _is_pinned_index_cmd(cmd: "list[str] | tuple[str, ...]") -> bool:
     return any(arg in ("--index-url", "--default-index") for arg in cmd)
 
 
+# Restrictive package-manager policy that a pinned install must not inherit from the
+# ENVIRONMENT. The pinned branch already neutralises the config FILES (UV_NO_CONFIG=1 +
+# PIP_CONFIG_FILE=devnull), but these env vars outrank a config file, so a hardened shell
+# could still fail a torch repair the pin was supposed to make deterministic (#8530).
+_PM_POLICY_ENV_VARS = (
+    "UV_NO_BUILD",
+    "UV_NO_BUILD_PACKAGE",
+    "UV_NO_BINARY",
+    "UV_NO_BINARY_PACKAGE",
+    "UV_REQUIRE_HASHES",
+    "UV_EXCLUDE_NEWER",
+    "PIP_ONLY_BINARY",
+    "PIP_NO_BINARY",
+    "PIP_REQUIRE_HASHES",
+)
+
+
+def _relaxed_pip_policy_env(cmd: "list[str]") -> "dict[str, str]":
+    """Overrides that stop a hardened user pip config failing the installer's own pip.
+
+    Empty for anything that is not a `pip install` / `pip download` this module drives --
+    including every `uv` command, so the "non-pinned installs inherit the caller env
+    unchanged" contract is untouched on a machine with no hostile pip config.
+
+    ``require-hashes = true`` in ~/.config/pip/pip.conf makes pip reject any requirement
+    without a --hash, which is every requirements file the installer ships; that is what
+    took the pip FALLBACK down in #8530 once uv had already failed. pip applies env vars
+    AFTER config files, so PIP_REQUIRE_HASHES=0 overrides it while pip.conf's index-url,
+    trusted-host, cert and proxy settings all stay in force. Scoped to the child env: the
+    user's own later pip commands are unaffected.
+    """
+    if cmd[:1] == ["uv"] or not any(arg in ("install", "download") for arg in cmd):
+        return {}
+    return {"PIP_REQUIRE_HASHES": "0"}
+
+
 def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     """Return an env with the uv index vars stripped for a pinned-index install.
 
@@ -3917,11 +3987,23 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     the user's mirror. For pinned commands, the uv index/backend vars are removed,
     UV_NO_CONFIG=1 set (a discovered uv.toml outranks the CLI pin), and PIP_CONFIG_FILE
     pointed at os.devnull for the pip fallback. Mirrors install.sh's gate (#6898).
+
+    A non-pinned `pip` command additionally gets hash-required mode switched off, which is
+    the only relaxation that cannot be expressed as a command-line flag; the wheel-less
+    requirements are handled by the package-scoped --no-binary in _sdist_only_build_args()
+    instead of by overriding the user's binary policy wholesale.
     """
     if not _is_pinned_index_cmd(cmd):
-        return None
+        relaxed = _relaxed_pip_policy_env(cmd)
+        if not relaxed:
+            return None
+        env = os.environ.copy()
+        env.update(relaxed)
+        return env
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
+        env.pop(name, None)
+    for name in _PM_POLICY_ENV_VARS:
         env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
@@ -4432,6 +4514,9 @@ def install_python_stack() -> int:
     pip_install(
         "Installing additional unsloth dependencies",
         "--no-cache-dir",
+        # extras.txt is where the wheel-less requirements live, so a user-level
+        # no-build/only-binary policy fails this step first (#8530).
+        *_sdist_only_build_args(),
         req = REQ_ROOT / "extras.txt",
     )
 
