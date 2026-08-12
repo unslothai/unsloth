@@ -34,7 +34,9 @@ this from becoming a surprise for anyone who wanted the merge kept.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -42,6 +44,14 @@ from pathlib import Path
 import pytest
 
 GB = 1024**3
+
+# A weight shard of the merge, as opposed to anything else that ends in
+# `.safetensors` (an adapter) or `.bin` (`training_args.bin`).
+_MERGE_SHARD = re.compile(r"^(model|pytorch_model|consolidated)\.|-\d+-of-\d+\.")
+
+
+def _is_merge_shard(name):
+    return name.endswith((".safetensors", ".bin")) and bool(_MERGE_SHARD.search(name))
 
 
 @pytest.fixture
@@ -57,8 +67,13 @@ def _layout(tmp_path, merge_gb, base_gb):
     gguf.mkdir()
     # Sparse files: the sizes are what the code reads, and writing 60GB of
     # zeroes to prove a point about disk space would be its own joke.
-    for i, gb in enumerate(_split(merge_gb)):
-        with open(merge / f"model-0000{i + 1}.safetensors", "wb") as fh:
+    # The names `save_pretrained` really writes: a `-NNNNN-of-NNNNN` set, which
+    # is what the reclamation matches on. `model-00001.safetensors` is not a
+    # shape transformers ever produces.
+    merge_shards = list(_split(merge_gb))
+    for i, gb in enumerate(merge_shards):
+        name = f"model-{i + 1:05d}-of-{len(merge_shards):05d}.safetensors"
+        with open(merge / name, "wb") as fh:
             fh.truncate(int(gb * GB))
     (merge / "config.json").write_text("{}")
     (merge / "tokenizer.json").write_text("{}")
@@ -136,9 +151,12 @@ def test_config_and_tokenizer_survive(tmp_path, monkeypatch, save_mod):
 
 def test_more_quants_need_more_room(tmp_path, monkeypatch, save_mod):
     """Every output stays on disk, so three of them is three times the room.
-    A disk that fits one and not three must still be treated as tight."""
+    A disk that fits one and not three must still be treated as tight.
+
+    Off a 60GB BF16 base one Q4_K_M is about 21GB, while Q4_K_M + Q5_K_M + Q8_0
+    together are about 81GB, so 50GB free fits the first and not the three."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
-    _with_free(monkeypatch, save_mod, 100)
+    _with_free(monkeypatch, save_mod, 50)
     assert _reclaim(save_mod, merge, gguf, bases) == 0
     assert _reclaim(save_mod, merge, gguf, bases, ["q4_k_m", "q5_k_m", "q8_0"]) > 0
 
@@ -406,7 +424,6 @@ def test_f32_from_an_f32_base_is_not_doubled(save_mod):
     """The ratio is target over base, not a special case for the word f32."""
     assert save_mod._gguf_output_size_ratio("f32", "bf16") == 2.0
     assert save_mod._gguf_output_size_ratio("f32", "f32") == 1.0
-    assert save_mod._gguf_output_size_ratio("q4_k_m", "bf16") == 1.0
 
 
 def test_a_roomy_output_disk_is_not_called_full_by_a_tight_cwd(monkeypatch, save_mod):
@@ -424,3 +441,100 @@ def test_a_roomy_output_disk_is_not_called_full_by_a_tight_cwd(monkeypatch, save
     assert save_mod._gguf_failure_looks_like_disk(exc, "/output") is False
     # No output directory to consult, so the working directory still answers.
     assert save_mod._gguf_failure_looks_like_disk(exc, None) is True
+
+
+def test_unrelated_training_artifacts_are_never_deleted(tmp_path, monkeypatch, save_mod):
+    """A merge routinely lands in a training `output_dir`, so deleting by
+    extension takes `training_args.bin` and the optimizer state with it. Those
+    are not the merge and this export cannot put them back."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    keep = {
+        "training_args.bin": b"args",
+        "optimizer.pt": b"opt",
+        "rng_state.pth": b"rng",
+        "scheduler.pt": b"sched",
+        # An adapter beside the merge is the user's, and it is tiny anyway.
+        "adapter_model.safetensors": b"adapter",
+    }
+    for name, blob in keep.items():
+        (Path(merge) / name).write_bytes(blob)
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    left = set(os.listdir(merge))
+    for name in keep:
+        assert name in left, f"{name} was deleted but the merge did not write it"
+    assert not [f for f in left if _is_merge_shard(f)]
+
+
+def test_the_shards_the_index_names_are_the_ones_reclaimed(tmp_path, monkeypatch, save_mod):
+    """`save_pretrained` writes an index naming its shards, so when there is one
+    it decides rather than the naming convention."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 30, base_gb = 60)
+    odd = Path(merge) / "weights-part-a.safetensors"
+    with open(odd, "wb") as fh:
+        fh.truncate(int(20 * GB))
+    (Path(merge) / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"a.weight": "weights-part-a.safetensors"}})
+    )
+    _with_free(monkeypatch, save_mod, 1)
+    freed = _reclaim(save_mod, merge, gguf, bases)
+    assert freed > 20 * GB
+    assert not odd.exists(), "the index named this shard and it was left behind"
+
+
+def test_a_malformed_index_falls_back_to_the_naming_convention(tmp_path, monkeypatch, save_mod):
+    """A half-written index must not stop the reclamation, nor make it raise."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    (Path(merge) / "model.safetensors.index.json").write_text("{not json")
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+
+
+def test_a_quantized_output_is_priced_below_the_base_it_reads(tmp_path, monkeypatch, save_mod):
+    """The merge is kept whenever the export already fits, which is the whole
+    promise. A Q4_K_M off a 60GB BF16 base needs about 21GB, so 30GB free has
+    the room and charging it a full 60GB copy would delete for nothing."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    _with_free(monkeypatch, save_mod, 30)
+    assert _reclaim(save_mod, merge, gguf, bases) == 0
+    assert [f for f in os.listdir(merge) if _is_merge_shard(f)]
+
+
+def test_each_quant_is_priced_by_its_own_width(save_mod):
+    """Wider types cost more room, and none of them is charged the base."""
+    ratio = lambda m: save_mod._gguf_output_size_ratio(m, "bf16")
+    assert ratio("q2_k") < ratio("q4_k_m") < ratio("q6_k") < ratio("q8_0") < 1.0
+    # The published llama.cpp 7B sizes: Q4_K_M near 4.5 bits a weight, Q8_0 8.5.
+    assert 4.5 / 16 < ratio("q4_k_m") < 8.0 / 16
+    assert 8.5 / 16 < ratio("q8_0") < 1.0
+    # i-quants carry their width the same way.
+    assert ratio("iq2_xxs") < ratio("iq4_xs") < ratio("q8_0")
+    # An unrecognised method is still charged a whole copy of the base.
+    assert ratio("something_new") == 1.0
+
+
+def test_a_q8_0_base_is_not_priced_as_sixteen_bit(save_mod):
+    """`first_conversion` is a public argument and `q8_0` is one of the types
+    convert_hf_to_gguf can emit directly, so the base GGUF is not always 16-bit.
+    Pricing an 8-bit base as 16-bit halves every estimate taken off it, and
+    under-counting is the direction that costs the export."""
+    off_16 = save_mod._gguf_output_size_ratio("q4_k_m", "bf16")
+    off_8 = save_mod._gguf_output_size_ratio("q4_k_m", "q8_0")
+    assert off_8 > off_16, "a quant off an 8-bit base is a bigger share of it"
+    # Still an upper bound: Q4_K_M is about 4.5 bits against Q8_0's real 8.5.
+    assert off_8 > 4.5 / 8.5
+    # And an f32 output off that base is four bytes a weight against one.
+    assert save_mod._gguf_output_size_ratio("f32", "q8_0") >= 32.0 / 8.5
+
+
+def test_the_vlm_projector_is_not_charged_to_every_quant(tmp_path, monkeypatch, save_mod):
+    """llama-quantize copies the `-mmproj` projector rather than quantizing it,
+    so it is not part of what a pass writes. Charging it per quant calls a disk
+    tight that has the room."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 30)
+    mmproj = Path(gguf) / "model.BF16-mmproj.gguf"
+    with open(mmproj, "wb") as fh:
+        fh.truncate(int(200 * GB))
+    _with_free(monkeypatch, save_mod, 20)
+    assert _reclaim(save_mod, merge, gguf, bases + [str(mmproj)]) == 0
+    assert [f for f in os.listdir(merge) if _is_merge_shard(f)]

@@ -3471,25 +3471,99 @@ def _gguf_failure_looks_like_disk(exc, save_directory = None):
     return False
 
 
-# Bytes per weight of the dtypes the converter and llama-quantize can emit as
-# a full-precision output. Every other method is a quantized type, which is
-# smaller than the 16-bit source it reads.
-_GGUF_BYTES_PER_WEIGHT = {"f32": 4.0, "f16": 2.0, "bf16": 2.0}
+# Bits per weight of the dtypes the converter and llama-quantize can emit as a
+# full-precision output. Every other method llama-quantize writes is a
+# quantized type, and its name carries the width: the leading digit of `q4_k_m`
+# or `iq3_xxs` is the nominal bits a weight.
+_GGUF_BITS_PER_WEIGHT = {"f32": 32.0, "f16": 16.0, "bf16": 16.0}
+
+# k- and i-quants store block scales and mins beside the weights, so a type is
+# always a little wider than its name. llama.cpp's own published 7B sizes put
+# that overhead under a bit a weight throughout (Q4_K_M lands near 4.5 bits,
+# Q6_K near 6.6), so 1.5 bounds every type in the table with room to spare.
+_QUANT_OVERHEAD_BITS = 1.5
+
+_QUANT_NOMINAL_BITS = re.compile(r"^i?q(\d+)")
+
+
+def _gguf_type_bits(dtype):
+    """Nominal bits a weight of a GGUF type, or None if the name is unknown.
+
+    The float types are exact. A quantized type carries its nominal width as the
+    leading digit of the name, not counting the block scales and mins that k-
+    and i-quants store beside the weights.
+    """
+    name = str(dtype).lower()
+    if name in _GGUF_BITS_PER_WEIGHT:
+        return _GGUF_BITS_PER_WEIGHT[name]
+    nominal = _QUANT_NOMINAL_BITS.match(name)
+    return float(nominal.group(1)) if nominal else None
 
 
 def _gguf_output_size_ratio(quant_method, first_conversion):
     """Upper bound on one output's size as a multiple of the base GGUF's.
 
-    A quantized output is smaller than the GGUF it is quantized from, so 1.0
-    bounds it. `f32` is the exception the ratio exists for: asking for f32 off
-    an f16 or bf16 base writes four bytes a weight, twice the input, so a
-    per-pass bound of 1.0 would call a disk roomy that is about to fill.
+    There are two ways to be wrong here and they cost different things.
+    Charging every quantized pass a whole copy of the base deletes a merge that
+    an export with room to spare would have kept: a Q4_K_M off a 60GB base
+    needs about 21GB, not 60GB. Charging `f32` one copy under-counts by half,
+    since f32 off an f16 base writes four bytes a weight against two, and
+    under-counting costs the export outright.
+
+    So price each pass by its own width, and round both sides so the answer can
+    only come out high: the base at its nominal width, the output at its
+    nominal width plus the block overhead. `first_conversion` is not always
+    16-bit -- `q8_0` is a direct-convert outtype -- so the base is measured the
+    same way rather than assumed.
     """
-    base = _GGUF_BYTES_PER_WEIGHT.get(str(first_conversion).lower(), 2.0)
-    target = _GGUF_BYTES_PER_WEIGHT.get(str(quant_method).lower(), 0.0)
-    if base <= 0:
+    base = _gguf_type_bits(first_conversion) or 16.0
+    target = _gguf_type_bits(quant_method)
+    if target is None:
+        # An unrecognised method is charged a whole copy of the base, which is
+        # what every quantized method used to get.
         return 1.0
-    return max(1.0, target / base)
+    if str(quant_method).lower() not in _GGUF_BITS_PER_WEIGHT:
+        target += _QUANT_OVERHEAD_BITS
+    return target / base
+
+
+# The names `save_pretrained` gives a set of weights, and only those. Unsharded
+# it is transformers' own `SAFE_WEIGHTS_NAME` / `WEIGHTS_NAME`, plus the
+# consolidated single file unsloth_zoo renames to `model.safetensors`. Sharded
+# it is `-NNNNN-of-NNNNN` under any stem, which is the shape transformers
+# matches its own shards with (`modeling_utils`: `(.*?)-\d{5}-of-\d{5}`).
+_MERGE_WEIGHT_NAME = re.compile(
+    r"^((model|pytorch_model|consolidated)|.+-\d+-of-\d+)\.(safetensors|bin)$"
+)
+# `save_pretrained` names the shard set here when it writes more than one.
+_WEIGHT_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+
+
+def _merge_weight_files(model_directory, names):
+    """The weight files a 16-bit merge writes, out of everything in a directory.
+
+    Deleting by extension alone is what this exists to avoid. The merge lands in
+    a directory the caller named, which is routinely a training `output_dir`
+    that already holds `training_args.bin`, `optimizer.pt` or `rng_state.pth`
+    next to it -- artifacts this export did not create and cannot recreate. So
+    match the names `save_pretrained` actually produces: the index, when it
+    wrote one, names its shards outright, and the naming convention answers when
+    there is no index.
+    """
+    indexed = set()
+    for index_name in _WEIGHT_INDEX_NAMES:
+        if index_name not in names:
+            continue
+        try:
+            with open(os.path.join(model_directory, index_name), encoding = "utf-8") as index_file:
+                weight_map = json.load(index_file).get("weight_map") or {}
+            # Basenames, like the index reader above: only this directory is
+            # being listed, so a value carrying a path would never match.
+            indexed.update(os.path.split(str(shard))[-1] for shard in weight_map.values())
+        except (OSError, ValueError, AttributeError):
+            # A missing or malformed index just means the names decide instead.
+            continue
+    return sorted(n for n in names if n in indexed or _MERGE_WEIGHT_NAME.match(n))
 
 
 def _free_merge_if_disk_is_tight(
@@ -3524,7 +3598,16 @@ def _free_merge_if_disk_is_tight(
     if not quant_methods:
         return 0
     try:
-        base_bytes = sum(os.path.getsize(f) for f in initial_files if os.path.isfile(f))
+        # A VLM conversion also emits an `-mmproj` projector, which
+        # llama-quantize copies rather than quantizes: it is not part of what a
+        # pass writes, so charging it once per requested quant would call a disk
+        # tight that has the room. Filtered the same way the RAM budget above
+        # filters it.
+        base_bytes = sum(
+            os.path.getsize(f)
+            for f in initial_files
+            if os.path.isfile(f) and "-mmproj" not in os.path.basename(f).lower()
+        )
     except OSError:
         return 0
     if base_bytes <= 0:
@@ -3562,11 +3645,10 @@ def _free_merge_if_disk_is_tight(
         # Unreadable is not a reason to fail an export that no longer needs
         # this directory at all.
         return 0
-    for name in names:
-        if name.endswith((".safetensors", ".bin", ".pth", ".pt")):
-            path = os.path.join(model_directory, name)
-            if os.path.isfile(path):
-                weights.append(path)
+    for name in _merge_weight_files(model_directory, names):
+        path = os.path.join(model_directory, name)
+        if os.path.isfile(path):
+            weights.append(path)
     freed = 0
     for path in weights:
         try:
