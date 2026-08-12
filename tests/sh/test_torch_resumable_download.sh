@@ -45,7 +45,7 @@ _mk() { printf '#!/bin/sh\n%s\n' "$2" > "$_BIN/$1"; chmod +x "$_BIN/$1"; }
 
 echo "=== download_resumable prefers wget -c ==="
 rm -f "$_BIN"/*
-_mk wget 'echo "wget $@" >> '"$_BIN"'/log"; exit 0'
+_mk wget "echo wget \"\$@\" >> $_BIN/log; exit 0"
 PATH="$_BIN:$PATH" . "$_HARNESS"
 PATH="$_BIN:$PATH" . "$_FN_FILE"
 PATH="$_BIN:$PATH" download_resumable "https://example.com/torch.whl" "/tmp/torch.whl"
