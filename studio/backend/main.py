@@ -1863,6 +1863,15 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             )
             enriched_devices.append(enriched_dev)
 
+        # The tile divides the aggregate by the SUMMED per-device totals, so both must
+        # describe the same cards. The two probes enumerate independently: visibility
+        # drops a device whose mem_get_info raises, the aggregate side reads torch
+        # properties only and keeps it. A device in one and not the other inflates the
+        # percentage and floors free at 0, so identical index sets only (#7452).
+        aggregate_basis_matches = metrics_match and {
+            d.get("index") for d in utilization_info.get("devices", [])
+        } == {d.get("index") for d in enriched_devices}
+
         try:
             from core.inference.llama_cpp import LlamaCppBackend
             from utils.hardware import DeviceType, get_device
@@ -1890,6 +1899,11 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            # Host-level used VRAM, for when no counter is attributable to one card
+            # (#7452). Only the Windows ROCm path sets it; None everywhere else.
+            "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
+            if aggregate_basis_matches
+            else None,
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp
