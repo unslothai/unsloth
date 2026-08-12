@@ -136,6 +136,8 @@ def cross_venv(tmp_path, monkeypatch):
         with_manifest = True,
         duplicate_versions = (),
         inactive_duplicate_version = "",
+        unresolved_active_paths = False,
+        malformed_unrelated_metadata = False,
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -167,6 +169,12 @@ def cross_venv(tmp_path, monkeypatch):
                 f"Version: {inactive_duplicate_version}\n",
                 encoding = "utf-8",
             )
+        if unresolved_active_paths:
+            (managed / "lib" / "python3.10" / "site-packages").mkdir(parents = True)
+        if malformed_unrelated_metadata:
+            malformed = managed_site / "unrelated-1.0.dist-info"
+            malformed.mkdir()
+            (malformed / "METADATA").write_bytes(b"\xff\xfe")
 
         (caller_site / "unsloth_cli").mkdir(parents = True)
         shutil.copy(DEPS_PATH, caller_site / "unsloth_cli" / "_studio_deps.py")
@@ -235,6 +243,22 @@ def test_duplicate_metadata_in_a_foreign_managed_venv_is_not_collapsed(
 
 def test_inactive_python_site_packages_do_not_create_a_foreign_conflict(cross_venv):
     state = cross_venv(inactive_duplicate_version = "2025.1.1")
+
+    assert state["ok"] is True, state
+    assert state["reason"] is None
+
+
+def test_unresolved_foreign_site_packages_fail_closed(cross_venv):
+    state = cross_venv(unresolved_active_paths = True)
+
+    assert state["ok"] is False
+    assert state["manifest_ok"] is False
+    assert state["deps_ok"] is False
+    assert state["reason"] == "studio_install_incomplete"
+
+
+def test_malformed_unrelated_foreign_metadata_does_not_hide_valid_records(cross_venv):
+    state = cross_venv(malformed_unrelated_metadata = True)
 
     assert state["ok"] is True, state
     assert state["reason"] is None

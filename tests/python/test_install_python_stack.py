@@ -658,6 +658,44 @@ class TestDuplicateCoreMetadataRepair:
         source = inspect.getsource(ips.install_python_stack)
         assert "local_repo=local_repo" in source.replace(" ", "")
 
+    def test_ci_repair_restores_only_the_candidate_unsloth_checkout(self, monkeypatch):
+        probes = {
+            "unsloth": iter((["old", "new"], ["new"], [], ["new"])),
+            "unsloth-zoo": iter((["new"],)),
+        }
+        installs = []
+
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda name: next(probes[name]),
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ips,
+            "pip_install",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+        )
+
+        assert ips._repair_duplicate_core_metadata(
+            ("unsloth", "unsloth-zoo"), ci_source_overlay = "/src/candidate"
+        )
+        assert len(installs) == 1
+        assert installs[0][1] == (
+            "--no-cache-dir",
+            "--no-deps",
+            "-e",
+            "/src/candidate",
+        )
+        assert installs[0][2]["constrain"] is False
+
+    def test_ci_overlay_is_wired_into_duplicate_repair(self):
+        source = inspect.getsource(ips.install_python_stack).replace(" ", "")
+        assert 'os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY","")' in source
+        assert "ci_source_overlay=ci_source_overlay" in source
+
     def test_normal_local_overlay_still_applies_both_sources(self, monkeypatch):
         installs = []
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)

@@ -222,8 +222,8 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
 
     found: Dict[str, str] = {}
     conflicts: set[str] = set()
-    try:
-        for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
+    for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
+        try:
             name = getattr(dist, "name", None) or dist.metadata["Name"]
             if name:
                 canonical = _canonical(name)
@@ -231,8 +231,10 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
                     conflicts.add(canonical)
                 else:
                     found[canonical] = dist.version or ""
-    except Exception:
-        return None
+        except Exception:
+            # An unrelated malformed record does not make every otherwise
+            # readable distribution in the foreign environment disappear.
+            continue
     return found, conflicts
 
 
@@ -285,6 +287,17 @@ def install_state(extra_roots: Sequence[Path] = ()) -> dict:
     installed = foreign_distributions[0] if foreign_distributions is not None else None
     installed_conflicts = foreign_distributions[1] if foreign_distributions is not None else set()
     req_root = _requirements_root_in(root) if foreign else None
+    if foreign and (foreign_distributions is None or req_root is None):
+        # Never answer for the caller when the requested environment cannot be
+        # inspected. That can turn a torn or ambiguous managed venv into a
+        # healthy result merely because the external CLI has matching packages.
+        return {
+            "ok": False,
+            "manifest_ok": False,
+            "deps_ok": False,
+            "missing": [],
+            "reason": "studio_install_incomplete",
+        }
     try:
         if installed is not None and req_root is not None and _supports_foreign_root(module):
             # That venv's own metadata: unreadable through this interpreter.

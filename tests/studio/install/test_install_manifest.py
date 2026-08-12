@@ -89,6 +89,19 @@ def test_installed_versions_reports_every_canonical_metadata_record(tmp_path, mo
     assert im._installed_version("demo-pkg") is None
 
 
+def test_installed_versions_ignores_malformed_unrelated_metadata(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    _write_dist_metadata(site, "demo", "2.0")
+    malformed = site / "unrelated-1.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+
+
 def test_duplicate_package_metadata_invalidates_the_manifest(
     tmp_path, monkeypatch, install_root, req_root
 ):

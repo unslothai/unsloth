@@ -123,13 +123,15 @@ def installed_versions(dist_name: str) -> List[str]:
     paths = _metadata_scan_paths()
     kwargs = {"path": paths} if paths else {}
     found: List[str] = []
-    try:
-        for dist in distributions(**kwargs):
+    for dist in distributions(**kwargs):
+        try:
             name = getattr(dist, "name", None) or dist.metadata["Name"]
             if name and _canonical(name) == wanted:
                 found.append(dist.version or "")
-    except Exception:
-        return []
+        except Exception:
+            # One malformed unrelated METADATA must not erase valid records
+            # already found for the requested distribution.
+            continue
     return sorted(found)
 
 

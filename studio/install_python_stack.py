@@ -3565,7 +3565,7 @@ def _overlay_local_core_packages(local_repo: str, package_names = None) -> None:
 
 
 def _repair_duplicate_core_metadata(
-    package_names: "tuple[str, ...]", *, local_repo: str = ""
+    package_names: "tuple[str, ...]", *, local_repo: str = "", ci_source_overlay: str = ""
 ) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
@@ -3604,11 +3604,17 @@ def _repair_duplicate_core_metadata(
                 return False
             record_count = remaining
 
+        canonical = re.sub(r"[-_.]+", "-", name).lower()
         if local_repo:
             # install.sh/install.ps1 may already have applied these sources
             # before handing off with SKIP_STUDIO_BASE=1. Install that same
             # provenance directly now that no ambiguous record remains.
             _overlay_local_core_packages(local_repo, (name,))
+        elif ci_source_overlay and canonical == "unsloth":
+            # Clean-machine CI overlays only the candidate unsloth checkout.
+            # Preserve that exact editable source without introducing the
+            # unsloth-zoo git overlay used by a full --local install.
+            _overlay_local_core_packages(ci_source_overlay, (name,))
         else:
             pip_install(
                 f"Repairing duplicate metadata for {name}",
@@ -3963,6 +3969,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    # Clean-machine CI overlays only unsloth, not the full local source pair.
+    ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
     # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
     base_total = 12 if IS_WINDOWS else 13
     if IS_MACOS:
@@ -4040,7 +4048,11 @@ def install_python_stack() -> int:
     # A superseded dist-info makes version() and every RECORD consumer choose
     # an arbitrary package version. Repair it before any fast package operation,
     # including installer handoffs that set skip_base after their own upgrade.
-    if not _repair_duplicate_core_metadata((package_name, "unsloth-zoo"), local_repo = local_repo):
+    if not _repair_duplicate_core_metadata(
+        (package_name, "unsloth-zoo"),
+        local_repo = local_repo,
+        ci_source_overlay = ci_source_overlay,
+    ):
         return 1
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
