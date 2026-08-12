@@ -502,8 +502,7 @@ def test_lint_rejects_expansion_in_the_interpreter_token(tmp_path):
     (wf / "host.yml").write_text(
         _host_workflow().replace(
             "run: python3 scripts/lint_workflow_triggers.py",
-            'run: |\n          "/usr/$(printf bin)/python3" '
-            "scripts/lint_workflow_triggers.py",
+            'run: |\n          "/usr/$(printf bin)/python3" ' "scripts/lint_workflow_triggers.py",
         )
     )
     proc = _run(wf, require_host = True)

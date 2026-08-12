@@ -110,7 +110,7 @@ def _is_trusted_python(token: str) -> bool:
     add an executable of that name.
     """
     if any(op in token for op in _SHELL_OPERATORS):
-        return False        # a substitution runs before the path is used
+        return False  # a substitution runs before the path is used
     path = PurePosixPath(token)
     if not _PYTHON_BASENAME.fullmatch(path.name):
         return False
