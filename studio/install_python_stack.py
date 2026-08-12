@@ -4173,10 +4173,7 @@ def _parse_package_spec(spec: str) -> tuple[str, str]:
 
 
 def _pick_wheel_href_from_listing(
-    listing: str,
-    package: str,
-    version: str,
-    py_tag: str,
+    listing: str, package: str, version: str, py_tag: str
 ) -> str | None:
     import re
 
