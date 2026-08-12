@@ -46,6 +46,21 @@ _TRANSPORT_ERRORS = (
 )
 
 
+def _resolve_entrypoint(binary: str) -> str:
+    """The real executable behind a managed shell/symlink entrypoint.
+
+    macOS only matters here: SIP purges DYLD_* while starting the protected
+    /bin/sh a wrapper runs under, so probing or launching the wrapper loses the
+    loader path however carefully the environment was built (#8566).
+    """
+    try:
+        from core.inference.llama_cpp import _resolve_llama_binary
+
+        return str(_resolve_llama_binary(binary))
+    except Exception:  # noqa: BLE001 - launch what we were given
+        return binary
+
+
 def _binary_lib_dir(binary: str) -> str:
     """Directory holding ``binary``'s sibling libraries, through an entrypoint."""
     try:
@@ -105,6 +120,11 @@ class LlamaServerBackend:
                 "llama-server. Install llama.cpp or set LLAMA_SERVER_PATH / "
                 "UNSLOTH_LLAMA_CPP_PATH."
             )
+        # Resolve before the probe, so both the `--help` capability check and
+        # the later spawn run the real executable rather than an entrypoint
+        # that would lose DYLD_* to SIP.
+        if sys.platform == "darwin":
+            binary = _resolve_entrypoint(binary)
         self._assert_embedding_support(binary)
         self._binary = binary
         return binary

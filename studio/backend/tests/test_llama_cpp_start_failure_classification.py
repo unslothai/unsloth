@@ -843,3 +843,31 @@ class TestMacOSSymbolProvenance:
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 1)
         assert "newer macOS" in msg
+
+
+class TestCommandLineSecrets:
+    """--api-key is minted per launch with secrets.token_urlsafe(32), so it is
+    in no environment variable and matches no token shape."""
+
+    _KEY = "Xy9_kQ2mLp7RtVw4NbZc8FgHjKdSaEuI0oPqWxYz1A"
+
+    def test_the_api_key_is_redacted_by_its_flag(self):
+        out = f"exec: llama-server -m x.gguf --api-key {self._KEY} --port 8080\nabort"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert self._KEY not in msg
+        assert "--api-key" in msg  # the flag stays; only the value goes
+
+    def test_the_equals_form_is_redacted_too(self):
+        out = f"argv: --api-key={self._KEY}"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1)
+        assert self._KEY not in msg
+
+    def test_a_known_secret_is_redacted_wherever_it_appears(self):
+        # Passed by the caller, so it goes even without the flag next to it.
+        out = f"client sent token {self._KEY} and was refused"
+        msg = _classify(out, "/models/x.gguf", "local/x", 1, None, None, (self._KEY,))
+        assert self._KEY not in msg
+
+    def test_no_known_secret_is_harmless(self):
+        msg = _classify("plain failure", "/models/x.gguf", "local/x", 1, None, None, (None,))
+        assert "plain failure" in msg

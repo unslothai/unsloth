@@ -64,10 +64,13 @@ fi
 # clean-machine lane scrubs PATH down to system directories and puts the shim
 # under its own UNSLOTH_STUDIO_HOME, so `command -v unsloth` is empty there and
 # a PATH-only lookup would skip this assertion in the one lane whose whole
-# point is a clean install, while CI still reported success.
+# point is a clean install, while CI still reported success. The tauri delivery
+# nests its venv one level deeper (clean-machine-install-ci.yml checks
+# $HOME_DIR/studio/unsloth_studio), so both layouts are candidates.
 STUDIO_PY=""
 for candidate in \
   "$UNSLOTH_HOME/unsloth_studio/bin/python" \
+  "$UNSLOTH_HOME/studio/unsloth_studio/bin/python" \
   "$UNSLOTH_HOME/.venv/bin/python" \
   "$HOME/.unsloth/unsloth_studio/bin/python"; do
   [ -x "$candidate" ] && { STUDIO_PY="$candidate"; break; }

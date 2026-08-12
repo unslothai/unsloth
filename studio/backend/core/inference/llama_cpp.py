@@ -42,6 +42,7 @@ from typing import (
     NamedTuple,
     NoReturn,
     Optional,
+    Sequence,
     Union,
 )
 
@@ -9153,6 +9154,7 @@ class LlamaCppBackend:
         returncode: Optional[int] = None,
         binary: Optional[str] = None,
         log_path: "Optional[Path | str]" = None,
+        secrets: "Sequence[Optional[str]]" = (),
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -9319,6 +9321,7 @@ class LlamaCppBackend:
                     f"{LlamaCppBackend._runtime_remedy(binary)}.",
                     output,
                     log_path,
+                    secrets,
                 )
             return (
                 "llama-server was stopped by the operating system (signal 9), "
@@ -9356,6 +9359,7 @@ class LlamaCppBackend:
             "Check that the GGUF file is valid and you have enough memory.",
             output,
             log_path,
+            secrets,
         )
 
     # Enough of the tail to carry a stack trace or a ggml assert, bounded so a
@@ -9371,13 +9375,19 @@ class LlamaCppBackend:
         re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
         re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
         re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+"),
+        # Our own --api-key, echoed by a wrapper or diagnostic build that dumps
+        # its argv. The value is secrets.token_urlsafe(32), so it matches no
+        # token shape and is in no environment variable to look up; catch it by
+        # its flag, the way _redacted_cmd_for_log does for the log.
+        re.compile(r"(?<=--api-key )\S+"),
+        re.compile(r"(?<=--api-key=)\S+"),
         # scheme://user:secret@host, which is what DATABASE_URL / REDIS_URL and
         # a proxy variable carry. Keep the scheme, drop the userinfo.
         re.compile(r"(?<=://)[^/@\s]+(?=@)"),
     )
 
     @staticmethod
-    def _scrub_secret_values(text: str) -> str:
+    def _scrub_secret_values(text: str, extra: "Sequence[Optional[str]]" = ()) -> str:
         """Redact credential-looking environment values out of ``text``.
 
         llama-server inherits nearly all of Studio's environment, so a wrapper
@@ -9388,6 +9398,12 @@ class LlamaCppBackend:
         if not text:
             return text
         cleaned = text
+        # Secrets we minted ourselves and therefore know exactly (the
+        # --api-key value); no pattern can be relied on to recognise a
+        # token_urlsafe blob.
+        for literal in extra:
+            if literal and len(literal) >= 8:
+                cleaned = cleaned.replace(literal, "***")
         # By name, using the same predicate that decides what to strip from a
         # managed server's own environment, so the two cannot drift: anything
         # we refuse to hand the child must not come back out of it either.
@@ -9410,7 +9426,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _with_startup_diagnostics(
-        message: str, output: Optional[str], log_path: "Optional[Path | str]"
+        message: str,
+        output: Optional[str],
+        log_path: "Optional[Path | str]",
+        extra_secrets: "Sequence[Optional[str]]" = (),
     ) -> str:
         """Append llama-server's output tail and log path to ``message``.
 
@@ -9426,7 +9445,7 @@ class LlamaCppBackend:
         # API error; keep newlines and tabs, which carry the structure.
         tail = "".join(ch for ch in raw if ch in "\n\t" or ch.isprintable()).strip()
         if tail:
-            tail = LlamaCppBackend._scrub_secret_values(tail)
+            tail = LlamaCppBackend._scrub_secret_values(tail, extra_secrets)
             tail = tail[-LlamaCppBackend._STARTUP_TAIL_CHARS :].lstrip()
             parts.append(f"llama-server output:\n{tail}")
         if log_path:
@@ -13249,6 +13268,7 @@ class LlamaCppBackend:
                             cpu_rc,
                             binary,
                             self._llama_log_path,
+                            (self._api_key,),
                         )
                         self._cleanup_failed_cpu_fallback()
                         raise RuntimeError(detail)
@@ -13641,6 +13661,7 @@ class LlamaCppBackend:
                                     _retry_rc,
                                     binary,
                                     self._llama_log_path,
+                                    (self._api_key,),
                                 )
                                 _raise_terminal_load_failure(
                                     self._mmproj_retry_failure_message(
@@ -13676,6 +13697,7 @@ class LlamaCppBackend:
                                     _crash_rc,
                                     binary,
                                     self._llama_log_path,
+                                    (self._api_key,),
                                 )
                             )
 
