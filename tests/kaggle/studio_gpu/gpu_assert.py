@@ -130,8 +130,15 @@ def cuda_buffer_mib(log_text: str) -> float | None:
     return max(float(size) for _, size in matches)
 
 
-def install_kind(marker_path: Path) -> str | None:
-    """``install_kind`` from a llama.cpp install's UNSLOTH_PREBUILT_INFO.json."""
+def install_kind(marker_path: Path | None) -> str | None:
+    """``install_kind`` from a llama.cpp install's UNSLOTH_PREBUILT_INFO.json.
+
+    ``None`` in means no marker was found, and answers ``None`` rather than
+    raising: ``llama_cpp_marker`` returns ``None`` for that case and every
+    caller here feeds it straight in.
+    """
+    if marker_path is None:
+        return None
     try:
         payload = json.loads(Path(marker_path).read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001
@@ -144,6 +151,38 @@ def install_kind(marker_path: Path) -> str | None:
 
 def is_cuda_install(kind: str | None) -> bool:
     return bool(kind) and kind in CUDA_INSTALL_KINDS
+
+
+# Where a llama.cpp install can be, most specific first. STUDIO_HOME is checked
+# because a caller may point an install there explicitly; the canonical
+# location is what `install_llama_prebuilt.py` uses by default (its
+# `Path.home() / ".unsloth" / "llama.cpp"`), and it is where `install.sh
+# --local` actually puts one.
+def llama_cpp_marker(studio_home: Path) -> Path | None:
+    """The UNSLOTH_PREBUILT_INFO.json of the llama.cpp this box will use.
+
+    Five hardware runs reported install_kind=None and failed the export
+    assertion for it. There was no missing llama.cpp: install.sh --local had
+    installed one into ~/.unsloth/llama.cpp, and this payload was reading
+    STUDIO_HOME/llama.cpp, a path nothing ever wrote to. The installer even
+    said so when asked to install again --
+
+        existing llama.cpp install already matches selected release
+        b10360-mix-87da1a2; skipping download and install
+
+    -- while the directory it had been pointed at stayed empty.
+
+    Returns None when neither location has a marker, which is then a real
+    absence rather than a guess about where to look.
+    """
+    candidates = (
+        Path(studio_home) / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json",
+        Path.home() / ".unsloth" / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json",
+    )
+    for marker in candidates:
+        if marker.is_file():
+            return marker
+    return None
 
 
 def gguf_magic_ok(path: Path) -> bool:

@@ -1207,3 +1207,61 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
     # And it must happen before the server, so the export route never sees a
     # llama.cpp appear underneath it.
     assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
+
+
+def test_the_llama_cpp_marker_falls_back_to_the_canonical_location(tmp_path, monkeypatch):
+    """Five runs reported install_kind=None with a llama.cpp sitting on disk.
+
+    install.sh --local puts one at ~/.unsloth/llama.cpp, which is what
+    install_llama_prebuilt.py's own default resolves to, and this payload read
+    STUDIO_HOME/llama.cpp -- a path nothing ever wrote to. The installer said
+    as much when asked to install again: "existing llama.cpp install already
+    matches selected release b10360-mix-87da1a2; skipping download and
+    install", while the directory it was pointed at stayed empty.
+    """
+    module = _load_payload()
+    fake_home = tmp_path / "home"
+    canonical = fake_home / ".unsloth" / "llama.cpp"
+    canonical.mkdir(parents = True)
+    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"install_kind": "linux-cuda"})
+    )
+    monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
+
+    studio_home = tmp_path / "studio_home"
+    studio_home.mkdir()
+    found = module.llama_cpp_marker(studio_home)
+    assert found is not None, "the canonical ~/.unsloth/llama.cpp was not consulted"
+    assert module.install_kind(found) == "linux-cuda"
+
+
+def test_an_explicit_studio_home_install_wins_over_the_canonical_one(tmp_path, monkeypatch):
+    """Most specific first. A caller who installed into STUDIO_HOME on purpose
+    must not be answered with whatever is in the shared location."""
+    module = _load_payload()
+    fake_home = tmp_path / "home"
+    canonical = fake_home / ".unsloth" / "llama.cpp"
+    canonical.mkdir(parents = True)
+    (canonical / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"install_kind": "linux-cpu"})
+    )
+    monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
+
+    studio_home = tmp_path / "studio_home"
+    (studio_home / "llama.cpp").mkdir(parents = True)
+    (studio_home / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"install_kind": "linux-cuda"})
+    )
+    assert module.install_kind(module.llama_cpp_marker(studio_home)) == "linux-cuda"
+
+
+def test_no_llama_cpp_anywhere_is_still_reported_as_absent(tmp_path, monkeypatch):
+    """The fallback must not turn a real absence into a guess."""
+    module = _load_payload()
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(module.Path, "home", staticmethod(lambda: fake_home))
+    studio_home = tmp_path / "studio_home"
+    studio_home.mkdir()
+    assert module.llama_cpp_marker(studio_home) is None
+    assert module.install_kind(None) is None

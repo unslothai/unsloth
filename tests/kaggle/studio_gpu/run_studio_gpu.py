@@ -80,6 +80,7 @@ if str(_HERE) not in sys.path:
 from gpu_assert import (  # noqa: E402
     gguf_magic_ok,
     install_kind,
+    llama_cpp_marker,
     is_cuda_install,
     offload_verdict,
     parse_compute_apps,
@@ -285,7 +286,7 @@ class Payload:
                 )
         except Exception as exc:  # noqa: BLE001
             env["torch_error"] = f"{type(exc).__name__}: {exc}"
-        marker = self.studio_home / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json"
+        marker = llama_cpp_marker(self.studio_home)
         env["llama_cpp_install_kind"] = install_kind(marker)
         return env
 
@@ -698,7 +699,7 @@ class Payload:
         # install.sh" and "a CPU bundle after install.sh" are different bugs
         # and this step would hide the difference by fixing both. Recording the
         # prior state keeps the original question answerable.
-        detail["install_kind_before"] = install_kind(install_dir / "UNSLOTH_PREBUILT_INFO.json")
+        detail["install_kind_before"] = install_kind(llama_cpp_marker(self.studio_home))
         env = dict(os.environ)
         env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
         # `run` already applies capture_output and text; passing them again is
@@ -727,8 +728,7 @@ class Payload:
         detail["stdout_tail"] = self.scrub(proc.stdout or "")[-2000:]
         detail["stderr_tail"] = self.scrub(proc.stderr or "")[-2000:]
 
-        marker = install_dir / "UNSLOTH_PREBUILT_INFO.json"
-        kind = install_kind(marker)
+        kind = install_kind(llama_cpp_marker(self.studio_home))
         detail["llama_cpp_install_kind"] = kind
 
         failures: list[str] = []
@@ -750,7 +750,7 @@ class Payload:
         failures: list[str] = []
         detail: dict = {"adapter_dir": adapter_dir}
 
-        marker = self.studio_home / "llama.cpp" / "UNSLOTH_PREBUILT_INFO.json"
+        marker = llama_cpp_marker(self.studio_home)
         kind = install_kind(marker)
         detail["llama_cpp_install_kind"] = kind
         if not is_cuda_install(kind):
