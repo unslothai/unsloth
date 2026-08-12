@@ -1873,6 +1873,53 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     return sorted(f for f in main_files if boundary.search(f.lower()))
 
 
+def _resolve_variant_gguf_files(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    hf_token: Optional[str] = None,
+) -> tuple[Optional[str], list[str]]:
+    """Which file in ``hf_repo`` this variant means, plus its extra shards.
+
+    The repo listing first, the local HF cache when the Hub cannot be asked, and finally a
+    name synthesised from the repo id. Every tier fails soft: ``(None, [])`` means "no
+    opinion", not "no such file". Lives out here rather than inside ``_download_gguf`` so
+    the pre-teardown header probe asks the question exactly the way the download will
+    answer it -- two implementations of this cascade would let the file the probe judged
+    drift from the file the load opens.
+    """
+    gguf_filename: Optional[str] = None
+    gguf_extra_shards: list[str] = []
+    if not hf_variant:
+        return None, []
+    try:
+        from huggingface_hub import list_repo_files
+
+        files = list_repo_files(hf_repo, token = hf_token)
+        gguf_files = _gguf_files_for_variant(files, hf_variant)
+        if gguf_files:
+            gguf_filename = gguf_files[0]
+            gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
+    except Exception as e:
+        logger.warning(f"Could not list repo files: {e}")
+
+    # Fall back to the local cache when the repo listing is unavailable.
+    if not gguf_filename:
+        cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
+        if cached_name:
+            gguf_filename = cached_name
+            gguf_extra_shards = cached_shards
+            logger.info(
+                "Resolved variant %s -> %s from local HF cache",
+                hf_variant,
+                gguf_filename,
+            )
+
+    if not gguf_filename:
+        repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
+        gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+    return gguf_filename, gguf_extra_shards
+
+
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
@@ -7162,6 +7209,75 @@ class LlamaCppBackend:
         probe._read_gguf_metadata(gguf_path)
         return probe._non_chat_gguf_refusal(gguf_path)
 
+    @classmethod
+    def _remote_non_chat_gguf_refusal(
+        cls,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str],
+        hf_token: Optional[str],
+        model_identifier: Optional[str],
+    ) -> Optional[str]:
+        """``_non_chat_gguf_refusal_for_path`` for a repo load, decided from a header-sized
+        BYTE RANGE instead of the checkpoint, so the verdict lands before Phase 1 tears the
+        resident model down.
+
+        A repo load reaches the same refusal after Phase 2, which is one teardown too late:
+        the Model Hub sends a repo id for every Hub model (the route, not the UI, decides
+        local-vs-remote), so a media GGUF opened into a chat kills the user's live model to
+        answer a question its own header answers. Downloading first to answer it earlier
+        would trade the teardown for tens of GB, so this reads the header only.
+
+        A 256 KiB prefix is enough for exactly the files this refuses. Media GGUFs carry a
+        handful of KV pairs -- measured over the Hub, flux / flux2 / cosmos / wan / sd3 all
+        finish the KV walk in 144-145 bytes and LTX-2, the largest seen, in 3,987 -- while a
+        chat model's ``tokenizer.ggml.tokens`` array pushes its KV block into the megabytes
+        (Qwen3-0.6B 5.93 MB, Llama-3.2-1B 7.82 MB). So the prefix completes the walk for a
+        media GGUF and cuts mid-KV for a chat one, where ``_gguf_header_parsed`` stays False
+        and ``_non_chat_gguf_refusal`` declines to have an opinion.
+
+        Fails open at every step -- no resolvable filename, an unreachable Hub, a proxy that
+        answers 200 instead of 206, a prefix too short to finish the walk -- because the
+        post-download check is still there as the backstop. This can only turn a refusal
+        that costs the resident model into one that does not; it can never refuse a load the
+        full-file check would have allowed, since it runs the same verdict on the same
+        bytes."""
+        try:
+            from core.inference.diffusion_compat import (
+                _local_gguf_path,
+                _read_gguf_header,
+                _read_local_header,
+            )
+        except Exception as e:  # noqa: BLE001 -- an unavailable probe is not a verdict
+            logger.debug("GGUF header probe unavailable: %s", e)
+            return None
+        try:
+            gguf_filename, _shards = _resolve_variant_gguf_files(hf_repo, hf_variant, hf_token)
+            if not gguf_filename:
+                return None
+            # A copy already in the cache answers this with no request at all, and is the
+            # only thing that can answer it while the Hub is unreachable.
+            local = _local_gguf_path(hf_repo, gguf_filename)
+            prefix = (
+                _read_local_header(local)
+                if local
+                else _read_gguf_header(hf_repo, gguf_filename, hf_token)
+            )
+            # Magic, version and the two counts. Anything shorter cannot even be opened as
+            # a GGUF, so there is nothing to be right about.
+            if len(prefix) < 24:
+                return None
+            with tempfile.TemporaryDirectory(prefix = "unsloth-gguf-probe-") as probe_dir:
+                # Named after the real file: a GGUF that declares no architecture is refused
+                # on the strength of its name, and a temp name would lose the page pointer.
+                probe_path = os.path.join(probe_dir, os.path.basename(gguf_filename))
+                with open(probe_path, "wb") as handle:
+                    handle.write(prefix)
+                return cls._non_chat_gguf_refusal_for_path(probe_path, model_identifier)
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Non-chat GGUF header probe failed for %s: %s", hf_repo, e)
+            return None
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -7835,36 +7951,10 @@ class LlamaCppBackend:
             )
             hf_repo = resolved_hf_repo
 
-        # Resolve the filename from the variant
-        gguf_filename = None
-        gguf_extra_shards: list[str] = []
-        if hf_variant:
-            try:
-                from huggingface_hub import list_repo_files
-
-                files = list_repo_files(hf_repo, token = hf_token)
-                gguf_files = _gguf_files_for_variant(files, hf_variant)
-                if gguf_files:
-                    gguf_filename = gguf_files[0]
-                    gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
-            except Exception as e:
-                logger.warning(f"Could not list repo files: {e}")
-
-            # Fall back to the local cache when the repo listing is unavailable.
-            if not gguf_filename:
-                cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
-                if cached_name:
-                    gguf_filename = cached_name
-                    gguf_extra_shards = cached_shards
-                    logger.info(
-                        "Resolved variant %s -> %s from local HF cache",
-                        hf_variant,
-                        gguf_filename,
-                    )
-
-            if not gguf_filename:
-                repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
-                gguf_filename = f"{repo_name}-{hf_variant}.gguf"
+        # Resolve the filename from the variant (shared with the pre-teardown header probe)
+        gguf_filename, gguf_extra_shards = _resolve_variant_gguf_files(
+            hf_repo, hf_variant, hf_token
+        )
 
         # Prefer the existing model. Updates use force=True to fetch a new revision.
         if not force:
@@ -10559,9 +10649,7 @@ class LlamaCppBackend:
 
             # An image / video GGUF already on disk is refused HERE, before the teardown
             # below: the header answers the question without llama-server, so there is no
-            # reason to make the user pay their resident chat model for it. A repo load
-            # cannot be settled this early (the file only exists after Phase 2), so that
-            # path is caught by the same check after the download instead.
+            # reason to make the user pay their resident chat model for it.
             if gguf_path and not hf_repo and Path(gguf_path).is_file():
                 _early_non_chat = self._non_chat_gguf_refusal_for_path(gguf_path, model_identifier)
                 if _early_non_chat:
@@ -10571,6 +10659,41 @@ class LlamaCppBackend:
                         gguf_path,
                     )
                     raise ValueError(_early_non_chat)
+
+            # And the same refusal for a REPO load, which is the one the Model Hub actually
+            # sends: /load carries an opaque model_path that the route resolves to hf_repo
+            # for every Hub model, so leaving this to the post-download check meant the
+            # reported case -- a video model opened into a chat -- killed the live model
+            # first. The file does not exist yet, but the verdict does not need it: a
+            # header-sized byte range decides it (see _remote_non_chat_gguf_refusal), and
+            # downloading tens of GB just to refuse would cost more than the teardown this
+            # is saving. When a preflight above already fetched the file, judge that
+            # instead -- same verdict, no request. Fails open into the post-download check
+            # below, which stays as the backstop.
+            if hf_repo:
+                _early_non_chat = (
+                    self._non_chat_gguf_refusal_for_path(_preflight_model_path, model_identifier)
+                    if _preflight_model_path
+                    else self._remote_non_chat_gguf_refusal(
+                        hf_repo = hf_repo,
+                        hf_variant = hf_variant,
+                        hf_token = hf_token,
+                        model_identifier = model_identifier,
+                    )
+                )
+                if _early_non_chat:
+                    logger.error(
+                        "Refusing non-chat GGUF before teardown: %s (%s)",
+                        _early_non_chat,
+                        hf_repo,
+                    )
+                    raise ValueError(_early_non_chat)
+
+            # A probe can take a bounded moment on a slow Hub, so re-read the cancel flag
+            # rather than tearing down a healthy server for a load that was called off.
+            if _load_cancelled():
+                logger.info("Load cancelled before teardown")
+                return False
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             _replaying_cpu_fallback = intent.cpu_fallback

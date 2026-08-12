@@ -99,6 +99,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { looksLikeLocalPath } from "./lib/local-path";
 import {
   ggufVariantsMatch,
   modelIdsMatch,
@@ -1296,11 +1297,18 @@ export function ModelsPage() {
       // so a path sent through here would arrive as a repo that does not exist. Those keep
       // today's route; the backend preflight now refuses them by name instead of letting
       // llama-server fail opaquely.
-      if (mediaPage && selectedModel.kind !== "local") {
+      // A cached repo whose id does not resolve on its own -- one outside the active HF
+      // cache, or whose default ref names no whole quant -- is pinned by the inventory to
+      // its snapshot directory, so runId is an absolute path on a row that is not `local`.
+      // The target pages reject that: a snapshot entry is a symlink into the sibling blobs
+      // dir, and the containment check refuses a child resolving outside the repo root. The
+      // Hub id loads the SAME copy, since the loader reuses whichever cache root holds it.
+      const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
+      if (mediaPage && selectedModel.kind !== "local" && routeId) {
         void navigate({
           to: `/${mediaPage}`,
           // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
-          search: diffusionRouteSearch(runId, {
+          search: diffusionRouteSearch(routeId, {
             ggufVariant: opts.ggufVariant ?? null,
           }),
         });
