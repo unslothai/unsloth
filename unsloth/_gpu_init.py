@@ -36,6 +36,7 @@ from .import_fixes import (
     configure_amdgpu_asic_id_table_path,
     fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
+    disable_torchaudio_if_cuda_mismatched,
     fix_diffusers_warnings,
     fix_huggingface_hub,
 )
@@ -87,6 +88,14 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
+# Ahead of `import unsloth_zoo` below, not with the other import fixes further
+# down. unsloth_zoo's temporary_patches reach transformers.processing_utils,
+# which imports transformers.audio_utils, which imports torchaudio -- so a
+# torchaudio that raises at extension init takes the whole unsloth import down
+# roughly 95 lines before the late block would have neutralised it. Measured:
+# Kaggle-Muse_Glimmer_(30B)-GRPO died at cell 4 with the guard present but not
+# yet run.
+disable_torchaudio_if_cuda_mismatched()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
@@ -206,7 +215,6 @@ from .import_fixes import (
     patch_vllm_for_notebooks,
     patch_torchcodec_audio_decoder,
     disable_torchcodec_if_broken,
-    disable_torchaudio_if_cuda_mismatched,
     disable_broken_wandb,
     fix_trl_vllm_ascend,
     fix_peft_transformers_tensor_parallel_import_compat,
@@ -247,7 +255,6 @@ fix_executorch()
 patch_vllm_for_notebooks()
 patch_torchcodec_audio_decoder()
 disable_torchcodec_if_broken()
-disable_torchaudio_if_cuda_mismatched()
 disable_broken_wandb()
 # Must run before patch_peft_weight_converter_compatibility: stubs the
 # transformers v5 submodules peft 0.19.x imports, so the next patch can wrap

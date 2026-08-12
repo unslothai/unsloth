@@ -145,14 +145,23 @@ def test_the_check_itself_is_never_patched_out():
     assert "_check_cuda_version" not in code
 
 
-def test_it_runs_on_import_after_the_torchcodec_repair():
-    """Ordering: both seat sentinels, and the audio decoder path touches
-    both, so the torchcodec one goes first as it always has."""
+def test_it_runs_before_the_torchcodec_repair_because_it_has_to():
+    """This assertion used to run the other way round, and was wrong.
+
+    Both repairs seat sentinels, and the audio decoder path touches both, so
+    ordering them torchcodec-first looked natural. But torchcodec is only
+    reached lazily, while torchaudio is imported eagerly by
+    transformers.audio_utils as soon as unsloth_zoo is imported -- which
+    happens ~95 lines BEFORE the late fix block where torchcodec is repaired.
+    Ordering by tidiness rather than by when each package actually gets
+    imported is what let Kaggle-Muse_Glimmer_(30B)-GRPO keep dying at cell 4
+    with the guard present and shipped.
+    """
     from pathlib import Path
 
     init = (Path(import_fixes_dir()) / "_gpu_init.py").read_text()
-    assert init.index("disable_torchcodec_if_broken()") < init.index(
-        "disable_torchaudio_if_cuda_mismatched()"
+    assert init.index("disable_torchaudio_if_cuda_mismatched()") < init.index(
+        "disable_torchcodec_if_broken()"
     )
 
 
@@ -160,3 +169,37 @@ def import_fixes_dir():
     import unsloth
     from pathlib import Path
     return Path(unsloth.__file__).parent
+
+
+def test_the_guard_runs_before_anything_can_import_torchaudio():
+    """Defined is not the same as run in time.
+
+    The guard shipped invoked at line 250 of _gpu_init, and `import
+    unsloth_zoo` sits at line 155. unsloth_zoo's temporary_patches reach
+    transformers.processing_utils -> transformers.audio_utils -> torchaudio,
+    so a torchaudio that raises at extension init took the whole unsloth
+    import down 95 lines before the repair would have run. Measured:
+    Kaggle-Muse_Glimmer_(30B)-GRPO still died at cell 4 with the fix present.
+
+    Ordering is the property that matters, so assert on it directly.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "unsloth"
+           / "_gpu_init.py").read_text(encoding = "utf-8").splitlines()
+
+    def line_of(predicate):
+        for i, line in enumerate(src):
+            if predicate(line):
+                return i
+        return None
+
+    call = line_of(lambda l: l.strip() == "disable_torchaudio_if_cuda_mismatched()")
+    zoo = line_of(lambda l: l.strip() == "import unsloth_zoo")
+    assert call is not None, "the guard is never called"
+    assert zoo is not None, "could not find the unsloth_zoo import"
+    assert call < zoo, (
+        f"disable_torchaudio_if_cuda_mismatched() runs at line {call + 1}, "
+        f"after `import unsloth_zoo` at line {zoo + 1}; torchaudio is already "
+        f"imported by then and the guard cannot help"
+    )
