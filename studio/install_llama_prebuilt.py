@@ -53,6 +53,17 @@ if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
 import prebuilt_core as _core  # noqa: E402
+from backend.utils.prebuilt.llama_backend import (  # noqa: E402
+    INSTALL_KIND_BACKENDS,
+    REQUESTABLE_BACKENDS,
+    backend_for_install_kind,
+    environment_backend_override,
+    install_kinds_for_backend,
+    marker_backend,
+    marker_backend_request,
+    marker_install_identity,
+    normalize_backend_request,
+)
 
 # Late-binding seam: core functions resolve collaborators (download_file,
 # fetch_json, ...) through this module's globals at call time, so tests that
@@ -132,47 +143,7 @@ UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
 # validation), so check against this to keep the marker honest (#7357).
 VULKAN_INSTALL_KINDS = frozenset({"linux-vulkan", "windows-vulkan"})
 
-# Shared backend vocabulary for bundles, markers, CLI, environment, and UI.
-INSTALL_KIND_BACKENDS = {
-    "linux-cuda": "cuda",
-    "linux-arm64-cuda": "cuda",
-    "windows-cuda": "cuda",
-    "linux-rocm": "rocm",
-    "windows-hip": "rocm",
-    "windows-rocm": "rocm",
-    "linux-vulkan": "vulkan",
-    "windows-vulkan": "vulkan",
-    "linux-cpu": "cpu",
-    "linux-arm64": "cpu",
-    "windows-cpu": "cpu",
-    "windows-arm64": "cpu",
-    # The macOS bundles are universal Metal builds; there is nothing else to pick.
-    "macos-arm64": "metal",
-    "macos-x64": "metal",
-}
-
-# "auto" clears a choice. Metal is the only macOS build and is not selectable.
-REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 CONCRETE_BACKENDS = tuple(backend for backend in REQUESTABLE_BACKENDS if backend != "auto")
-
-
-def backend_for_install_kind(install_kind: str | None) -> str | None:
-    """The accelerator an install_kind runs on, or None for an unknown kind.
-
-    Unknown is not an error: a bundle added to the manifest after this install is
-    simply undescribed, and every caller treats that as "cannot tell" rather than
-    rewriting the install.
-    """
-    if not isinstance(install_kind, str):
-        return None
-    return INSTALL_KIND_BACKENDS.get(install_kind.strip())
-
-
-def install_kinds_for_backend(backend: str | None) -> frozenset[str]:
-    """Every install_kind that satisfies a request for ``backend``."""
-    if not backend:
-        return frozenset()
-    return frozenset(kind for kind, value in INSTALL_KIND_BACKENDS.items() if value == backend)
 
 
 # DiskPart-prompt suppression. RunAsInvoker does NOT stop amd-smi's runtime
@@ -6375,35 +6346,7 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
 def installed_llama_identity(install_dir: Path | None = None) -> str | None:
     """Exact runtime identity used by slim whisper.cpp pairing markers."""
     root = install_dir if install_dir is not None else default_managed_llama_dir()
-    marker = load_prebuilt_metadata(root)
-    if not marker:
-        return None
-    fingerprint = marker.get("install_fingerprint")
-    if isinstance(fingerprint, str) and fingerprint:
-        return f"fingerprint:{fingerprint}"
-    asset = marker.get("asset")
-    if not isinstance(asset, str) or not asset:
-        return None
-    fields = (
-        "published_repo",
-        "release_tag",
-        "asset",
-        "asset_sha256",
-        "binary_repo",
-        "binary_release_tag",
-        "source_asset",
-        "source_sha256",
-        "runtime_line",
-        "bundle_profile",
-        "coverage_class",
-        "ggml_tree",
-        "backend",
-    )
-    payload = {field: marker.get(field) for field in fields}
-    digest = hashlib.sha256(
-        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
-    ).hexdigest()
-    return f"legacy:{digest}"
+    return marker_install_identity(load_prebuilt_metadata(root))
 
 
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
@@ -6848,19 +6791,9 @@ def validate_prebuilt_attempts(
     raise PrebuiltFallback("no prebuilt bundle passed validation")
 
 
-def _normalized_llama_backend(value: object) -> str | None:
-    """Return a canonical backend name, or None for an unknown value."""
-    if not isinstance(value, str) or not value:
-        return None
-    backend = value.strip().lower()
-    if backend == "hip":
-        return "rocm"
-    return backend if backend in REQUESTABLE_BACKENDS else None
-
-
 def llama_backend_from_env() -> str | None:
     """Read the backend preference from UNSLOTH_LLAMA_CPP_BACKEND."""
-    return _normalized_llama_backend(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
+    return normalize_backend_request(os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"))
 
 
 def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
@@ -6868,7 +6801,7 @@ def resolved_llama_backend(llama_backend: str | None = None) -> str | None:
     env var. None when neither named one we know -- which is distinct from "auto",
     a request to detect that outranks both a stored choice and the legacy
     UNSLOTH_FORCE_VULKAN flag."""
-    return _normalized_llama_backend(llama_backend) or llama_backend_from_env()
+    return normalize_backend_request(llama_backend) or llama_backend_from_env()
 
 
 def persisted_backend_request(
@@ -6880,31 +6813,14 @@ def persisted_backend_request(
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return None
-    recorded = _normalized_llama_backend(marker.get("backend_request"))
-    if recorded is not None:
-        return recorded
-    if marker.get("backend_request") is not None:
-        # Unknown explicit choices must not be mistaken for automatic detection.
-        if reject_unknown:
-            raise UnknownBackendRequest(
-                "this install records an unsupported llama.cpp backend choice "
-                f"({marker.get('backend_request')!r}); update Studio before replacing it"
-            )
-        return None
-    if bool(marker.get("force_cpu")):
-        return "cpu"
-    if "llama_backend" not in marker and "vulkan" in str(marker.get("asset") or "").lower():
-        # Old markers cannot distinguish chosen Vulkan from automatic Vulkan.
-        return "vulkan"
-    legacy = marker.get("llama_backend")
-    if legacy in (None, "", "auto"):
-        return "auto"
-    if legacy == "vulkan":
-        return "vulkan"
+    request = marker_backend_request(marker)
+    if request is not None:
+        return request
     if reject_unknown:
+        field = "backend_request" if marker.get("backend_request") is not None else "llama_backend"
         raise UnknownBackendRequest(
-            "this install records an unsupported legacy llama.cpp backend choice "
-            f"({legacy!r}); update Studio before replacing it"
+            "this install records an unsupported llama.cpp backend choice "
+            f"({marker.get(field)!r}); update Studio before replacing it"
         )
     return None
 
@@ -6917,12 +6833,14 @@ def effective_backend_request(
     Explicit requests are mandatory. Stored choices are advisory if hardware or
     published bundles changed.
     """
-    explicit = resolved_llama_backend(llama_backend)
+    explicit = normalize_backend_request(llama_backend)
+    if explicit is None:
+        explicit = environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"),
+            os.environ.get("UNSLOTH_FORCE_VULKAN"),
+        )
     if explicit is not None:
         return explicit, True
-    # The legacy environment override has the same precedence as its replacement.
-    if force_vulkan_requested():
-        return "vulkan", True
     return persisted_backend_request(install_dir, reject_unknown = True), False
 
 
@@ -6934,18 +6852,13 @@ def force_vulkan_requested(llama_backend: str | None = None) -> bool:
     llama.cpp backend; the torch/training stack installs separately and still sees
     the real GPU.
     """
-    backend = resolved_llama_backend(llama_backend)
-    if backend is not None:
-        # Authoritative, so =hip is a real opt-out a stale UNSLOTH_FORCE_VULKAN cannot
-        # overrule. =auto is the same kind of opt-out: it is how the picker clears a
-        # choice, and a legacy flag left in a shell profile must not resurrect one.
-        return backend == "vulkan"
-    return os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    backend = normalize_backend_request(llama_backend)
+    if backend is None:
+        backend = environment_backend_override(
+            os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND"),
+            os.environ.get("UNSLOTH_FORCE_VULKAN"),
+        )
+    return backend == "vulkan"
 
 
 def _host_rocm_gfx_targets(host: HostInfo) -> list[str]:
@@ -8090,37 +8003,14 @@ def describe_installed_backend(install_dir: Path | None) -> dict[str, Any] | Non
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return None
-    install_kind = marker.get("install_kind")
-    backend = marker.get("backend") or backend_for_install_kind(install_kind)
-    if backend is None:
-        # Markers predating the field: the asset name is all there is to go on.
-        backend = _backend_from_asset_name(marker.get("asset"))
     return {
-        "backend": backend,
+        "backend": marker_backend(marker),
         "backend_request": persisted_backend_request(install_dir),
         "asset": marker.get("asset"),
         "release_tag": marker.get("release_tag") or marker.get("tag"),
         "repo": marker.get("published_repo"),
         "installed_at_utc": marker.get("installed_at_utc"),
     }
-
-
-def _backend_from_asset_name(asset: object) -> str | None:
-    """Infer the backend for a marker that predates the backend field."""
-    if not isinstance(asset, str) or not asset:
-        return None
-    name = asset.lower()
-    for token, backend in (
-        ("vulkan", "vulkan"),
-        ("cuda", "cuda"),
-        ("rocm", "rocm"),
-        ("hip", "rocm"),
-        ("macos", "metal"),
-        ("cpu", "cpu"),
-    ):
-        if token in name:
-            return backend
-    return None
 
 
 def main() -> int:

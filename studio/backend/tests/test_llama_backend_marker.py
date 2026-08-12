@@ -71,6 +71,22 @@ def test_the_requestable_backends_are_identical():
     assert backend_marker.REQUESTABLE_BACKENDS == ilp.REQUESTABLE_BACKENDS
 
 
+@pytest.mark.parametrize(
+    "primary,legacy,expected",
+    [
+        (None, None, None),
+        (None, "on", "vulkan"),
+        ("auto", "on", "auto"),
+        ("cpu", "on", "cpu"),
+        ("hip", None, "rocm"),
+        ("metal", "on", "vulkan"),
+        ("unknown", "true", "vulkan"),
+    ],
+)
+def test_public_backend_selector_outranks_the_legacy_flag(primary, legacy, expected):
+    assert backend_marker.environment_backend_override(primary, legacy) == expected
+
+
 def test_the_api_offers_exactly_the_requestable_backends():
     """The route's Literal is what FastAPI validates and documents, so a backend
     added to the installer must reach the picker rather than 422 on the way in."""

@@ -5276,7 +5276,7 @@ $explicitLlamaSourceBackend = $null
 if (-not $IsMacOS) {
     if ($sourceLlamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
         $explicitLlamaSourceBackend = if ($sourceLlamaBackend -eq "hip") { "rocm" } else { $sourceLlamaBackend }
-    } elseif ($sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
+    } elseif ($sourceLlamaBackend -ne "auto" -and $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
         $explicitLlamaSourceBackend = "vulkan"
     }
 }
@@ -5550,7 +5550,6 @@ if ($LocalLlamaCppLinked) {
         # maps to the persisted --force-cpu choice. vulkan is consumed directly
         # by install_llama_prebuilt.py and does not change the torch backend.
         $llamaBackend = $sourceLlamaBackend
-        $legacyForceVulkan = $sourceLegacyForceVulkan
         $windowsArm64 = (
             $env:OS -eq "Windows_NT" -and
             (
@@ -5558,7 +5557,7 @@ if ($LocalLlamaCppLinked) {
                 "$($env:PROCESSOR_ARCHITEW6432)".ToUpperInvariant() -eq "ARM64"
             )
         )
-        $explicitLlamaBackend = $null
+        $explicitLlamaBackend = $explicitLlamaSourceBackend
         if ($llamaBackend -eq "cpu") {
             $prebuiltArgs += "--force-cpu"
         } elseif ($llamaBackend -eq "vulkan") {
@@ -5573,15 +5572,8 @@ if ($LocalLlamaCppLinked) {
         } elseif ($llamaBackend -and $llamaBackend -notin @("auto", "cuda", "hip", "rocm")) {
             Write-StudioLine "[WARN] Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$llamaBackend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" -ForegroundColor Yellow
         }
-        if (-not $IsMacOS) {
-            if ($llamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
-                $explicitLlamaBackend = if ($llamaBackend -eq "hip") { "rocm" } else { $llamaBackend }
-            } elseif ($legacyForceVulkan -in @("1", "true", "yes", "on")) {
-                if ($windowsArm64) {
-                    throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
-                }
-                $explicitLlamaBackend = "vulkan"
-            }
+        if ($explicitLlamaBackend -eq "vulkan" -and $llamaBackend -ne "vulkan" -and $windowsArm64) {
+            throw "Vulkan was requested, but no Windows ARM64 Vulkan bundle is published. Unset UNSLOTH_FORCE_VULKAN or compile llama.cpp from source."
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"

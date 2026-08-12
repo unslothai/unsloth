@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -207,6 +208,44 @@ def test_a_backend_with_no_build_here_is_reported_by_name(monkeypatch, tmp_path)
 
     assert job["state"] == "error"
     assert "No rocm llama.cpp build is published for this machine" in job["error"]
+
+
+@pytest.mark.parametrize(
+    "name,value,expected",
+    [
+        ("UNSLOTH_LLAMA_CPP_BACKEND", "cpu", "cpu"),
+        ("UNSLOTH_FORCE_VULKAN", "1", "vulkan"),
+    ],
+)
+def test_update_failure_names_the_environment_pinned_backend(
+    monkeypatch, tmp_path, name, value, expected
+):
+    install_dir = _install(monkeypatch, tmp_path)
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        upd,
+        "_plan_llama_phase",
+        lambda backend_request = None: {
+            "spec": {
+                "install_dir": install_dir,
+                "repo": "unslothai/llama.cpp",
+                "asset": None,
+                "script": tmp_path / "install_llama_prebuilt.py",
+                "pin_release_tag": "b9597-mix-new",
+                "from_tag": "b9596-mix-abc",
+                "llama_backend": "auto",
+                "rocm_gfx": None,
+                "backend_request": None,
+            }
+        },
+    )
+    _patch_installer(monkeypatch, returncode = upd._EXIT_BACKEND_UNAVAILABLE)
+
+    assert upd.start_update()["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "error"
+    assert f"No {expected} llama.cpp build is published for this machine" in job["error"]
 
 
 def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
@@ -403,6 +442,33 @@ def test_a_switch_and_an_update_cannot_run_at_once(monkeypatch, tmp_path):
         assert update["message"] == "Another llama.cpp install is already running."
     finally:
         upd._reset_job_for_tests()
+
+
+def test_backend_resolution_is_part_of_the_serialized_operation(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _resolve(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout = 5)
+        return {"backends": [{"backend": "rocm", "available": False, "resolved_backend": None}]}
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve)
+    first: dict = {}
+    thread = threading.Thread(
+        target = lambda: first.update(upd.start_backend_switch("rocm")), daemon = True
+    )
+    thread.start()
+    assert entered.wait(timeout = 5)
+
+    second = upd.start_update()
+    release.set()
+    thread.join(timeout = 5)
+
+    assert second["reason"] == "already_running"
+    assert first["reason"] == "backend_unavailable"
+    assert not upd._operation_lock.locked()
 
 
 # ── Status ──

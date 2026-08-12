@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read llama.cpp backend fields from an install marker."""
+"""Canonical llama.cpp backend vocabulary, precedence, and marker readers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,8 @@ import hashlib
 import json
 from typing import Any, Mapping, Optional
 
-# install_kind -> accelerator. Mirrors install_llama_prebuilt.INSTALL_KIND_BACKENDS.
+# The standalone installer imports this map, so planning and marker reads share
+# one vocabulary instead of relying on mirrored definitions.
 INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
@@ -54,10 +55,45 @@ def normalize_backend(value: Any) -> Optional[str]:
     return None
 
 
+def normalize_backend_request(value: Any) -> Optional[str]:
+    """Return a canonical user-selectable backend, excluding actual-only Metal."""
+    backend = normalize_backend(value)
+    return backend if backend in REQUESTABLE_BACKENDS else None
+
+
 def backend_for_install_kind(install_kind: Any) -> Optional[str]:
     if not isinstance(install_kind, str):
         return None
     return INSTALL_KIND_BACKENDS.get(install_kind.strip())
+
+
+def install_kinds_for_backend(backend: Any) -> frozenset[str]:
+    """Return every install kind that satisfies ``backend``."""
+    normalized = normalize_backend(backend)
+    if normalized is None:
+        return frozenset()
+    return frozenset(
+        kind for kind, kind_backend in INSTALL_KIND_BACKENDS.items() if kind_backend == normalized
+    )
+
+
+def environment_backend_override(primary: Any, legacy_vulkan: Any) -> Optional[str]:
+    """Resolve the public selector over the legacy Vulkan boolean.
+
+    A recognized public value is authoritative, including ``auto``. Unknown or
+    absent public values leave the legacy flag in effect for compatibility.
+    """
+    backend = normalize_backend_request(primary)
+    if backend is not None:
+        return backend
+    if isinstance(legacy_vulkan, str) and legacy_vulkan.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return "vulkan"
+    return None
 
 
 def backend_from_asset_name(asset: Any) -> Optional[str]:
@@ -89,7 +125,7 @@ def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> Optional[str]
     """
     if not marker:
         return "auto"
-    recorded = normalize_backend(marker.get("backend_request"))
+    recorded = normalize_backend_request(marker.get("backend_request"))
     if recorded is not None:
         return recorded
     if marker.get("backend_request") is not None:
@@ -116,7 +152,7 @@ def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
     if not marker:
         return False
     if marker.get("backend_request") is not None:
-        return normalize_backend(marker.get("backend_request")) not in ("auto",)
+        return normalize_backend_request(marker.get("backend_request")) not in ("auto",)
     if bool(marker.get("force_cpu")):
         return True
     legacy = marker.get("llama_backend")

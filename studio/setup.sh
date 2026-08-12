@@ -1915,13 +1915,14 @@ _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
-_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
 _explicit_llama_source_backend=""
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
     case "$_source_backend_choice" in
         hip) _explicit_llama_source_backend="rocm" ;;
         cpu|cuda|rocm|vulkan) _explicit_llama_source_backend="$_source_backend_choice" ;;
+        auto) ;;
         *)
             case "$_source_legacy_force_vulkan" in
                 1|true|yes|on) _explicit_llama_source_backend="vulkan" ;;
@@ -2149,8 +2150,7 @@ else
     fi
     # The normalized override affects llama.cpp only, not the training backend.
     _llama_backend="$_source_backend_choice"
-    _legacy_force_vulkan="$_source_legacy_force_vulkan"
-    _explicit_llama_backend=""
+    _explicit_llama_backend="$_explicit_llama_source_backend"
     case "$_llama_backend" in
         cpu)
             if [ "$_HOST_SYSTEM" = "Darwin" ]; then
@@ -2171,17 +2171,6 @@ else
         ""|auto|cuda|hip|rocm) ;;
         *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'cuda', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
     esac
-    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
-        case "$_llama_backend" in
-            hip) _explicit_llama_backend="rocm" ;;
-            cpu|cuda|vulkan|rocm) _explicit_llama_backend="$_llama_backend" ;;
-            *)
-                case "$_legacy_force_vulkan" in
-                    1|true|yes|on) _explicit_llama_backend="vulkan" ;;
-                esac
-                ;;
-        esac
-    fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
     if _is_verbose; then

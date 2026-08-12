@@ -44,10 +44,11 @@ def _run(value: str | None, system: str = "Linux") -> tuple[list[str], str]:
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = value
     harness = (
         f'set -u\n_PREBUILT_CMD=()\nC_WARN=""\nC_OK=""\n_HOST_SYSTEM="{system}"\n'
-        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" '
+        '_source_backend_choice="$(printf \'%s\' "${UNSLOTH_LLAMA_CPP_BACKEND:-}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
         '_source_legacy_force_vulkan="$(printf \'%s\' "${UNSLOTH_FORCE_VULKAN:-}" '
         "| awk '{$1=$1; print tolower($0)}')\"\n"
+        '_explicit_llama_source_backend=""\n'
         'step() { printf "STEP: %s\\n" "$*" >&2; }\n'
         f"{_backend_block()}\n"
         'printf "%s\\n" "${_PREBUILT_CMD[@]}"'
@@ -212,13 +213,12 @@ def test_force_compile_sets_need_source_build_before_backend_guard():
 
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
-    assert "_legacy_force_vulkan=" in sh
-    assert '1|true|yes|on) _explicit_llama_backend="vulkan"' in sh
+    assert '1|true|yes|on) _explicit_llama_source_backend="vulkan"' in sh
+    assert '_explicit_llama_backend="$_explicit_llama_source_backend"' in sh
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
-    assert "$legacyForceVulkan = $sourceLegacyForceVulkan" in ps1
-    assert '$legacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
-    assert '$explicitLlamaBackend = "vulkan"' in ps1
+    assert '$sourceLegacyForceVulkan -in @("1", "true", "yes", "on")' in ps1
+    assert "$explicitLlamaBackend = $explicitLlamaSourceBackend" in ps1
 
 
 def _source_backend_choice_block() -> str:
@@ -237,9 +237,10 @@ def _source_backend_choice_block() -> str:
 @pytest.mark.parametrize(
     "backend, force_vulkan, expected_backend, expected_explicit",
     [
-        (None, None, "auto", ""),
+        (None, None, "", ""),
+        (None, "on", "", "vulkan"),
         ("vulkan", None, "vulkan", "vulkan"),
-        ("auto", "on", "auto", "vulkan"),
+        ("auto", "on", "auto", ""),
         ("banana", "1", "banana", "vulkan"),
         ("cpu", "1", "cpu", "cpu"),
         ("cuda", "1", "cuda", "cuda"),
@@ -281,8 +282,9 @@ def _ps1_search(pattern: str, flags = 0) -> str:
     "backend, force_vulkan, expected_explicit",
     [
         (None, None, ""),
+        (None, "on", "vulkan"),
         ("vulkan", None, "vulkan"),
-        ("auto", "on", "vulkan"),
+        ("auto", "on", ""),
         ("cpu", "1", "cpu"),
         ("cuda", "1", "cuda"),
         ("hip", "1", "rocm"),
@@ -349,6 +351,7 @@ def _run_ps1(value: str | None) -> str:
         "$prebuiltArgs = @()\n"
         '$sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()\n'
         '$sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()\n'
+        "$explicitLlamaSourceBackend = $null\n"
         f'{normalize}\n"ARGS:" + ($prebuiltArgs -join ",")'
     )
     out = subprocess.run(

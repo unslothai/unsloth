@@ -169,6 +169,13 @@ def test_an_explicit_auto_clears_a_recorded_choice(monkeypatch, tmp_path):
     assert ilp.effective_backend_request(None, install_dir = install) == ("auto", True)
 
 
+def test_an_explicit_auto_suppresses_the_legacy_vulkan_flag(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+    install = _marker(tmp_path, backend_request = "vulkan")
+    assert ilp.effective_backend_request(None, install_dir = install) == ("auto", True)
+
+
 def test_legacy_force_vulkan_still_outranks_a_recorded_choice(monkeypatch, tmp_path):
     # The legacy environment override outranks the stored choice.
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
