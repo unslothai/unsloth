@@ -52,6 +52,7 @@ class CursorTranscript:
     """One imported session: a thread and its messages, ready to store."""
 
     session_id: str
+    thread_id: str
     path: Path
     title: str
     created_at_ms: int
@@ -246,6 +247,7 @@ def read_transcript(
     )
     return CursorTranscript(
         session_id = resolved_session,
+        thread_id = thread_id,
         path = path,
         title = _title_from(first_user),
         created_at_ms = created_ms,
