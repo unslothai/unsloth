@@ -21,6 +21,7 @@ import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
 import importlib
+import collections
 import inspect
 import os
 import re
@@ -1797,6 +1798,82 @@ def _note_grpo_hidden_states_success(model):
     setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, False)
 
 
+def _minimise_logits_kwarg(forward_signature, args, forward_kwargs):
+    """Ask the model for as few logits as it will give us, and say which kwarg did it.
+
+    We are about to overwrite `outputs.logits` with hidden states, so every
+    logit the forward computes is thrown away. transformers spells the limit
+    `logits_to_keep` (older: `num_logits_to_keep`) and reads it as
+    `slice(-value, None)`, so the DEFAULT of 0 becomes `slice(0, None)` -- the
+    whole sequence. The GRPO trainer does not pass a value at all, so the
+    lm_head projects every prompt and completion position over the full
+    vocabulary and, for the softcapped models, multiplies the result twice more.
+
+    Muse Glimmer 30B on a Kaggle 2xT4 measured that at a 1002 MiB allocation
+    per chunk, over a 202048-wide vocabulary. On one card it is invisible: the
+    trainer's `del outputs` frees it a line later. On a layer-split model
+    accelerate copies it to the other card first and the run dies there.
+
+    1, not 0: 0 means "all of them", and a model that computes its own loss from
+    `labels` needs real logits, so that case is left alone.
+    """
+    if forward_kwargs.get("labels") is not None:
+        return None
+    try:
+        bound = forward_signature.bind_partial(*args, **forward_kwargs)
+    except TypeError:
+        return None
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in forward_signature.parameters.values()
+    )
+    for name in ("logits_to_keep", "num_logits_to_keep"):
+        declared = name in forward_signature.parameters
+        if not declared and not accepts_var_keyword:
+            continue
+        # Passing it positionally already and then also by keyword is a
+        # TypeError, so leave a positional caller alone.
+        if name in bound.arguments and name not in forward_kwargs:
+            continue
+        forward_kwargs[name] = 1
+        return name
+    return None
+
+
+def _drop_spare_hidden_states(outputs):
+    """Detach every hidden-state layer from `outputs`; the caller keeps the last.
+
+    `outputs.hidden_states = None` does NOT do this. `ModelOutput.__setattr__`
+    is
+
+        if name in field_names and value is not None:
+            super().__setitem__(name, value)
+        super().__setattr__(name, value)
+
+    so assigning None sets the attribute and leaves the mapping entry holding
+    the full tuple, and `ModelOutput` blocks `__delitem__`, `pop`, `update` and
+    `setdefault` outright. Every consumer that walks the object as a mapping --
+    accelerate's `send_to_device`, which is the one that matters here -- still
+    sees and copies all of it. Writing through `OrderedDict.__setitem__` is what
+    actually clears it, and leaves the mapping and the attribute agreeing on
+    None, which is the state a forward returns with `output_hidden_states=False`.
+    """
+    try:
+        if isinstance(outputs, collections.OrderedDict) and "hidden_states" in outputs:
+            collections.OrderedDict.__setitem__(outputs, "hidden_states", None)
+            object.__setattr__(outputs, "hidden_states", None)
+        elif isinstance(outputs, dict) and "hidden_states" in outputs:
+            outputs["hidden_states"] = None
+        elif hasattr(outputs, "hidden_states"):
+            outputs.hidden_states = None
+    except Exception:
+        # A frozen or exotic output object is not worth failing the step over;
+        # the caller has already taken the layer it needs.
+        logger.debug(
+            "Unsloth: could not drop spare GRPO hidden states.", exc_info = True,
+        )
+
+
 def _replace_outputs_logits(outputs, hidden_states):
     if hasattr(outputs, "logits"):
         outputs.logits = hidden_states
@@ -1846,16 +1923,28 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
+        logits_kwarg = _minimise_logits_kwarg(
+            forward_signature, args, forward_kwargs,
+        )
         try:
             outputs = original_forward(*args, **forward_kwargs)
         except TypeError as error:
-            if "output_hidden_states" not in str(error) and "return_dict" not in str(error):
+            message = str(error)
+            if logits_kwarg is not None and logits_kwarg in message:
+                # The signature advertised the parameter but the forward refuses
+                # the value. Retry without our minimisation rather than losing
+                # hidden states entirely over an optimisation.
+                forward_kwargs.pop(logits_kwarg, None)
+                logits_kwarg = None
+                outputs = original_forward(*args, **forward_kwargs)
+            elif "output_hidden_states" not in message and "return_dict" not in message:
                 raise
-            _warn_grpo_hidden_states_fallback_once(
-                target_model,
-                f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
-            )
-            return original_forward(*args, **kwargs)
+            else:
+                _warn_grpo_hidden_states_fallback_once(
+                    target_model,
+                    f"Unsloth: GRPO fallback could not request hidden states for unsupported model {model_name}; using logits directly.",
+                )
+                return original_forward(*args, **kwargs)
 
         hidden_states = getattr(outputs, "hidden_states", None)
         if hidden_states is None or len(hidden_states) == 0:
@@ -1868,6 +1957,12 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        # Only the last layer is ever read. Every earlier layer is still hanging
+        # off `outputs`, and on a multi-GPU dispatch accelerate's
+        # AlignDevicesHook.post_forward walks the whole returned object and
+        # copies every tensor in it to the input device, so keeping them costs a
+        # cross-device copy per layer as well as the memory.
+        _drop_spare_hidden_states(outputs)
         _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
