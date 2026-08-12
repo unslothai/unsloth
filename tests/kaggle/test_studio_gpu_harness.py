@@ -601,7 +601,9 @@ def test_every_file_the_builder_requires_is_actually_in_the_payload_dir():
 
 def test_the_result_prefix_matches_the_shared_launcher():
     """The launcher is reused unchanged; it scrapes this exact prefix."""
-    launcher = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "launch.py").read_text(encoding = "utf-8")
+    launcher = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "launch.py").read_text(
+        encoding = "utf-8"
+    )
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in launcher
     payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in payload
@@ -747,7 +749,9 @@ def test_the_two_kaggle_legs_queue_behind_each_other():
     by the other's kernel."""
     yaml = pytest.importorskip("yaml")
     notebook = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
+        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+            encoding = "utf-8"
+        )
     )
     assert (
         _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
@@ -806,7 +810,9 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     this test is where the reasoning has to be argued with.
     """
     studio = WORKFLOW.read_text(encoding = "utf-8")
-    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
+    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+        encoding = "utf-8"
+    )
 
     assert "--percent 5" in studio and "--percent 15" in notebook
     assert "= EXPECTED SPEND           ~28 GPU-h / week" in studio
@@ -833,7 +839,9 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     import re
 
     studio = WORKFLOW.read_text(encoding = "utf-8")
-    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
+    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
+        encoding = "utf-8"
+    )
 
     def rate(text):
         # The invoked flag, not the prose that quotes it.
