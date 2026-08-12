@@ -11387,9 +11387,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     # Commit operations that never read a local file, so no path check applies.
-    _HF_NO_READ_COMMIT_OPS = frozenset(
-        {"CommitOperationDelete", "CommitOperationCopy"}
-    )
+    _HF_NO_READ_COMMIT_OPS = frozenset({"CommitOperationDelete", "CommitOperationCopy"})
 
     # Upload methods that take CommitOperation* objects rather than a path, and
     # the kwarg each one carries them in. `preupload_lfs_files` sends the file
@@ -11503,9 +11501,7 @@ def _check_signal_escape_patterns(code: str):
         if method_name in _HF_OPERATIONS_KWARG:
             # Both take the operation list as the 2nd positional param.
             ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
-            operations_node: ast.AST | None = (
-                node.args[1] if len(node.args or []) > 1 else None
-            )
+            operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
             for kw in node.keywords or []:
                 if kw.arg is None:
                     # `**kwargs` can smuggle the operations past this gate.
