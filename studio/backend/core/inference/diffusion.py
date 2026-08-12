@@ -5606,7 +5606,6 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
-                "gguf_filename": None,
                 "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
@@ -5634,7 +5633,6 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
-            "gguf_filename": state.gguf_filename,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename

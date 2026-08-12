@@ -5566,7 +5566,6 @@ class VideoBackend:
                 "dtype": None,
                 "model_kind": None,
                 "engine": None,
-                "gguf_filename": None,
                 "gguf_variant": None,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -5603,7 +5602,6 @@ class VideoBackend:
             "dtype": state.dtype,
             "model_kind": state.kind,
             "engine": state.engine,
-            "gguf_filename": state.gguf_filename,
             # As on the image runtime: dtype is compute precision, which labelled a Q4_K_M BF16.
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)

@@ -1229,10 +1229,7 @@ def test_server_status_reports_selected_gguf_quant(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers, gguf_filename = "z-image-turbo-Q8_0.gguf")
-    status = b.status()
-    assert status["model_kind"] == "gguf"
-    assert status["gguf_filename"] == "z-image-turbo-Q8_0.gguf"
-    assert status["gguf_variant"] == "Q8_0"
+    assert b.status()["gguf_variant"] == "Q8_0"
 
 
 def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):

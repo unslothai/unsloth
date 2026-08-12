@@ -95,12 +95,6 @@ import {
   chainDynamicDefaultRollback,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
-import {
-  type ImageLoadConfig,
-  imageLoadConfigFromStatus,
-  reapplyTargetFromStatus,
-  useResidentLoadConfig,
-} from "@/features/resident-load";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
@@ -125,6 +119,8 @@ import {
   isPrecisionRefusal,
   memoryRecipeValue,
   resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
   routedGgufFilename,
@@ -1269,15 +1265,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
-  const residentReapplyTarget = useMemo(
-    () => reapplyTargetFromStatus(status),
-    [
-      status?.gguf_filename,
-      status?.loaded,
-      status?.model_kind,
-      status?.repo_id,
-    ],
-  );
   // Controlled so the body-portaled overlays force-close while this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [aspectOpen, setAspectOpen] = useState(false);
@@ -1378,34 +1365,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setCount(params.runs);
     return params;
   }, []);
-  const applyImageLoadConfig = useCallback((config: ImageLoadConfig) => {
-    setSpeedMode(config.speedMode);
-    setTransformerQuant(config.transformerQuant);
-    setAttentionBackend(config.attentionBackend);
-    setMemoryMode(config.memoryMode);
-    setTransformerCache(config.transformerCache);
-    setCpuOffload(config.cpuOffload);
-  }, []);
   const imagePresets = useMediaGenerationPresets({
     kind: "image",
     defaultParams: imageDefaultRecipe,
     currentParams: imagePresetParams,
     applyParams: applyImagePresetParams,
   });
-  const residentLoadConfig = useResidentLoadConfig({
-    residentKey: status?.loaded
-      ? `${status.repo_id ?? ""}\0${status.model_kind ?? ""}\0${status.gguf_filename ?? ""}`
-      : null,
-    resolved: status?.resolved,
-    parse: imageLoadConfigFromStatus,
-    apply: applyImageLoadConfig,
-    busy,
-  });
-  // Only when status fully describes the resident load configuration: the native engine publishes
-  // no resolved record at all, and Reapply submits what the selects show, so offering it without
-  // knowing the resident configuration would replace it with local defaults.
-  const residentReapplyReady =
-    residentReapplyTarget && residentLoadConfig ? residentReapplyTarget : null;
   const applyImageDynamicDefault = imagePresets.applyDynamicDefault;
   const applyImageModelDefaults = useCallback(
     (repoId: string) => {
@@ -2297,8 +2262,31 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // a user edit made after the load survives until the next load replaces it -- the backend
   // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
   // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
-  // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
-  // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  useEffect(() => {
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
+      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
+      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (quant) setTransformerQuant(quant);
+    const memory = resolvedSelectValue(record.memory_mode, (v) =>
+      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
+    );
+    if (memory) setMemoryMode(memory);
+    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+      // The engaged value uses the dispatcher's own name; map it back to the option.
+      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+        (o) => o === v || `_native_${o}` === v,
+      ) ?? null,
+    );
+    if (attention) setAttentionBackend(attention);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
+  }, [resolvedKey]);
+
   const bakedLorasFor = useCallback(
     (repoId: string): LoraSpecInput[] => {
       const sameTarget = repoId === (lastLoad.current?.repoId ?? status?.repo_id ?? null);
@@ -2772,9 +2760,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model. The ref remains
     // the fallback while this page's own load is committing and status has not caught up yet.
-    const l = residentReapplyReady ?? lastLoad.current;
+    const l = lastLoad.current;
     if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
-  }, [handleLoad, residentReapplyReady]);
+  }, [handleLoad]);
 
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
   // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
@@ -3470,7 +3458,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
       <LoadedBuildSummary status={status} />
-      {status?.loaded && (canReapply || residentReapplyReady) && (
+      {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
+      {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button

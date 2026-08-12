@@ -36,6 +36,7 @@ test("a declined explicit precision renders a warning badge naming both sides", 
   assert.match(badge.tooltip, /does not fit resident/);
   assert.equal(isResolvedHonored(resolved), false);
 });
+
 test("an honored explicit request renders no badge", () => {
   const resolved: ResolvedControl = {
     value: "fp8",
@@ -192,14 +193,6 @@ test("the Precision select seeds from the loaded build", () => {
       toQuantOption,
     ),
     "int8",
-  );
-  // Older records do not carry the requested field, so the engaged value is the best reconstruction.
-  assert.equal(
-    resolvedSelectValue(
-      { value: "fp8", source: "explicit", reason: "" },
-      toQuantOption,
-    ),
-    "fp8",
   );
   // A DECLINED request snaps to what actually engaged, so the dropdown stops advertising it.
   assert.equal(

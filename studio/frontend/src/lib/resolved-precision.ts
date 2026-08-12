@@ -145,11 +145,7 @@ export function resolvedSelectValue<T extends string>(
 ): T | null {
   if (!resolved) return null;
   if (resolved.source === "auto") return toOption("auto");
-  const source = isResolvedHonored(resolved)
-    ? resolved.requested === undefined
-      ? resolved.value
-      : resolved.requested
-    : resolved.value;
+  const source = isResolvedHonored(resolved) ? resolved.requested : resolved.value;
   if (source === undefined) return null;
   if (source === null) return toOption("none");
   if (typeof source === "boolean") return toOption(source ? "on" : "none");
@@ -166,27 +162,24 @@ export function resolvedSelectValue<T extends string>(
  * picked but not yet loaded. That is the opposite of the intent: an edit made after the load is
  * meant to survive until the next LOAD replaces it.
  *
- * Every control a Reapply submits is represented by its request. The engaged value participates
- * only when an explicit request fell back, because that is the only case where the select is
- * reseeded from runtime state. Generation-time changes to auto-selected speed, attention, and
- * cache values therefore do not replay the load-time seed over later edits.
+ * Only the controls the reseed writes are in the key, and for attention only the REQUEST side:
+ * `value` is the field the generation-time rewrite touches, and the reseed's answer for an auto or
+ * an honored request does not read it anyway. A reload still re-fires, including a Reapply with
+ * new options, because that always lands a different request or engaged value on one of these.
  */
 export function resolvedSeedKey(
   resolved: Record<string, ResolvedControl> | null | undefined,
 ): string | null {
   if (!resolved) return null;
-  const part = (control: ResolvedControl | undefined): string => {
+  const part = (control: ResolvedControl | undefined, withValue: boolean): string => {
     if (!control) return "";
-    const engaged = isResolvedHonored(control) ? "" : String(control.value ?? "");
-    return `${control.source}:${control.status ?? "applied"}:${String(control.requested ?? "")}:${engaged}`;
+    const engaged = withValue ? String(control.value ?? "") : "";
+    return `${control.source}:${String(control.requested ?? "")}:${engaged}`;
   };
   return [
-    part(resolved.speed_mode),
-    part(resolved.transformer_quant),
-    part(resolved.attention_backend),
-    part(resolved.memory_mode),
-    part(resolved.transformer_cache),
-    part(resolved.cpu_offload),
+    part(resolved.transformer_quant, true),
+    part(resolved.memory_mode, true),
+    part(resolved.attention_backend, false),
   ].join("|");
 }
 

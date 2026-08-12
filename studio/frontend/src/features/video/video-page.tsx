@@ -91,12 +91,6 @@ import {
   closestResolutionIndex,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
-import {
-  type VideoLoadConfig,
-  reapplyTargetFromStatus,
-  useResidentLoadConfig,
-  videoLoadConfigFromStatus,
-} from "@/features/resident-load";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -113,6 +107,8 @@ import {
   formatResolvedValue,
   isPrecisionRefusal,
   resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
 } from "@/lib/resolved-precision";
 import {
   routedGgufFilename,
@@ -871,23 +867,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // visibilitychange handler active while a generation poll runs: background tabs clamp setInterval, so returning fires one immediate poll.
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<VideoStatus | null>(null);
-  const residentReapplyTarget = useMemo<
-    ({ repoId: string } & VideoLoadOptions) | null
-  >(() => {
-    const target = reapplyTargetFromStatus(status);
-    if (!target) return null;
-    const h3Task =
-      status?.h3_task === "fl2va" || status?.h3_task === "ref2va"
-        ? status.h3_task
-        : undefined;
-    return { ...target, h3Task };
-  }, [
-    status?.gguf_filename,
-    status?.h3_task,
-    status?.loaded,
-    status?.model_kind,
-    status?.repo_id,
-  ]);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
@@ -1173,13 +1152,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     },
     [durationOptions, numFrames, resolutionPresets],
   );
-  const applyVideoLoadConfig = useCallback((config: VideoLoadConfig) => {
-    setMemoryMode(config.memoryMode);
-    setSpeedMode(config.speedMode);
-    setAttentionBackend(config.attentionBackend);
-    setTransformerCache(config.transformerCache);
-    setTransformerQuant(config.transformerQuant);
-  }, []);
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const resolution =
@@ -1206,20 +1178,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     applyParams: applyVideoPresetParams,
     normalizeParams: normalizeVideoPresetParams,
   });
-  const residentLoadConfig = useResidentLoadConfig({
-    residentKey: status?.loaded
-      ? `${status.repo_id ?? ""}\0${status.model_kind ?? ""}\0${status.gguf_filename ?? ""}\0${status.h3_task ?? ""}`
-      : null,
-    resolved: status?.resolved,
-    parse: videoLoadConfigFromStatus,
-    apply: applyVideoLoadConfig,
-    busy,
-  });
-  // Only when status fully describes the resident load configuration: the native engine publishes
-  // no resolved record at all, and Reapply submits what the selects show, so offering it without
-  // knowing the resident configuration would replace it with local defaults.
-  const residentReapplyReady =
-    residentReapplyTarget && residentLoadConfig ? residentReapplyTarget : null;
   const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
   const applyVideoModelDefaults = useCallback(
     (repoId: string) => {
@@ -1331,8 +1289,31 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Precision dropdown can never go on advertising a scheme the loaded DiT is not running. Keyed on
   // the LOAD-TIME half of the record: the backend rewrites the transformer_cache entry at GENERATION
   // time, so serializing the whole record let a step-cache toggle discard a pending Advanced edit.
-  // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download
-  // the file: the link goes straight into the <video> element, which streams ranges, so playback starts and seeking works.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  useEffect(() => {
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
+      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
+      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (quant) setTransformerQuant(quant);
+    const memory = resolvedSelectValue(record.memory_mode, (v) =>
+      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
+    );
+    if (memory) setMemoryMode(memory);
+    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+      // The engaged value uses the dispatcher's own name; map it back to the option.
+      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+        (o) => o === v || `_native_${o}` === v,
+      ) ?? null,
+    );
+    if (attention) setAttentionBackend(attention);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
+  }, [resolvedKey]);
+
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
     const cached = galleryCache.srcById.get(video.id);
     if (cached && Date.now() - cached.mintedAt < VIDEO_LINK_REFRESH_MS) return;
@@ -2533,7 +2514,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model. The ref remains
     // the fallback while this page's own load is committing and status has not caught up yet.
-    const l = residentReapplyReady ?? lastLoad.current;
+    const l = lastLoad.current;
     if (l) {
       void handleLoad(l.repoId, {
         kind: l.kind,
@@ -2541,7 +2522,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         h3Task: l.h3Task,
       });
     }
-  }, [handleLoad, residentReapplyReady]);
+  }, [handleLoad]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
   // Every pick supersedes the one before it, whichever route it takes. A staged download outlives
@@ -2989,7 +2970,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         ]}
       />
       <LoadedBuildSummary status={status} />
-      {status?.loaded && (canReapply || residentReapplyReady) && (
+      {status?.loaded && canReapply && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <Button

@@ -1591,7 +1591,6 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
     )
 
     assert status["gguf_variant"] == "Q4_K_M"
-    assert status["gguf_filename"] == filename
     assert backend.unload()["gguf_variant"] is None
     # A pipeline load has no checkpoint quant to name.
     assert (
@@ -1605,14 +1604,7 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
 
 def test_video_status_response_carries_gguf_variant():
     from models.inference import VideoStatusResponse
-
-    response = VideoStatusResponse(
-        loaded = True,
-        gguf_filename = "ltx-Q4_K_M.gguf",
-        gguf_variant = "Q4_K_M",
-    )
-    assert response.gguf_filename == "ltx-Q4_K_M.gguf"
-    assert response.gguf_variant == "Q4_K_M"
+    assert VideoStatusResponse(loaded = True, gguf_variant = "Q4_K_M").gguf_variant == "Q4_K_M"
 
 
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
