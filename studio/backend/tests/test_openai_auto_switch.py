@@ -290,9 +290,22 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
 
-    _run_hook("unsloth/B-GGUF")
+    # #8389 made a hub-style id a CONCRETE reference, so a name the refresh just proved is not
+    # here is refused rather than quietly answered by whatever is resident. This test predates
+    # that and used to assert the hook returned; what it is actually about -- one rescan, then a
+    # re-resolve that does not rescan, and the resident model left alone -- is unchanged, so the
+    # refusal is asserted alongside it instead of the test being weakened to swallow it.
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
 
-    assert calls == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
+    assert excinfo.value.status_code == 404
+    # The third call is the refusal wording asking what the RESIDENT model is; like the second it
+    # passes allow_scan = False, which is why the rescan count below is still one.
+    assert calls == [
+        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"allow_scan": False}),
+        ("unsloth/A-GGUF:Q4_K_M", {"allow_scan": False}),
+    ]
     assert scans == [1]
     assert rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"

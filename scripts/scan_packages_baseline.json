@@ -1746,6 +1746,54 @@
       "severity": "CRITICAL",
       "evidence": "L747:         os.dup2(good_fd, closed_fd)",
       "evidence_hash": "7eb34f0b046a377f38f3d1a66daadce492c43cda85b7967f66c7ad62f0ca4169"
+    },
+    {
+      "package": "httpx2",
+      "file": "httpx2/_models.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L534:         history: list[Response] | None = None, sha256:934ed9b3eb1a374f2ff77800fa760232842538d1d487e87e1411d764314bf086\nNetwork: L9: import urllib.request | L1228:     class _CookieCompatRequest(urllib.request.Request):",
+      "evidence_hash": "c1faa319a4a8b53e133819b90be51fb12aae77477ae5ceda22d0f9930e646130"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L281:         while True: sha256:fbefef3c441ac4aad2220118629caaf5947f6e5ce919b5d22696559b78cefe34",
+      "evidence_hash": "6db10c4435d07c75201311256c6e35d807a271250d9d1520ac00b3622e8daebb"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata / IMDS endpoints",
+      "severity": "HIGH",
+      "evidence": "L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"",
+      "evidence_hash": "b74e53f2e9dcf692737e69af8ca6b77448b65a6f4b6b96218d483c22124048af"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/httpsession.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L186:         sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L509:             urllib_response = conn.urlopen(\nL510:                 method=request.method,\nL511:                 url=request_target,\nL512:                 body=request.body,\nL513:                 headers=request.headers,\nL514:                 retries=Retry(False),\nL515:                 assert_same_host=False,\nL516:                 preload_content=False,\nL517:                 decode_content=False,\nL518:                 chunked=self._chunked(request.headers),\nL519:                 **extra_kwargs,\nL520:             )",
+      "evidence_hash": "9240e223b1ffd4e599ec84c457bde659bd1f7e4d075e77b220f592e02b462a22"
+    },
+    {
+      "package": "pandas",
+      "file": "pandas/tests/io/test_pickle.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L270:                 with tarfile.open(dest_path, mode=\"w\") as tar:\nNetwork: L502:         monkeypatch.setattr(\"urllib.request.urlopen\", mock_urlopen_read)",
+      "evidence_hash": "1493feaf122ac84c21097206624c3dad13814a6c24f2c3f1b03581879b2d5f2d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/device_map_planner.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L530:             module = __import__(mod_path, fromlist=[\"compute_module_sizes\"])\nExec: L1366:     model.eval()",
+      "evidence_hash": "d11a00fda9ab43a1390c5a10cf09f760efcbacd26c89fc18b359f063ee167135"
     }
   ]
 }
