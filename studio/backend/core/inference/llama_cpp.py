@@ -14589,9 +14589,16 @@ class LlamaCppBackend:
         _find_llama_server_binary() can return, so orphans from any
         supported install path are cleaned up.
 
-        Uses psutil for cross-platform support (Linux, macOS, Windows);
-        falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
-        absent.
+        Reads /proc directly on Linux and uses psutil elsewhere (macOS, Windows).
+        The pgrep fallback the psutil-less path used to take is gone: /proc is
+        what that fallback read anyway, and psutil is a hard dependency, so it
+        was unreachable from both directions.
+
+        Candidates are collected first and killed afterwards, so an enumeration
+        that fails part way kills nothing rather than some. The parent check
+        therefore runs after enumeration rather than during it; a parent that
+        exits in between makes the process a genuine orphan, and the start-time
+        check below still refuses to signal a PID that has been reused.
 
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
