@@ -401,20 +401,26 @@ def _install_latest_while_blocked(
     }
 
 
-def _installed_llama_backend() -> Optional[str]:
-    """The backend the managed llama.cpp install currently runs on."""
+def _installed_llama_pairing() -> tuple[Optional[str], Optional[str]]:
+    """Backend and exact identity of the managed llama.cpp runtime."""
     try:
         from utils.llama_cpp_freshness import read_install_marker as read_llama_marker
         from utils.llama_cpp_update import _find_binary as find_llama_binary
-        from utils.prebuilt.llama_backend import marker_backend
+        from utils.prebuilt.llama_backend import marker_backend, marker_install_identity
 
-        return marker_backend(read_llama_marker(find_llama_binary()))
+        marker = read_llama_marker(find_llama_binary())
+        return marker_backend(marker), marker_install_identity(marker)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("whisper repair: llama backend lookup failed", error = str(exc))
-        return None
+        logger.debug("whisper repair: llama pairing lookup failed", error = str(exc))
+        return None, None
 
 
-def repair_pairing_plan(backend: str, *, resolved_backend: Optional[str] = None) -> dict:
+def repair_pairing_plan(
+    backend: str,
+    *,
+    resolved_backend: Optional[str] = None,
+    llama_will_run: bool = False,
+) -> dict:
     """Plan re-pairing for a slim whisper install that borrows llama's ggml."""
     plan: dict = {"update_available": False, "skip_reason": None, "phase": None}
     binary = _find_binary()
@@ -429,8 +435,15 @@ def repair_pairing_plan(backend: str, *, resolved_backend: Optional[str] = None)
         # Carries its own ggml, so llama's backend is not its backend.
         plan["skip_reason"] = "self_contained"
         return plan
-    target_backend = resolved_backend or (backend if backend != "auto" else None)
-    if target_backend is not None and marker.get("backend") == target_backend:
+    llama_backend, llama_identity = _installed_llama_pairing()
+    target_backend = resolved_backend or llama_backend or (backend if backend != "auto" else None)
+    pairing_matches = (
+        target_backend is not None
+        and marker.get("backend") == target_backend
+        and isinstance(marker.get("paired_llama_identity"), str)
+        and marker.get("paired_llama_identity") == llama_identity
+    )
+    if pairing_matches and not llama_will_run:
         plan["skip_reason"] = "already_paired"
         return plan
     script = _installer_script()
@@ -449,6 +462,7 @@ def repair_pairing_plan(backend: str, *, resolved_backend: Optional[str] = None)
         # The runner reads the backend that the llama phase actually installed.
         "requested_backend": backend,
         "installed_backend": marker.get("backend"),
+        "installed_llama_identity": marker.get("paired_llama_identity"),
         "script": script,
         # Resolve the whisper release paired with the installed llama release.
         "pin_release_tag": None,
@@ -459,11 +473,15 @@ def repair_pairing_plan(backend: str, *, resolved_backend: Optional[str] = None)
 
 def run_repair_phase(phase: dict, set_progress) -> dict:
     """Re-pair whisper after a successful llama backend switch."""
-    backend = _installed_llama_backend()
+    backend, llama_identity = _installed_llama_pairing()
     if backend is None:
         logger.info("whisper repair: skipped, llama backend unknown")
         return {}
-    if backend == phase.get("installed_backend"):
+    if (
+        backend == phase.get("installed_backend")
+        and isinstance(phase.get("installed_llama_identity"), str)
+        and phase.get("installed_llama_identity") == llama_identity
+    ):
         # Automatic selection may land on the backend already paired with whisper.
         return {}
     phase = {**phase, "backend": backend}

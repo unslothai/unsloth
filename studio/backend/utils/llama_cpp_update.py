@@ -1034,16 +1034,13 @@ def _whisper_phase_plan(backend_request: Optional[str], *, llama_will_run: bool)
     if not llama_will_run:
         try:
             from utils import whisper_cpp_update
-            installed_backend = whisper_cpp_update._installed_llama_backend()
-            return whisper_cpp_update.repair_pairing_plan(
-                backend_request, resolved_backend = installed_backend
-            )
+            return whisper_cpp_update.repair_pairing_plan(backend_request)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("llama switch: whisper retry probe failed", error = str(exc))
             return {}
     try:
         from utils import whisper_cpp_update
-        return whisper_cpp_update.repair_pairing_plan(backend_request)
+        return whisper_cpp_update.repair_pairing_plan(backend_request, llama_will_run = True)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("llama switch: whisper repair probe failed", error = str(exc))
         return {}

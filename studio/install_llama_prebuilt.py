@@ -6372,6 +6372,40 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
+def installed_llama_identity(install_dir: Path | None = None) -> str | None:
+    """Exact runtime identity used by slim whisper.cpp pairing markers."""
+    root = install_dir if install_dir is not None else default_managed_llama_dir()
+    marker = load_prebuilt_metadata(root)
+    if not marker:
+        return None
+    fingerprint = marker.get("install_fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        return f"fingerprint:{fingerprint}"
+    asset = marker.get("asset")
+    if not isinstance(asset, str) or not asset:
+        return None
+    fields = (
+        "published_repo",
+        "release_tag",
+        "asset",
+        "asset_sha256",
+        "binary_repo",
+        "binary_release_tag",
+        "source_asset",
+        "source_sha256",
+        "runtime_line",
+        "bundle_profile",
+        "coverage_class",
+        "ggml_tree",
+        "backend",
+    )
+    payload = {field: marker.get(field) for field in fields}
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"legacy:{digest}"
+
+
 def runtime_payload_health_groups(choice: AssetChoice) -> list[list[str]]:
     if choice.install_kind in {"linux-cpu", "linux-arm64"}:
         return [

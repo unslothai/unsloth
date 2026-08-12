@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping, Optional
 
 # install_kind -> accelerator. Mirrors install_llama_prebuilt.INSTALL_KIND_BACKENDS.
@@ -121,3 +123,35 @@ def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
     if legacy in (None, "", "auto"):
         return False
     return True
+
+
+def marker_install_identity(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Stable identity for the exact installed llama.cpp runtime bundle."""
+    if not marker:
+        return None
+    fingerprint = marker.get("install_fingerprint")
+    if isinstance(fingerprint, str) and fingerprint:
+        return f"fingerprint:{fingerprint}"
+    asset = marker.get("asset")
+    if not isinstance(asset, str) or not asset:
+        return None
+    fields = (
+        "published_repo",
+        "release_tag",
+        "asset",
+        "asset_sha256",
+        "binary_repo",
+        "binary_release_tag",
+        "source_asset",
+        "source_sha256",
+        "runtime_line",
+        "bundle_profile",
+        "coverage_class",
+        "ggml_tree",
+        "backend",
+    )
+    payload = {field: marker.get(field) for field in fields}
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"legacy:{digest}"

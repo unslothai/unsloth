@@ -1505,6 +1505,7 @@ def _slim_install_env(monkeypatch, tmp_path, host, *, sha256: str) -> Path:
         "installed_llama_runtime",
         lambda install_dir = None: (llama_bin, SLIM_LLAMA_TAG, "cuda13-newer"),
     )
+    monkeypatch.setattr(M, "installed_llama_identity", lambda install_dir = None: "fingerprint:llama")
     manifest = M.parse_manifest(
         _manifest(
             [
@@ -1556,6 +1557,7 @@ def test_slim_install_wires_links_and_marker(tmp_path, monkeypatch):
     assert marker["asset"] == SLIM_ASSET
     assert marker["install_kind"] == "slim"
     assert marker["paired_llama_tag"] == SLIM_LLAMA_TAG
+    assert marker["paired_llama_identity"] == "fingerprint:llama"
     assert marker["linked_from"] == str(llama_bin)
     # The wired filenames land in the marker; the sidecar launch guard
     # verifies exactly these names instead of hardcoded per-OS globs.

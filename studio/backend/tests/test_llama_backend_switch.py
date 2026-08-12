@@ -521,8 +521,86 @@ def test_a_failed_whisper_repair_can_retry_without_reinstalling_llama(monkeypatc
     assert calls == 2
 
 
+def test_whisper_repair_runs_when_the_llama_asset_changes_on_the_same_backend(
+    monkeypatch, tmp_path
+):
+    whisper_dir = tmp_path / "whisper.cpp"
+    whisper_binary = _write_install(
+        whisper_dir,
+        install_kind = "slim",
+        paired_llama_identity = "fingerprint:old",
+    )
+    (whisper_dir / MARKER).rename(whisper_dir / whisper_upd._INSTALL_MARKER_NAME)
+    monkeypatch.setattr(whisper_upd, "_find_binary", lambda: whisper_binary)
+    monkeypatch.setattr(
+        whisper_upd,
+        "_installed_llama_pairing",
+        lambda: ("cuda", "fingerprint:new"),
+    )
+    monkeypatch.setattr(
+        whisper_upd, "_installer_script", lambda: tmp_path / "install_whisper_prebuilt.py"
+    )
+
+    plan = whisper_upd.repair_pairing_plan("cuda", resolved_backend = "cuda")
+
+    assert plan["phase"]["installed_backend"] == "cuda"
+    assert plan["phase"]["installed_llama_identity"] == "fingerprint:old"
+
+
+def test_whisper_repair_is_planned_before_a_same_backend_llama_swap(monkeypatch, tmp_path):
+    whisper_dir = tmp_path / "whisper.cpp"
+    whisper_binary = _write_install(
+        whisper_dir,
+        install_kind = "slim",
+        paired_llama_identity = "fingerprint:old",
+    )
+    (whisper_dir / MARKER).rename(whisper_dir / whisper_upd._INSTALL_MARKER_NAME)
+    monkeypatch.setattr(whisper_upd, "_find_binary", lambda: whisper_binary)
+    monkeypatch.setattr(
+        whisper_upd,
+        "_installed_llama_pairing",
+        lambda: ("cuda", "fingerprint:old"),
+    )
+    monkeypatch.setattr(
+        whisper_upd, "_installer_script", lambda: tmp_path / "install_whisper_prebuilt.py"
+    )
+
+    current = whisper_upd.repair_pairing_plan("cuda", resolved_backend = "cuda")
+    pending_swap = whisper_upd.repair_pairing_plan("cuda", llama_will_run = True)
+
+    assert current["skip_reason"] == "already_paired"
+    assert pending_swap["phase"]["repair"] is True
+
+
+def test_whisper_repair_skips_only_an_exact_runtime_pair(monkeypatch):
+    monkeypatch.setattr(
+        whisper_upd,
+        "_installed_llama_pairing",
+        lambda: ("cuda", "fingerprint:new"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        whisper_upd,
+        "_install_latest_while_blocked_with_maintenance",
+        lambda phase, set_progress: calls.append(phase) or {},
+    )
+
+    whisper_upd.run_repair_phase(
+        {"installed_backend": "cuda", "installed_llama_identity": "fingerprint:old"},
+        lambda progress: None,
+    )
+    whisper_upd.run_repair_phase(
+        {"installed_backend": "cuda", "installed_llama_identity": "fingerprint:new"},
+        lambda progress: None,
+    )
+
+    assert len(calls) == 1
+
+
 def test_whisper_repair_treats_only_incompatibility_as_unavailable(monkeypatch):
-    monkeypatch.setattr(whisper_upd, "_installed_llama_backend", lambda: "vulkan")
+    monkeypatch.setattr(
+        whisper_upd, "_installed_llama_pairing", lambda: ("vulkan", "fingerprint:new")
+    )
     monkeypatch.setattr(
         whisper_upd,
         "_install_latest_while_blocked_with_maintenance",
@@ -538,7 +616,9 @@ def test_whisper_repair_treats_only_incompatibility_as_unavailable(monkeypatch):
 
 @pytest.mark.parametrize("returncode", [1, 3])
 def test_whisper_repair_surfaces_retryable_installer_failures(monkeypatch, returncode):
-    monkeypatch.setattr(whisper_upd, "_installed_llama_backend", lambda: "vulkan")
+    monkeypatch.setattr(
+        whisper_upd, "_installed_llama_pairing", lambda: ("vulkan", "fingerprint:new")
+    )
     monkeypatch.setattr(
         whisper_upd,
         "_install_latest_while_blocked_with_maintenance",

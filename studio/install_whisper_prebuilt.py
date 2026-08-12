@@ -96,6 +96,7 @@ ReleaseBundle = core.ReleaseBundle
 llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
 installed_llama_ggml_tree = llama.installed_llama_ggml_tree
+installed_llama_identity = llama.installed_llama_identity
 
 # Late-binding seam for prebuilt_core: name lookups hit this module's globals
 # first (so monkeypatches apply), then the core defaults.
@@ -951,6 +952,7 @@ def selection_from_artifact(
         selection,
         install_kind = "slim",
         paired_llama_tag = llama_tag,
+        paired_llama_identity = installed_llama_identity(),
         linked_from = str(llama_bin_dir),
     )
 
