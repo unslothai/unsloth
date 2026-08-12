@@ -13,9 +13,11 @@ import re
 import secrets
 import shlex
 import shutil
+import site
 import sqlite3
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import types
@@ -3394,8 +3396,49 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(returncode)
 
 
-_INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
-_INSTALLER_URL_PWSH = "https://unsloth.ai/install.ps1"
+def _installer_script_candidates(installer_name: str) -> List[Path]:
+    """On-disk install.sh / install.ps1 locations, most specific first.
+
+    Every entry is a file that shipped with this Unsloth: a checkout, or the copy
+    pyproject's data-files puts under <data>/share/unsloth for wheel installs. The
+    launcher refresh runs one of these and nothing else -- it deliberately does not
+    fall back to downloading an installer from the website and executing it, which
+    would put a second, weaker trust anchor behind an already-installed package.
+    """
+    candidates: List[Path] = []
+
+    def add(path: Path) -> None:
+        if path not in candidates:
+            candidates.append(path)
+
+    # An explicit checkout wins: `update --local` should refresh from that tree.
+    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+    if local_repo:
+        add(Path(local_repo).expanduser() / installer_name)
+    # Running out of a clone (or an editable install): _PACKAGE_ROOT is the repo root.
+    add(_PACKAGE_ROOT / installer_name)
+    # Wheel installs: data-files land under the install scheme's data dir, which is
+    # the venv root for the venv install.sh/install.ps1 create. sys.prefix is the
+    # same directory on every stock scheme; USER_BASE covers `pip install --user`.
+    data_roots = [sysconfig.get_path("data"), sys.prefix, getattr(site, "USER_BASE", None)]
+    for root in data_roots:
+        if root:
+            add(Path(root) / "share" / "unsloth" / installer_name)
+    return candidates
+
+
+def _echo_missing_installer(
+    installer_name: str, candidates: Sequence[Path], *, verbose: bool = False
+) -> None:
+    """Report a skipped launcher refresh. The existing shortcuts keep working."""
+    typer.echo(f"  refresh-launcher  skipped: no {installer_name} found next to this install")
+    if verbose:
+        for candidate in candidates:
+            typer.echo(f"                      looked at {candidate}")
+    if platform.system() == "Windows":
+        typer.echo("                      to rebuild it: irm https://unsloth.ai/install.ps1 | iex")
+    else:
+        typer.echo("                      to rebuild it: curl -fsSL https://unsloth.ai/install.sh | sh")
 
 
 def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
@@ -3406,14 +3449,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
 
     is_windows = platform.system() == "Windows"
     installer_name = "install.ps1" if is_windows else "install.sh"
-    installer_url = _INSTALLER_URL_PWSH if is_windows else _INSTALLER_URL_BASH
-
-    # Prefer local checkout, fall back to package dir, then network fetch.
-    local_repo = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
-    candidates: list[Path] = []
-    if local_repo:
-        candidates.append(Path(local_repo) / installer_name)
-    candidates.append(_PACKAGE_ROOT / installer_name)
+    candidates = _installer_script_candidates(installer_name)
 
     args = ["--shortcuts-only"]
     if verbose:
@@ -3452,61 +3488,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
             except OSError:
                 continue
 
-        # PyPI installs lack install.ps1: fetch + pipe to powershell stdin.
-        try:
-            request = urllib.request.Request(
-                installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-            )
-            with urllib.request.urlopen(request, timeout = 30) as response:
-                installer = response.read().decode("utf-8", errors = "replace")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
-            return
-
-        # install.ps1 auto-invokes `Install-UnslothStudio @args` at EOF; over
-        # stdin `$args` is empty so that triggers the full installer flow
-        # (deps, venv, prompts) before our shortcuts-only call. Strip it.
-        installer = re.sub(
-            r"(?m)^[ \t]*Install-UnslothStudio[ \t]+@args[ \t]*\r?\n?",
-            "",
-            installer,
-        )
-        # stdin-piped scripts have empty $args, so call Install-UnslothStudio explicitly.
-        marker_args = " ".join(args)
-        wrapper = installer + f"\nInstall-UnslothStudio {marker_args}\n"
-
-        # Write to a UTF-8 BOM tempfile and use -File rather than -Command -.
-        # `powershell.exe -Command -` reads stdin via [Console]::InputEncoding
-        # (CP1252/OEM on most Windows boxes), which mangles box-drawing chars
-        # in install.ps1. -File reads the BOM and decodes correctly. The
-        # prefix gives AV/EDR engines (and grep'ing users) a clear identity.
-        ps1_fd, ps1_path = tempfile.mkstemp(
-            prefix = "unsloth-studio-refresh-",
-            suffix = ".ps1",
-        )
-        try:
-            with os.fdopen(ps1_fd, "wb") as fh:
-                fh.write(b"\xef\xbb\xbf" + wrapper.encode("utf-8"))
-            argv = list(ps_argv)
-            argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path])
-            try:
-                result = subprocess.run(
-                    argv,
-                    env = env,
-                    check = False,
-                    **_windows_hidden_subprocess_kwargs(),
-                )
-                if result.returncode != 0:
-                    typer.echo(
-                        f"  refresh-launcher  fetched install.ps1 exited {result.returncode}"
-                    )
-            except OSError as exc:
-                typer.echo(f"  refresh-launcher  skipped: powershell exec failed ({exc})")
-        finally:
-            try:
-                os.unlink(ps1_path)
-            except OSError:
-                pass
+        _echo_missing_installer(installer_name, candidates, verbose = verbose)
         return
 
     for script in candidates:
@@ -3523,28 +3505,7 @@ def _refresh_desktop_shortcuts(*, verbose: bool = False) -> None:
         except OSError:
             continue
 
-    # PyPI installs lack install.sh: fetch upstream.
-    try:
-        request = urllib.request.Request(
-            installer_url, headers = {"User-Agent": "unsloth-studio-update"}
-        )
-        with urllib.request.urlopen(request, timeout = 30) as response:
-            installer = response.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        typer.echo(f"  refresh-launcher  skipped: could not fetch {installer_url} ({exc})")
-        return
-
-    try:
-        result = subprocess.run(
-            ["bash", "-s", "--", *args],
-            input = installer,
-            env = env,
-            check = False,
-        )
-        if result.returncode != 0:
-            typer.echo(f"  refresh-launcher  fetched install.sh exited {result.returncode}")
-    except OSError as exc:
-        typer.echo(f"  refresh-launcher  skipped: bash exec failed ({exc})")
+    _echo_missing_installer(installer_name, candidates, verbose = verbose)
 
 
 @studio_app.command(hidden = True)

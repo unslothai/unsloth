@@ -76,6 +76,15 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
 
+# `unsloth studio update` re-runs the installer with --shortcuts-only to refresh
+# the desktop launcher. Shipping install.sh / install.ps1 with the distribution
+# keeps that a local exec: pip and uv place these under the install scheme's data
+# dir (the Studio venv root), where _installer_script_candidates() finds them.
+# Without this a PyPI install has no installer on disk, and the refresh would
+# have to fetch one over the network and run it.
+[tool.setuptools.data-files]
+"share/unsloth" = ["install.sh", "install.ps1"]
+
 [tool.setuptools.packages.find]
 include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
 exclude = [
