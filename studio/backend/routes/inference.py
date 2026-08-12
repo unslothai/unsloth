@@ -3097,14 +3097,30 @@ _TOOL_CODE_TIP = (
 # on my laptop", a local chat model answers "no, I am sandboxed" from training
 # data rather than reading its own tool list, so the environment is stated
 # outright and the guess is redirected to a tool call.
-_TOOL_FULL_ACCESS_TIP = (
-    "The python and terminal tools run on the machine running Unsloth Studio, "
-    "with the code sandbox and the approval prompts disabled, so you can inspect "
-    "and change the real files and system there. That machine is not always the "
-    "device the user is viewing this on: Studio can be served remotely. When "
-    "asked what you can see or do on it, check with a tool call instead of "
-    "assuming you are isolated from it."
-)
+# Fixed order so the sentence reads the same whichever way the caller listed them.
+_LOCAL_CODE_TOOLS = ("python", "terminal")
+
+
+def _full_access_tip(code_tools: list[str]) -> str:
+    """The Full access sentence, naming only the code tools actually selected.
+
+    enabled_tools=["python"] leaves terminal out of the request's schemas, so
+    naming it here would advertise a tool the loop would refuse to run.
+    """
+    if len(code_tools) == 1:
+        subject = f"The {code_tools[0]} tool runs"
+    else:
+        subject = "The " + " and ".join(code_tools) + " tools run"
+    return (
+        subject + " on the machine running Unsloth Studio, with the code sandbox "
+        "and the approval prompts disabled, so you can inspect and change the real "
+        "files and system there. That machine is not always the device the user is "
+        "viewing this on: Studio can be served remotely. When asked what you can "
+        "see or do on it, check with a tool call instead of assuming you are "
+        "isolated from it."
+    )
+
+
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
     "it is available with one complete self-contained HTML document in the code "
@@ -3130,12 +3146,13 @@ def _build_tool_action_nudge(
         if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
     }
     has_web = "web_search" in tool_names
-    has_code = "python" in tool_names or "terminal" in tool_names
+    code_tools = [name for name in _LOCAL_CODE_TOOLS if name in tool_names]
+    has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     if not (has_web or has_code or has_artifact):
         return ""
     if full_access_only:
-        return _TOOL_FULL_ACCESS_TIP if (full_access and has_code) else ""
+        return _full_access_tip(code_tools) if (full_access and has_code) else ""
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -3145,7 +3162,7 @@ def _build_tool_action_nudge(
     if has_code:
         tool_tip_parts.append(_TOOL_CODE_TIP)
         if full_access:
-            tool_tip_parts.append(_TOOL_FULL_ACCESS_TIP)
+            tool_tip_parts.append(_full_access_tip(code_tools))
     if has_artifact:
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     return (

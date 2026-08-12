@@ -8957,12 +8957,13 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # PYTHONPATH, so sandbox_site/sitecustomize.py goes on healing an absent
     # /mnt/data or /tmp/outputs onto the workdir in bypass runs too. Promising
     # that every absolute path resolves would make the model report a write to
-    # /mnt/data that actually landed in the working directory.
+    # /mnt/data that actually landed in the working directory. The tail differs
+    # per tool, see _FULL_ACCESS_ABSENT_PREFIX_TAIL.
     (
         "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
         ". The code sandbox is disabled, so absolute paths on the machine running "
         "Unsloth Studio do resolve; /mnt/data and /tmp/outputs are still not real "
-        "there, and writes to them are redirected into the working directory.",
+        "there{tail}",
     ),
     # Windows already says where the code runs and never denies absolute paths,
     # so there is nothing false to remove; state the capability instead. "the
@@ -8977,7 +8978,18 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 )
 
 
-def _to_full_access(description: str) -> str:
+# sitecustomize.py is a CPython startup hook, so the /mnt/data heal reaches the
+# python tool and any Python the terminal tool launches -- but NOT a plain shell
+# redirect, where `printf x > /mnt/data/out` on a host without /mnt/data simply
+# fails. Telling terminal its writes are redirected would have the model report a
+# command that errored as having landed in the working directory.
+_FULL_ACCESS_ABSENT_PREFIX_TAIL = {
+    "python": ", and writes to them are redirected into the working directory.",
+    "terminal": ", so write to the working directory instead.",
+}
+
+
+def _to_full_access(description: str, tool_name: str) -> str:
     """Rewrite a sandboxed tool description for Full access.
 
     Under bypass_permissions the loops pass disable_sandbox=True:
@@ -8989,8 +9001,9 @@ def _to_full_access(description: str) -> str:
     workdir is the per-session dir either way (_build_bypass_env repoints HOME /
     TMPDIR / TEMP / TMP at it), and so is the download-link note.
     """
+    tail = _FULL_ACCESS_ABSENT_PREFIX_TAIL[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
-        description = description.replace(sandboxed, full_access)
+        description = description.replace(sandboxed, full_access.format(tail = tail))
     return description
 
 
@@ -9071,7 +9084,7 @@ PYTHON_TOOL_FULL_ACCESS = {
     "type": "function",
     "function": {
         **PYTHON_TOOL["function"],
-        "description": _to_full_access(PYTHON_TOOL["function"]["description"]),
+        "description": _to_full_access(PYTHON_TOOL["function"]["description"], "python"),
     },
 }
 
@@ -9079,7 +9092,7 @@ TERMINAL_TOOL_FULL_ACCESS = {
     "type": "function",
     "function": {
         **TERMINAL_TOOL["function"],
-        "description": _to_full_access(TERMINAL_TOOL["function"]["description"]),
+        "description": _to_full_access(TERMINAL_TOOL["function"]["description"], "terminal"),
     },
 }
 

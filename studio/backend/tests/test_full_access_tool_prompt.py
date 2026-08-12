@@ -33,7 +33,7 @@ from core.inference.tools import (
 )
 from models.inference import ChatCompletionRequest, ChatCountTokensRequest
 from routes.inference import (
-    _TOOL_FULL_ACCESS_TIP,
+    _full_access_tip,
     _build_tool_action_nudge,
     _select_request_tools,
 )
@@ -93,7 +93,8 @@ def test_full_access_schemas_keep_name_and_parameters():
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
-def test_the_substitutions_land_on_every_platform(monkeypatch, platform):
+@pytest.mark.parametrize("tool_name", ["python", "terminal"])
+def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_name):
     """The module constants are built once for the host platform, so a Linux
     runner would never exercise the Windows branch. Rebuild the note per
     platform and re-derive, which is also the guard against a rewording of
@@ -103,7 +104,7 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform):
     sandboxed = "Execute Python code in a sandbox and return stdout/stderr." + (
         tools._build_sandbox_paths_note()
     )
-    full = tools._to_full_access(sandboxed)
+    full = tools._to_full_access(sandboxed, tool_name)
 
     assert full != sandboxed
     assert "in a sandbox" not in full
@@ -116,7 +117,14 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform):
     # paths resolve" would have the model report a write that went elsewhere.
     if platform != "win32":
         assert "/mnt/data" in full
-        assert "redirected into the working directory" in full
+        # sitecustomize is a CPython startup hook: it heals an absent /mnt/data
+        # for python (and any python terminal launches), but a plain shell
+        # redirect just fails, so only python may promise the redirect.
+        if tool_name == "python":
+            assert "redirected into the working directory" in full
+        else:
+            assert "redirected" not in full
+            assert "write to the working directory instead" in full
     # True in both modes, so untouched.
     assert "persists for this conversation" in full
     assert "download link" in full
@@ -219,6 +227,28 @@ def test_nudge_states_the_environment_under_full_access():
     # on a remote server, so an unqualified "tool calls run here" is wrong when
     # any of those are enabled alongside.
     assert nudge.count("The python and terminal tools run on") == 1
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [
+        (["python"], "The python tool runs on"),
+        (["terminal"], "The terminal tool runs on"),
+        (["python", "terminal"], "The python and terminal tools run on"),
+        # Order comes from _LOCAL_CODE_TOOLS, not from the caller's list.
+        (["terminal", "python"], "The python and terminal tools run on"),
+    ],
+    ids = ["python_only", "terminal_only", "both", "reversed"],
+)
+def test_the_tip_names_only_the_selected_code_tools(enabled, expected):
+    """enabled_tools=["python"] leaves terminal out of the request's schemas, so
+    naming it would advertise a tool the loop would refuse to run."""
+    tools = [t for t in ALL_TOOLS if t["function"]["name"] in enabled]
+    nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", full_access = True)
+    assert expected in nudge
+    for absent in {"python", "terminal"} - set(enabled):
+        assert f"The {absent} tool runs on" not in nudge
+        assert f"and {absent} tools run on" not in nudge
     # Studio can be served remotely, so the tools' host is not necessarily the
     # device in front of the user.
     assert "not always the device the user is viewing this on" in nudge
@@ -233,7 +263,7 @@ def test_full_access_only_returns_the_sentence_alone():
     only = _build_tool_action_nudge(
         tools = _CODE_TOOLS, model_name = "test-8B", full_access = True, full_access_only = True
     )
-    assert only == _TOOL_FULL_ACCESS_TIP
+    assert only == _full_access_tip(["python", "terminal"])
     assert "The current date is" not in only
     assert "Tools are available when they materially improve" not in only
 
