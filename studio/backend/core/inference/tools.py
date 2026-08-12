@@ -9196,11 +9196,12 @@ def execute_tool(
             return f"Error: malformed MCP tool name '{name}'"
         server = mcp_servers_db.get_server(server_id)
         if not server:
-            return f"Error: MCP server '{server_id}' not found"
+            return f"Error: MCP server for tool '{tool_name}' not found"
+        display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
-            return f"Error: MCP server '{server_id}' is disabled"
+            return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
-            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+            return f"Error: stdio MCP server '{display}' is disabled on this host"
         # Persist a stateful stdio session only per conversation (thread_id).
         # session_id is the project-wide sandbox id, so scoping by it alone leaks
         # browser/DB/REPL state across conversations; fall back to one-shot. Tag +

@@ -17,6 +17,8 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   useExternalProvidersStore,
+  formatMcpToolName,
+  mcpServerFromProvenance,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
@@ -130,10 +132,11 @@ function toolCategoryFromCall(toolName: string): string | null {
   return null;
 }
 
-function formatToolCallName(toolName: string): string {
+function formatToolCallName(toolName: string, mcpServer?: string): string {
   const normalized = toolName.toLowerCase();
   if (TOOL_CALL_LABELS[normalized]) return TOOL_CALL_LABELS[normalized];
-  if (normalized.startsWith("mcp__")) return `MCP: ${toolName.slice(5)}`;
+  const mcpLabel = formatMcpToolName(toolName, mcpServer);
+  if (mcpLabel) return `MCP: ${mcpLabel}`;
   return toolName
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -158,6 +161,19 @@ function toolCallsFromContent(content: unknown): string[] {
   );
 }
 
+function mcpServersFromContent(content: unknown): Map<string, string> {
+  const servers = new Map<string, string>();
+  if (!Array.isArray(content)) return servers;
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const p = part as { type?: unknown; toolName?: unknown; provenance?: unknown };
+    if (p.type !== "tool-call" || typeof p.toolName !== "string") continue;
+    const server = mcpServerFromProvenance(p.provenance);
+    if (server) servers.set(p.toolName, server);
+  }
+  return servers;
+}
+
 function enabledTools(
   tools: Record<string, boolean | undefined> | undefined,
   toolCalls: string[],
@@ -177,9 +193,14 @@ function enabledTools(
   return active.length > 0 ? active.join(", ") : "None";
 }
 
-function calledTools(toolCalls: string[]): string | null {
+function calledTools(
+  toolCalls: string[],
+  mcpServers: Map<string, string>,
+): string | null {
   if (toolCalls.length === 0) return null;
-  return uniqueValues(toolCalls.map(formatToolCallName)).join(", ");
+  return uniqueValues(
+    toolCalls.map((name) => formatToolCallName(name, mcpServers.get(name))),
+  ).join(", ");
 }
 
 function DetailSection({
@@ -328,6 +349,7 @@ export const MessageResponseDetailsSheet: FC<{
   const summaryLabel =
     modelLabel === "Not recorded" ? "Model not recorded" : `Used ${modelLabel}`;
   const messageToolCalls = toolCallsFromContent(message.content);
+  const mcpServers = mcpServersFromContent(message.content);
   const toolCalls =
     responseDetails?.toolCalls && responseDetails.toolCalls.length > 0
       ? responseDetails.toolCalls
@@ -457,7 +479,7 @@ export const MessageResponseDetailsSheet: FC<{
               label="Enabled"
               value={enabledTools(responseDetails?.tools, toolCalls)}
             />
-            <DetailRow label="Called" value={calledTools(toolCalls)} />
+            <DetailRow label="Called" value={calledTools(toolCalls, mcpServers)} />
             <DetailRow
               label="Confirmation"
               value={

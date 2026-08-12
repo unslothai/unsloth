@@ -134,7 +134,10 @@ def test_execute_tool_malformed_mcp_name():
 def test_execute_tool_unknown_server(tmp_path, monkeypatch):
     _reset_db(tmp_path, monkeypatch)
     from core.inference.tools import execute_tool
-    assert execute_tool("mcp__missing__do_thing", {}) == "Error: MCP server 'missing' not found"
+    assert (
+        execute_tool("mcp__missing__do_thing", {})
+        == "Error: MCP server for tool 'do_thing' not found"
+    )
 
 
 def test_execute_tool_disabled_server(tmp_path, monkeypatch):
@@ -147,7 +150,7 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     )
     from core.inference.tools import execute_tool
 
-    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'srv1' is disabled"
+    assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'A' is disabled"
 
 
 def test_mcp_specs_skip_invalid_openai_function_names():
@@ -1325,3 +1328,47 @@ def test_oauth_probe_failure_in_chat_path_uses_long_cooloff(tmp_path, monkeypatc
     # branch (use_oauth=True) fired -- not the 60 s default.
     remaining = mcp_client._probe_cooloff_until["s1"] - time.monotonic()
     assert remaining > mcp_client.FAILED_PROBE_COOLOFF_SECONDS
+
+
+# ── MCP display names in status text and provenance ─────────────────
+
+
+def test_status_for_tool_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert status_for_tool("mcp__srv1__create_issue", {}) == "Calling: GitHub · create_issue"
+
+
+def test_status_for_tool_unknown_mcp_server_keeps_raw_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    from core.inference.tool_loop_controller import status_for_tool
+
+    assert status_for_tool("mcp__missing__x", {}) == "Calling: mcp__missing__x"
+
+
+def test_awaiting_approval_status_uses_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import awaiting_approval_status
+
+    assert (
+        awaiting_approval_status("mcp__srv1__create_issue")
+        == "Waiting for approval: GitHub · create_issue"
+    )
+
+
+def test_prepare_call_stamps_mcp_server_provenance(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    controller = ToolLoopController(tools = None)
+    decision = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__create_issue", "arguments": {}}}
+    )
+    assert decision.provenance["mcp_server"] == "GitHub"
+
+    plain = controller.prepare_call({"function": {"name": "python", "arguments": {}}})
+    assert "mcp_server" not in plain.provenance

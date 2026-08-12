@@ -144,6 +144,10 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,

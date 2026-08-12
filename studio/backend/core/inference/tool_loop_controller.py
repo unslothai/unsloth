@@ -207,6 +207,23 @@ def tool_event_provenance(**flags: object) -> dict[str, object]:
     return provenance
 
 
+def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
+    """(server display name, bare tool name) for a resolvable mcp__ tool."""
+    if not tool_name.startswith("mcp__"):
+        return None
+    parts = tool_name.split("__", 2)
+    if len(parts) < 3 or not parts[1] or not parts[2]:
+        return None
+    try:
+        from storage import mcp_servers_db
+
+        server = mcp_servers_db.get_server(parts[1])
+    except Exception:  # noqa: BLE001
+        return None
+    display = (server or {}).get("display_name")
+    return (str(display), parts[2]) if display else None
+
+
 def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     """Return the status text already used by local tool streams."""
     if tool_name == "web_search":
@@ -235,6 +252,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Calling: {mcp[0]} · {mcp[1]}"
     return f"Calling: {tool_name}"
 
 
@@ -248,6 +268,9 @@ def awaiting_approval_status(tool_name: str) -> str:
         return "Waiting for approval: Python"
     if tool_name == "terminal":
         return "Waiting for approval: command"
+    mcp = mcp_display_parts(tool_name)
+    if mcp:
+        return f"Waiting for approval: {mcp[0]} · {mcp[1]}"
     return f"Waiting for approval: {tool_name}"
 
 
@@ -436,10 +459,12 @@ class ToolLoopController:
             tool_name = tool_name,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
+        mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
             forced = forced,
             provisional = provisional,
+            mcp_server = mcp[0] if mcp else None,
         )
         action: ToolAction = "execute"
         noop = ""
