@@ -1,0 +1,358 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Regression tests for issue #8473 -- the installer says the GPU is fine and the backend runs CPU-only.
+
+Reporter: AMD host, `unsloth studio update` prints `gpu AMD ROCm (gfx1201)` then
+`python dependencies up to date`, and Studio then shows VRAM `--`, "No visible GPU"
+and a `CPU` detail line. The installer's GPU line comes from rocminfo / amd-smi /
+hipinfo plus a marketing-name table; the backend's verdict is
+torch.cuda.is_available() in its own process (on ROCm, get_backend_visible_gpu_info
+skips the SMI branch, so torch.cuda is the only thing that can populate devices).
+Nothing ever reconciled the two, so the user was told twice the GPU was fine.
+
+setup.sh now runs one bounded probe in the venv after the GPU summary and prints
+the mismatch. There is no AMD hardware in CI -- every runner is a hosted
+ubuntu/windows/macos box -- so the real block is extracted from setup.sh and run
+under bash against a FAKE venv interpreter whose answer, exit code and latency the
+test controls, plus a fake `timeout` that records the bound setup.sh asked for
+while enforcing a short one, so the hang case finishes in seconds.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
+
+_BLOCK_START = "# ── Does PyTorch see the GPU this installer just announced? ──"
+_BLOCK_END = "# ── 7. Prefer prebuilt llama.cpp bundles"
+
+# Colours are the assertion surface for severity: the harness substitutes the names
+# themselves, so a report demoted from $C_ERR to $C_WARN fails rather than passing on
+# text alone.
+_HARNESS_HEAD = """
+C_DIM="DIM"; C_RST=""; C_OK="OK"; C_WARN="WARN"; C_ERR="ERR"
+step()    { printf 'STEP|%s|%s|%s\\n' "$1" "$2" "${3:-OK}"; }
+substep() { printf 'SUB|%s|%s\\n' "$1" "${2:-DIM}"; }
+verbose_substep() { printf 'VSUB|%s\\n' "$1"; }
+"""
+
+_HARNESS_TAIL = '\necho "BLOCK_DONE"\n'
+
+
+def _block() -> str:
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index(_BLOCK_START)
+    end = text.index(_BLOCK_END, start)
+    return text[start:end]
+
+
+@pytest.fixture(scope = "module")
+def block() -> str:
+    extracted = _block()
+    # An empty or truncated extraction would make every check below pass vacuously.
+    assert "torch.cuda.is_available()" in extracted
+    assert "_setup_amd_detected" in extracted
+    return extracted
+
+
+def _write_exec(path: Path, body: str) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text(body, encoding = "utf-8")
+    path.chmod(0o755)
+
+
+def _make_venv(
+    tmp_path: Path,
+    *,
+    stdout: str = "",
+    exit_code: int = 0,
+    sleep_seconds: float = 0.0,
+    torch_on_disk: bool = True,
+) -> Path:
+    """A venv whose `python` prints exactly what the test wants, when it wants."""
+    venv = tmp_path / "venv"
+    calls = venv / "calls.log"
+    _write_exec(
+        venv / "bin" / "python",
+        "#!/bin/sh\n"
+        f'echo "call" >> "{calls}"\n'
+        + (f"sleep {sleep_seconds}\n" if sleep_seconds else "")
+        + (f"printf '%s' \"$(cat <<'PROBE_EOF'\n{stdout}\nPROBE_EOF\n)\"\n" if stdout else "")
+        + f"exit {exit_code}\n",
+    )
+    if torch_on_disk:
+        (venv / "lib" / "python3.11" / "site-packages" / "torch").mkdir(parents = True)
+        (venv / "lib" / "python3.11" / "site-packages" / "torch" / "version.py").write_text(
+            "__version__ = '2.9.0+rocm6.4'\n", encoding = "utf-8"
+        )
+    return venv
+
+
+def _run_block(
+    block_text: str,
+    venv: Path,
+    tmp_path: Path,
+    *,
+    amd: bool = False,
+    nvidia: bool = False,
+    gfx: str = "",
+    marketing: str = "",
+    env: dict[str, str] | None = None,
+    with_timeout: bool = True,
+    timeout_bound: int = 5,
+) -> dict:
+    """Run the real setup.sh block with stubbed printers and a stubbed `timeout`."""
+    stub_bin = tmp_path / "stubbin"
+    stub_bin.mkdir(exist_ok = True)
+    timeout_log = tmp_path / "timeout_args.log"
+    real_timeout = shutil.which("timeout")
+    if with_timeout:
+        assert real_timeout, "this test host has no timeout(1) to delegate to"
+        # Records the bound setup.sh ASKED for, then enforces a short one, so the
+        # hang case is observable without waiting out the real 90 seconds.
+        _write_exec(
+            stub_bin / "timeout",
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$*" >> "{timeout_log}"\n'
+            "shift\n"
+            f'exec "{real_timeout}" {timeout_bound} "$@"\n',
+        )
+    else:
+        # No `timeout` on PATH at all: the fallback arm of the probe must still run.
+        # Only the utilities the block itself uses are reachable.
+        for tool in ("bash", "grep", "tail", "cut", "sh", "sleep", "cat"):
+            found = shutil.which(tool)
+            assert found, f"missing {tool}"
+            os.symlink(found, stub_bin / tool)
+
+    script = "\n".join(
+        [
+            _HARNESS_HEAD,
+            f'VENV_DIR="{venv}"',
+            f"_setup_nvidia_usable={'true' if nvidia else 'false'}",
+            f"_setup_amd_detected={'true' if amd else 'false'}",
+            f'_setup_gfx="{gfx}"',
+            f'_setup_mkt="{marketing}"',
+            block_text,
+            _HARNESS_TAIL,
+        ]
+    )
+    run_env = dict(os.environ)
+    run_env.pop("UNSLOTH_SKIP_TORCH_GPU_CHECK", None)
+    run_env.update(env or {})
+    run_env["PATH"] = (
+        str(stub_bin) if not with_timeout else f"{stub_bin}{os.pathsep}{run_env.get('PATH', '')}"
+    )
+    started = time.monotonic()
+    completed = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True, timeout = 120, env = run_env
+    )
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "elapsed": time.monotonic() - started,
+        "calls": (venv / "calls.log").read_text(encoding = "utf-8")
+        if (venv / "calls.log").exists()
+        else "",
+        "timeout_args": timeout_log.read_text(encoding = "utf-8") if timeout_log.exists() else "",
+    }
+
+
+def _answer(
+    available: str,
+    count: str = "0",
+    version: str = "2.9.0+cpu",
+    hip: str = "",
+) -> str:
+    return f"UNSLOTHTORCHGPU={available}|{count}|{version}|{hip}"
+
+
+pytestmark = pytest.mark.skipif(os.name == "nt", reason = "setup.sh is the POSIX installer")
+
+
+def test_amd_gpu_invisible_to_torch_is_reported_loudly(block, tmp_path):
+    """The whole point of #8473: say the two verdicts disagree, and say which is which."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block, venv, tmp_path, amd = True, gfx = "gfx1201", marketing = "Radeon RX 9070 XT"
+    )
+    out = result["stdout"]
+    assert "STEP|gpu check|PyTorch cannot see the AMD GPU reported above|ERR" in out
+    # The announcement is repeated verbatim, so the report is falsifiable on its own.
+    assert "SUB|detected by the installer: AMD ROCm (gfx1201) -- Radeon RX 9070 XT|ERR" in out
+    assert f"SUB|torch.cuda.is_available() is False in {venv}|ERR" in out
+    assert "SUB|torch 2.9.0+cpu, device_count 0, torch.version.hip none|ERR" in out
+    # Naming the symptom the user is about to see is what stops it being filed twice.
+    assert "No visible GPU" in out
+    assert "https://github.com/unslothai/unsloth/issues" in out
+    # Loud, never fatal: a CPU-only Studio still chats.
+    assert "BLOCK_DONE" in out
+    assert result["returncode"] == 0
+
+
+def test_hip_version_is_reported_when_torch_has_one(block, tmp_path):
+    """A +rocm wheel that still sees nothing is a different fault from a CPU wheel."""
+    venv = _make_venv(tmp_path, stdout = _answer("0", version = "2.9.0+rocm6.4", hip = "6.4.43482"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1151")
+    assert (
+        "SUB|torch 2.9.0+rocm6.4, device_count 0, torch.version.hip 6.4.43482|ERR"
+        in result["stdout"]
+    )
+
+
+def test_a_working_amd_gpu_prints_no_mismatch(block, tmp_path):
+    venv = _make_venv(tmp_path, stdout = _answer("1", count = "1", version = "2.9.0+rocm6.4", hip = "6.4"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
+    out = result["stdout"]
+    assert "gpu check" not in out
+    assert "cannot see" not in out
+    assert "VSUB|torch sees 1 GPU(s) (torch 2.9.0+rocm6.4, hip 6.4)" in out
+
+
+def test_nvidia_host_is_named_as_nvidia(block, tmp_path):
+    """The mismatch is not AMD-specific, and calling an NVIDIA host AMD would be worse than silence."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, nvidia = True)
+    out = result["stdout"]
+    assert "STEP|gpu check|PyTorch cannot see the NVIDIA GPU reported above|ERR" in out
+    assert "AMD" not in out
+
+
+def test_a_banner_cannot_spoof_the_answer(block, tmp_path):
+    """torch imports print to stdout on some hosts; only a line-anchored sentinel is the answer.
+
+    The spoof is placed on BOTH sides of the real answer on purpose: the reader takes the last
+    match, so a leading banner alone is caught by the tail and an unanchored match survives it.
+    """
+    venv = _make_venv(
+        tmp_path,
+        stdout = (
+            "warning: overriding UNSLOTHTORCHGPU=1|8|2.9.0+rocm6.4|6.4\n"
+            + _answer("0")
+            + "\nnote: trailing UNSLOTHTORCHGPU=1|8|2.9.0+rocm6.4|6.4"
+        ),
+    )
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_the_two_guards_against_a_spoofed_answer_both_exist(block):
+    """The line anchor and the sentinel prefix strip are independent, and either alone rejects a
+    mid-line sentinel -- so the behavioural test above cannot tell them apart, and removing one
+    silently leaves the reader resting on the other. Asserted here per guard instead."""
+    assert "grep '^UNSLOTHTORCHGPU='" in block
+    assert '"${_setup_torch_line#UNSLOTHTORCHGPU=}"' in block
+
+
+def test_a_crashing_probe_warns_and_accuses_nobody(block, tmp_path):
+    """A probe that did not answer says nothing about the GPU. It must not read as "no GPU"."""
+    venv = _make_venv(tmp_path, exit_code = 1)
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
+    out = result["stdout"]
+    assert "gpu check" not in out
+    assert (
+        "SUB|[WARN] could not check whether PyTorch sees this GPU (the probe crashed or did not answer within 90s).|WARN"
+        in out
+    )
+    assert result["returncode"] == 0
+
+
+def test_a_gguf_only_venv_says_nothing(block, tmp_path):
+    """No torch installed is not a mismatch, and a warning there is noise on every update."""
+    venv = _make_venv(tmp_path, exit_code = 1, torch_on_disk = False)
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
+    out = result["stdout"]
+    assert "gpu check" not in out
+    assert "could not check" not in out
+    assert result["returncode"] == 0
+
+
+def test_a_hanging_import_cannot_hang_the_installer(block, tmp_path):
+    """`import torch` on a box with a stalled GPU driver is the classic hang, and this probe
+    exists precisely for hosts whose driver is misbehaving."""
+    venv = _make_venv(tmp_path, sleep_seconds = 60, stdout = _answer("1", count = "1"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", timeout_bound = 3)
+    assert result["elapsed"] < 30
+    assert "could not check whether PyTorch sees this GPU" in result["stdout"]
+    assert result["returncode"] == 0
+    # ...and the bound setup.sh actually asked for is the one in the source, not the
+    # short one this test enforces.
+    assert result["timeout_args"].split()[0] == "90"
+    assert str(venv / "bin" / "python") in result["timeout_args"]
+
+
+def test_the_probe_runs_where_timeout_is_missing(block, tmp_path):
+    """Base macOS and minimal Linux images have no timeout(1); the SIGALRM deadline inside the
+    probe is what bounds them, and the check must still happen."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201", with_timeout = False)
+    assert result["calls"].count("call") == 1
+    assert "PyTorch cannot see the AMD GPU reported above" in result["stdout"]
+
+
+def test_both_probe_arms_carry_the_in_process_deadline(block):
+    """Per call site, not per file: one arm losing signal.alarm leaves that host unbounded, and a
+    file-level check passes with the other arm intact."""
+    arms = [line for line in block.splitlines() if '-c "$_setup_torch_probe"' in line]
+    assert len(arms) == 2, arms
+    assert all('"$VENV_DIR/bin/python"' in line for line in arms), arms
+    # One arm bounded by timeout(1), one for hosts without it -- both share the same probe
+    # string, so the in-process deadline covers each.
+    assert sum(1 for line in arms if "timeout 90 " in line) == 1, arms
+    assert block.count("_setup_torch_probe='import signal; signal.alarm(90); ") == 1
+
+
+def test_no_accelerator_means_no_interpreter_launch(block, tmp_path):
+    """A CPU-only host must not pay for an `import torch` on every update."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(block, venv, tmp_path)
+    assert result["calls"] == ""
+    assert result["stdout"].strip() == "BLOCK_DONE"
+
+
+def test_the_check_can_be_switched_off(block, tmp_path):
+    """An escape hatch for hosts where probing torch is itself the problem."""
+    venv = _make_venv(tmp_path, stdout = _answer("0"))
+    result = _run_block(
+        block,
+        venv,
+        tmp_path,
+        amd = True,
+        gfx = "gfx1201",
+        env = {"UNSLOTH_SKIP_TORCH_GPU_CHECK": "1"},
+    )
+    assert result["calls"] == ""
+    assert "gpu check" not in result["stdout"]
+
+
+def test_a_missing_interpreter_is_skipped_by_name(block, tmp_path):
+    """setup.sh runs before the venv exists in some repair paths. Asserted on the skip line
+    rather than on the absence of a report: without the guard the probe merely fails to exec,
+    which is silent too, so silence proves nothing."""
+    venv = tmp_path / "novenv"
+    venv.mkdir()
+    result = _run_block(block, venv, tmp_path, amd = True, gfx = "gfx1201")
+    assert "VSUB|torch GPU visibility check skipped: no interpreter at" in result["stdout"]
+    assert "gpu check" not in result["stdout"]
+    assert result["returncode"] == 0
+
+
+def test_the_check_runs_after_the_gpu_summary_and_before_the_llama_step():
+    """Ordering is load-bearing: _setup_gfx and _setup_amd_detected are computed by the summary,
+    and the report has to sit next to the line it contradicts."""
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    summary = text.index("# ── GPU detection summary")
+    announcement = text.index('step "gpu" "AMD ROCm ($_setup_gfx)"')
+    check = text.index(_BLOCK_START)
+    llama = text.index(_BLOCK_END)
+    assert summary < announcement < check < llama

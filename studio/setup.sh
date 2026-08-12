@@ -1898,6 +1898,90 @@ else
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
 fi
 
+# ── Does PyTorch see the GPU this installer just announced? ──
+# The line above comes from rocminfo / amd-smi / nvidia-smi and a marketing-name
+# table. The backend's verdict is torch.cuda.is_available() in its own process:
+# get_backend_visible_gpu_info() skips the SMI branch on ROCm entirely, so on an
+# AMD host torch.cuda is the ONLY thing that can populate the device list. The
+# two stacks shared no state and never reconciled, so a host whose torch cannot
+# open the device was told "AMD ROCm (gfx1201)" here, then "dependencies up to
+# date", and then ran CPU-only showing VRAM "--" and "No visible GPU" with no
+# diagnostic anywhere (#8473; reported that way in #7485 and as problem 5 of
+# #7307). This is the reconciliation, and it is diagnosis only: nothing below
+# changes routing, wheel selection or placement.
+#
+# Bounded exactly like the XPU probe above, because `import torch` on a box with
+# a stalled GPU driver is the classic hang: an outer `timeout` where it exists,
+# and a SIGALRM deadline inside the probe for hosts without it (base macOS,
+# minimal images). 90s rather than the XPU probe's 60s, since a cold import plus
+# HIP device enumeration is seconds on its own.
+#
+# A probe that does not answer reports that it could not answer and NEVER fails
+# the install: the announced GPU may be perfectly fine and the probe the only
+# broken thing, and Studio still runs. For the same reason a real mismatch is
+# printed loudly but does not abort either -- CPU-only Studio is degraded, not
+# dead, and aborting here would turn a diagnosable install into a failed one.
+_setup_torch_probe_answered=false
+_setup_torch_sees_gpu=false
+_setup_torch_devices=0
+_setup_torch_ver=""
+_setup_torch_hip=""
+if [ "$_setup_nvidia_usable" = true ] || [ "$_setup_amd_detected" = true ]; then
+    case "${UNSLOTH_SKIP_TORCH_GPU_CHECK:-}" in
+        1|true|TRUE|yes|YES|on|ON) _setup_skip_torch_check=true ;;
+        *) _setup_skip_torch_check=false ;;
+    esac
+    if [ "$_setup_skip_torch_check" = true ]; then
+        verbose_substep "torch GPU visibility check skipped (UNSLOTH_SKIP_TORCH_GPU_CHECK)"
+    elif [ ! -x "$VENV_DIR/bin/python" ]; then
+        verbose_substep "torch GPU visibility check skipped: no interpreter at $VENV_DIR/bin/python"
+    else
+        # Sentinel-prefixed and matched line-anchored below, so a stdout banner
+        # from a noisy import cannot be read as the answer.
+        _setup_torch_probe='import signal; signal.alarm(90); import torch; print("UNSLOTHTORCHGPU=" + ("1" if torch.cuda.is_available() else "0") + "|" + str(torch.cuda.device_count()) + "|" + torch.__version__ + "|" + str(getattr(torch.version, "hip", None) or ""))'
+        if command -v timeout >/dev/null 2>&1; then
+            _setup_torch_out=$(timeout 90 "$VENV_DIR/bin/python" -c "$_setup_torch_probe" 2>/dev/null || true)
+        else
+            _setup_torch_out=$("$VENV_DIR/bin/python" -c "$_setup_torch_probe" 2>/dev/null || true)
+        fi
+        _setup_torch_line=$(printf '%s\n' "$_setup_torch_out" | grep '^UNSLOTHTORCHGPU=' | tail -n 1 || true)
+        if [ -n "$_setup_torch_line" ]; then
+            _setup_torch_probe_answered=true
+            _setup_torch_fields="${_setup_torch_line#UNSLOTHTORCHGPU=}"
+            [ "$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f1)" = "1" ] && _setup_torch_sees_gpu=true
+            _setup_torch_devices=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f2)
+            _setup_torch_ver=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f3)
+            _setup_torch_hip=$(printf '%s' "$_setup_torch_fields" | cut -d'|' -f4)
+        fi
+    fi
+    if [ "$_setup_torch_probe_answered" = true ] && [ "$_setup_torch_sees_gpu" = false ]; then
+        if [ "$_setup_amd_detected" = true ]; then
+            step "gpu check" "PyTorch cannot see the AMD GPU reported above" "$C_ERR"
+            substep "detected by the installer: AMD ROCm${_setup_gfx:+ ($_setup_gfx)}${_setup_mkt:+ -- $_setup_mkt}" "$C_ERR"
+        else
+            step "gpu check" "PyTorch cannot see the NVIDIA GPU reported above" "$C_ERR"
+            substep "detected by the installer: NVIDIA GPU" "$C_ERR"
+        fi
+        substep "torch.cuda.is_available() is False in $VENV_DIR" "$C_ERR"
+        substep "torch ${_setup_torch_ver:-unknown}, device_count ${_setup_torch_devices:-0}, torch.version.hip ${_setup_torch_hip:-none}" "$C_ERR"
+        # Named so the report matches what the user is about to see, instead of
+        # leaving them to discover it and file it as a second, separate bug.
+        substep "Studio will run CPU-only: the Live monitor will show VRAM \"--\" and \"No visible GPU\"." "$C_ERR"
+        substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "$C_ERR"
+    elif [ "$_setup_torch_probe_answered" = true ]; then
+        verbose_substep "torch sees $_setup_torch_devices GPU(s) (torch $_setup_torch_ver, hip ${_setup_torch_hip:-none})"
+    elif [ "$_setup_skip_torch_check" = false ] && [ -x "$VENV_DIR/bin/python" ]; then
+        # Silent when torch is simply absent (GGUF-only venv): there is nothing
+        # to reconcile, and a warning there would be noise on every update.
+        for _setup_torch_vpy in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_setup_torch_vpy" ] || continue
+            substep "[WARN] could not check whether PyTorch sees this GPU (the probe crashed or did not answer within 90s)." "$C_WARN"
+            substep "       $VENV_DIR/bin/python -c \"import torch; print(torch.cuda.is_available())\"" "$C_WARN"
+            break
+        done
+    fi
+fi
+
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.

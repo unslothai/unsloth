@@ -1070,6 +1070,38 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
+# What does torch itself see? The step "gpu" line is computed from hipinfo / nvidia-smi / the
+# marketing-name table, while the backend's verdict is torch.cuda.is_available() in its own
+# process. The two stacks share no state, so a host whose torch cannot open the device is told
+# "AMD ROCm (gfx1201)" and then runs CPU-only with VRAM "--" and "No visible GPU", with no
+# diagnostic anywhere (#8473). Diagnosis only: no caller routes on this.
+#
+# Answered is False for every failure -- timeout, crash, no torch -- and is deliberately NOT the
+# same thing as SeesGpu being False. A probe that did not answer says nothing about the GPU, and
+# reading it as "no GPU" would print an accusation the run cannot support.
+function Get-TorchGpuVisibility {
+    param([string]$PythonExe, [int]$TimeoutSec = 90)
+    $result = [pscustomobject]@{
+        Answered = $false; SeesGpu = $false; DeviceCount = 0
+        TorchVersion = ""; Hip = ""; Error = ""
+    }
+    # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
+    $code = "import torch; print('UNSLOTHTORCHGPU=' + ('1' if torch.cuda.is_available() else '0') + " +
+        "'|' + str(torch.cuda.device_count()) + '|' + torch.__version__ + " +
+        "'|' + str(getattr(torch.version, 'hip', None) or ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code -TimeoutSec $TimeoutSec
+    $result.Error = $probe.Error
+    # Line-anchored like every other probe here, so a stdout banner cannot be read as the answer.
+    if ($probe.Ok -and $probe.Output -match '(?m)^UNSLOTHTORCHGPU=([01])\|(\d+)\|(\S*)\|(\S*)\s*$') {
+        $result.Answered = $true
+        $result.SeesGpu = ($Matches[1] -eq "1")
+        $result.DeviceCount = [int]$Matches[2]
+        $result.TorchVersion = $Matches[3]
+        $result.Hip = $Matches[4]
+    }
+    return $result
+}
+
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -5088,6 +5120,43 @@ if ($stackExit -ne 0) {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
+}
+
+# ── Does PyTorch see the GPU this installer announced? ──
+# Outside the fast-path gate above on purpose: the reported case is an update that prints
+# "AMD ROCm (gfx1201)" and then "dependencies up to date", so a check that only ran after a
+# dependency pass would stay silent on exactly the run being complained about (#8473). The
+# pre-stack AMD escape near $script:ROCmGfxArch clears the fast path when torch is CPU-only, but
+# nothing reported the case where the pass ran and torch STILL cannot see the device.
+#
+# Loud, never fatal. A timeout or a crash means the probe failed, not that the GPU is missing,
+# and even a confirmed mismatch leaves a working chat-only Studio -- aborting here would turn a
+# diagnosable install into a failed one. Nothing below changes routing or wheel selection.
+$_gpuCheckAnnounced = ""
+if ($HasNvidiaSmi) { $_gpuCheckAnnounced = "NVIDIA GPU" }
+elseif ($script:ROCmGfxArch) { $_gpuCheckAnnounced = "AMD GPU ($script:ROCmGfxArch)" }
+elseif ($HasROCm) { $_gpuCheckAnnounced = "AMD GPU" }
+$_gpuCheckPy = Join-Path $VenvDir "Scripts\python.exe"
+if ($_gpuCheckAnnounced -and -not $NoTorchMode -and
+    -not ($env:UNSLOTH_SKIP_TORCH_GPU_CHECK -match '^\s*(?i:true|1|yes|on)\s*$') -and
+    (Test-Path -LiteralPath $_gpuCheckPy -PathType Leaf)) {
+    $_gpuVisibility = Get-TorchGpuVisibility -PythonExe $_gpuCheckPy
+    if ($_gpuVisibility.Answered -and -not $_gpuVisibility.SeesGpu) {
+        $_gpuCheckHip = if ($_gpuVisibility.Hip) { $_gpuVisibility.Hip } else { "none" }
+        step "gpu check" "PyTorch cannot see the $_gpuCheckAnnounced reported above" "Red"
+        substep "torch.cuda.is_available() is False in $VenvDir" "Red"
+        substep "torch $($_gpuVisibility.TorchVersion), device_count $($_gpuVisibility.DeviceCount), torch.version.hip $_gpuCheckHip" "Red"
+        # Named so the report matches what the user is about to see, rather than leaving them to
+        # find it and file it as a second, separate bug.
+        substep "Studio will run CPU-only: the Live monitor will show VRAM `"--`" and `"No visible GPU`"." "Red"
+        substep "Please report the two lines above at https://github.com/unslothai/unsloth/issues" "Red"
+    } elseif (-not $_gpuVisibility.Answered) {
+        # Quiet when torch is simply absent: there is nothing to reconcile, and a warning there
+        # would be noise on every update of a GGUF-only install.
+        if (-not ($_gpuVisibility.Error -match 'ModuleNotFoundError|No module named')) {
+            substep "[WARN] could not check whether PyTorch sees this GPU: $($_gpuVisibility.Error)" "Yellow"
+        }
+    }
 }
 
 # ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
