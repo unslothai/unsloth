@@ -185,8 +185,11 @@ def test_the_guard_runs_before_anything_can_import_torchaudio():
     """
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "unsloth"
-           / "_gpu_init.py").read_text(encoding = "utf-8").splitlines()
+    src = (
+        (Path(__file__).resolve().parents[1] / "unsloth" / "_gpu_init.py")
+        .read_text(encoding = "utf-8")
+        .splitlines()
+    )
 
     def line_of(predicate):
         for i, line in enumerate(src):
