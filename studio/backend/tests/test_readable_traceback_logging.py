@@ -246,3 +246,21 @@ def test_ordinary_text_is_left_readable():
     echoed = _render({"event": "e", "exception": exception}).partition("\n")[2]
     assert "中文" in echoed and "café" in echoed and "—" in echoed
     assert "\there" in echoed
+
+
+def test_the_exception_line_survives_a_cap_that_cannot_fit_it():
+    # The last line of a traceback is the exception type and message, and a control-heavy
+    # message is exactly what makes that line too big for the tail budget. Dropping it
+    # whole left the reader every frame and no reason.
+    frames = "\n".join(f'  File "/app/x{i}.py", line {i}, in fn' for i in range(60))
+    payload = "Traceback (most recent call last):\n" + frames + "\nValueError: rejected upload " + (
+        "\x00" * 3000
+    )
+    capped = log_config.truncate_exception({"exception": payload})["exception"]
+    out = _render({"event": "request_failed", "exception": capped})
+    _, _, echoed = out.partition("\n")
+    lines = echoed.split("\n")
+    assert lines[-1].startswith("| ValueError: rejected upload ")
+    assert len(echoed) <= log_config._MAX_EXC_CHARS + 200
+    for line in lines:
+        assert line.startswith("| "), line

@@ -209,11 +209,12 @@ def _echoable(exception: str) -> str:
 def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     """Join the echoed lines within `limit` characters, keeping the head and the tail.
 
-    Whole lines, and the omission notice carries the prefix too, so the invariant the echo
-    rests on holds for every line it emits: nothing here can begin a JSON value. A single
-    line longer than the head budget is cut mid-line rather than dropping the echo
-    entirely, which can land inside a ``\\uXXXX`` escape; that costs one garbled escape at
-    the cut and keeps the frames around it."""
+    Whole lines where they fit, and the omission notice carries the prefix too, so the
+    invariant the echo rests on holds for every line it emits: nothing here can begin a
+    JSON value. A line too long for its budget is cut rather than dropped, which can land
+    inside a ``\\uXXXX`` escape; that costs one garbled escape and keeps the line. The tail
+    matters most -- it holds the exception type and message, and one control-heavy message
+    is exactly what makes the last line oversized -- so it is cut, never discarded."""
     if limit <= 0:
         return "\n".join(lines)
     total = sum(len(line) + 1 for line in lines)
@@ -232,15 +233,23 @@ def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     used = 0
     for line in reversed(lines[len(head) :]):
         if used + len(line) + 1 > tail_budget:
+            # The boundary line, cut to what is left rather than dropped: the last line
+            # of a traceback is the exception type and message, and losing it to a cap
+            # would leave the reader the frames and none of the reason.
+            room = tail_budget - used - 1
+            if room > 0:
+                tail.append(line[:room])
             break
         tail.append(line)
         used += len(line) + 1
     tail.reverse()
     if not head and not tail:
         head = [lines[0][:head_budget]]
+    # A cut boundary line counts as kept, so say "cut" rather than claim zero lines went.
     dropped = len(lines) - len(head) - len(tail)
+    what = f"{dropped} lines omitted" if dropped else "cut here"
     notice = (
-        f"{_TRACEBACK_ECHO_PREFIX}... [{dropped} lines omitted; raise "
+        f"{_TRACEBACK_ECHO_PREFIX}... [{what}; raise "
         "UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ..."
     )
     return "\n".join([*head, notice, *tail])
