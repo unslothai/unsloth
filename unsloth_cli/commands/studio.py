@@ -3429,12 +3429,17 @@ def _remote_installer_disabled() -> bool:
     }
 
 
+def _is_allowed_installer_url(url: str) -> bool:
+    """https on a pinned host. Applied to the first request and to every redirect."""
+    split = urllib.parse.urlsplit(url)
+    return split.scheme == "https" and split.hostname in _INSTALLER_FETCH_HOSTS
+
+
 class _InstallerRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Keep the installer fetch on https://raw.githubusercontent.com."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        split = urllib.parse.urlsplit(newurl)
-        if split.scheme != "https" or split.hostname not in _INSTALLER_FETCH_HOSTS:
+        if not _is_allowed_installer_url(newurl):
             raise urllib.error.URLError(f"refused installer redirect to {newurl}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -3463,6 +3468,11 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         return None
 
     url = _INSTALLER_URL_PWSH if installer_name == "install.ps1" else _INSTALLER_URL_BASH
+    # The starting URL is checked with the same rule as the redirects it may follow, so
+    # the guard does not quietly depend on the constants above staying right.
+    if not _is_allowed_installer_url(url):
+        typer.echo(f"  refresh-launcher  refusing to fetch {installer_name} from {url}")
+        return None
     try:
         opener = urllib.request.build_opener(_InstallerRedirectHandler)
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})

@@ -75,6 +75,22 @@ def test_fetch_targets_the_repo_origin_not_the_website():
     assert "unsloth.ai/install" not in studio._INSTALLER_URL_BASH
 
 
+def test_a_starting_url_off_the_pinned_host_is_refused(monkeypatch, tmp_path):
+    """The guard covers the constant too, not just the redirects it may follow.
+
+    https://unsloth.ai/install.sh redirects TO the pinned host, so a redirect-only
+    check would happily fetch through it.
+    """
+    studio = _posix(monkeypatch, tmp_path)
+    monkeypatch.setattr(studio, "_INSTALLER_URL_BASH", "https://unsloth.ai/install.sh")
+    monkeypatch.setattr(
+        studio.urllib.request,
+        "build_opener",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not open a connection")),
+    )
+    assert studio._fetch_installer("install.sh") is None
+
+
 def test_redirect_off_the_pinned_host_is_refused():
     studio = _studio()
     handler = studio._InstallerRedirectHandler()
