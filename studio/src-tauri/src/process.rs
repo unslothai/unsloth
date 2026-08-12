@@ -967,6 +967,18 @@ fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::pa
         if bin.exists() {
             return Some(bin);
         }
+
+        // Nothing runs the console script any more, so its absence no longer means
+        // there is no install: antivirus quarantine takes the unsigned stub and
+        // leaves a perfectly working environment behind. Answering None there would
+        // report "not installed" for a Studio the interpreter can still start, and
+        // this finder gates the backend, the updater and the install-status probe.
+        // The returned path stays the canonical handle whether or not the file is
+        // there: every Windows caller reaches the CLI through its parent directory.
+        #[cfg(windows)]
+        if base.join("Scripts").join("python.exe").exists() {
+            return Some(bin);
+        }
     }
 
     None
@@ -1159,6 +1171,34 @@ mod tests {
         fs::write(&python, "").unwrap();
         fs::write(&bin, "").unwrap();
         (dir, python, bin)
+    }
+
+    // Quarantine takes the unsigned stub and leaves the environment intact. The
+    // finder gates the backend, the updater and the install-status probe, so a None
+    // here reports "not installed" for a Studio that still runs.
+    #[cfg(windows)]
+    #[test]
+    fn a_quarantined_stub_is_still_a_managed_install() {
+        let studio = temp_studio_dir("quarantined-stub");
+        let scripts = studio.join("unsloth_studio").join("Scripts");
+        fs::create_dir_all(&scripts).unwrap();
+
+        // No interpreter yet: there is genuinely nothing to run.
+        assert_eq!(find_unsloth_binary_in_studio_dir(&studio), None);
+
+        fs::write(scripts.join("python.exe"), "").unwrap();
+        assert_eq!(
+            find_unsloth_binary_in_studio_dir(&studio),
+            Some(scripts.join("unsloth.exe")),
+            "a stub-less environment with an interpreter is still an install"
+        );
+
+        // And the handle it hands back drives the interpreter as usual.
+        let invocation =
+            resolve_managed_cli_invocation(&scripts.join("unsloth.exe"), &["studio"]).unwrap();
+        assert_eq!(invocation.program, scripts.join("python.exe"));
+
+        fs::remove_dir_all(studio).unwrap();
     }
 
     #[cfg(windows)]
