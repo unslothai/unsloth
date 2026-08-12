@@ -10,8 +10,16 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write, require_ui_session
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -361,6 +369,74 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    require_ui_session(via_api_key)
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
+    return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
 class HelperPrecachePayload(BaseModel):
@@ -1577,6 +1653,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "projects": True,
     "images": True,
     "video": False,
+    "audio": False,
     "train": True,
     "recipes": False,
     "export": False,
@@ -1625,6 +1702,7 @@ class PersonalizationSidebarNavItem(BaseModel):
         "projects",
         "images",
         "video",
+        "audio",
         "train",
         "recipes",
         "export",

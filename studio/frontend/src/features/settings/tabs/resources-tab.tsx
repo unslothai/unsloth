@@ -11,6 +11,10 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuVramUsedIsPerDevice,
+  resolveGpuVramUsedGb,
+} from "@/hooks/gpu-vram";
+import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
@@ -238,15 +242,13 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const vramTotal = aggregateGpuMemoryTotalGb(devices);
-    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-    // fabricates a 0-used total, so the aggregate is unknown if any device is.
-    const vramUsageKnown =
-      devices.length > 0 &&
-      devices.every((device) => isFiniteNumber(device.vram_used_gb));
-    const vramUsed = vramUsageKnown
-      ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
-      : null;
-    const vramFree = vramUsageKnown
+    // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+    // total, so the device's own row stays unknown. The host figure can still be
+    // known when no device's is (#7452).
+    const perDeviceKnown = gpuVramUsedIsPerDevice(devices);
+    const vramUsed = resolveGpuVramUsedGb(displayedGpu);
+    const vramUsageKnown = vramUsed !== null;
+    const vramFree = perDeviceKnown
       ? devices.reduce(
           (sum, device) =>
             sum +
@@ -257,7 +259,9 @@ export function ResourcesTab() {
               )),
           0,
         )
-      : null;
+      : vramUsed !== null
+        ? Math.max(0, vramTotal - vramUsed)
+        : null;
     const vramPercent =
       vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
         ? (vramUsed / vramTotal) * 100

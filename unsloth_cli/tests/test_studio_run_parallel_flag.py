@@ -444,6 +444,17 @@ def test_reexec_forwards_speculative_options(monkeypatch):
     assert _value_after(argv, "--spec-draft-n-max") == "3", argv
 
 
+def test_reexec_forwards_dflash_speculative_type(monkeypatch):
+    """SpeculativeType is what Typer validates the option against, so a mode missing
+    from the literal is rejected before any loading code runs."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--speculative-type", "dflash"],
+    )
+    assert len(captured) == 1, result.output
+    assert _value_after(captured[0]["argv"], "--speculative-type") == "dflash"
+
+
 def test_reexec_omits_unset_speculative_options(monkeypatch):
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output

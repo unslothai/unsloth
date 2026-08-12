@@ -13,9 +13,9 @@ import assert from "node:assert/strict";
 
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
+  AUDIO_CATALOG,
   IMAGE_CATALOG,
   VIDEO_CATALOG,
-  artifactForRepoId,
   canonicalKeyFor,
   catalogGroupFitsDevice,
   catalogToModelOptions,
@@ -138,7 +138,7 @@ assert.equal(
 
 // ── catalog integrity: unique ids, artifacts resolve to exactly one group ──────
 
-for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   const seen = new Set<string>();
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
@@ -221,31 +221,24 @@ const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
   "unsloth/MiniMax-H3-GGUF",
-  "leejet/MiniMax-H3-GGUF",
   ...OLD_PIPELINE_MODELS,
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
 
-// H3 publishes the ordinary and reference denoisers as separately loadable GGUFs.
-// Curating both repos must keep their bundled file menus on the matching partition.
-assert.equal(
-  artifactForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
-    .ggufFilenamePrefix,
-  "minimax_h3_fl2va",
-);
-assert.equal(
-  artifactForRepoId("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
-    .ggufFilenamePrefix,
-  "minimax_h3_ref2va",
+// H3 publishes both denoiser partitions in its official bundle. One artifact lets the lister's
+// partition-aware labels expose both in Recommended and On Device without a community mirror.
+const h3Group = groupForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG);
+assert.ok(h3Group);
+assert.deepEqual(
+  h3Group.artifacts
+    .filter((artifact) => artifact.format === "gguf")
+    .map((artifact) => artifact.repoId),
+  ["unsloth/MiniMax-H3-GGUF"],
 );
 assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
-  "MiniMax H3 (GGUF - Text and frames)",
-);
-assert.equal(
-  curatedDisplayNameFor("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG),
-  "MiniMax H3 (GGUF - References)",
+  "MiniMax H3 (GGUF)",
 );
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
@@ -614,6 +607,31 @@ assert.equal(
   catalogGroupFitsDevice(wanA14b, { gpuGb: 192, systemRamGb: 256 }, notDownloaded),
   true,
 );
+
+// ── audio catalog: task tags, grouping, load specs ─────────────────────────────
+
+// Every audio group carries a task tag; the other catalogs carry none.
+for (const group of AUDIO_CATALOG) {
+  assert.ok(group.task === "tts" || group.task === "stt", `audio group ${group.canonicalId} needs a task`);
+  assert.equal(group.scope, "audio");
+}
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+  for (const group of catalog) {
+    assert.equal(group.task, undefined, `non-audio group ${group.canonicalId} must not carry a task`);
+  }
+}
+// The Orpheus GGUF groups with its safetensors base and reports the gguf load kind.
+const orpheus = groupForRepoId("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG);
+assert.ok(orpheus);
+assert.equal(orpheus.canonicalId, "unsloth/orpheus-3b-0.1-ft");
+assert.equal(orpheus.task, "tts");
+assert.equal(loadSpecFor("unsloth/orpheus-3b-0.1-ft-GGUF", AUDIO_CATALOG)?.kind, "gguf");
+assert.equal(loadSpecFor("unsloth/csm-1b", AUDIO_CATALOG)?.kind, "pipeline");
+// The whisper sidecar repos resolve as stt groups.
+assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.task, "stt");
+assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
+// A chat model stays unknown to the audio catalog.
+assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
 
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 
