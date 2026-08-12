@@ -1513,6 +1513,69 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     substep "continuing to llama.cpp install for GGUF inference support"
 fi
 
+# ── AMD / NVIDIA vendor probe ──
+# The dependency fast path needs this verdict; the summary below reuses it.
+# WSL2 ROCDXG needs this variable, and /opt/rocm/bin may be absent from non-login PATHs.
+export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+    PATH="$PATH:/opt/rocm/bin"
+fi
+_setup_amd_detected=false
+_setup_nvidia_usable=false
+_setup_gfx_all=""
+_setup_mkt=""
+
+# Prefer a gfx agent because rocminfo lists the CPU first. Keep the first-name fallback for APUs
+# without a gfx token; name-based arch inference uses it. Keep in sync with install.sh.
+_setup_rocminfo_gpu_marketing_name() {
+    awk -F': ' '
+        /^[[:space:]]*Name:/ {
+            name = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            is_gpu = (name ~ /^gfx[1-9]/)
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
+            if (mkt == "") next
+            if (is_gpu) { print mkt; printed = 1; exit }
+            if (first == "") first = mkt
+        }
+        END { if (!printed && first != "") print first }
+    '
+}
+
+# NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
+# a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
+# This also keeps a wedged rocminfo/amd-smi from hanging setup before the
+# host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_usable_nvidia_gpu; then
+    _setup_nvidia_usable=true
+fi
+if [ "$_setup_nvidia_usable" != true ]; then
+    if command -v rocminfo >/dev/null 2>&1 && \
+       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | _setup_rocminfo_gpu_marketing_name || true)
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_setup_gfx_all" ] && \
+            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif [ -e /dev/kfd ] && \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
+        # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
+        # missing but the kernel exposes the GPU, so the source-build gate
+        # below does not drop them to a CPU llama.cpp build. No gfx arch is
+        # available from this path; name-based inference handles it.
+        _setup_amd_detected=true
+    fi
+fi
+
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
@@ -1657,6 +1720,43 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # A current package can hide a non-ROCm torch on an AMD host. Force the only pass that can
+        # replace it. Read version.py because a broken runtime can hang and reinstalling the same
+        # ROCm wheel cannot fix driver failures. This arm ignores missing torch and non-ROCm pins.
+        # Match the same ROCm families as install_python_stack; custom pins are authoritative.
+        _setup_rocm_family_leaf() {
+            case "$1" in
+                gfx[0-9]*) return 0 ;;
+                rocm[0-9]*)
+                    # rocm7., rocm7.2.1, and nonnumeric suffixes are custom pins.
+                    _setup_rfl_rest="${1#rocm}"
+                    case "$_setup_rfl_rest" in
+                        *.*.*) return 1 ;;
+                        *.*)
+                            case "${_setup_rfl_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                            case "${_setup_rfl_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                            ;;
+                        *[!0-9]*) return 1 ;;
+                    esac
+                    ;;
+                *) return 1 ;;
+            esac
+            return 0
+        }
+        _setup_amd_pin_blocks=false
+        if [ -n "$_setup_pin_leaf" ] && ! _setup_rocm_family_leaf "$_setup_pin_leaf"; then
+            _setup_amd_pin_blocks=true
+        fi
+        _setup_torch_is_rocm=false
+        case "${_setup_pin_ver:-}" in *+rocm*) _setup_torch_is_rocm=true ;; esac
+        # Defaults keep this block safe when extracted by shell tests.
+        if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "${_setup_pin_ver:-}" ] && \
+           [ "$_setup_torch_is_rocm" = false ] && [ "$_setup_pin_is_xpu" = false ] && \
+           [ "$_setup_amd_pin_blocks" = false ] && [ "${_setup_nvidia_usable:-}" != true ] && \
+           [ "${_setup_amd_detected:-}" = true ]; then
+            substep "AMD GPU detected but installed PyTorch is not a ROCm build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -1741,18 +1841,8 @@ fi
 fi
 
 # ── GPU detection summary (mirrors setup.ps1 step "gpu" block) ──
-# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
-# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
-# off PATH outside login shells (the profile.d drop-in). Seed both before the
-# probes or a ROCDXG WSL host is misdetected as CPU-only.
-export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
-if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
-    PATH="$PATH:/opt/rocm/bin"
-fi
-_setup_amd_detected=false
-_setup_nvidia_usable=false
-_setup_gfx_all=""
-_setup_mkt=""
+# The NVIDIA/AMD vendor probe ran before the dependency fast path (see "AMD / NVIDIA vendor
+# probe" above), which needs its verdict; this block adds the runtime answers and prints.
 # Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
 # an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
 # label is read off disk first so a CPU-only host never pays for an `import torch`.
@@ -1786,39 +1876,6 @@ if [ "$_setup_torch_is_xpu" = true ]; then
     # fine `studio update` over a best-effort step and leaving the warning below unreachable.
     run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
         substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
-fi
-# NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
-# a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
-# This also keeps a wedged rocminfo/amd-smi from hanging setup before the
-# host is classified; the AMD probes themselves run under _setup_run_smi.
-if _setup_has_usable_nvidia_gpu; then
-    _setup_nvidia_usable=true
-fi
-if [ "$_setup_nvidia_usable" != true ]; then
-    if command -v rocminfo >/dev/null 2>&1 && \
-       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
-        _setup_amd_detected=true
-        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
-    elif command -v amd-smi >/dev/null 2>&1 && \
-         _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
-        _setup_amd_detected=true
-        _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        [ -z "$_setup_gfx_all" ] && \
-            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
-    elif [ -e /dev/kfd ] && \
-         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
-             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
-        # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
-        # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
-        # missing but the kernel exposes the GPU, so the source-build gate
-        # below does not drop them to a CPU llama.cpp build. No gfx arch is
-        # available from this path; name-based inference handles it.
-        _setup_amd_detected=true
-    fi
 fi
 
 if [ "$_setup_nvidia_usable" = true ]; then
@@ -1869,7 +1926,31 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
-    if [ -n "$_setup_gfx" ]; then
+    # Hardware visibility does not prove that this venv's torch can use the GPU. Bound the probe
+    # because a broken HIP runtime can hang during import; skip it when torch is absent.
+    _setup_rocm_torch_ok=unknown
+    for _setup_amd_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_setup_amd_tv" ] || continue
+        _setup_amd_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)'
+        _setup_rocm_torch_ok=false
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 60 "$VENV_DIR/bin/python" -c "$_setup_amd_probe" >/dev/null 2>&1 && _setup_rocm_torch_ok=true
+        elif "$VENV_DIR/bin/python" -c "$_setup_amd_probe" >/dev/null 2>&1; then
+            _setup_rocm_torch_ok=true
+        fi
+        break
+    done
+    if [ "$_setup_rocm_torch_ok" = false ]; then
+        if [ -n "$_setup_gfx" ]; then
+            step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"
+        else
+            step "gpu" "AMD ROCm (PyTorch cannot use it)" "$C_WARN"
+        fi
+        substep "The GPU is visible to ROCm, but torch.cuda.is_available() is False in this environment."
+        substep "Check that the amdgpu kernel driver is loaded and that this user is in the render and video groups."
+        # The torch backend fails without an accelerator; llama.cpp remains available.
+        substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
+    elif [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     else
         step "gpu" "AMD ROCm"

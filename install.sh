@@ -4343,6 +4343,24 @@ fi
 _TAURI_GPU_BRANCH=$(_tauri_gpu_branch "$_TAURI_TORCH_INDEX_FAMILY" "$_amd_gpu_radeon")
 tauri_diag_marker "$_TAURI_GPU_BRANCH" "$_TAURI_TORCH_INDEX_FAMILY"
 
+# Prefer a gfx agent because rocminfo lists the CPU first. Keep the first-name fallback for APUs
+# without a gfx token; name-based arch inference uses it. Keep in sync with studio/setup.sh.
+_rocminfo_gpu_marketing_name() {
+    awk -F': ' '
+        /^[[:space:]]*Name:/ {
+            name = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            is_gpu = (name ~ /^gfx[1-9]/)
+        }
+        /^[[:space:]]*Marketing Name:/ {
+            mkt = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", mkt)
+            if (mkt == "") next
+            if (is_gpu) { print mkt; printed = 1; exit }
+            if (first == "") first = mkt
+        }
+        END { if (!printed && first != "") print first }
+    '
+}
+
 # ── GPU detection summary (mirrors install.ps1 step "gpu" block) ──
 if _has_usable_nvidia_gpu; then
     step "gpu" "NVIDIA GPU detected"
@@ -4353,8 +4371,7 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     _gpu_disp_mkt=""
     if command -v rocminfo >/dev/null 2>&1; then
         _gpu_disp_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-        _gpu_disp_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+        _gpu_disp_mkt=$(rocminfo 2>/dev/null | _rocminfo_gpu_marketing_name || true)
     fi
     if [ -z "$_gpu_disp_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)

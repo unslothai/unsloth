@@ -29,11 +29,11 @@ trap 'rm -rf "$WORK"' EXIT
 awk '/_setup_pin="\$\{UNSLOTH_TORCH_INDEX_URL/{on=1} on && /^    elif \[ -n "\$INSTALLED_VER"/{exit} on{print}' \
     "$SETUP_SH" > "$WORK/blk.sh"
 [ -s "$WORK/blk.sh" ] || { echo "FATAL: escape block not found in $SETUP_SH" >&2; exit 1; }
-# An extraction that lost any of the three moving parts would make cases below pass vacuously.
+# Require the three XPU arms and one AMD arm so extraction cannot pass vacuously.
 _arms=$(grep -c '_SKIP_PYTHON_DEPS=false' "$WORK/blk.sh")
-[ "$_arms" = "3" ] || { echo "FATAL: expected 3 escape arms, extracted $_arms" >&2; exit 1; }
+[ "$_arms" = "4" ] || { echo "FATAL: expected 4 escape arms, extracted $_arms" >&2; exit 1; }
 for _need in _setup_pin_leaf _setup_pin_is_xpu _setup_generic_triton _setup_pin_known_nonxpu \
-             _setup_known_nonxpu_leaf; do
+             _setup_known_nonxpu_leaf _setup_amd_pin_blocks _setup_rocm_family_leaf; do
     grep -q "$_need" "$WORK/blk.sh" || { echo "FATAL: extraction lost $_need" >&2; exit 1; }
 done
 bash -n "$WORK/blk.sh" || { echo "FATAL: extracted block does not parse" >&2; exit 1; }
@@ -66,12 +66,14 @@ make_venv() {
     printf '%s' "$_v"
 }
 
-# Echoes the resulting _SKIP_PYTHON_DEPS. $2 is the pin (empty for none).
+# $4 and $5 default to a host without an AMD GPU so XPU cases isolate their own arms.
 escape() {
     (
         VENV_DIR="$1"
         UNSLOTH_TORCH_INDEX_URL="$2"
         UNSLOTH_TORCH_INDEX_FAMILY="${3-}"
+        _setup_amd_detected="${4-false}"
+        _setup_nvidia_usable="${5-false}"
         _SKIP_PYTHON_DEPS=true
         # shellcheck disable=SC2317
         substep() { :; }
@@ -80,6 +82,9 @@ escape() {
         echo "$_SKIP_PYTHON_DEPS"
     )
 }
+
+# Same, on a host whose vendor probe found an AMD GPU and no usable NVIDIA one.
+escape_amd() { escape "$1" "${2-}" "${3-}" true false; }
 
 XPU=https://download.pytorch.org/whl/xpu
 
@@ -166,6 +171,42 @@ check "cuda pin + cuda wheel"  "$(escape "$(make_venv '2.9.1+cu128' yes t)" "htt
 check "rocm pin + rocm wheel"  "$(escape "$(make_venv '2.9.1+rocm6.4' yes u)" "https://download.pytorch.org/whl/rocm6.4")" true
 check "cpu pin + cpu wheel"    "$(escape "$(make_venv '2.9.1+cpu' yes v)" "https://download.pytorch.org/whl/cpu")" true
 
+echo "an AMD host must not keep a non-ROCm wheel through the fast path"
+# Only the dependency pass replaces a non-ROCm wheel on an AMD host.
+check "amd, cpu wheel"        "$(escape_amd "$(make_venv '2.9.1+cpu' no aa)")" false
+check "amd, untagged wheel"   "$(escape_amd "$(make_venv '2.9.1' no ab)")" false
+check "amd, cuda wheel"       "$(escape_amd "$(make_venv '2.9.1+cu128' no ac)")" false
+check "amd, rocm wheel"       "$(escape_amd "$(make_venv '2.9.1+rocm6.4' no ad)")" true
+# Missing torch is valid for GGUF-only installs.
+check "amd, no torch at all"  "$(escape_amd "$(make_venv '' no ae)")" true
+check "amd, no venv at all"   "$(escape_amd "$WORK/nope")" true
+# XPU and NVIDIA paths must not trigger the AMD arm.
+check "amd, xpu wheel"        "$(escape_amd "$(make_venv '2.9.1+xpu' no af)")" true
+check "nvidia present, cpu wheel" "$(escape "$(make_venv '2.9.1+cpu' no ag)" "" "" true true)" true
+# Recognized ROCm pins remain repairable.
+check "amd, rocm7.2 pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no ah)" "https://download.pytorch.org/whl/rocm7.2")" false
+check "amd, gfx pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no ai)" "https://repo.radeon.com/whl/gfx1151")" false
+check "amd, gfx120x-all pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no aj)" "https://repo.radeon.com/whl/gfx120x-all")" false
+check "amd, FAMILY=rocm6.4 + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no ak)" "" "rocm6.4")" false
+# Explicit non-ROCm and custom pins are authoritative.
+check "amd, cpu pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no al)" "https://download.pytorch.org/whl/cpu")" true
+check "amd, cu128 pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no am)" "https://download.pytorch.org/whl/cu128")" true
+check "amd, xpu pin + cpu wheel" \
+    "$(escape_amd "$(make_venv '2.9.1+cpu' no an)" "$XPU")" false
+for _custom in "https://mirror/simple" "https://mirror/whl/rocm-current" \
+               "https://mirror/whl/rocm7.2-private" "https://mirror/whl/rocm7." \
+               "https://mirror/whl/rocm7.2.1" "https://mirror/whl/gfx-private" \
+               "https://mirror/whl/cpu-private"; do
+    check "amd, custom pin $(basename "$_custom") + cpu wheel" \
+        "$(escape_amd "$(make_venv '2.9.1+cpu' no ao)" "$_custom")" true
+done
+
 # --- parity with the helpers that would actually do the repair --------------------------------
 # The escape only pays off if the leaf it calls "known" is one install_python_stack acts on, so
 # ask both predicates rather than trust them to stay in step.
@@ -193,6 +234,27 @@ for leaf in sys.argv[1:]:
         check "leaf $_leaf" "$_got" "$_want"
     done <<EOF
 $_pyout
+EOF
+
+    # Keep the shell predicate aligned with the repair helper's ROCm classifier.
+    awk '/^        _setup_rocm_family_leaf\(\) \{/{on=1} on{print} on && /^        \}$/{exit}' \
+        "$WORK/blk.sh" > "$WORK/rocm_leaf.sh"
+    grep -q 'gfx\[0-9\]' "$WORK/rocm_leaf.sh" || { echo "FATAL: rocm predicate not extracted" >&2; exit 1; }
+    # shellcheck disable=SC1091
+    . "$WORK/rocm_leaf.sh"
+    _pyrocm=$(cd "$(dirname "$PY_STACK")" && python3 -c '
+import sys, install_python_stack as m
+for leaf in sys.argv[1:]:
+    print(leaf, "true" if m._is_pip_rocm_family_leaf(leaf) else "false")
+' $_corpus) || { echo "FATAL: python rocm predicate did not run" >&2; exit 1; }
+    echo "the AMD arm calls a leaf ROCm exactly when install_python_stack does"
+    while read -r _leaf _want; do
+        [ -n "$_leaf" ] || continue
+        _got=false
+        _setup_rocm_family_leaf "$_leaf" && _got=true
+        check "rocm leaf $_leaf" "$_got" "$_want"
+    done <<EOF
+$_pyrocm
 EOF
 fi
 
