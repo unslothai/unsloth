@@ -730,6 +730,7 @@ export const ar = {
         switched: "تم تغيير خلفية llama.cpp.",
         switchedTo: "يعمل llama.cpp الآن على {backend}.",
         switchFailed: "تعذّر تغيير خلفية llama.cpp.",
+        switchInterrupted: "توقفت عملية التبديل قبل اكتمالها.",
         envLocked: "تم ضبطها على {backend} عبر متغيّر البيئة UNSLOTH_LLAMA_CPP_BACKEND، وهو يتجاوز هذا الإعداد.",
         backends: {
           auto: "تلقائي",

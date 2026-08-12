@@ -710,6 +710,7 @@ export const zhCN = {
         switched: "llama.cpp 后端已更改。",
         switchedTo: "llama.cpp 现在运行在 {backend} 上。",
         switchFailed: "无法更改 llama.cpp 后端。",
+        switchInterrupted: "切换在完成前中断。",
         envLocked: "已由环境变量 UNSLOTH_LLAMA_CPP_BACKEND 固定为 {backend}，其优先级高于此设置。",
         backends: {
           auto: "自动",

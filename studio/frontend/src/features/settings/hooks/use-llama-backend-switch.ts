@@ -6,6 +6,10 @@ import {
   signalLlamaJobStarted,
   subscribeToLlamaJobStarted,
 } from "@/lib/llama-job-events";
+import {
+  type OwnedLlamaSwitchOutcome,
+  ownedLlamaSwitchOutcome,
+} from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -30,14 +34,13 @@ export function useLlamaBackendSwitch() {
   const mounted = useRef(false);
   // Prevent overlapping resolver polls.
   const polling = useRef(false);
-  // Prevent duplicate completion handling.
-  const handledFor = useRef<string | null>(null);
-  // Updates share this job but should not produce switch notifications.
-  const ourJob = useRef(false);
+  // Updates share this job, so completion belongs to this surface only when
+  // it has the identity of the switch accepted by apply().
+  const ownedJob = useRef<{ startedAt: string | null } | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (forceRefresh = false) => {
     try {
-      const next = await loadLlamaBackendStatus();
+      const next = await loadLlamaBackendStatus(forceRefresh);
       if (mounted.current) {
         setStatus(next);
         setLoadError(null);
@@ -53,9 +56,10 @@ export function useLlamaBackendSwitch() {
 
   useEffect(() => {
     mounted.current = true;
-    // refresh updates state only after its network request settles.
+    // Opening the picker is an explicit host-capability recheck. If an install
+    // is running, the poll repeats it once the backend can resolve options.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh();
+    void refresh(true);
     return () => {
       mounted.current = false;
       if (pollTimer.current) {
@@ -66,24 +70,26 @@ export function useLlamaBackendSwitch() {
   }, [refresh]);
 
   const finish = useCallback(
-    (next: LlamaBackendStatus) => {
+    (next: LlamaBackendStatus, outcome: OwnedLlamaSwitchOutcome | null) => {
       if (!mounted.current) {
         return;
       }
       setApplying(false);
       // The install marker is authoritative after completion.
       setSelected(next.backendRequest);
-      if (next.job.finishedAt && next.job.finishedAt === handledFor.current) {
+      if (!outcome) {
         return;
       }
-      handledFor.current = next.job.finishedAt;
-      if (!ourJob.current) {
-        return;
-      }
-      ourJob.current = false;
-      if (next.job.state === "error") {
+      ownedJob.current = null;
+      if (outcome === "error") {
         toast.error(t("settings.resources.llamaBackend.switchFailed"), {
           description: next.job.error ?? undefined,
+        });
+        return;
+      }
+      if (outcome !== "success") {
+        toast.error(t("settings.resources.llamaBackend.switchFailed"), {
+          description: t("settings.resources.llamaBackend.switchInterrupted"),
         });
         return;
       }
@@ -111,15 +117,24 @@ export function useLlamaBackendSwitch() {
       }
       polling.current = true;
       try {
-        const next = await refresh();
-        if (!next || next.job.state === "running") {
+        // The backend skips option resolution while a job is running, so this
+        // becomes one forced host probe on the first terminal status.
+        const next = await refresh(true);
+        if (!next) {
+          return;
+        }
+        const owned = ownedJob.current;
+        const outcome = owned
+          ? ownedLlamaSwitchOutcome(next.job, owned.startedAt)
+          : null;
+        if (next.job.state === "running" && (!owned || outcome === "running")) {
           return;
         }
         if (pollTimer.current) {
           clearInterval(pollTimer.current);
           pollTimer.current = null;
         }
-        finish(next);
+        finish(next, outcome);
       } finally {
         polling.current = false;
       }
@@ -145,17 +160,14 @@ export function useLlamaBackendSwitch() {
       return;
     }
     setApplying(true);
-    ourJob.current = true;
     void (async () => {
       try {
         const started = await switchLlamaBackend(requested);
         if (!started.started) {
           if (!mounted.current) {
-            ourJob.current = false;
             return;
           }
           setApplying(false);
-          ourJob.current = false;
           toast.error(
             started.message ??
               t("settings.resources.llamaBackend.switchFailed"),
@@ -166,20 +178,19 @@ export function useLlamaBackendSwitch() {
         // App-wide recovery continues if Settings closes.
         signalLlamaJobStarted(started.job.startedAt);
         if (!mounted.current) {
-          ourJob.current = false;
           return;
         }
+        ownedJob.current = { startedAt: started.job.startedAt };
         setStatus((current) =>
           current ? { ...current, job: started.job } : current,
         );
         startPolling();
       } catch (error) {
         if (!mounted.current) {
-          ourJob.current = false;
           return;
         }
         setApplying(false);
-        ourJob.current = false;
+        ownedJob.current = null;
         toast.error(error instanceof Error ? error.message : String(error));
       }
     })();

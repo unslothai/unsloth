@@ -734,6 +734,7 @@ export const ru = {
         switched: "Бэкенд llama.cpp изменён.",
         switchedTo: "Теперь llama.cpp работает на {backend}.",
         switchFailed: "Не удалось изменить бэкенд llama.cpp.",
+        switchInterrupted: "Переключение было прервано до завершения.",
         envLocked: "Значение {backend} задано переменной окружения UNSLOTH_LLAMA_CPP_BACKEND, она важнее этой настройки.",
         backends: {
           auto: "Автоматически",

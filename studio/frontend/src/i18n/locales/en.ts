@@ -724,6 +724,7 @@ export const en = {
         switched: "llama.cpp backend changed.",
         switchedTo: "llama.cpp now runs on {backend}.",
         switchFailed: "Could not change the llama.cpp backend.",
+        switchInterrupted: "The switch was interrupted before completion.",
         envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
         backends: {
           auto: "Automatic",

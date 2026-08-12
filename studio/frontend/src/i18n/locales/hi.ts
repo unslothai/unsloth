@@ -733,6 +733,7 @@ export const hi = {
         switched: "llama.cpp बैकएंड बदल दिया गया।",
         switchedTo: "अब llama.cpp {backend} पर चल रहा है।",
         switchFailed: "llama.cpp बैकएंड नहीं बदला जा सका।",
+        switchInterrupted: "स्विच पूरा होने से पहले बाधित हो गया।",
         envLocked: "पर्यावरण चर UNSLOTH_LLAMA_CPP_BACKEND ने इसे {backend} पर तय किया है, जो इस सेटिंग पर भारी पड़ता है।",
         backends: {
           auto: "स्वचालित",

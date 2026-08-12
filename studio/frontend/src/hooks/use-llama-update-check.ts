@@ -7,6 +7,7 @@ import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
 } from "@/lib/llama-job-events";
+import { llamaUpdatePresentation } from "@/lib/llama-job-lifecycle";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -92,9 +93,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     update_available: s.update_available === true,
     component,
     installed_tag:
-      typeof details.installed_tag === "string"
-        ? details.installed_tag
-        : null,
+      typeof details.installed_tag === "string" ? details.installed_tag : null,
     latest_tag:
       typeof details.latest_tag === "string" ? details.latest_tag : null,
     update_size_bytes:
@@ -201,7 +200,9 @@ export function useLlamaUpdateCheck({
   // (the job came back embedded in a "not started" response) so none of them
   // can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
-    (job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">) => {
+    (
+      job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">,
+    ) => {
       // "error" is included for partial chained updates: the llama phase can
       // land (and unload the server) before a later phase fails, and the
       // backend keeps reload_required set in exactly that case. Without the
@@ -227,11 +228,12 @@ export function useLlamaUpdateCheck({
         const s = await fetchStatus();
         if (!s) return;
         setStatus(s);
-        if (s.job.state === "running") return;
+        const presentation = llamaUpdatePresentation(s.update_available, s.job);
+        setApplying(presentation.applying);
+        setVisible(presentation.visible);
+        if (presentation.running) return;
         clearPollTimer();
-        setApplying(false);
         if (s.job.state === "success") {
-          setVisible(false);
           void refreshHardwareInfo();
           // The update unloads the running model server-side, so the chat
           // runtime still points at a model that now 400s on send. Let the
@@ -261,16 +263,13 @@ export function useLlamaUpdateCheck({
     (next: LlamaUpdateStatus | null) => {
       if (!next) return;
       setStatus(next);
-      if (next.job.state === "running") {
-        if (next.job.operation === "switch") {
-          setApplying(false);
-          setVisible(false);
-          if (!pollTimer.current) startJobPoll();
-          return;
-        }
-        // Another tab is applying; show progress here too.
-        setApplying(true);
-        setVisible(true);
+      const presentation = llamaUpdatePresentation(
+        next.update_available,
+        next.job,
+      );
+      setApplying(presentation.applying);
+      setVisible(presentation.visible);
+      if (presentation.running) {
         if (!pollTimer.current) startJobPoll();
         return;
       }
@@ -278,11 +277,7 @@ export function useLlamaUpdateCheck({
       // a tab that missed the running window entirely (mounted, or only checks
       // hourly and misses both the running and just-finished moments) still
       // needs to resync here, not just from the poll path above.
-      setApplying(false);
       notifyReloadIfNeeded(next.job);
-      if (next.update_available) {
-        setVisible(true);
-      }
     },
     [startJobPoll, notifyReloadIfNeeded],
   );

@@ -713,6 +713,7 @@ export const ja = {
         switched: "llama.cpp のバックエンドを変更しました。",
         switchedTo: "llama.cpp は {backend} で動作するようになりました。",
         switchFailed: "llama.cpp のバックエンドを変更できませんでした。",
+        switchInterrupted: "切り替えは完了する前に中断されました。",
         envLocked: "環境変数 UNSLOTH_LLAMA_CPP_BACKEND により {backend} に固定されています。この設定より優先されます。",
         backends: {
           auto: "自動",

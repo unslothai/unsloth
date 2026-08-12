@@ -727,6 +727,7 @@ export const ko = {
         switched: "llama.cpp 백엔드를 변경했습니다.",
         switchedTo: "이제 llama.cpp가 {backend}에서 실행됩니다.",
         switchFailed: "llama.cpp 백엔드를 변경하지 못했습니다.",
+        switchInterrupted: "전환이 완료되기 전에 중단되었습니다.",
         envLocked: "환경 변수 UNSLOTH_LLAMA_CPP_BACKEND가 {backend}(으)로 고정했으며, 이 설정보다 우선합니다.",
         backends: {
           auto: "자동",
