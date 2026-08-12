@@ -228,6 +228,39 @@ def is_relocatable_invocation(argv, environ):
     return tuple(rest) in _STUDIO_COMMANDS
 
 
+# Path overrides the caller may have written relative to the folder being left.
+# Studio resolves them with Path.resolve(), which anchors a relative value to the
+# working directory, so moving first would silently retarget them: STUDIO_HOME
+# unsloth_cli/commands/studio.py, the caches storage_roots.py and
+# hf_cache_settings.py.
+_RELATIVE_PATH_ENV = (
+    "UNSLOTH_STUDIO_HOME",
+    "STUDIO_HOME",
+    "UNSLOTH_LLAMA_CPP_PATH",
+    "UNSLOTH_COMPILE_LOCATION",
+    "HF_HOME",
+    "HF_HUB_CACHE",
+    "HUGGINGFACE_HUB_CACHE",
+    "HF_XET_CACHE",
+)
+
+
+def pin_relative_overrides(environ, cwd, pathmod = _os.path):
+    """Rewrite relative path overrides so they keep meaning the folder they did.
+
+    Returns the names that were pinned. A `~` value is left alone: expanduser
+    does not consult the working directory.
+    """
+    pinned = []
+    for name in _RELATIVE_PATH_ENV:
+        value = (environ.get(name) or "").strip()
+        if not value or value.startswith("~") or _is_rooted(value, pathmod):
+            continue
+        environ[name] = pathmod.join(cwd, value)
+        pinned.append(name)
+    return pinned
+
+
 def relocation_target(
     environ,
     windir,
@@ -335,6 +368,14 @@ def check_working_directory(
         return blocked_message(cwd, argv, environ, windirs, pathmod, sep, expanduser), "red", True
 
     target = relocation_target(environ, windirs, pathmod, sep, expanduser, makedirs)
+    if target is not None:
+        try:
+            # Before moving, or a relative override the caller wrote would end up
+            # naming a folder under the new directory instead of theirs.
+            pin_relative_overrides(environ, cwd, pathmod)
+        except Exception:
+            # An environment we cannot pin is one we must not move underneath.
+            target = None
     if target is not None:
         try:
             chdir(target)

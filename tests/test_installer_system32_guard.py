@@ -329,6 +329,7 @@ def _guard_outcome(
     getcwd_error: OSError | None = None,
     makedirs_error: OSError | None = None,
     windows_dirs: tuple[str, ...] = (r"C:\Windows",),
+    environ_out: dict[str, str] | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -382,6 +383,9 @@ def _guard_outcome(
         # Only a folder that really holds System32 counts as a Windows directory.
         isdir = lambda path: ntpath.normcase(path) in real_windows_dirs,
     )
+    if environ_out is not None:
+        environ_out.clear()
+        environ_out.update(environ)
     assert fatal == (colour == "red"), "only a red message may stop the command"
     return message, colour, chdir_calls
 
@@ -746,6 +750,74 @@ def test_cli_guard_keeps_working_when_nothing_looks_like_windows():
         windows_dirs = (),
     )
     assert colour == "red"
+
+
+def test_cli_guard_pins_a_relative_studio_home_before_moving():
+    """Studio resolves the override with Path.resolve(), which anchors a relative
+    value to the working directory, so moving first would retarget it."""
+    environ_out: dict[str, str] = {}
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "update"],
+        environ_extra = {"UNSLOTH_STUDIO_HOME": r".\custom"},
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert chdir_calls == [_RELOCATED]
+    assert environ_out["UNSLOTH_STUDIO_HOME"] == r"C:\Windows\System32\.\custom", (
+        "the override must keep naming the folder the caller meant"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+        "UNSLOTH_LLAMA_CPP_PATH",
+        "UNSLOTH_COMPILE_LOCATION",
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_XET_CACHE",
+    ],
+)
+def test_cli_guard_pins_every_relative_path_override(name: str):
+    environ_out: dict[str, str] = {}
+    _, colour, _ = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {name: "cache"},
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    assert environ_out[name] == r"C:\Windows\System32\cache"
+
+
+@pytest.mark.parametrize("value", [r"C:\elsewhere\custom", r"~\custom", r"\\server\share\c"])
+def test_cli_guard_leaves_an_already_anchored_override_alone(value: str):
+    """An absolute, UNC or ~ value does not depend on the working directory."""
+    environ_out: dict[str, str] = {}
+    _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "studio", "--api-only"],
+        environ_extra = {"UNSLOTH_STUDIO_HOME": value},
+        environ_out = environ_out,
+    )
+    assert environ_out["UNSLOTH_STUDIO_HOME"] == value
+
+
+def test_cli_guard_does_not_touch_overrides_when_it_refuses():
+    """No move, nothing to pin: the command runs where the caller left it."""
+    environ_out: dict[str, str] = {}
+    _, colour, chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        argv = ["unsloth", "train"],
+        environ_extra = {"UNSLOTH_STUDIO_HOME": r".\custom"},
+        environ_out = environ_out,
+    )
+    assert (colour, chdir_calls) == ("red", [])
+    assert environ_out["UNSLOTH_STUDIO_HOME"] == r".\custom"
 
 
 def test_cli_guard_does_nothing_off_windows():
