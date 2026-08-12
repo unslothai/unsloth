@@ -5674,11 +5674,6 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
-# Stand-in for a drafter repo no listing could price. Matches the loader's own
-# flat MTP reserve for the case where the drafter's dims are unavailable
-# (llama_cpp's _tp_flat_mtp), because it answers the same question: the launch
-# will make a drafter resident and nothing here can say how big it is. Zero is
-# the one answer that is certainly wrong, since it admits the load.
 # What an unreadable remote drafter costs the guard. Sized to cover the largest
 # drafter class Studio knows of rather than a typical one: a DSpark sidecar is
 # about 11 GB (see the --fit note in llama_cpp._emit_dspark), --spec-draft-hf can
@@ -5754,11 +5749,6 @@ def _remote_drafter_repo_bytes(spec: str, *, hf_token: Optional[str]) -> int:
             # the basename restores every quant and charges the repo's F16.
             matched = {n: s for n, s in sizes.items() if hint in n.lower()}
             sizes = matched or sizes
-        # An empty listing is "we learned nothing" and falls through to the cache
-        # and then the reserve. A listing that DID name GGUFs and still bounds at
-        # zero is different: every family was rejected as an incomplete split, so
-        # the fetch can load none of them and no draft weights become resident.
-        # Charging the reserve there 409s a load for VRAM nothing will take.
         bounded = dflash_budget_bytes(sizes, _gguf_extra_shards)
         if bounded:
             return bounded
@@ -6037,13 +6027,6 @@ def _estimate_gguf_required_gb(
         # fits. Both halves matter. Owning the spec type alone keeps the conservative
         # charge, since the guard protects a running training job and a drafter can
         # still arrive by a route this cannot see. Applies to every kind, hence one flag.
-        # Only a LOCAL file, because the suppression's whole premise is that the
-        # drafter is "already charged below as _extras_bytes" and that charge is
-        # itself gated on Path(...).is_file(). --spec-draft-hf / -hfd names an HF
-        # repo id, which llama-server downloads and loads all the same (its
-        # has_dft() only asks whether a draft path was given), so suppressing on
-        # one would leave a multi-GB resident drafter charged nowhere and let the
-        # guard admit a load that evicts the training job it protects.
         _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
         # An extras draft path wins whether or not the extras also own --spec-type:
         # the loader ranks _cli_draft_for_budget ahead of _studio_draft_for_budget,
