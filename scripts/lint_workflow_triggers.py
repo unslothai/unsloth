@@ -202,6 +202,14 @@ def main() -> int:
                     "its lint step is continue-on-error, so findings cannot "
                     "fail the run"
                 )
+            if any(
+                job.get("if") is not None or step.get("if") is not None
+                for job, step in lint_steps
+            ):
+                problems.append(
+                    "its lint step is gated by an 'if:' condition, so the gate "
+                    "can be skipped while the run still succeeds"
+                )
             if problems:
                 findings.append(
                     f"{path.name}: runs {LINT_SCRIPT_NAME} but "

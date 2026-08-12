@@ -113,21 +113,33 @@ def test_lint_rejects_a_narrowed_host(tmp_path, key, value):
 
 
 @pytest.mark.parametrize("where", ["step", "job"])
-def test_lint_rejects_a_non_blocking_host(tmp_path, where):
-    """`continue-on-error` means findings cannot fail the run."""
+@pytest.mark.parametrize(
+    "key, value, expected",
+    [
+        ("continue-on-error", "true", "continue-on-error"),
+        ("if", "${{ false }}", "'if:' condition"),
+    ],
+)
+def test_lint_rejects_a_host_that_cannot_fail(tmp_path, where, key, value, expected):
+    """A host that runs but cannot fail, or is skipped, is not a gate.
+
+    `continue-on-error` makes findings advisory; a false `if:` skips the step
+    entirely. Either way the workflow goes green with the lint never enforcing
+    anything.
+    """
     wf = tmp_path / "wf"
     wf.mkdir()
     if where == "step":
-        body = _host_workflow(step_extra = "        continue-on-error: true\n")
+        body = _host_workflow(step_extra = f"        {key}: {value}\n")
     else:
         body = _host_workflow().replace(
             "    runs-on: ubuntu-latest\n",
-            "    runs-on: ubuntu-latest\n    continue-on-error: true\n",
+            f"    runs-on: ubuntu-latest\n    {key}: {value}\n",
         )
     (wf / "host.yml").write_text(body)
     proc = _run(wf, require_host = True)
     assert proc.returncode == 1
-    assert "continue-on-error" in proc.stderr
+    assert expected in proc.stderr
 
 
 def test_lint_accepts_unfiltered_host(tmp_path):
@@ -212,15 +224,30 @@ def _codeowners_rules(text: str) -> list[tuple[str, list[str]]]:
 
 
 def _pattern_matches(pattern: str, path: str) -> bool:
+    """Approximate GitHub's CODEOWNERS matching, erring toward matching.
+
+    A directory pattern owns everything beneath it, so every directory prefix
+    of the path is a candidate. Patterns are globbed rather than compared
+    literally: `**/workflows/` is a valid rule that a substring search misses.
+    An unanchored pattern may start at any depth.
+    """
     if pattern == "*":
         return True
     anchored = pattern.startswith("/")
-    body = pattern.lstrip("/")
-    if body.endswith("/"):
-        return path.startswith(body) if anchored else f"/{path}".find(f"/{body}") >= 0
-    if anchored:
-        return fnmatch.fnmatch(path, body) or path.startswith(f"{body}/")
-    return fnmatch.fnmatch(path, body) or fnmatch.fnmatch(path.rsplit("/", 1)[-1], body)
+    is_dir = pattern.endswith("/")
+    body = pattern.strip("/")
+    segments = path.split("/")
+
+    candidates = ["/".join(segments[:i]) for i in range(1, len(segments))]
+    if not is_dir:
+        candidates.append(path)
+    if not anchored:
+        candidates += [
+            "/".join(segments[j:i])
+            for i in range(1, len(segments) + 1)
+            for j in range(1, i)
+        ]
+    return any(fnmatch.fnmatch(c, body) for c in candidates)
 
 
 def _effective_owners(text: str, path: str) -> list[str]:
@@ -277,8 +304,20 @@ def test_workflow_changes_require_code_owner_review():
         (f"/{CODEOWNERS_PROBES[0]} @someone-else", ["@someone-else"]),
         # A pattern with no owners is valid, and clears ownership.
         (f"/{CODEOWNERS_PROBES[0]}", []),
+        # Globbed and unanchored directory patterns are valid rules too.
+        ("**/workflows/ @someone-else", ["@someone-else"]),
+        ("workflows/ @someone-else", ["@someone-else"]),
+        (".github/*/ @someone-else", ["@someone-else"]),
     ],
-    ids = ["catch-all", "parent-dir", "narrower-file", "ownerless"],
+    ids = [
+        "catch-all",
+        "parent-dir",
+        "narrower-file",
+        "ownerless",
+        "globbed-dir",
+        "unanchored-dir",
+        "wildcard-segment",
+    ],
 )
 def test_codeowners_guard_catches_a_later_rule(override, expected):
     """The guard must fail whichever way a trailing rule takes precedence."""
