@@ -3,10 +3,15 @@
 """Tests for multimodal (vision) decoder embedding support in FastSentenceTransformer
 (e.g. Qwen/Qwen3-VL-Embedding-2B).
 
-Two layers:
+Three layers:
+- Static source checks that never import unsloth (so they never hit the accelerator
+  gate). They compile unsloth/models/sentence_transformer.py and assert, via ast, that
+  the symbols the rest of this file depends on still exist. These ALWAYS run: a syntax
+  error or a renamed/removed symbol turns this file red even on a CPU-only runner.
 - Fast, no-GPU unit tests for the VLM-detection helper and the get_peft_model vision
-  flags. They import unsloth but never touch weights, so they run wherever unsloth is
-  importable (skipped otherwise).
+  flags. They import unsloth but never touch weights. They skip only on the one
+  explicitly detected condition where unsloth legitimately refuses to import
+  (NotImplementedError with no CUDA device); every other import failure fails.
 - An opt-in, GPU-only end-to-end parity test (UNSLOTH_VLM_EMBEDDING_PARITY_MODEL) that
   loads a real VLM embedding checkpoint and compares against a stock SentenceTransformer.
 
@@ -20,33 +25,108 @@ class.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
 import types
+from pathlib import Path
 
 import pytest
 
+# unsloth/models/sentence_transformer.py, located relative to this test file (not the
+# CWD) so the static checks below work from any invocation directory.
+_SOURCE_PATH = (
+    Path(__file__).resolve().parents[2] / "unsloth" / "models" / "sentence_transformer.py"
+)
+
 
 def _import_fast_sentence_transformer():
-    """Import FastSentenceTransformer for the logic tests.
+    """Import FastSentenceTransformer, skipping ONLY on the documented CPU-only refusal.
 
-    Skips ONLY when a required heavy dependency is genuinely absent -- an
-    unsupported environment, not a regression. The import of the code under test
-    is then run WITHOUT a catch-all: a syntax error, a missing symbol, or any
-    other import-time regression introduced by this change must fail these tests,
-    not silently skip them. (A previous version wrapped the import in
-    `except Exception: pytest.skip(...)`, which turned every such regression into
-    a green skip.)"""
-    pytest.importorskip("torch")
+    unsloth raises NotImplementedError when it finds no supported accelerator; that is
+    an environment fact and may skip. Anything else -- SyntaxError, ImportError, a
+    missing symbol -- is a real regression and is re-raised so the test fails."""
+    torch = pytest.importorskip("torch")
     pytest.importorskip("sentence_transformers")
     pytest.importorskip("unsloth_zoo")
-    from unsloth import FastSentenceTransformer
-
+    try:
+        from unsloth import FastSentenceTransformer
+    except NotImplementedError as exc:
+        if torch.cuda.is_available():
+            raise
+        pytest.skip(f"unsloth requires an accelerator; none available: {exc}")
     return FastSentenceTransformer
 
 
 def _cfg(**attrs):
     return types.SimpleNamespace(**attrs)
+
+
+def _parse_source_module():
+    """Compile and parse the module under test without importing it, so these checks
+    run on every machine including CPU-only runners with no torch installed."""
+    source = _SOURCE_PATH.read_text(encoding="utf-8")
+    # compile() raises SyntaxError on a broken module -> the test fails, never skips.
+    compile(source, str(_SOURCE_PATH), "exec")
+    return ast.parse(source, filename=str(_SOURCE_PATH))
+
+
+def _class_node(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    raise AssertionError(f"class {name} not found in {_SOURCE_PATH}")
+
+
+def _method_node(cls_node, name):
+    for node in cls_node.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"{cls_node.name}.{name} not found in {_SOURCE_PATH}")
+
+
+def _arg_names(func_node):
+    args = func_node.args
+    names = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    return set(names)
+
+
+def test_source_module_compiles_and_defines_expected_symbols():
+    """Always-runs regression guard: never skips, so a syntax error or a renamed symbol
+    in sentence_transformer.py turns this file red even where unsloth cannot import."""
+    tree = _parse_source_module()
+
+    module_level_assignments = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            module_level_assignments.update(
+                t.id for t in node.targets if isinstance(t, ast.Name)
+            )
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            module_level_assignments.add(node.target.id)
+    assert "_DEFAULT_TARGET_MODULES" in module_level_assignments
+
+    cls = _class_node(tree, "FastSentenceTransformer")
+    for method in ("_is_vlm_embedding_config", "from_pretrained", "get_peft_model"):
+        _method_node(cls, method)
+
+
+def test_source_get_peft_model_declares_vision_selectors():
+    """Signature-level mirror of test_get_peft_model_exposes_vision_lora_flags that does
+    not require importing unsloth, so renaming a selector cannot pass as a skip."""
+    cls = _class_node(_parse_source_module(), "FastSentenceTransformer")
+    params = _arg_names(_method_node(cls, "get_peft_model"))
+    for name in (
+        "finetune_vision_layers",
+        "finetune_language_layers",
+        "finetune_attention_modules",
+        "finetune_mlp_modules",
+        "finetune_last_n_layers",
+    ):
+        assert name in params, f"get_peft_model lost the {name} selector"
+
+    from_pretrained_params = _arg_names(_method_node(cls, "from_pretrained"))
+    assert "processor_kwargs" in from_pretrained_params
 
 
 def test_is_vlm_embedding_config_detects_vision_config():
