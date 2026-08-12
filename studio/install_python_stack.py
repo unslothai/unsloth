@@ -2085,6 +2085,24 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     return _pin_is_211 != _inst_is_211
 
 
+def _rocm_index_needs_reinstall(index_url: str, installed_ver: str) -> bool:
+    """Whether installed torch satisfies a selected ROCm or gfx index.
+
+    Version tags distinguish generic ROCm releases from AMD per-arch wheels, but
+    sibling gfx indexes can share the same tag. When the installed AMD runtime
+    records its arch family, require it to match the selected gfx leaf exactly.
+    An unknown installed family stays conservative so a healthy legacy wheel does
+    not enter a reinstall loop.
+    """
+    if _rocm_pin_family_mismatch(index_url, installed_ver):
+        return True
+    desired_family = _torch_index_leaf(index_url)
+    if not desired_family.startswith("gfx"):
+        return False
+    installed_family = _installed_rocm_wheel_family()
+    return installed_family is not None and installed_family != desired_family
+
+
 # Intel XPU wheels. Own range, not the CUDA spec above: the xpu index serves past our tested
 # ceiling, and the floor is 2.6 because unsloth/models/_utils.py raises at import for an XPU
 # device below it. Kept in step with install.sh by tests/sh/test_xpu_torch_spec_parity.sh.
@@ -2864,7 +2882,7 @@ def _rocm_fast_path_needs_repair(
     if not is_rocm:
         return True
     if rocm_pin is not None:
-        return _rocm_pin_family_mismatch(rocm_pin, installed_version)
+        return _rocm_index_needs_reinstall(rocm_pin, installed_version)
 
     # A working ROCm import is not enough for the hardware-specific exceptions.
     # Strix needs AMD's per-arch 2.11 build, and gfx906 needs the last wheel family
@@ -2882,13 +2900,9 @@ def _rocm_fast_path_needs_repair(
         )
         if selected_gfx is not None:
             desired_url = _amd_arch_index_url(selected_gfx)
-            desired_family = (_GFX_TO_AMD_INDEX_ARCH.get(selected_gfx) or "").lower()
-            installed_family = _installed_rocm_wheel_family()
-            if desired_url is not None and _rocm_pin_family_mismatch(
+            if desired_url is not None and _rocm_index_needs_reinstall(
                 desired_url, installed_version
             ):
-                return True
-            if desired_family and installed_family and installed_family != desired_family:
                 return True
 
     gfx_codes = detected_gfx_devices
@@ -3108,10 +3122,10 @@ def _ensure_rocm_torch() -> None:
     has_hip_torch = bool(_sep) and _hip_marker != ""
 
     # An explicit ROCm pin whose family differs from the installed torch must reinstall, else a
-    # rocm7.2/gfx* pin over an older +rocm6.4/7.1 build never applies. Version-tag heuristic
-    # only: a same-tag per-arch switch (gfx1151 -> gfx120X-all, both +rocm7.13.0) isn't detectable.
+    # rocm7.2/gfx* pin over an older family never applies. Version tags cover generic-to-gfx and
+    # ROCm release changes; the installed AMD runtime metadata covers same-tag sibling gfx pins.
     _rocm_pin_mismatch = (
-        _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
+        _rocm_index_needs_reinstall(_rocm_pin, _installed_torch_ver)
         if (has_hip_torch and _rocm_pin is not None)
         else False
     )

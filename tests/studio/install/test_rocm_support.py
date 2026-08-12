@@ -1174,6 +1174,18 @@ Agent 4
         assert f(f"{base}/rocm7", "2.10.0") is True
         assert f(f"{base}/rocm7", "2.10.0+rocm") is False
 
+    def test_rocm_gfx_index_compares_the_installed_arch_family(self):
+        """Same-tag AMD wheels need their runtime metadata to distinguish siblings."""
+        f = stack_mod._rocm_index_needs_reinstall
+        pin = "https://repo.amd.com/rocm/whl/gfx1151"
+        installed = "2.11.0+rocm7.13.0"
+        with patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = "gfx1150"):
+            assert f(pin, installed) is True
+        with patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = "gfx1151"):
+            assert f(pin, installed) is False
+        with patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None):
+            assert f(pin, installed) is False
+
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -1230,6 +1242,36 @@ Agent 4
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_gfx_pin_over_same_tag_sibling_family_reinstalls(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """A gfx1151 pin must replace an installed gfx1150 wheel even though both
+        publish the same torch and ROCm version tag."""
+        mock_probe = MagicMock(returncode = 0, stdout = b"7.13|2.11.0+rocm7.13.0\n")
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx1151"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_installed_rocm_wheel_family", return_value = "gfx1150"
+                    ):
+                        with patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []):
+                            _ensure_rocm_torch()
+        torch_calls = [
+            call
+            for call in mock_pip.call_args_list
+            if any(str(arg).startswith("torch") for arg in call.args)
+        ]
+        assert len(torch_calls) == 1
+        assert "gfx1151" in str(torch_calls[0])
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
     def test_rocm_pin_matches_installed_no_torch_reinstall(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
@@ -1277,7 +1319,8 @@ Agent 4
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
             with patch("os.path.isdir", return_value = True):
                 with patch("subprocess.run", return_value = mock_probe):
-                    _ensure_rocm_torch()
+                    with patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = None):
+                        _ensure_rocm_torch()
         # has_hip_torch True + no mismatch -> torch must NOT be reinstalled.
         assert not any(
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list

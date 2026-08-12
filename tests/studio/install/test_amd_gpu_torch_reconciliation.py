@@ -265,6 +265,36 @@ def test_matching_explicit_rocm_family_keeps_the_fast_path(monkeypatch):
     )
 
 
+def test_explicit_gfx_sibling_family_forces_the_pass(monkeypatch):
+    assert _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.13.0",
+        hip = "7.13.0",
+        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+        installed_rocm_family = "gfx1150",
+    )
+
+
+def test_matching_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.13.0",
+        hip = "7.13.0",
+        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+        installed_rocm_family = "gfx1151",
+    )
+
+
+def test_unknown_explicit_gfx_family_keeps_the_fast_path(monkeypatch):
+    assert not _repair_needed(
+        monkeypatch,
+        version = "2.11.0+rocm7.13.0",
+        hip = "7.13.0",
+        rocm_pin = "https://repo.amd.com/rocm/whl/gfx1151",
+        installed_rocm_family = None,
+    )
+
+
 def test_strix_generic_rocm_wheel_forces_the_pass(monkeypatch):
     assert _repair_needed(
         monkeypatch,
