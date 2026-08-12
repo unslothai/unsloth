@@ -2496,3 +2496,87 @@ def test_the_chat_template_the_payload_installs_actually_renders():
     # Both roles must survive; a template that drops the user turn would train
     # on prompts the model never saw.
     assert "<|im_start|>user\nU<|im_end|>" in rendered
+
+
+# The `frontier` leg exists because the canary's "newest" is not PyPI's newest.
+# unsloth_zoo/pyproject.toml pins transformers <=5.5.0 and trl <=0.24.0, and the
+# canary resolves WITH zoo in the resolution, so it obeys that cap: measured on
+# 2026-08-11 it sat at transformers 5.5.0 against a PyPI latest of 5.15.0 and trl
+# 0.24.0 against 1.9.2, while moving peft and accelerate to genuine latest. Two of
+# five packages never moved, which is what made the leg look like it was working.
+# Without `frontier` this CI cannot detect a transformers 5.6+ or trl 1.x
+# regression, because it never installs one.
+
+
+def test_the_frontier_leg_resolves_dependencies_rather_than_skipping_them():
+    """--no-deps is what the first probe got wrong, and it must not come back.
+
+    `--no-deps transformers trl` plus a blanket `--upgrade tokenizers` did reach
+    transformers 5.15.0 and trl 1.9.2 (kernel unsloth-t4-ci-bd0c49e5) and then
+    died before running anything, because an unbounded upgrade overshoots the
+    ceiling transformers declares:
+
+        tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1
+        safetensors>=0.8.0 is required, but found safetensors==0.7.0
+
+    Letting pip resolve the dependencies fixes both AND still clears zoo's cap,
+    because pip enforces only the requirements of packages in the resolution.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    frontier = legs.LEGS["frontier"]
+    upgrades = [group for group in frontier.install if "--upgrade" in group]
+    assert upgrades, "the frontier leg no longer upgrades anything"
+    for group in upgrades:
+        assert "--no-deps" not in group, (
+            f"the frontier leg upgrade {group!r} skips dependency resolution; "
+            f"that is what left tokenizers above the ceiling transformers "
+            f"declares and killed the leg before it ran a single step"
+        )
+    upgraded = {arg for group in upgrades for arg in group if not arg.startswith("-")}
+    assert {"transformers", "trl"} <= upgraded, (
+        f"the frontier leg upgrades {sorted(upgraded)}, and the two packages it "
+        f"exists for are transformers and trl"
+    )
+
+
+def test_the_frontier_leg_does_not_carry_the_zoo_requirement():
+    """Naming unsloth_zoo in the same resolution reimposes the cap it evades.
+
+    This is exactly how the canary differs, and the canary is right to do it:
+    it measures the supported window. The frontier leg measures past it, and
+    a single stray `ZOO` in the upgrade group would silently turn one into the
+    other while every other assertion here still passed.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    for group in legs.LEGS["frontier"].install:
+        if "--upgrade" not in group:
+            continue
+        assert not any("unsloth-zoo" in arg or "unsloth_zoo" in arg for arg in group), (
+            "the frontier leg upgrades unsloth_zoo in the same resolution as "
+            "transformers and trl, so zoo's transformers<=5.5.0 and trl<=0.24.0 "
+            "bind again and the leg silently becomes a second canary"
+        )
+
+
+def test_the_frontier_leg_is_wired_on_the_seat_that_costs_nothing():
+    """A Kaggle session bills wall clock once, not per card.
+
+    So the second kernel's idle T4 is free capacity, and testing the newest
+    transformers and trl on every run costs no quota. It passed there on real
+    hardware: transformers 5.15.0, trl 1.9.2, ten steps, canary emitted, two
+    fresh processes agreeing bitwise.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    wired = [kernel for kernel in legs.KERNELS if "frontier" in kernel]
+    assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
+    assert len(wired[0]) == legs.MAX_LEGS_PER_KERNEL, (
+        "frontier should share a kernel rather than take one of its own, since "
+        "a second seat in an existing session is free and a new session is not"
+    )
+    assert "frontier" not in legs.UNWIRED
