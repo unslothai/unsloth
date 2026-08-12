@@ -832,6 +832,7 @@ PID_FILE_GLOB = "studio-*.pid"
 # one. Only the sibling probe reads these.
 STARTUP_MARKER_GLOB = "studio-starting-*.marker"
 _OWN_STARTUP_MARKERS: "list[Path]" = []
+_STARTUP_MARKER_HOOK_REGISTERED = False
 
 
 def _pid_file_for_port(port: int) -> Path:
@@ -1027,7 +1028,12 @@ def write_startup_marker() -> None:
             # Same layout as a per-port record, so _read_pid_record parses both.
             # An unknown start time is a blank line, read back as None.
             path.write_text(body, encoding = "utf-8")
-            _OWN_STARTUP_MARKERS.append(path)
+            # Not appended twice. The path is the same file every time (this
+            # PID names it), so a second publish rewrites identical bytes, but
+            # a duplicate entry would be popped and retried twice on the way
+            # out for no reason.
+            if path not in _OWN_STARTUP_MARKERS:
+                _OWN_STARTUP_MARKERS.append(path)
         except OSError:
             pass
     if not _OWN_STARTUP_MARKERS:
@@ -1036,8 +1042,13 @@ def write_startup_marker() -> None:
 
     # Registered here rather than beside the pid-file hook: startup can fail
     # between these two points, and the marker has to go either way. Before the
-    # wait below, so an interrupt during it still takes the marker back.
-    atexit.register(_remove_startup_marker)
+    # wait below, so an interrupt during it still takes the marker back. Once
+    # per process: the hook drains the whole list, so a second registration
+    # only runs it again on an empty one.
+    global _STARTUP_MARKER_HOOK_REGISTERED
+    if not _STARTUP_MARKER_HOOK_REGISTERED:
+        atexit.register(_remove_startup_marker)
+        _STARTUP_MARKER_HOOK_REGISTERED = True
     if published_unlocked:
         _wait_out_a_running_cache_clear(compiled_cache_lock, LOCK_BUSY)
 

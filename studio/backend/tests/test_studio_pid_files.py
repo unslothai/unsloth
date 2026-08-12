@@ -843,6 +843,50 @@ def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypa
     assert events == [("lock", False), ("unlock", True)]
 
 
+def test_every_record_call_can_be_repeated(tmp_path):
+    # Startup and shutdown both run more than once in a long-lived embedded
+    # host, and a crash can leave either half done. Each of these has to be
+    # safe to call again on the state the previous call left.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    published = sorted(p.name for p in tmp_path.iterdir())
+    body = marker.read_text(encoding = "utf-8")
+
+    run.write_startup_marker()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == published, "a second publish added a file"
+    assert marker.read_text(encoding = "utf-8") == body
+    assert run._OWN_STARTUP_MARKERS == [marker], "tracked twice would be removed twice"
+
+    run._write_pid_file(8888, "127.0.0.1")
+    recorded = sorted(p.name for p in tmp_path.iterdir())
+    run._write_pid_file(8888, "127.0.0.1")
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == recorded
+
+    run._remove_startup_marker()
+    run._remove_startup_marker()
+    run._remove_pid_file()
+    run._remove_pid_file()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert _files(tmp_path) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_reading_the_siblings_changes_nothing_on_disk(tmp_path):
+    # The probe runs on every startup and is a read. If it pruned or rewrote
+    # anything, one install's startup would edit another's records.
+    (tmp_path / "studio-8888-4242.pid").write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("4243", encoding = "utf-8")
+    before = {p.name: p.read_text(encoding = "utf-8") for p in tmp_path.iterdir()}
+
+    for _ in range(3):
+        run.live_sibling_backend()
+
+    assert {p.name: p.read_text(encoding = "utf-8") for p in tmp_path.iterdir()} == before
+
+
 def test_a_busy_lock_publishes_then_waits_for_the_clear_to_finish(tmp_path, monkeypatch):
     # Publishing unlocked keeps this backend visible to sibling probes, but
     # returning straight away would let the caller import and compile into a
