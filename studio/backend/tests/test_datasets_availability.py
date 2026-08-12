@@ -171,7 +171,7 @@ class TestHealthVerdict:
         on DETECTION_COMPLETE would leave the first replies with chat_only set and
         no reason, and the UI polling for a verdict that is already known."""
         source = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-        function = source[source.index("def _hardware_snapshot("):]
+        function = source[source.index("def _hardware_snapshot(") :]
         function = function[: function.index("\n\n\n")]
         assert function.index("datasets_unavailable") < function.index(
             "DETECTION_COMPLETE.is_set()"
