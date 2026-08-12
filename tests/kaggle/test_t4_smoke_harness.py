@@ -1547,9 +1547,7 @@ def test_every_leg_is_either_wired_or_explained():
 
     wired = {name for kernel in KERNELS for name in kernel}
     for name in LEGS:
-        assert name in wired or name in UNWIRED, (
-            f"leg {name!r} is in neither KERNELS nor UNWIRED"
-        )
+        assert name in wired or name in UNWIRED, f"leg {name!r} is in neither KERNELS nor UNWIRED"
 
 
 def test_nothing_is_both_wired_and_unwired():
@@ -1566,9 +1564,48 @@ def test_an_unwired_note_says_what_is_unknown():
     without running it. Vacuous while UNWIRED is empty, and that is correct:
     it has something to check the moment a leg goes back in."""
     from legs import UNWIRED
-
     for name, note in UNWIRED.items():
         assert "STILL UNKNOWN" in note, f"{name} note does not say what is open"
+
+
+def test_grpo_stays_unwired_while_the_illegal_memory_access_is_open():
+    """This test replaces one that asserted the opposite thing for a wrong reason.
+
+    grpo was given a kernel of its own on the reasoning that sharing a session
+    with gptoss was what broke it: it failed paired (unsloth-t4-ci-70a2f4eb)
+    and had passed alone (unsloth-t4-ci-53efcc4e), so the pairing looked like
+    the variable. Running it ALONE again (unsloth-t4-ci-c98f14be) reproduced
+    the paired failure exactly -- same stack at unsloth_zoo/vllm_utils.py:601
+    sleep(), same 13.8GB peak, same engine_built false. One contrasting
+    observation was never enough to blame a shared host, and the pairing was
+    not the variable.
+
+    What the three sessions actually show is an INTERMITTENT illegal memory
+    access: one pass, two failures, identical in every recorded version and at
+    the same peak. A leg that passes one session in three cannot tell CI
+    anything, so it is unwired until the IMA is understood -- and wiring it
+    back without that is the change this test exists to stop."""
+    from legs import KERNELS, UNWIRED
+
+    assert "grpo" not in {name for kernel in KERNELS for name in kernel}
+    note = UNWIRED["grpo"]
+    assert "illegal memory access" in note
+    # The evidence, so re-wiring means answering it rather than deleting it.
+    for kernel_id in ("53efcc4e", "70a2f4eb", "c98f14be", "b1f23e34"):
+        assert kernel_id in note, f"the note drops session {kernel_id}"
+    # The launch-blocking run is done and answered something, so the note must
+    # not still read as though it were the next thing to try.
+    assert "STILL UNKNOWN" in note and "--cuda-launch-blocking run is done" in note
+
+
+def test_control_and_canary_still_share_a_session():
+    """The opposite constraint, and the reason the pairing rule is not just
+    'one leg per kernel'. They are a matched pair: same image, same driver,
+    same hour, differing only in library versions. Splitting them puts an
+    uncontrolled variable between the only two legs whose comparison has to be
+    clean."""
+    from legs import KERNELS
+    assert any(set(k) >= {"control", "canary"} for k in KERNELS), KERNELS
 
 
 def test_the_grpo_leg_keeps_the_config_that_actually_fit():
@@ -1592,9 +1629,9 @@ def test_the_grpo_leg_keeps_the_config_that_actually_fit():
         ("--lora-rank", "16"),
     ):
         assert flag in args, f"grpo leg lost {flag}"
-        assert args[args.index(flag) + 1] == value, (
-            f"{flag} is {args[args.index(flag) + 1]}, not the {value} that fit"
-        )
+        assert (
+            args[args.index(flag) + 1] == value
+        ), f"{flag} is {args[args.index(flag) + 1]}, not the {value} that fit"
     assert "--load-in-4bit" in args
 
 
@@ -2463,3 +2500,87 @@ def test_the_chat_template_the_payload_installs_actually_renders():
     # Both roles must survive; a template that drops the user turn would train
     # on prompts the model never saw.
     assert "<|im_start|>user\nU<|im_end|>" in rendered
+
+
+# The `frontier` leg exists because the canary's "newest" is not PyPI's newest.
+# unsloth_zoo/pyproject.toml pins transformers <=5.5.0 and trl <=0.24.0, and the
+# canary resolves WITH zoo in the resolution, so it obeys that cap: measured on
+# 2026-08-11 it sat at transformers 5.5.0 against a PyPI latest of 5.15.0 and trl
+# 0.24.0 against 1.9.2, while moving peft and accelerate to genuine latest. Two of
+# five packages never moved, which is what made the leg look like it was working.
+# Without `frontier` this CI cannot detect a transformers 5.6+ or trl 1.x
+# regression, because it never installs one.
+
+
+def test_the_frontier_leg_resolves_dependencies_rather_than_skipping_them():
+    """--no-deps is what the first probe got wrong, and it must not come back.
+
+    `--no-deps transformers trl` plus a blanket `--upgrade tokenizers` did reach
+    transformers 5.15.0 and trl 1.9.2 (kernel unsloth-t4-ci-bd0c49e5) and then
+    died before running anything, because an unbounded upgrade overshoots the
+    ceiling transformers declares:
+
+        tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1
+        safetensors>=0.8.0 is required, but found safetensors==0.7.0
+
+    Letting pip resolve the dependencies fixes both AND still clears zoo's cap,
+    because pip enforces only the requirements of packages in the resolution.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    frontier = legs.LEGS["frontier"]
+    upgrades = [group for group in frontier.install if "--upgrade" in group]
+    assert upgrades, "the frontier leg no longer upgrades anything"
+    for group in upgrades:
+        assert "--no-deps" not in group, (
+            f"the frontier leg upgrade {group!r} skips dependency resolution; "
+            f"that is what left tokenizers above the ceiling transformers "
+            f"declares and killed the leg before it ran a single step"
+        )
+    upgraded = {arg for group in upgrades for arg in group if not arg.startswith("-")}
+    assert {"transformers", "trl"} <= upgraded, (
+        f"the frontier leg upgrades {sorted(upgraded)}, and the two packages it "
+        f"exists for are transformers and trl"
+    )
+
+
+def test_the_frontier_leg_does_not_carry_the_zoo_requirement():
+    """Naming unsloth_zoo in the same resolution reimposes the cap it evades.
+
+    This is exactly how the canary differs, and the canary is right to do it:
+    it measures the supported window. The frontier leg measures past it, and
+    a single stray `ZOO` in the upgrade group would silently turn one into the
+    other while every other assertion here still passed.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    for group in legs.LEGS["frontier"].install:
+        if "--upgrade" not in group:
+            continue
+        assert not any("unsloth-zoo" in arg or "unsloth_zoo" in arg for arg in group), (
+            "the frontier leg upgrades unsloth_zoo in the same resolution as "
+            "transformers and trl, so zoo's transformers<=5.5.0 and trl<=0.24.0 "
+            "bind again and the leg silently becomes a second canary"
+        )
+
+
+def test_the_frontier_leg_is_wired_on_the_seat_that_costs_nothing():
+    """A Kaggle session bills wall clock once, not per card.
+
+    So the second kernel's idle T4 is free capacity, and testing the newest
+    transformers and trl on every run costs no quota. It passed there on real
+    hardware: transformers 5.15.0, trl 1.9.2, ten steps, canary emitted, two
+    fresh processes agreeing bitwise.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    import legs
+
+    wired = [kernel for kernel in legs.KERNELS if "frontier" in kernel]
+    assert len(wired) == 1, f"frontier appears in {len(wired)} kernels, expected 1"
+    assert len(wired[0]) == legs.MAX_LEGS_PER_KERNEL, (
+        "frontier should share a kernel rather than take one of its own, since "
+        "a second seat in an existing session is free and a new session is not"
+    )
+    assert "frontier" not in legs.UNWIRED

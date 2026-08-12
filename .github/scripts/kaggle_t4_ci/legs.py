@@ -169,6 +169,82 @@ LEGS: dict[str, Leg] = {
         # and that nothing raised. See tests/kaggle/t4_smoke/references/README.md.
         reference = "",
     ),
+    "frontier": Leg(
+        name = "frontier",
+        summary = "the same SFT run on the newest transformers and trl on PyPI",
+        # WHY THIS EXISTS, given the canary above already says "newest".
+        #
+        # The canary installs the newest set zoo's own metadata ALLOWS, and
+        # that ceiling is low. unsloth_zoo/pyproject.toml pins
+        #
+        #     transformers >=4.51.3,...,<=5.5.0
+        #     trl          >=0.18.2,!=0.19.0,<=0.24.0
+        #
+        # so on 2026-08-11 the canary resolved transformers 5.5.0 against a
+        # PyPI latest of 5.15.0, and trl 0.24.0 against a latest of 1.9.2 --
+        # a whole major version. It moved peft 0.19.1 -> 0.20.0 and accelerate
+        # 1.13.0 -> 1.14.0 (both genuinely latest, both uncapped), which is
+        # what made the leg look like it was doing its job. Two of the five
+        # packages never moved at all, and they are the two that break most.
+        #
+        # The consequence is structural: with only the canary, this CI CANNOT
+        # detect a transformers 5.6+ or trl 1.x regression, because it never
+        # installs one. The cap is exactly what a regression detector has to
+        # step over, since the cap is raised only after someone has checked,
+        # and this is the thing that checks.
+        #
+        # WITH dependencies, and NOT --no-deps. Getting this wrong is what the
+        # first probe measured. `--no-deps transformers trl` plus a blanket
+        # `--upgrade tokenizers` did reach transformers 5.15.0 and trl 1.9.2 --
+        # kernel unsloth-t4-ci-bd0c49e5, the first time this CI ever installed
+        # either -- and then died before running anything:
+        #
+        #   tokenizers<=0.23.0,>=0.22.0 is required, but found tokenizers==0.23.1
+        #   safetensors>=0.8.0 is required, but found safetensors==0.7.0
+        #
+        # An unbounded upgrade overshoots the ceiling transformers declares, and
+        # --no-deps means nothing repairs it. Letting pip resolve the deps fixes
+        # both, because pip only enforces the requirements of the packages IN
+        # the resolution: unsloth_zoo is merely installed, so its `<=5.5.0` is a
+        # warning here rather than a ceiling. Verified by dry run against an
+        # environment with zoo installed: "Would install datasets-5.0.1
+        # huggingface_hub-1.27.0 transformers-5.15.0 trl-1.9.2".
+        #
+        # So this leg moves more than the two packages it is named for -- it
+        # moves whatever transformers and trl now require. That is the honest
+        # scope: those bumps are part of taking the new version.
+        #
+        # I expected this leg to go red. IT DOES NOT. Kernel from
+        # temp/frontier_kernel2.ipynb on a real T4: transformers 5.15.0, trl
+        # 1.9.2, datasets 5.0.1, ten steps, canary emitted, and the two fresh
+        # processes agreed BITWISE (max_abs_diff 0.0 on both loss and
+        # grad_norm). Unsloth trains and generates correctly a whole trl major
+        # above what zoo's metadata permits.
+        #
+        # A red here would still be a to-do about the next version bump rather
+        # than a broken main, and it should be wired so a reader can tell those
+        # apart. But the current answer is green.
+        #
+        # WHAT IT DOES NOT CATCH, and what a reader should look at by hand:
+        # the loss trajectory is not the control's.
+        #
+        #   control  tf 5.5.0  trl 0.24.0: 10.3222 10.4956 9.9563 10.3892 5.0523 ...
+        #   frontier tf 5.15.0 trl 1.9.2 :  6.4367  6.6086 5.9956  3.6721 2.0265 ...
+        #
+        # Step 1 is computed before any parameter update, on identical initial
+        # weights, identical data and identical seed, so 10.32 against 6.44 is
+        # not optimisation drift: the loss FUNCTION differs, in masking or in
+        # normalisation. Both runs converge, so neither is obviously wrong, and
+        # this leg deliberately has no reference band (see the canary above),
+        # which is exactly why it passes without noticing. Settling which of
+        # the two objectives is the intended one is separate work.
+        install = BASE_INSTALL + ((("--upgrade", "transformers", "trl")),),
+        entry = "run_t4_smoke.py",
+        files = SMOKE_FILES,
+        # Same reasoning as the canary, more so: this set is further from the
+        # committed trace than the canary's is.
+        reference = "",
+    ),
     "gptoss": Leg(
         name = "gptoss",
         summary = "gpt-oss-20b LoRA: torch.compile and the float32 path",
@@ -258,12 +334,17 @@ LEGS: dict[str, Leg] = {
         # Measured on kernel unsloth-t4-ci-53efcc4e: peak 13.60GB allocated of
         # 14.56GB, three steps in 192s.
         args = (
-            "--max-steps", "3",
+            "--max-steps",
+            "3",
             "--load-in-4bit",
-            "--gpu-memory-utilization", "0.5",
-            "--max-seq-length", "1024",
-            "--num-generations", "2",
-            "--lora-rank", "16",
+            "--gpu-memory-utilization",
+            "0.5",
+            "--max-seq-length",
+            "1024",
+            "--num-generations",
+            "2",
+            "--lora-rank",
+            "16",
         ),
         env = {
             "UNSLOTH_VLLM_STANDBY": "1",
@@ -311,19 +392,42 @@ MAX_LEGS_PER_KERNEL = 2
 # install, and deleting it would mean rediscovering the install problem from
 # scratch. Every entry must say what was measured.
 UNWIRED: dict[str, str] = {
-    # Empty on purpose. Every leg in LEGS is in KERNELS.
-    #
-    # `grpo` was the last entry here and came out on 2026-08-11 after kernel
-    # unsloth-t4-ci-53efcc4e passed on a real Tesla T4: reward_std 0.707 and
-    # grad_norm 0.772 at step 2, peak 13.60GB of 14.56GB, three steps in 192s.
-    # The four blockers it cleared on the way are recorded where each fix
-    # lives -- the vLLM/torch pin and the attention backend in the leg's
-    # install comment, the flashinfer link shim and the base-model chat
-    # template in run_grpo_t4.py, and the T4-sized training config in the
-    # leg's args.
-    #
     # A leg belongs here only while there is a specific unanswered question
     # about it that a session would answer. "Not tried yet" is not that.
+    "grpo": (
+        "vLLM standby sleep hits an illegal memory access on Turing, and it is "
+        "INTERMITTENT. Three sessions on a real Tesla T4, identical to the "
+        "flag and identical in every recorded version (torch 2.10.0+cu128, "
+        "transformers 5.5.0, trl 0.24.0, peft 0.19.1, vllm 0.19.1, unsloth "
+        "2026.8.15, zoo 2026.8.10) and at the same 13.8GB/13.6GB peak of "
+        "14.56GB: unsloth-t4-ci-53efcc4e PASSED (engine_built true, reward_std "
+        "0.707 and grad_norm 0.772 at step 2, three steps in 192s), then "
+        "unsloth-t4-ci-70a2f4eb and unsloth-t4-ci-c98f14be both FAILED with "
+        "engine_built false and\n"
+        "  unsloth_zoo/vllm_utils.py:601 sleep() -> torch.cuda.empty_cache()\n"
+        "  torch.AcceleratorError: CUDA error: an illegal memory access was "
+        "encountered\n"
+        "UNSLOTH_VLLM_STANDBY=1 is set in all three. One pass in three is not "
+        "a leg CI can spend a session on: it would go red for a reason no "
+        "reader could act on.\n"
+        "The --cuda-launch-blocking run is done, kernel unsloth-t4-ci-b1f23e34, "
+        "and it did NOT localise the fault: with blocking on there was no "
+        "illegal memory access at all. engine_built true, three steps, same "
+        "13.8GB peak. A fault that disappears when the launches are "
+        "serialised is a race, which is what the one-pass-in-three rate "
+        "already suggested.\n"
+        "It also exposed a SECOND problem, and the two are separate. That run "
+        "failed on reward_std = [0.0, 0.0, 0.0] with grad_norm 0.0 at every "
+        "step. The completions recorded in the report are coherent prose, not "
+        "degenerate, so this is not the model collapsing -- it is two "
+        "completions scoring identically. The leg runs num_generations = 2, "
+        "shrunk to fit a 14.56GB card, and at two samples a tie on a coarse "
+        "reward is ordinary rather than a bug. So the leg's own pass "
+        "criterion is fragile at the size it has to be to fit.\n"
+        "STILL UNKNOWN: where the race is (the standby wake/sleep cycle on "
+        "sm_75 is the suspect, and UNSLOTH_VLLM_STANDBY=1 is set in all four "
+        "sessions), and what pass criterion is honest at num_generations = 2."
+    ),
 }
 
 # Which legs travel in which kernel. One entry per kernel, and a kernel runs
@@ -334,12 +438,28 @@ UNWIRED: dict[str, str] = {
 # Splitting them across sessions would put an uncontrolled variable between
 # the only two legs whose comparison has to be clean.
 #
-# The second kernel carries one leg and has a free T4, which costs nothing:
-# a session bills its wall clock once, not per card. That card is where
-# `grpo` goes when its install works.
+# The second kernel's free T4 now carries `frontier`, and that seat is free
+# in the literal sense: a session bills its wall clock once, not per card, so
+# testing the newest transformers and trl every run costs no quota at all.
+# It went there rather than beside control and canary because those two must
+# differ in nothing but versions within the zoo-permitted window, and
+# frontier deliberately leaves that window.
+#
+# `grpo` was the previous claimant on that seat and goes back to it once the
+# illegal memory access in UNWIRED is understood.
+#
+# `grpo` briefly had a third kernel of its own, on the reasoning that pairing
+# it with gpt-oss was what broke it: it failed paired and had passed alone,
+# so the pairing looked like the variable. Running it ALONE again
+# (unsloth-t4-ci-c98f14be) reproduced the paired failure exactly -- same
+# stack, same 13.8GB peak, same engine_built false. So the pairing was never
+# the variable and that reasoning was wrong; one contrasting observation was
+# not enough to blame a shared host. The leg is unwired rather than
+# re-paired, because a leg that passes one session in three cannot tell CI
+# anything either way.
 KERNELS: tuple[tuple[str, ...], ...] = (
     ("control", "canary"),
-    ("gptoss", "grpo"),
+    ("gptoss", "frontier"),
 )
 
 
