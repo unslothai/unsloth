@@ -86,7 +86,14 @@ def _with_free(monkeypatch, save_mod, free_gb):
     return usage
 
 
-def _reclaim(save_mod, merge, gguf, bases, quant_methods = ("q4_k_m",), **kwargs):
+def _reclaim(
+    save_mod,
+    merge,
+    gguf,
+    bases,
+    quant_methods = ("q4_k_m",),
+    **kwargs,
+):
     """Call the helper the way `save_to_gguf` does for a merge it wrote itself.
 
     `merge_is_disposable` defaults to off in the helper so that a caller who
@@ -147,10 +154,7 @@ def test_nothing_to_quantize_frees_nothing(tmp_path, monkeypatch, save_mod):
 def test_a_missing_directory_is_not_an_error(tmp_path, monkeypatch, save_mod):
     """It runs to make an export succeed and must never be what fails it."""
     _with_free(monkeypatch, save_mod, 1)
-    assert (
-        _reclaim(save_mod, str(tmp_path / "gone"), str(tmp_path), [])
-        == 0
-    )
+    assert _reclaim(save_mod, str(tmp_path / "gone"), str(tmp_path), []) == 0
 
 
 def test_an_unreadable_disk_declines_rather_than_deleting(tmp_path, monkeypatch, save_mod):
@@ -207,7 +211,10 @@ def test_a_reused_checkpoint_is_never_reclaimed(tmp_path, monkeypatch, save_mod)
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
     freed = save_mod._free_merge_if_disk_is_tight(
-        merge, gguf, bases, quant_methods = ["q4_k_m"],
+        merge,
+        gguf,
+        bases,
+        quant_methods = ["q4_k_m"],
     )
     assert freed == 0
     assert [f for f in os.listdir(merge) if f.endswith(".safetensors")]
@@ -304,13 +311,17 @@ def test_a_caller_can_keep_a_directory_it_owns(tmp_path, monkeypatch, save_mod):
     monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakeModel)
     model = _FakeModel("some-org/some-model")
     seen = _run_export(
-        monkeypatch, save_mod, tmp_path, model, merge_is_disposable = False,
+        monkeypatch,
+        save_mod,
+        tmp_path,
+        model,
+        merge_is_disposable = False,
     )
     assert seen["merge_is_disposable"] is False
     assert generic, "the PEFT branch should have merged through unsloth_generic_save"
-    assert "merge_is_disposable" not in generic, (
-        "the 16-bit merge does not take this argument; forwarding it is a TypeError"
-    )
+    assert (
+        "merge_is_disposable" not in generic
+    ), "the 16-bit merge does not take this argument; forwarding it is a TypeError"
 
 
 def test_the_sentence_transformer_export_keeps_its_module_directory(monkeypatch, tmp_path):
@@ -329,7 +340,8 @@ def test_the_sentence_transformer_export_keeps_its_module_directory(monkeypatch,
             return types.SimpleNamespace(auto_model = object())
 
     monkeypatch.setattr(
-        st, "unsloth_save_pretrained_gguf",
+        st,
+        "unsloth_save_pretrained_gguf",
         lambda *a, **kw: (seen.update(kw), {"gguf_files": []})[1],
     )
     st._save_pretrained_gguf(_FakeST(), str(tmp_path / "st"))
@@ -404,7 +416,8 @@ def test_a_roomy_output_disk_is_not_called_full_by_a_tight_cwd(monkeypatch, save
     tight = types.SimpleNamespace(total = 0, used = 0, free = 1 * GB)
     roomy = types.SimpleNamespace(total = 0, used = 0, free = 400 * GB)
     monkeypatch.setattr(
-        save_mod.shutil, "disk_usage",
+        save_mod.shutil,
+        "disk_usage",
         lambda path: roomy if str(path) == "/output" else tight,
     )
     exc = RuntimeError("llama-quantize: unknown model architecture")

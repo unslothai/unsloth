@@ -3544,9 +3544,10 @@ def _free_merge_if_disk_is_tight(
     # Every output lands on disk and stays there, so the passes add up.
     # Overestimating costs a deletion that was not strictly required;
     # underestimating costs the export.
-    needed = base_bytes * sum(
-        _gguf_output_size_ratio(m, first_conversion) for m in quant_methods
-    ) + _DISK_HEADROOM_BYTES
+    needed = (
+        base_bytes * sum(_gguf_output_size_ratio(m, first_conversion) for m in quant_methods)
+        + _DISK_HEADROOM_BYTES
+    )
     try:
         free = shutil.disk_usage(target_directory).free
     except OSError:
