@@ -449,7 +449,7 @@ def test_lint_rejects_a_non_mapping_pull_request_value(tmp_path, value):
         "./python3 scripts/lint_workflow_triggers.py",
         "bin/python3 scripts/lint_workflow_triggers.py",
         # A substitution in an option value runs before python does.
-        "python3 -W \"$(touch pwned)\" scripts/lint_workflow_triggers.py",
+        'python3 -W "$(touch pwned)" scripts/lint_workflow_triggers.py',
     ],
     ids = ["relative-interpreter", "repo-path-interpreter", "expansion-in-value"],
 )

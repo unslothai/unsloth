@@ -129,7 +129,7 @@ def _classify_lint_line(line: str) -> tuple[bool, str | None]:
         if args[i] in _OPTS_WITH_VALUE:
             value = args[i + 1] if i + 1 < len(args) else ""
             if any(op in value for op in _SHELL_OPERATORS):
-                return False, None      # a substitution runs before python
+                return False, None  # a substitution runs before python
             i += 2
         elif args[i] in _SAFE_OPTS:
             i += 1
