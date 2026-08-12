@@ -109,7 +109,9 @@ import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "./presets/prese
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
+
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
@@ -658,8 +660,9 @@ export function SharedComposer({
   const imageUnavailableReason = getImageInputUnavailableReason({
     activeModel,
     isExternalModel,
-    externalSupportsVision: providerTypeSupportsVision(
+    externalSupportsVision: providerModelSupportsVision(
       selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
     ),
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
@@ -785,11 +788,14 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
-  // Disable only when a loaded model can't run it; with no model the toggle
-  // can still be pre-selected, matching Web search/Code/MCP.
-  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
-  const showRagPill = !isExternalModel;
+  const externalUsesStudioTools =
+    providerModelSupportsStudioTools(
+      selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
+    ) === true;
+  const ragDisabled =
+    modelLoaded && ((!externalUsesStudioTools && isExternalModel) || !supportsTools);
+  const showRagPill = !isExternalModel || externalUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
   // collapse too: the labelled row is wider than a phone-width composer.

@@ -12,6 +12,36 @@ import re
 from typing import Any
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "openai_codex": {
+        "display_name": "ChatGPT / Codex subscription",
+        "base_url": "https://chatgpt.com/backend-api",
+        "default_models": [
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ],
+        "model_capabilities": {
+            "gpt-5.3-codex-spark": {"vision": False, "studio_tools": True},
+            "gpt-5.4": {"vision": True, "studio_tools": True},
+            "gpt-5.4-mini": {"vision": True, "studio_tools": True},
+            "gpt-5.5": {"vision": True, "studio_tools": True},
+            "gpt-5.6-luna": {"vision": True, "studio_tools": True},
+            "gpt-5.6-sol": {"vision": True, "studio_tools": True},
+            "gpt-5.6-terra": {"vision": True, "studio_tools": True},
+        },
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_kind": "chatgpt_oauth",
+        "base_url_editable": False,
+        "model_ids_editable": False,
+        "model_list_mode": "curated",
+        "notes": "Personal ChatGPT subscription via the Codex Responses endpoint.",
+    },
     "openai": {
         "display_name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
@@ -374,10 +404,14 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "display_name": info["display_name"],
                 "base_url": info["base_url"],
                 "default_models": info["default_models"],
+                "model_capabilities": info.get("model_capabilities", {}),
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
                 "model_list_mode": info.get("model_list_mode", "remote"),
+                "auth_kind": info.get("auth_kind", "api_key"),
+                "base_url_editable": info.get("base_url_editable", True),
+                "model_ids_editable": info.get("model_ids_editable", True),
             }
         )
     return result
