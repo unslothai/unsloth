@@ -2085,6 +2085,11 @@ $HipSdkInstalled = $false   # HIP SDK binary found (independent of device access
 $ROCmGpuLabel = $null
 $script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
+# Beside ROCmGfxArch, NOT inside the `-not $HasNvidiaSmi` block below: the ROCm
+# summary reads this unconditionally, so an NVIDIA host (where AMD detection never
+# runs) would hit an undefined variable and abort under a caller's Set-StrictMode.
+# Assigning here also clears a stale value on a repeated dot-sourced invocation.
+$script:ROCmUnsupportedGfxArch = $null
 # APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
 # enumerates the APU first, so an index-0 pick reads the iGPU's arch and the dGPU never
 # gets its wheels (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). In sync with

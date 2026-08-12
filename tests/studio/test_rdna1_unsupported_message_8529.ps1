@@ -233,6 +233,35 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     Check "the resolver feeds the variable the arms read" ($src -match 'ROCmUnsupportedGfxArch\s*=\s*(\$row\.A|Get-GfxArchFromGpuName)')
 }
 
+# studio/setup.ps1 reads $script:ROCmUnsupportedGfxArch in the unconditional ROCm
+# summary, so it must be initialised OUTSIDE the `-not $HasNvidiaSmi` AMD-detection
+# block. Left inside, an NVIDIA host never defines it and a caller's Set-StrictMode
+# turns the summary into an aborting undefined-variable error (unslothai#8529).
+$setupSrc = (Get-Content -Raw (Join-Path $root "studio/setup.ps1")) -replace "`r`n", "`n"
+# Ask the parser, not the text: the file has three `-not $HasNvidiaSmi` blocks, so a
+# line-order check picks the wrong one, and brace counting trips over braces in strings
+# and comments. The invariant is simply that one assignment is NOT nested in any
+# conditional, i.e. it runs on every host including NVIDIA ones.
+$setupAst = [System.Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $root "studio/setup.ps1"), [ref]$null, [ref]$null)
+$assignments = $setupAst.FindAll({
+    param($n)
+    $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $n.Left.Extent.Text -eq '$script:ROCmUnsupportedGfxArch'
+}, $true)
+Check "the unsupported-arch assignments were found" ($assignments.Count -gt 0)
+$unconditional = @($assignments | Where-Object {
+    $p = $_.Parent
+    $nested = $false
+    while ($null -ne $p) {
+        if ($p -is [System.Management.Automation.Language.IfStatementAst]) { $nested = $true; break }
+        $p = $p.Parent
+    }
+    -not $nested
+})
+Check "the unsupported-arch state is initialised outside every conditional" ($unconditional.Count -gt 0)
+
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green
