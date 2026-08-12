@@ -39,9 +39,8 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio MCP provider is a command the run would spawn on this host, so only a
-# UI session may supply one. Annotated rather than a Depends default, so a direct
-# call gets False.
+# A stdio provider is a command this host would run, so only a UI session may
+# supply one. Annotated, not a Depends default, so a direct call gets False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 

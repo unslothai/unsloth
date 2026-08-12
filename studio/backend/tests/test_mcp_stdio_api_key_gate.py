@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A stdio MCP server runs a local command as the backend user, outside the
-python/terminal sandbox. sk-unsloth API keys authenticate the same routes the UI
-uses, so without a credential-class check a delegated key is arbitrary local
-execution. These tests pin that only a UI session may define a local command,
-and that http(s) MCP servers stay fully usable from an API key.
-
-The transport is never reached in the refused cases: list_tools_async is stubbed
-to fail the test if called, so a gate placed after the probe would not pass.
+"""stdio MCP runs a local command as the backend user, outside the sandbox, and
+sk-unsloth API keys authenticate the same routes the UI uses. So these pin that
+only a UI session may define a command, and that http(s) MCP stays usable from an
+API key. list_tools_async is stubbed to fail if called, so a gate placed after the
+probe would not pass.
 """
 
 import asyncio

@@ -168,7 +168,7 @@ def _validate_recipe_runtime_support(recipe: dict[str, Any], model_providers: li
 
 def recipe_has_stdio_mcp(recipe: dict[str, Any]) -> bool:
     """True when the recipe asks for a local (stdio) MCP provider, i.e. a command
-    this host would run. Routes use it to keep that behind a UI session."""
+    this host would run. Routes gate on it to keep that behind a UI session."""
     providers = recipe.get("mcp_providers") or []
     if not isinstance(providers, list):
         return False

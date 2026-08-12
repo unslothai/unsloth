@@ -46,10 +46,9 @@ logger = structlog.get_logger(__name__)
 
 router = APIRouter()
 
-# A stdio MCP server runs a local command, so only a UI session may define one (an
-# sk-unsloth API key keeps full http(s) access). Annotated rather than a Depends
-# default: the routes are also called directly by the unit tests, where a Depends
-# object as the default would be truthy and read as "API key".
+# Only a UI session may define a local command; API keys keep http(s) MCP.
+# Annotated, not a Depends default: these routes are also called directly by the
+# tests, where a Depends object is truthy and would read as "API key".
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
@@ -207,9 +206,9 @@ async def update_mcp_server(
     changes = _changes_from_payload(payload)
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
-    # Both directions: an API key may neither point a row at a local command nor
-    # edit an existing stdio row (its env, name or enabled flag). Before any write,
-    # OAuth cleanup, cache eviction or session close, so a refusal changes nothing.
+    # Both directions, so an API key can neither repoint an http row at a command
+    # nor edit a stdio row's env/name/enabled flag. Before every side effect, so a
+    # refusal leaves the row, its OAuth tokens, cache and sessions untouched.
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
@@ -326,8 +325,8 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
-            # Per entry, inside the same boundary: an API-key import of a mixed
-            # config still creates its http entries and reports the stdio ones.
+            # Per entry, so an API-key import of a mixed config still creates its
+            # http entries and reports the stdio ones.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
         except HTTPException as exc:
@@ -362,8 +361,8 @@ async def test_mcp_server(
     # frontend's create-form pre-flight gets the same error semantics as the
     # save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
-    # This probes an unstored, caller-supplied address, so the gate must land
-    # before list_tools_async -- after it, the process has already started.
+    # Caller-supplied and unstored, so the gate has to land before
+    # list_tools_async -- after it the process has already started.
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
