@@ -33,8 +33,9 @@ from core.inference.tools import (
 )
 from models.inference import ChatCompletionRequest, ChatCountTokensRequest
 from routes.inference import (
-    _full_access_tip,
+    _append_to_codex_instructions,
     _build_tool_action_nudge,
+    _full_access_tip,
     _select_request_tools,
 )
 
@@ -115,19 +116,23 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
     # _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize
     # still heals these onto the workdir under Full access. A blanket "absolute
     # paths resolve" would have the model report a write that went elsewhere.
-    if platform != "win32":
-        assert "/mnt/data" in full
-        # sitecustomize is a CPython startup hook: it patches python (and any
-        # python terminal launches), while a plain shell redirect gets nothing.
-        if tool_name == "python":
-            # Measured: parent exists -> real path; parent missing -> <cwd>/base.
-            # So the promise has to be conditional, never blanket.
-            assert "absolute paths under a directory that exists do resolve" in full
-            assert "silently redirects it into the working directory" in full
-            assert "absolute paths on the machine running Unsloth Studio do resolve" not in full
-        else:
-            assert "redirect" not in full
-            assert "write to the working directory instead" in full
+    # The clause is per tool on BOTH platforms: the split is the shim, not the OS.
+    # sitecustomize is a CPython startup hook, so it patches python (and any
+    # python the terminal launches) wherever it runs, while a plain shell gets
+    # nothing. Measured: parent exists -> real path; parent missing -> <cwd>/base,
+    # unless that name is taken, where it raises.
+    if tool_name == "python":
+        assert "absolute paths under a directory that exists do resolve" in full
+        assert "redirected into the working directory under the same base name" in full
+        assert "fails outright if that name is already taken" in full
+    else:
+        assert "absolute paths do resolve, exactly as the shell resolves them" in full
+        assert "redirect" not in full
+    # No categorical claim about the convention paths in either: on a host where
+    # /mnt/data is a real mount the shim never shadows it, so "not real" is wrong,
+    # and the parent-directory rule already covers the absent case.
+    assert "/mnt/data" not in full
+    assert "not real there" not in full
     # True in both modes, so untouched.
     assert "persists for this conversation" in full
     assert "download link" in full
@@ -307,6 +312,37 @@ def _count_request(**kwargs) -> ChatCountTokensRequest:
         enabled_tools = ["python", "terminal"],
         **kwargs,
     )
+
+
+# ── Codex studio-tools instructions ───────────────────────────────────
+
+
+def test_codex_instructions_skip_a_developer_message():
+    """_responses_input folds only `system` turns into the Responses
+    instructions and drops every other role bar user/assistant/tool, so a nudge
+    appended to a `developer` turn would never reach the model. `developer` is an
+    accepted ChatMessage role, so this shape is reachable."""
+    messages = [
+        {"role": "developer", "content": "house style"},
+        {"role": "user", "content": "hi"},
+    ]
+    out = _append_to_codex_instructions(messages, "NUDGE")
+    assert out[0] == {"role": "system", "content": "NUDGE"}
+    assert out[1] == messages[0]
+    assert messages[0]["content"] == "house style"
+
+
+def test_codex_instructions_extend_an_existing_system_message():
+    messages = [{"role": "system", "content": "base"}, {"role": "user", "content": "hi"}]
+    out = _append_to_codex_instructions(messages, "NUDGE")
+    assert out[0]["content"] == "base\n\nNUDGE"
+    assert len(out) == 2
+    assert messages[0]["content"] == "base"
+
+
+def test_codex_instructions_are_a_no_op_without_an_addition():
+    messages = [{"role": "user", "content": "hi"}]
+    assert _append_to_codex_instructions(messages, "") is messages
 
 
 def test_count_request_reads_the_flag_when_omitted():

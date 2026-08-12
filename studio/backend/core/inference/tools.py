@@ -8951,10 +8951,13 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # dropped, not reworded: where the code runs is said once, by the paths note
     # below, which both tools carry.
     ("Execute Python code in a sandbox and", "Execute Python code and"),
-    # POSIX: real absolute paths DO resolve with the sandbox off, so a blanket
-    # denial is wrong -- but so is a blanket promise, and by different amounts
-    # per tool, so the clause itself comes from _FULL_ACCESS_POSIX_CLAUSE.
-    ("; absolute paths like /mnt/data or /tmp/outputs do not exist.", "{clause}"),
+    # POSIX: a blanket denial is wrong with the sandbox off, and so is a blanket
+    # promise. POSIX has no sentence saying where the code runs, so it is added
+    # here; Windows already has one.
+    (
+        "; absolute paths like /mnt/data or /tmp/outputs do not exist.",
+        ". This runs on the machine running Unsloth Studio.{clause}",
+    ),
     # Windows already says where the code runs and never denies absolute paths,
     # so there is nothing false to remove; state the capability instead. "the
     # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
@@ -8962,39 +8965,41 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # Studio, which is then not the device the user is looking at.
     (
         " You are on Windows, and this runs on the user's own machine.",
-        " You are on Windows, and this runs on the machine running Unsloth Studio. "
-        "The code sandbox is disabled, so absolute paths there do resolve.",
+        " You are on Windows, and this runs on the machine running Unsloth Studio.{clause}",
     ),
 )
 
 
-# What "absolute paths work" actually means under bypass, per tool.
+# What "the sandbox is off" actually means for paths, per tool. Shared by both
+# platform substitutions, because the split is the shim, not the OS.
 #
 # _build_bypass_env keeps _SANDBOX_SITE_DIR on PYTHONPATH, so sitecustomize.py
-# still loads. It is a CPython startup hook, which is what splits the two tools:
-# it patches the python tool (and any Python the terminal tool launches), while a
-# plain shell redirect gets nothing. Measured against the shim:
+# still loads. It is a CPython startup hook, which is what splits the two tools.
+# Measured against it:
 #
 #   python, parent exists   -> writes the real absolute path
-#   python, parent missing  -> CREATE is redirected to <cwd>/<basename>, and the
-#                              requested path is never made (this covers the
-#                              /mnt/data family and any other invented root)
-#   terminal, parent missing -> the shell just fails, no redirect
+#   python, parent missing  -> CREATE is redirected to <cwd>/<basename> and the
+#                              requested path is never made, EXCEPT when that
+#                              name is already taken in the workdir, where the
+#                              anti-clobber branch declines and open raises
+#   python, prefix present  -> a real /mnt/data mount is never shadowed, so the
+#                              rule is the parent directory, not a prefix list
+#   terminal                -> no shim in a plain shell, so the shell's own rules
 #
-# So python must not promise that every absolute path resolves (the model would
-# report a write that went elsewhere), and terminal must not promise a redirect
-# it never gets (it would report an errored command as having landed).
-_FULL_ACCESS_POSIX_CLAUSE = {
+# Hence no categorical claim about /mnt/data in either: on a host where it is a
+# real mount, Full access can read and write it like any other directory, and
+# the general parent-directory rule already covers it when it is absent.
+_FULL_ACCESS_CLAUSE = {
     "python": (
-        ". The code sandbox is disabled, so absolute paths under a directory that "
-        "exists do resolve on the machine running Unsloth Studio; creating a file "
-        "under a directory that does not exist, /mnt/data and /tmp/outputs "
-        "included, silently redirects it into the working directory instead."
+        " The code sandbox is disabled, so absolute paths under a directory that "
+        "exists do resolve. Creating a file under a directory that does not exist "
+        "is redirected into the working directory under the same base name, and "
+        "fails outright if that name is already taken there, so say where a file "
+        "actually landed rather than assuming the path you asked for."
     ),
     "terminal": (
-        ". The code sandbox is disabled, so absolute paths on the machine running "
-        "Unsloth Studio do resolve; /mnt/data and /tmp/outputs are still not real "
-        "there, so write to the working directory instead."
+        " The code sandbox is disabled, so absolute paths do resolve, exactly as "
+        "the shell resolves them."
     ),
 }
 
@@ -9011,7 +9016,7 @@ def _to_full_access(description: str, tool_name: str) -> str:
     workdir is the per-session dir either way (_build_bypass_env repoints HOME /
     TMPDIR / TEMP / TMP at it), and so is the download-link note.
     """
-    clause = _FULL_ACCESS_POSIX_CLAUSE[tool_name]
+    clause = _FULL_ACCESS_CLAUSE[tool_name]
     for sandboxed, full_access in _FULL_ACCESS_SUBSTITUTIONS:
         description = description.replace(sandboxed, full_access.format(clause = clause))
     return description

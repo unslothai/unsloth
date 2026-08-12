@@ -11201,7 +11201,9 @@ async def _proxy_to_external_provider(
                     full_access = True,
                     full_access_only = True,
                 )
-                chat_messages = _append_to_system_message(chat_messages, _codex_full_access_nudge)
+                chat_messages = _append_to_codex_instructions(
+                    chat_messages, _codex_full_access_nudge
+                )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -17960,6 +17962,28 @@ def _validate_anthropic_client_tools(tools) -> None:
                 status_code = 400,
                 detail = "Client tool is missing required field 'name'.",
             )
+
+
+def _append_to_codex_instructions(messages: list[dict], addition: str) -> list[dict]:
+    """Append text to the leading system message, or prepend one.
+
+    Not _append_to_system_message: that one also accepts a `developer` turn, but
+    _responses_input folds only `system` turns into the Responses instructions
+    and drops every other role bar user/assistant/tool, so text parked on a
+    developer message never reaches the model. `developer` is an accepted
+    ChatMessage role, so a request can carry one and no system turn at all.
+    """
+    if not addition:
+        return messages
+    copied = [dict(msg) for msg in messages]
+    for msg in copied:
+        if msg.get("role") != "system":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = content.rstrip() + "\n\n" + addition
+            return copied
+    return [{"role": "system", "content": addition}, *copied]
 
 
 def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]:
