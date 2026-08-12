@@ -109,8 +109,11 @@ def test_the_fake_output_really_does_reproduce_the_trap():
     out = FakeModelOutput(logits = "L", hidden_states = ("a", "b", "c"))
     out.hidden_states = None
     assert out.hidden_states is None, "the attribute should have taken the None"
-    assert out["hidden_states"] == ("a", "b", "c"), (
-        "the mapping entry must survive -- that is the bug being guarded")
+    assert out["hidden_states"] == (
+        "a",
+        "b",
+        "c",
+    ), "the mapping entry must survive -- that is the bug being guarded"
     with pytest.raises(Exception):
         out.pop("hidden_states")
 
@@ -125,7 +128,8 @@ def test_the_spare_layers_leave_the_mapping_not_just_the_attribute():
     assert out.hidden_states is None
     assert out["hidden_states"] is None, (
         "accelerate's send_to_device iterates .items(); a stale tuple here is "
-        "copied to the other device")
+        "copied to the other device"
+    )
     assert dict(out.items())["hidden_states"] is None
 
 
@@ -140,6 +144,7 @@ def test_a_plain_object_output_is_handled_too():
     class Out:
         logits: str
         hidden_states: tuple
+
     out = Out(logits = "L", hidden_states = ("a", "b"))
     _drop_spare_hidden_states(out)
     assert out.hidden_states is None
@@ -153,12 +158,15 @@ def test_an_output_without_hidden_states_is_left_alone():
 
 def test_an_unassignable_output_does_not_take_the_step_down():
     """The caller already has the layer it needs; this is not worth raising."""
+
     class Frozen:
         __slots__ = ()
+
         @property
         def hidden_states(self):
             return ("a",)
-    _drop_spare_hidden_states(Frozen())      # must not raise
+
+    _drop_spare_hidden_states(Frozen())  # must not raise
 
 
 # --------------------------------------------------------------------------
@@ -170,17 +178,25 @@ def _sig(fn):
 
 
 def test_the_modern_kwarg_is_pinned_to_one():
-    def forward(input_ids = None, logits_to_keep = 0, **kwargs): ...
+    def forward(
+        input_ids = None,
+        logits_to_keep = 0,
+        **kwargs,
+    ): ...
+
     kwargs = {"input_ids": "x"}
     name = _minimise_logits_kwarg(_sig(forward), (), kwargs)
     assert name == "logits_to_keep"
-    assert kwargs["logits_to_keep"] == 1, (
-        "0 means every position, which is the whole cost being avoided")
+    assert (
+        kwargs["logits_to_keep"] == 1
+    ), "0 means every position, which is the whole cost being avoided"
 
 
 def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
     """transformers 4.57.6 spells it num_logits_to_keep."""
+
     def forward(input_ids = None, num_logits_to_keep = 0): ...
+
     kwargs = {"input_ids": "x"}
     name = _minimise_logits_kwarg(_sig(forward), (), kwargs)
     assert name == "num_logits_to_keep"
@@ -189,7 +205,12 @@ def test_the_legacy_kwarg_is_used_when_that_is_what_the_model_takes():
 
 
 def test_the_modern_name_wins_when_a_forward_takes_both():
-    def forward(input_ids = None, logits_to_keep = 0, num_logits_to_keep = 0): ...
+    def forward(
+        input_ids = None,
+        logits_to_keep = 0,
+        num_logits_to_keep = 0,
+    ): ...
+
     kwargs = {"input_ids": "x"}
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) == "logits_to_keep"
     assert "num_logits_to_keep" not in kwargs
@@ -197,6 +218,7 @@ def test_the_modern_name_wins_when_a_forward_takes_both():
 
 def test_a_caller_supplied_value_is_overridden_because_we_discard_the_logits():
     def forward(input_ids = None, logits_to_keep = 0): ...
+
     kwargs = {"input_ids": "x", "logits_to_keep": 512}
     _minimise_logits_kwarg(_sig(forward), (), kwargs)
     assert kwargs["logits_to_keep"] == 1
@@ -204,7 +226,9 @@ def test_a_caller_supplied_value_is_overridden_because_we_discard_the_logits():
 
 def test_a_positional_value_is_left_alone():
     """Passing it positionally and again by keyword is a TypeError."""
+
     def forward(input_ids = None, logits_to_keep = 0): ...
+
     kwargs = {}
     name = _minimise_logits_kwarg(_sig(forward), ("x", 512), kwargs)
     assert name is None
@@ -213,6 +237,7 @@ def test_a_positional_value_is_left_alone():
 
 def test_a_forward_that_cannot_take_it_is_left_alone():
     def forward(input_ids = None, attention_mask = None): ...
+
     kwargs = {"input_ids": "x"}
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) is None
     assert kwargs == {"input_ids": "x"}
@@ -220,20 +245,32 @@ def test_a_forward_that_cannot_take_it_is_left_alone():
 
 def test_var_keyword_counts_as_accepting_it():
     def forward(input_ids = None, **kwargs): ...
+
     kwargs = {"input_ids": "x"}
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) == "logits_to_keep"
 
 
 def test_a_forward_given_labels_keeps_its_logits():
     """A model that computes its own loss needs the real thing."""
-    def forward(input_ids = None, labels = None, logits_to_keep = 0): ...
+
+    def forward(
+        input_ids = None,
+        labels = None,
+        logits_to_keep = 0,
+    ): ...
+
     kwargs = {"input_ids": "x", "labels": "y"}
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) is None
     assert "logits_to_keep" not in kwargs
 
 
 def test_labels_of_none_does_not_count_as_labels():
-    def forward(input_ids = None, labels = None, logits_to_keep = 0): ...
+    def forward(
+        input_ids = None,
+        labels = None,
+        logits_to_keep = 0,
+    ): ...
+
     kwargs = {"input_ids": "x", "labels": None}
     assert _minimise_logits_kwarg(_sig(forward), (), kwargs) == "logits_to_keep"
 
@@ -244,22 +281,42 @@ def test_labels_of_none_does_not_count_as_labels():
 class _Recorder:
     """A model whose lm_head cost is proportional to the positions it is asked for."""
 
-    def __init__(self, n_layers = 4, seq = 8, accepts = "logits_to_keep"):
+    def __init__(
+        self,
+        n_layers = 4,
+        seq = 8,
+        accepts = "logits_to_keep",
+    ):
         self.n_layers, self.seq, self.accepts = n_layers, seq, accepts
         self.projected_positions = None
         self.calls = 0
         if accepts == "logits_to_keep":
-            def forward(input_ids = None, logits_to_keep = 0,
-                        output_hidden_states = False, return_dict = False):
+
+            def forward(
+                input_ids = None,
+                logits_to_keep = 0,
+                output_hidden_states = False,
+                return_dict = False,
+            ):
                 return self._run(logits_to_keep, output_hidden_states)
         elif accepts == "num_logits_to_keep":
-            def forward(input_ids = None, num_logits_to_keep = 0,
-                        output_hidden_states = False, return_dict = False):
+
+            def forward(
+                input_ids = None,
+                num_logits_to_keep = 0,
+                output_hidden_states = False,
+                return_dict = False,
+            ):
                 return self._run(num_logits_to_keep, output_hidden_states)
         else:
-            def forward(input_ids = None,
-                        output_hidden_states = False, return_dict = False):
+
+            def forward(
+                input_ids = None,
+                output_hidden_states = False,
+                return_dict = False,
+            ):
                 return self._run(0, output_hidden_states)
+
         self.forward = forward
 
     def _run(self, keep, output_hidden_states):
@@ -268,9 +325,9 @@ class _Recorder:
         self.projected_positions = kept
         return FakeModelOutput(
             logits = [["logit"] * 202048] * kept,
-            hidden_states = tuple(
-                f"layer{i}" for i in range(self.n_layers + 1)
-            ) if output_hidden_states else None,
+            hidden_states = tuple(f"layer{i}" for i in range(self.n_layers + 1))
+            if output_hidden_states
+            else None,
         )
 
 
@@ -280,14 +337,14 @@ def hidden_states_on(monkeypatch):
 
 
 @pytest.mark.parametrize("accepts", ["logits_to_keep", "num_logits_to_keep"])
-def test_the_wrapper_asks_for_one_position_not_the_whole_sequence(
-        hidden_states_on, accepts):
+def test_the_wrapper_asks_for_one_position_not_the_whole_sequence(hidden_states_on, accepts):
     model = _Recorder(accepts = accepts)
-    assert _install(model) is not False or True     # install, whatever it returns
+    assert _install(model) is not False or True  # install, whatever it returns
     model.forward(input_ids = "x")
     assert model.projected_positions == 1, (
         f"projected {model.projected_positions} of {model.seq} positions over the "
-        f"full vocabulary, then discarded them")
+        f"full vocabulary, then discarded them"
+    )
 
 
 def test_the_wrapper_returns_the_last_layer_as_logits(hidden_states_on):
@@ -301,8 +358,9 @@ def test_the_wrapper_leaves_no_spare_layers_on_the_output(hidden_states_on):
     model = _Recorder()
     _install(model)
     out = model.forward(input_ids = "x")
-    assert out["hidden_states"] is None, (
-        "5 layer tensors would each be copied to the input device by accelerate")
+    assert (
+        out["hidden_states"] is None
+    ), "5 layer tensors would each be copied to the input device by accelerate"
 
 
 def test_a_model_that_takes_no_such_kwarg_still_gets_hidden_states(hidden_states_on):
@@ -318,8 +376,9 @@ def test_nothing_changes_when_hidden_states_were_not_asked_for(monkeypatch):
     model = _Recorder()
     _install(model)
     out = model.forward(input_ids = "x")
-    assert model.projected_positions == model.seq, (
-        "outside the hidden-states path this must be the untouched forward")
+    assert (
+        model.projected_positions == model.seq
+    ), "outside the hidden-states path this must be the untouched forward"
     assert out.logits != "layer4"
 
 
@@ -329,8 +388,13 @@ def test_a_forward_that_rejects_the_value_is_retried_without_it(hidden_states_on
     seen = []
 
     class Fussy:
-        def forward(self, input_ids = None, logits_to_keep = 0,
-                    output_hidden_states = False, return_dict = False):
+        def forward(
+            self,
+            input_ids = None,
+            logits_to_keep = 0,
+            output_hidden_states = False,
+            return_dict = False,
+        ):
             seen.append(logits_to_keep)
             if logits_to_keep == 1:
                 raise TypeError("logits_to_keep must be 0 for this model")
@@ -348,9 +412,15 @@ def test_a_forward_that_rejects_the_value_is_retried_without_it(hidden_states_on
 
 def test_an_unrelated_type_error_still_propagates(hidden_states_on):
     class Broken:
-        def forward(self, input_ids = None, logits_to_keep = 0,
-                    output_hidden_states = False, return_dict = False):
+        def forward(
+            self,
+            input_ids = None,
+            logits_to_keep = 0,
+            output_hidden_states = False,
+            return_dict = False,
+        ):
             raise TypeError("something else entirely")
+
     model = Broken()
     _install(model)
     with pytest.raises(TypeError, match = "something else entirely"):

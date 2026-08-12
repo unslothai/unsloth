@@ -1870,7 +1870,8 @@ def _drop_spare_hidden_states(outputs):
         # A frozen or exotic output object is not worth failing the step over;
         # the caller has already taken the layer it needs.
         logger.debug(
-            "Unsloth: could not drop spare GRPO hidden states.", exc_info = True,
+            "Unsloth: could not drop spare GRPO hidden states.",
+            exc_info = True,
         )
 
 
@@ -1924,7 +1925,9 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
         logits_kwarg = _minimise_logits_kwarg(
-            forward_signature, args, forward_kwargs,
+            forward_signature,
+            args,
+            forward_kwargs,
         )
         try:
             outputs = original_forward(*args, **forward_kwargs)
