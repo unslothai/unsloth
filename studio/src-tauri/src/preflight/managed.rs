@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 // 3: the cached capability gained studio_install_ok / studio_install_reason.
 const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
@@ -304,8 +303,14 @@ fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &Des
 
 async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(bin, args) else {
+        info!(
+            "Managed preflight probe {:?} has no managed interpreter to run",
+            args
+        );
+        return false;
+    };
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
@@ -351,10 +356,14 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
 
 async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "desktop-capabilities", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(
+        bin,
+        &["studio", "desktop-capabilities", "--json"],
+    ) else {
+        info!("Managed desktop-capabilities probe has no managed interpreter to run");
+        return None;
+    };
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);

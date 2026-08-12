@@ -51,19 +51,33 @@ def _reset_password_command() -> str:
     POSIX paths are shell-quoted. On Windows we use the bare absolute path only
     when it has no spaces (a quoted path differs between cmd and PowerShell);
     otherwise, or if the launcher can't be located, fall back to the PATH form.
+
+    Windows never names unsloth.exe here, present or not. Existing is not the
+    same as runnable: an Application Control policy leaves the generated,
+    unsigned unsloth.exe on disk and denies it at CreateProcess (issue #8490),
+    and a bare `unsloth` resolves to that same file because PATHEXT puts .EXE
+    ahead of the .cmd shim. Whoever is locked out of Studio is exactly who needs
+    this command to work, so it must not be the one a policy refuses. Preference
+    order is therefore the interpreter's module entry, which needs no quoting in
+    cmd or PowerShell, then `unsloth.cmd` -- spelling the extension is what stops
+    PATHEXT reaching for the executable.
     """
     try:
         bin_dir = os.path.dirname(os.path.abspath(sys.executable))
         if os.name == "nt":
-            exe = os.path.join(bin_dir, "unsloth.exe")
-            if os.path.isfile(exe) and " " not in exe:
-                return f"{exe} studio reset-password"
+            python = os.path.abspath(sys.executable)
+            if " " not in python:
+                return f"{python} -m unsloth_cli studio reset-password"
+            # A spaced interpreter path cannot be written unquoted, so fall
+            # through to the PATH form below.
         else:
             exe = os.path.join(bin_dir, "unsloth")
             if os.path.isfile(exe):
                 return f"{shlex.quote(exe)} studio reset-password"
     except Exception:
         pass
+    if os.name == "nt":
+        return "unsloth.cmd studio reset-password"
     return "unsloth studio reset-password"
 
 

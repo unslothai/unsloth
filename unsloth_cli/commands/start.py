@@ -1029,14 +1029,29 @@ def _start_studio_server(
 ) -> subprocess.Popen:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return it."""
     global _auto_served_server
-    unsloth = shutil.which("unsloth") or "unsloth"
+    # Windows goes through this interpreter rather than the launcher on PATH.
+    # shutil.which resolves `unsloth` to unsloth.exe (PATHEXT puts .EXE ahead of
+    # the .cmd shim), and that generated, unsigned executable is what an
+    # Application Control policy denies at CreateProcess (issue #8490) -- so on a
+    # locked-down machine a user who reached this CLI through unsloth.cmd or
+    # `python -m unsloth_cli` would still fail here. sys.executable is the
+    # interpreter already running this command, so the child gets the same
+    # environment the launcher would have given it.
+    if sys.platform == "win32":
+        # Local import: unsloth_cli.commands.studio imports at package init after
+        # this module, so a top-level import would be circular.
+        from unsloth_cli.commands.studio import _managed_cli_argv
+
+        launch_head = _managed_cli_argv(Path(sys.executable))
+    else:
+        launch_head = [shutil.which("unsloth") or "unsloth"]
     parsed = urlparse(base)
     # Tools default off = passthrough mode (relay the agent's own tools); --no-cloudflare =
     # loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging
     # travel via the child env below (version-agnostic) rather than new run flags that an
     # older re-exec'd run could mistake for llama-server args.
     command = [
-        unsloth,
+        *launch_head,
         "run",
         "-H",
         parsed.hostname or "127.0.0.1",

@@ -226,9 +226,12 @@ async fn exchange_desktop_secret(
 
 async fn provision_desktop_auth() -> Result<(), String> {
     let bin = crate::process::resolve_backend_binary()?;
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(["studio", "provision-desktop-auth"])
-        .stdout(std::process::Stdio::null())
+    let mut cmd = crate::process::build_managed_cli_command_tokio(
+        &bin,
+        &["studio", "provision-desktop-auth"],
+    )
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    cmd.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);

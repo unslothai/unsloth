@@ -752,7 +752,7 @@ def test_guard_and_mutex_precede_rollback_and_release_after_restore():
     cwd_venv_move = source.index("Move-Item -LiteralPath $CwdVenv", old_venv_move)
     restore = source.rindex("Restore-StudioVenvRollback")
     prompt = source.index("Start Unsloth Studio now?", restore)
-    autostart = source.index("Start-Process -FilePath $UnslothExe", prompt)
+    autostart = source.index("Start-Process -FilePath $VenvPython", prompt)
     release_runtime = source.rindex("Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]")
     release_install = source.rindex("Exit-StudioInstallMutex -Mutex $studioInstallMutex")
     wait_for_exit = source.rindex("$studioAutoStartProcess.WaitForExit()")
@@ -861,7 +861,7 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
         save,
     )
-    autostart = install_source.index("Start-Process -FilePath $UnslothExe", set_handoff)
+    autostart = install_source.index("Start-Process -FilePath $VenvPython", set_handoff)
     restore = install_source.index(
         "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $_runtimeGateHandoff",
         autostart,
@@ -874,7 +874,7 @@ def test_runtime_gate_handoff_covers_tauri_backend_and_installer_autostart():
         '$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"',
         setup_save,
     )
-    setup_invoke = install_source.index("& $UnslothExe @studioArgs", setup_set)
+    setup_invoke = install_source.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs", setup_set)
     setup_restore = install_source.index(
         "$env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff",
         setup_invoke,

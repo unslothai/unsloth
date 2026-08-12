@@ -171,6 +171,62 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
     return kwargs
 
 
+# The Windows `unsloth` entry point is a generated, unsigned executable, and
+# Application Control (AppLocker / WDAC / Smart App Control) denies it while the
+# signed interpreter beside it still runs. Reaching the CLI through that
+# interpreter therefore survives a policy no direct unsloth.exe launch can
+# (issue https://github.com/unslothai/unsloth/issues/8490).
+#
+# Byte-identical to WINDOWS_CLI_ENTRYPOINT in studio/src-tauri/src/process.rs and
+# to $script:UnslothCliTrampoline in install.ps1. Three things earn their place:
+#
+#   * The sys.path[:1] filter. `-c` puts the working directory on sys.path as ""
+#     and a console script never does, so without it a stray unsloth_cli/ beside
+#     the caller shadows the managed package (measured: it does). It removes only
+#     that entry, so it is a no-op under -P or PYTHONSAFEPATH where sys.path[0]
+#     is already something else.
+#   * argv[0] is assigned BEFORE the import, so unsloth_cli/__init__ sees the
+#     console-script name and applies its entry-point behaviour.
+#   * That name is also what typer prints in usage strings. Note it is `unsloth`,
+#     while the real Windows stub prints `unsloth.exe`, since click takes the
+#     basename of argv[0]. That one cosmetic difference is deliberate: matching it
+#     would mean baking a platform-specific name into a string three languages
+#     share.
+#
+# Deliberately no -I. It would imply -E and discard every PYTHON* variable, which
+# the console script honours: with PYTHONPROFILEIMPORTTIME=1 the stub emitted
+# 24,815 bytes of stderr and an -I trampoline emitted none. Stripping the one
+# extra path entry buys the same protection without that divergence.
+_WINDOWS_CLI_ENTRYPOINT = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; "
+    "sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()"
+)
+
+# CreateProcess refuses a program blocked by an Application Control policy with
+# ERROR_ACCESS_DISABLED_BY_POLICY, which Python surfaces as OSError.winerror.
+_ERROR_ACCESS_DISABLED_BY_POLICY = 1260
+
+
+def _managed_cli_argv(python: Path, *args: str) -> List[str]:
+    """argv that runs the managed `unsloth` CLI through *python*.
+
+    -X utf8 rather than PYTHONUTF8 so the encoding holds even for a caller that
+    scrubs the environment. No -I: see _WINDOWS_CLI_ENTRYPOINT for why isolation
+    is bought inside the trampoline instead. Same form and rationale as
+    build_managed_cli_command in studio/src-tauri/src/process.rs.
+    """
+    return [str(python), "-X", "utf8", "-c", _WINDOWS_CLI_ENTRYPOINT, *args]
+
+
+def _is_application_control_block(error: OSError) -> bool:
+    """True when Windows refused to start a program because a policy blocks it.
+
+    Distinct from a missing or corrupt executable: nothing ran, so the failure
+    says nothing about the program itself.
+    """
+    return getattr(error, "winerror", None) == _ERROR_ACCESS_DISABLED_BY_POLICY
+
+
 @contextlib.contextmanager
 def _studio_runtime_launch_guard(*, inherited: bool = False):
     guard = _studio_runtime_gate.studio_runtime_launch_guard(
@@ -2413,6 +2469,9 @@ def run(
         # Re-exec via the studio venv's `unsloth` console-script. Windows ships it as
         # unsloth.exe, so the bare name is never a file there and `unsloth run` aborted
         # with "venv missing 'unsloth' entry point" on a perfectly good install.
+        #
+        # On Windows the file is still what proves the venv has a CLI, but it is no
+        # longer what gets launched: see the launch_head below.
         studio_bin = studio_python.parent / (
             "unsloth.exe" if platform.system() == "Windows" else "unsloth"
         )
@@ -2469,8 +2528,16 @@ def run(
     )
 
     if not in_studio_venv:
+        # Windows launches the child through the venv interpreter rather than the
+        # console script it just validated: Application Control blocks the
+        # generated unsloth.exe on some machines, and the signed python.exe beside
+        # it is not blocked. POSIX keeps execing the script directly, which is what
+        # the os.execvp below needs anyway.
+        launch_head = (
+            _managed_cli_argv(studio_python) if sys.platform == "win32" else [str(studio_bin)]
+        )
         args = [
-            str(studio_bin),
+            *launch_head,
             "studio",
             "run",
             "--model",
@@ -3764,6 +3831,10 @@ class _WindowsLauncherUpdateTransaction:
     """Keep the managed Windows launcher recoverable during a Python update."""
 
     _VERSION_TIMEOUT_SECONDS = 10
+    # Sentinel rather than a message: _launcher_health_error matches on identity,
+    # so it can never be confused with a real diagnostic that happens to read the
+    # same way, and it never reaches a user.
+    _POLICY_BLOCKED = "an Application Control policy blocked the launcher"
     _RESTORE_ATTEMPTS = 3
 
     def __init__(self) -> None:
@@ -3965,6 +4036,17 @@ class _WindowsLauncherUpdateTransaction:
         candidate that fails --version must not stop the next one being tried,
         and a launcher already in place and working must not be replaced by a
         candidate that is merely PE-shaped.
+
+        Under Application Control that discrimination degrades to the PE-shape
+        check, because no candidate can be told apart by running it: every
+        --version attempt dies in CreateProcess. That is a real limitation and
+        not a hidden one -- a PE-shaped but corrupt copy can be left in place --
+        but it is also unavoidable, since the only way to tell a good stub from a
+        corrupt one is to start it. It is confined to the case where the launcher
+        was missing or truncated, since an intact one never reaches this loop:
+        _launcher_health_error asks the interpreter and reports healthy, and if
+        the interpreter says otherwise then no launcher copy could have fixed it
+        and returning False is the right answer anyway.
         """
         if self._launcher_health_error() is None:
             return True
@@ -3978,7 +4060,19 @@ class _WindowsLauncherUpdateTransaction:
             self._restore_from(candidates[0])
         return False
 
-    def _launcher_health_error(self) -> Optional[str]:
+    def _launcher_runs_error(self) -> Optional[str]:
+        """Whether THIS launcher file starts and answers --version.
+
+        Deliberately about the file, not about the CLI: it is the only check that
+        can catch a stub that is PE-shaped but corrupt, on every machine. Its
+        caller decides what a policy denial means.
+
+        The stub is probed first, and still is on a locked-down machine, which
+        costs one denied-launch event per update there. That is a log entry, not
+        a failure. Asking the interpreter instead would be quieter but blind: it
+        cannot see a corrupt launcher on ANY machine, including the overwhelming
+        majority that have no policy at all, which is the strictly worse trade.
+        """
         assert self.launcher is not None
         if not self._is_valid_pe(self.launcher):
             return "the updated launcher is missing or is not a non-empty PE file"
@@ -3993,9 +4087,61 @@ class _WindowsLauncherUpdateTransaction:
         except subprocess.TimeoutExpired:
             return f"the updated launcher timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
         except OSError as exc:
+            if _is_application_control_block(exc):
+                return self._POLICY_BLOCKED
             return f"the updated launcher could not run --version ({exc})"
         if result.returncode != 0:
             return f"the updated launcher returned {result.returncode} for --version"
+        return None
+
+    def _launcher_health_error(self) -> Optional[str]:
+        """Whether the update left a working CLI -- the question that matters.
+
+        Identical to _launcher_runs_error except when the launcher was denied by
+        an Application Control policy. That denial happens before Python starts,
+        so it says nothing about the update: the package can be perfectly
+        healthy. Ask the signed interpreter beside it instead, or every update on
+        such a machine reports failure and rolls a good install back (issue
+        #8490). A launcher that fails to start for any other reason is the
+        failure it always was.
+        """
+        error = self._launcher_runs_error()
+        if error is self._POLICY_BLOCKED:
+            return self._interpreter_health_error()
+        return error
+
+    def _interpreter_health_error(self) -> Optional[str]:
+        """Health of the managed CLI when the launcher itself cannot be started.
+
+        Answers the question validate_launcher actually has -- did the update
+        leave a working CLI? -- on a machine where --version on the launcher can
+        never succeed. Falls back to reporting the original block when there is
+        no interpreter to ask.
+        """
+        assert self.launcher is not None
+        python = self.launcher.parent / "python.exe"
+        if not python.is_file():
+            return (
+                "the updated launcher is blocked by an Application Control policy "
+                f"and there is no managed interpreter at {python} to ask instead"
+            )
+        try:
+            result = subprocess.run(
+                _managed_cli_argv(python, "--version"),
+                check = False,
+                capture_output = True,
+                timeout = self._VERSION_TIMEOUT_SECONDS,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                "the managed Python CLI timed out after "
+                f"{self._VERSION_TIMEOUT_SECONDS} seconds"
+            )
+        except OSError as exc:
+            return f"the managed Python CLI could not run --version ({exc})"
+        if result.returncode != 0:
+            return f"the managed Python CLI returned {result.returncode} for --version"
         return None
 
     @staticmethod

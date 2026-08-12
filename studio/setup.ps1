@@ -507,6 +507,26 @@ function Test-StudioHomeIsCustom {
         (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
 }
 
+# Is this bin\unsloth.cmd one install.ps1 wrote? Only then does it prove the root is
+# ours. The name alone is a plausible wrapper for anything built on unsloth, and the
+# caller uses the answer to decide whether a user-chosen venv may be deleted. The
+# trampoline is the marker; no other file carries it. Mirrored in install.ps1
+# (Test-UnslothCmdShimFile) and scripts/uninstall.ps1 (_IsUnslothCmdShim).
+function Test-UnslothCmdShimFile {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 8192) { return $false }
+        $text = [System.IO.File]::ReadAllText($Path)
+    } catch {
+        # Unreadable proves nothing, and "proves nothing" must not mean "deletable".
+        return $false
+    }
+    return ($text -like "*from unsloth_cli import app*")
+}
+
 # Shared default cache, or the custom Studio home's llama.cpp tree.
 function Get-ManagedLlamaCppDir {
     if (-not (Test-StudioHomeIsCustom)) {
@@ -1706,7 +1726,7 @@ function Write-LlamaFailureLog {
 }
 # Plain (no ANSI) form of a step/substep message on the OS stdout handle.
 # Write-Host on 5.1 goes through the Information stream, which does not survive
-# every install.ps1 -> unsloth.exe -> python -> powershell.exe chain.
+# every install.ps1 -> python -> powershell.exe chain.
 #
 # One half of an either/or: when redirected this is the ONLY sink. It used to
 # run in ADDITION to Write-Host, assuming that never reached the pipe. It does,
@@ -4129,7 +4149,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # Repair in place instead of wiping: the dependency pass force-reinstalls the torch trio from
     # the resolved index over this venv, the route an index-pin change and a cu* family change
     # already take above. Deleting is not an option here anyway -- install.ps1 invokes setup
-    # through the venv's own unsloth.exe, so python.exe is locked by the process running this.
+    # through the venv's own python.exe, which is therefore locked by the process running this.
     if ($shouldRebuild -and $InstallerManagedSetup) {
         substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
         substep "install.ps1 keeps a rollback copy of the previous environment until this run succeeds." "DarkGray"
@@ -4142,11 +4162,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
         # -PathType Leaf rejects a directory masquerading as the sentinel.
+        # The .cmd counts too, and for the same reason the uninstaller accepts it: a
+        # policy's quarantine can take the unsigned .exe and leave a root that is still
+        # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioHomeIsCustom -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir $StudioOwnedMarker) -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
+            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and
+            -not (Test-UnslothCmdShimFile (Join-Path $StudioHome "bin\unsloth.cmd"))
         ) {
             Write-StudioLine "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-StudioLine "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
@@ -4894,11 +4918,12 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     substep "skipping direct PyTorch and Triton installation (no-torch mode)." "Yellow"
 }
 
-# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
-# running launcher only ever failed (WinError 32) and printed a scary warning. It's
-# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
-# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
-# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# No unsloth.exe rename needed. install.ps1 no longer starts the generated console
+# script at all (it runs the CLI through the venv's python.exe, #8490), so the rename
+# would now target a file nothing is holding -- but it was never needed either:
+# install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and 'studio update'
+# goes through uv (--upgrade-package), whose pip fallback no-ops on the
+# already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."

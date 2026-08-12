@@ -7,10 +7,6 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-#[cfg(windows)]
-const WINDOWS_CLI_ENTRYPOINT: &str =
-    "import sys; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
-
 // ── Types ──
 
 #[derive(Default)]
@@ -28,45 +24,7 @@ pub fn new_update_state() -> UpdateState {
 
 // ── Spawn ──
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
-    #[cfg(windows)]
-    {
-        let python = bin
-            .parent()
-            .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
-            .join("python.exe");
-        if !python.is_file() {
-            return Err(format!(
-                "Managed Python interpreter not found beside Unsloth: {}",
-                python.display()
-            ));
-        }
-        let mut cmd = Command::new(python);
-        // Isolated mode prevents a project-local unsloth_cli module or an
-        // inherited Python search path from shadowing the managed package.
-        //
-        // -X utf8, not PYTHONUTF8: -I implies -E, so this process ignores every
-        // PYTHON* variable and its own output would reach read_lossy_lines in
-        // the locale encoding. The env vars still apply to descendants.
-        cmd.args([
-            "-X",
-            "utf8",
-            "-I",
-            "-c",
-            WINDOWS_CLI_ENTRYPOINT,
-            "studio",
-            "update",
-        ]);
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-        Ok(cmd)
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new(bin);
-        cmd.args(["studio", "update"]);
-        Ok(cmd)
-    }
+    crate::process::build_managed_cli_command(bin, &["studio", "update"])
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
@@ -545,20 +503,21 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                // -X utf8 leads: -I implies -E, so PYTHONUTF8 would be ignored.
+                // No -I: it implies -E, which made the child ignore every
+                // PYTHON* variable the console script honours.
                 OsString::from("-X"),
                 OsString::from("utf8"),
-                OsString::from("-I"),
                 OsString::from("-c"),
-                OsString::from(WINDOWS_CLI_ENTRYPOINT),
+                OsString::from(crate::process::WINDOWS_CLI_ENTRYPOINT),
                 OsString::from("studio"),
                 OsString::from("update")
             ]
         );
         for name in ["PYTHONHOME", "PYTHONPATH"] {
-            assert!(cmd
-                .get_envs()
-                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+            assert!(
+                !cmd.get_envs().any(|(key, _)| key == OsStr::new(name)),
+                "{name} must be inherited, not overridden"
+            );
         }
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -572,5 +531,25 @@ mod tests {
         assert!(build_update_command(&bin)
             .unwrap_err()
             .contains("python.exe"));
+    }
+
+    // The Windows trampoline moved into process.rs; nothing about the POSIX
+    // command may move with it. macOS and Linux still exec the console script.
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_update_command_still_execs_the_console_script() {
+        use std::ffi::OsString;
+
+        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
+        let cmd = build_update_command(bin).unwrap();
+
+        assert_eq!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![OsString::from("studio"), OsString::from("update")]
+        );
+        // No PYTHONHOME/PYTHONPATH scrubbing off Windows: the console script is
+        // not the interpreter, and callers that need it do it themselves.
+        assert!(cmd.get_envs().next().is_none());
     }
 }
