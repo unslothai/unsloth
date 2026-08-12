@@ -63,9 +63,11 @@ import { createConversationMarkdownExporter } from "../utils/conversation-markdo
 import { parseCsv } from "../utils/csv-parse";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
 } from "../utils/conversation-markdown";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -448,6 +450,39 @@ export const exportConversationMarkdown = createConversationMarkdownExporter({
   exportTimestamp: exportTs,
   notifyNoContent: () => toast.info("No exportable content."),
 });
+
+async function saveConversationAsProjectSource(
+  threadId: string,
+  projectId: string,
+  title: string,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId);
+  if (!messages) return;
+  const markdown = buildConversationMarkdown(
+    messages.map((msg) => ({
+      role: String(msg.role ?? ""),
+      content: messageToMarkdown(msg),
+    })),
+  );
+  if (!markdown) {
+    toast.info("No content to save.");
+    return;
+  }
+  await saveMarkdownAsProjectSource(projectId, markdown, title);
+}
+
+export async function saveChatItemAsProjectSource(
+  item: { id: string; title: string; type: string },
+  projectId: string,
+): Promise<void> {
+  const ids =
+    item.type === "single"
+      ? [item.id]
+      : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+  for (const id of ids) {
+    await saveConversationAsProjectSource(id, projectId, item.title);
+  }
+}
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 

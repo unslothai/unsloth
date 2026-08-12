@@ -123,6 +123,7 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   PLUS_MENU_ORDER,
   CONVERSATION_MARKDOWN_LABEL,
@@ -205,6 +206,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  BookOpen01Icon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -6173,9 +6175,11 @@ async function exportMessageMarkdown(content: string): Promise<void> {
   }
 }
 const AssistantActionBar: FC = () => {
+  const aui = useAui();
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const researchRunId = useResearchMessageRunId();
   const researchActive = useThreadResearchActive();
+  const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -6257,6 +6261,28 @@ const AssistantActionBar: FC = () => {
                 Export as markdown
               </ActionBarMorePrimitive.Item>
             </ActionBarPrimitive.ExportMarkdown>
+            {activeProjectId && (
+              <ActionBarMorePrimitive.Item
+                onSelect={() => {
+                  const text = aui.message().getCopyText();
+                  if (!text.trim()) {
+                    toast.info("No content to save.");
+                    return;
+                  }
+                  const title =
+                    aui.threadListItem().getState().title ?? "reply";
+                  void saveMarkdownAsProjectSource(activeProjectId, text, title);
+                }}
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+              >
+                <HugeiconsIcon
+                  icon={BookOpen01Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+                Save to project sources
+              </ActionBarMorePrimitive.Item>
+            )}
             <ActionBarMorePrimitive.Item
               onSelect={() => setDetailsOpen(true)}
               className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
