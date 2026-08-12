@@ -90,7 +90,10 @@ def _bindings(clause: str) -> list[str]:
             if piece.startswith("type "):
                 piece = piece[len("type ") :].strip()
             parts = piece.split()
-            names.append(parts[-1] if " as " in f" {piece} " else parts[0])
+            # `as` as a token, not as `" as "`: the clause is matched with
+            # DOTALL, so a specifier can wrap around the keyword and a literal
+            # space test then records the imported name instead of the alias.
+            names.append(parts[-1] if "as" in parts[:-1] else parts[0])
         clause = clause[: braced.start()]
 
     # What is left is the default and/or namespace part, comma separated.
@@ -123,14 +126,21 @@ def duplicates_in(source: str) -> list[tuple[int, str]]:
 def scan_paths(root: Path) -> tuple[list[tuple[str, int, str]], int]:
     found: list[tuple[str, int, str]] = []
     scanned = 0
+    # `--path` may be relative or outside the repo, and `REPO_ROOT` is absolute,
+    # so resolve before relativizing and fall back to the full path.
+    root = root.resolve()
     for path in sorted(root.rglob("*")):
         if path.suffix not in (".ts", ".tsx"):
             continue
         if SKIP_PARTS & set(path.parts) or path.name.startswith("._"):
             continue
         scanned += 1
+        try:
+            shown = str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            shown = str(path)
         for line, name in duplicates_in(path.read_text(encoding = "utf-8", errors = "replace")):
-            found.append((str(path.relative_to(REPO_ROOT)), line, name))
+            found.append((shown, line, name))
     return found, scanned
 
 
@@ -184,6 +194,11 @@ def _self_test() -> int:
             "a multi-line clause is one statement",
             'import {\n  alpha,\n  beta,\n} from "m";\nimport { beta } from "n";\n',
             ["beta"],
+        ),
+        (
+            "an alias split across lines still binds the alias",
+            'import {\n  Foo\n  as\n  Bar,\n} from "m";\nimport { Foo } from "n";\n',
+            [],
         ),
         (
             "a comment inside the import list is not a binding",
