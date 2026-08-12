@@ -372,7 +372,7 @@ class TestLaunchFinalization:
         # the live one and can evict the resident child for a budget the queued
         # load then fails to apply.
         compact = self._load_model_source()
-        lock_at = compact.index("withself._serial_load_lock:")
+        lock_at = compact.index("withself._serial_load_scope():")
         resolve_at = compact.index("_vram_frac=_active_vram_fraction()")
         dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent):")
         assert lock_at < resolve_at < dedupe_at
@@ -440,23 +440,28 @@ class TestPreLaunchWindow:
 
 
 class TestPendingOwnership:
-    def test_the_load_wrapper_always_releases_the_pending_value(self):
+    def test_the_pending_value_is_released_with_the_load_lock(self):
         # Armed before the download, so every exit ahead of the spawn (a cancelled
         # download, the diffusion runner's own return, a failed preflight) has to
         # give it back, and the settings route reads it before is_active. The
-        # decorator already wraps every load_model call, so it is the one place
-        # that sees all of those exits without reindenting the load itself.
+        # release belongs to the lock, not the call: two overlapping /load calls
+        # hand the lock over before the first one has returned, so a clear on the
+        # way out of the call would discard the queued load's own marker.
         import inspect
 
         import core.inference.llama_cpp as lc
 
         code = [
             line
-            for line in inspect.getsource(lc._with_gguf_load_marker).splitlines()
+            for line in inspect.getsource(lc.LlamaCppBackend._serial_load_scope).splitlines()
             if not line.strip().startswith("#")
         ]
         compact = "".join("".join(code).split())
-        assert "finally:self._vram_fraction_pending=None" in compact
+        assert "withself._serial_load_lock:try:yieldfinally:" in compact
+        assert compact.endswith("self._vram_fraction_pending=None")
+        # And the load has to go through it, or the scope guards nothing.
+        load = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "withself._serial_load_scope():" in load
 
     def test_a_pre_launch_exit_leaves_no_pending_value(self, monkeypatch):
         # Exercised rather than read: the diffusion path returns before the spawn.

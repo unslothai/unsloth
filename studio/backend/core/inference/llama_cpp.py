@@ -1772,29 +1772,19 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        try:
-            with gguf_load_in_flight(hf_repo):
-                if hf_repo and _hub_download_blocks_gguf_load(
-                    hf_repo,
-                    intent.hf_variant,
-                    require_mmproj = bool(
-                        intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
-                    ),
-                    hf_token = intent.hf_token,
-                ):
-                    raise RuntimeError(
-                        f"'{hf_repo}' is currently being downloaded by the download manager"
-                    )
-                return load(self, intent, load_cancel_event = load_cancel_event)
-        finally:
-            # A load owns the pending VRAM budget only while it is running. It is
-            # armed before the download so a save landing during those minutes is
-            # answered from what this load captured, but every exit ahead of the
-            # spawn -- a cancelled download, the diffusion runner's own return, a
-            # failed preflight -- would otherwise leave it armed, and the settings
-            # route reads it before is_active. A completed launch has already
-            # moved the value to _vram_fraction_launched, so this is a no-op there.
-            self._vram_fraction_pending = None
+        with gguf_load_in_flight(hf_repo):
+            if hf_repo and _hub_download_blocks_gguf_load(
+                hf_repo,
+                intent.hf_variant,
+                require_mmproj = bool(
+                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
+                ),
+                hf_token = intent.hf_token,
+            ):
+                raise RuntimeError(
+                    f"'{hf_repo}' is currently being downloaded by the download manager"
+                )
+            return load(self, intent, load_cancel_event = load_cancel_event)
 
     return wrapped
 
@@ -10076,6 +10066,24 @@ class LlamaCppBackend:
         )
         self._stdout_thread.start()
 
+    @contextlib.contextmanager
+    def _serial_load_scope(self):
+        """Hold the serial load lock, and release the pending budget with it.
+
+        The pending fraction is armed before the download, so every exit ahead of
+        the spawn has to give it back or the settings route, which reads it before
+        is_active, answers from a load that is over. Clearing it on the way out of
+        the lock rather than on the way out of the call is what makes that safe:
+        a queued load arms its own value the instant it takes the lock, and a
+        clear running after that point would discard the marker of a load that is
+        still going.
+        """
+        with self._serial_load_lock:
+            try:
+                yield
+            finally:
+                self._vram_fraction_pending = None
+
     @_with_gguf_load_marker
     def load_model(
         self,
@@ -10119,7 +10127,7 @@ class LlamaCppBackend:
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
-        with self._serial_load_lock:
+        with self._serial_load_scope():
             # In-app update swapping binaries: refuse fast (set under this lock,
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
