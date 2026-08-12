@@ -115,8 +115,7 @@ export async function loadVramBudgetSettings(): Promise<VramBudgetSettings | nul
   }
 }
 
-/** `null` clears the stored budget so the env var or the default applies again. */
-export async function updateVramBudgetSettings(
+async function putVramBudget(
   fraction: number | null,
 ): Promise<VramBudgetSettings> {
   const res = await authFetch("/api/settings/vram-budget", {
@@ -129,5 +128,34 @@ export async function updateVramBudgetSettings(
       await readFastApiError(res, "Failed to update VRAM budget"),
     );
   }
-  return publishVramBudget(fromApi(await res.json()));
+  return fromApi(await res.json());
+}
+
+// One drag can outrun its own saves: the debounce fires 400 ms after the last
+// move, so on a slow link a second PUT starts while the first is still open.
+// Concurrent writes can be applied in either order, and their responses can come
+// back in either order, so the older edit could win both the database row and
+// the published value. Chaining serialises the writes; the generation makes only
+// the newest publish, so a late response cannot repaint the control.
+let vramBudgetWriteChain: Promise<unknown> = Promise.resolve();
+let vramBudgetWriteGeneration = 0;
+
+/** `null` clears the stored budget so the env var or the default applies again. */
+export function updateVramBudgetSettings(
+  fraction: number | null,
+): Promise<VramBudgetSettings> {
+  vramBudgetWriteGeneration += 1;
+  const generation = vramBudgetWriteGeneration;
+  const write = vramBudgetWriteChain.then(
+    () => putVramBudget(fraction),
+    () => putVramBudget(fraction),
+  );
+  // The chain must survive a rejection, or one failed save would strand every
+  // later one behind it.
+  vramBudgetWriteChain = write.catch(() => undefined);
+  return write.then((settings) =>
+    generation === vramBudgetWriteGeneration
+      ? publishVramBudget(settings)
+      : settings,
+  );
 }

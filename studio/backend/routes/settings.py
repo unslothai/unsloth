@@ -228,8 +228,11 @@ class ModelMemoryResponse(BaseModel):
 class VramBudgetPayload(BaseModel):
     # None clears the stored budget, so the environment default (or the built-in
     # one) applies again. The route cannot use None for "leave untouched" as the
-    # model-memory switches do, because there is only one field to write.
-    fraction: Optional[float] = Field(default = None, ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
+    # model-memory switches do, because there is only one field to write. Which is
+    # why the field is required rather than defaulted: with a default, {} would be
+    # a valid body meaning "clear it", so a client that dropped an undefined field
+    # would silently discard the stored budget instead of being told it was wrong.
+    fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
 
     @field_validator("fraction", mode = "before")
     @classmethod

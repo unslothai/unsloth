@@ -10107,17 +10107,6 @@ class LlamaCppBackend:
         n_ubatch = intent.n_ubatch
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
-        # Fraction of each card this load may claim, resolved ONCE so every budget
-        # below is priced against the same number: ranking against one fraction and
-        # fitting against another mis-orders mixed-total setups. Defaults to
-        # _CTX_FIT_VRAM_FRACTION, so an unset budget is the historical behaviour.
-        _vram_frac = _active_vram_fraction()
-        # _vram_fraction_launched is NOT set here: it records what the running child
-        # was sized against, and this far up nothing has launched yet. The
-        # duplicate-load fast path below, a cancellation and every failed preflight
-        # all return with the previous child still serving, so writing the marker
-        # here would tell the settings route that a stale child already carries the
-        # new budget and hide the reload it needs. Committed at the launch site.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -10197,6 +10186,44 @@ class LlamaCppBackend:
                     tensor_parallel = False,
                     tensor_split = None,
                 )
+
+            # Fraction of each card this load may claim, resolved ONCE so every
+            # budget below is priced against the same number: ranking against one
+            # fraction and fitting against another mis-orders mixed-total setups.
+            # Defaults to _CTX_FIT_VRAM_FRACTION, so an unset budget is the
+            # historical behaviour. Resolved under the lock and ahead of the
+            # duplicate check, or a request that queued behind another load would
+            # plan with the fraction as it stood when it arrived while the check
+            # below reads the live one, and could evict the resident child for a
+            # budget it then fails to apply.
+            _vram_frac = _active_vram_fraction()
+
+            def _budget_priced_placement() -> Optional[float]:
+                """The fraction this child was sized against, or None if it wasn't.
+
+                Read at call time, because both names it closes over are rebound
+                during the load. Every consumer of the fraction is gated on a
+                non-empty ``gpus``, so manual mode and a host with no discrete GPU
+                plan without it; and an auto Vulkan crash that recovers on CPU
+                rewrites the intent to CPU placement while leaving ``gpus``
+                populated from the attempt that failed. Recording a budget for
+                either would make a later change to the setting evict a healthy
+                child for a reload that cannot move anything.
+                """
+                if not gpus or intent.cpu_fallback:
+                    return None
+                return _vram_frac
+
+            # Nothing is committed yet, so drop any value a previous load left
+            # behind; the launch site below re-arms it once placement is fixed.
+            self._vram_fraction_pending = None
+            # _vram_fraction_launched is NOT set here: it records what the running
+            # child was sized against, and this far up nothing has launched yet.
+            # The duplicate-load fast path below, a cancellation and every failed
+            # preflight all return with the previous child still serving, so
+            # writing the marker here would tell the settings route that a stale
+            # child already carries the new budget and hide the reload it needs.
+            # Committed at the launch site.
 
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
@@ -13380,12 +13407,20 @@ class LlamaCppBackend:
                 # child is already committed. Popen clears it, and so does every
                 # exit below, so a failed spawn cannot leave it stuck on.
                 self._memory_launch_pending = True
-                self._vram_fraction_pending = _vram_frac if gpus else None
+                self._vram_fraction_pending = _budget_priced_placement()
+                healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
-                    self._vram_fraction_pending = None
+                    # Only a spawn that never came up releases the pending value
+                    # here. A healthy child still has the decode probe and the
+                    # no-flash, drafter and projector retries to get through
+                    # before the marker is committed, and a save landing in that
+                    # gap would otherwise be answered from the PREVIOUS child's
+                    # marker, which describes a process that is already gone.
+                    if not healthy:
+                        self._vram_fraction_pending = None
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -13778,11 +13813,9 @@ class LlamaCppBackend:
                 # here with the rest of the known-good state, so a duplicate-load
                 # fast path or a failed launch leaves the previous child's marker
                 # intact and the settings route keeps asking for the reload. None
-                # when placement never consulted it: every consumer is gated on a
-                # non-empty gpus, so manual mode and hosts with no discrete GPU
-                # would otherwise be stamped with a budget they never applied and
-                # then be asked to reload for a change that cannot move anything.
-                self._vram_fraction_launched = _vram_frac if gpus else None
+                # when placement never consulted it; see _budget_priced_placement.
+                self._vram_fraction_launched = _budget_priced_placement()
+                self._vram_fraction_pending = None
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then

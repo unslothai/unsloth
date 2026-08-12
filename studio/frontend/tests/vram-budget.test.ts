@@ -177,3 +177,41 @@ test("the row adopts published settings instead of only its own read", () => {
   const guard = row.slice(subscribeAt, subscribeAt + 260);
   assert.match(guard, /if \(saveTimer\.current\) \{\s*return;/);
 });
+
+test("Run reports a rejected budget flush instead of voiding it", () => {
+  const handlerStart = pageSource.indexOf("const handleRun = () => {");
+  const handler = pageSource.slice(
+    handlerStart,
+    pageSource.indexOf("\n  };", handlerStart),
+  );
+  const flush = handler.slice(handler.indexOf("flushVramBudgetSave()"));
+  // finally alone re-rejects, so the browser logs an unhandled rejection and the
+  // load proceeds on the old fraction with nothing said.
+  assert.ok(
+    flush.indexOf(".catch(") < flush.indexOf(".finally("),
+    "the rejection must be handled before finally starts the load",
+  );
+  assert.match(flush, /Failed to save VRAM budget/);
+});
+
+test("budget writes are serialised and only the newest publishes", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  // Two debounced saves can overlap on a slow link; out-of-order responses would
+  // let the older edit win both the row and the stored value.
+  assert.match(client, /vramBudgetWriteChain/);
+  assert.match(client, /vramBudgetWriteGeneration/);
+  const update = client.slice(
+    client.indexOf("export function updateVramBudgetSettings"),
+  );
+  assert.match(
+    update,
+    /generation === vramBudgetWriteGeneration\s*\?\s*publishVramBudget/,
+  );
+  // A failed save must not strand every later one behind it.
+  assert.match(update, /vramBudgetWriteChain = write\.catch/);
+});

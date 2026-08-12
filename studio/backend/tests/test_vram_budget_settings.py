@@ -262,20 +262,22 @@ class TestLaunchedMarker:
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
         assert (
-            "self._vram_fraction_launched=_vram_fracifgpuselseNoneself._requested_n_batch"
-            in compact
+            "self._vram_fraction_launched=_budget_priced_placement()"
+            "self._vram_fraction_pending=Noneself._requested_n_batch" in compact
         )
 
     def test_marker_is_none_when_placement_had_no_devices(self):
         # gpus is emptied by both manual branches and is empty on a host with no
         # discrete GPU, and every consumer of the fraction is gated on it, so a
-        # value there would be a budget the child never applied.
+        # value there would be a budget the child never applied. Both the pending
+        # value and the committed marker go through the one predicate.
         import inspect
 
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert "self._vram_fraction_pending=_vram_fracifgpuselseNone" in compact
+        assert "self._vram_fraction_pending=_budget_priced_placement()" in compact
+        assert "self._vram_fraction_launched=_budget_priced_placement()" in compact
 
 
 class TestRouteContract:
@@ -352,3 +354,51 @@ class TestDiffusionPath:
         diffusion = diffusion[: diffusion.index("_start_diffusion_server")]
         compact = "".join(diffusion.split())
         assert "self._vram_fraction_launched=None" in compact
+
+
+class TestLaunchFinalization:
+    """The marker and the pending value must describe the child that is running."""
+
+    @staticmethod
+    def _load_model_source():
+        import inspect
+
+        import core.inference.llama_cpp as lc
+        return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+
+    def test_the_fraction_is_resolved_under_the_load_lock(self):
+        # A request queued behind another load would otherwise plan with the
+        # fraction as it stood when it arrived, while the duplicate check reads
+        # the live one and can evict the resident child for a budget the queued
+        # load then fails to apply.
+        compact = self._load_model_source()
+        lock_at = compact.index("withself._serial_load_lock:")
+        resolve_at = compact.index("_vram_frac=_active_vram_fraction()")
+        dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent):")
+        assert lock_at < resolve_at < dedupe_at
+
+    def test_a_healthy_spawn_keeps_the_pending_value_until_the_commit(self):
+        # The decode probe and the no-flash, drafter and projector retries all run
+        # after the first spawn returns, and the marker is committed after them.
+        # Releasing the pending value at the spawn would answer a save landing in
+        # that gap from the PREVIOUS child's marker.
+        compact = self._load_model_source()
+        assert "ifnothealthy:self._vram_fraction_pending=None" in compact
+        assert (
+            "self._vram_fraction_launched=_budget_priced_placement()self._vram_fraction_pending=None"
+            in compact
+        )
+
+    def test_a_cpu_fallback_child_is_not_stamped_with_a_budget(self):
+        # An auto Vulkan crash that recovers on CPU rewrites the intent to CPU
+        # placement but leaves gpus populated from the attempt that failed, so
+        # gpus alone would stamp a CPU-only child.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        source = inspect.getsource(lc.LlamaCppBackend.load_model)
+        helper = source[source.index("def _budget_priced_placement()") :]
+        helper = helper[: helper.index("# Nothing is committed yet")]
+        compact = "".join(helper.split())
+        assert "ifnotgpusorintent.cpu_fallback:returnNone" in compact

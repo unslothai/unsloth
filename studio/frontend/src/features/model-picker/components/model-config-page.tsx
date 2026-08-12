@@ -442,7 +442,9 @@ function VramBudgetRow() {
         ?.then(setSettings)
         .catch((error: unknown) => {
           toast.error(
-            error instanceof Error ? error.message : "Failed to save VRAM budget",
+            error instanceof Error
+              ? error.message
+              : "Failed to save VRAM budget",
           );
         });
     }, 400);
@@ -720,44 +722,46 @@ function MlxAdvancedSettings({
     <div className="flex flex-col gap-1">
       {servedByMlx && (
         <>
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>KV Cache Dtype</span>
-          <InfoHint>
-            Lower KV cache precision to save memory at the cost of some
-            quality. Auto keeps full precision; 8-bit is the safest reduction,
-            and lower widths save more memory.
-          </InfoHint>
-        </div>
-        <Select
-          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
-          onValueChange={(v) =>
-            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
-          }
-        >
-          <SelectTrigger
-            animateRadius={false}
-            icon={ChevronDownStandardIcon}
-            iconClassName="size-3.5"
-            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
-            {MLX_KV_BITS.map((bits) => (
-              <SelectItem key={bits} value={String(bits)}>
-                {bits}-bit
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      {outcome ? (
-        <p className="text-ui-11 leading-snug text-muted-foreground">
-          {outcome}
-        </p>
-      ) : null}
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>KV Cache Dtype</span>
+              <InfoHint>
+                Lower KV cache precision to save memory at the cost of some
+                quality. Auto keeps full precision; 8-bit is the safest
+                reduction, and lower widths save more memory.
+              </InfoHint>
+            </div>
+            <Select
+              value={
+                config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO
+              }
+              onValueChange={(v) =>
+                update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+              }
+            >
+              <SelectTrigger
+                animateRadius={false}
+                icon={ChevronDownStandardIcon}
+                iconClassName="size-3.5"
+                className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
+                {MLX_KV_BITS.map((bits) => (
+                  <SelectItem key={bits} value={String(bits)}>
+                    {bits}-bit
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {outcome ? (
+            <p className="text-ui-11 leading-snug text-muted-foreground">
+              {outcome}
+            </p>
+          ) : null}
         </>
       )}
       <ChatTemplateSetting
@@ -999,7 +1003,10 @@ function GgufAdvancedSettings({
                 const parsed = Number.parseInt(raw, 10);
                 if (Number.isFinite(parsed)) {
                   update({
-                    nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                    nBatch: Math.max(
+                      N_BATCH_MIN,
+                      Math.min(N_BATCH_MAX, parsed),
+                    ),
                   });
                 }
               }}
@@ -1010,7 +1017,8 @@ function GgufAdvancedSettings({
           </div>
           {batchBelowFloor && (
             <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
-              Too small for llama-server, so the load will raise it to {batchFloor}.
+              Too small for llama-server, so the load will raise it to{" "}
+              {batchFloor}.
               {config.nParallel != null && config.nParallel > 2
                 ? " It needs one output slot per parallel slot."
                 : " It cannot run a batch below 2."}
@@ -1025,10 +1033,10 @@ function GgufAdvancedSettings({
             <div className="flex min-w-0 items-center gap-1.5">
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
-                Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512). Larger values speed up prompt
-                processing but use more VRAM for the compute buffer; capped at the
-                batch size.
+                Physical prompt micro-batch size (--ubatch-size). Leave blank
+                for the llama.cpp default (512). Larger values speed up prompt
+                processing but use more VRAM for the compute buffer; capped at
+                the batch size.
               </InfoHint>
             </div>
             <input
@@ -1047,7 +1055,10 @@ function GgufAdvancedSettings({
                 const parsed = Number.parseInt(raw, 10);
                 if (Number.isFinite(parsed)) {
                   update({
-                    nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                    nUbatch: Math.max(
+                      N_BATCH_MIN,
+                      Math.min(N_BATCH_MAX, parsed),
+                    ),
                   });
                 }
               }}
@@ -1058,8 +1069,8 @@ function GgufAdvancedSettings({
           </div>
           {ubatchExceedsBatch && (
             <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
-              Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
-              {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
+              Micro-batch is larger than the batch size, so llama.cpp will run
+              at {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
           )}
         </div>
@@ -1106,8 +1117,8 @@ interface ModelConfigPageProps {
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
   /**
-  * Page variant only: render the built-in "Run settings" title block. A host that already
-  * shows the model name as its page heading turns this off. */
+   * Page variant only: render the built-in "Run settings" title block. A host that already
+   * shows the model name as its page heading turns this off. */
   showHeader?: boolean;
 }
 
@@ -1549,9 +1560,20 @@ export function ModelConfigPage({
     // load, hence finally, and a click with nothing staged stays synchronous.
     const stagedBudget = flushVramBudgetSave();
     if (stagedBudget) {
-      void stagedBudget.finally(() => {
-        onRun(effectiveLoadConfig, classifiedIsDiffusion);
-      });
+      // Caught, not voided: finally would re-reject and the browser would log an
+      // unhandled rejection, and the load would otherwise proceed on the old
+      // fraction with nothing said, unlike the debounced and unmount saves.
+      void stagedBudget
+        .catch((error: unknown) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Failed to save VRAM budget",
+          );
+        })
+        .finally(() => {
+          onRun(effectiveLoadConfig, classifiedIsDiffusion);
+        });
       return;
     }
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
