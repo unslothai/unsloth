@@ -101,8 +101,7 @@ def _truncate_exception_processor(logger, method_name, event_dict):
 
 
 def _plain_tracebacks_enabled() -> bool:
-    """Whether to echo a readable traceback under each JSON error record.
-    ``UNSLOTH_STUDIO_PLAIN_TRACEBACKS=0`` turns it off."""
+    """Echo readable tracebacks? ``UNSLOTH_STUDIO_PLAIN_TRACEBACKS=0`` turns it off."""
     return (os.environ.get("UNSLOTH_STUDIO_PLAIN_TRACEBACKS") or "").strip().lower() not in (
         "0",
         "off",
@@ -111,28 +110,19 @@ def _plain_tracebacks_enabled() -> bool:
     )
 
 
-# Prefix on every echoed traceback line. Deliberately NOT whitespace: RFC 8259 lets a
-# parser skip leading space/tab, so json.loads('  {"event": ...}') SUCCEEDS, and an
-# exception message carrying a newline plus a JSON object would produce a line that
-# reads as a genuine record (CWE-117 log injection). Exception messages carry
-# request-derived text -- the cap above exists because a rejected upload embedded a
-# whole request body in one -- so that payload is reachable, not theoretical. "| "
-# cannot begin a JSON value, so no echoed line can be mistaken for a record, and a
-# reader that wants records only can drop these lines on the prefix alone.
+# Prefix on every echoed line. NOT whitespace: RFC 8259 lets a parser skip leading
+# space/tab, so json.loads('  {"event": ...}') SUCCEEDS and a request-derived exception
+# message could forge a record (CWE-117). "| " cannot begin a JSON value, so no echoed
+# line parses as one, and a records-only reader can drop them on the prefix alone.
 _TRACEBACK_ECHO_PREFIX = "| "
 
 
-# Unicode's Bidi_Control characters (PropList.txt), the exact set the bidirectional
-# algorithm of UAX #9 acts on: the two marks, the Arabic letter mark, the embeddings /
-# overrides / PDF, and the isolates. UTR #36 "Unicode Security Considerations" and the
-# Trojan Source work (CVE-2021-42574) name this same set as the one to reject or render
-# visibly, and json.dumps escapes every one of them for free (ensure_ascii defaults True),
-# so the JSON record above still carries them as \uXXXX and only the echo would not.
+# Unicode's Bidi_Control set (PropList.txt), exactly what the UAX #9 algorithm acts on and
+# what UTR #36 / Trojan Source (CVE-2021-42574) name. json.dumps already escapes these
+# (ensure_ascii), so only the echo would emit them raw.
 #
-# Deliberately NOT all of category Cf. U+200B-200D (zero width space / non-joiner /
-# joiner), U+00AD (soft hyphen) and U+FEFF are Cf too and occur in ordinary text -- ZWNJ
-# in Persian and Arabic, ZWJ in emoji sequences -- and none of them reorder anything, so
-# escaping them would trade the readability this function exists to preserve for nothing.
+# Deliberately NOT all of category Cf: U+200B-200D, U+00AD and U+FEFF occur in ordinary
+# text (ZWNJ in Persian/Arabic, ZWJ in emoji) and reorder nothing.
 _BIDI_CONTROLS = frozenset(
     "؜"  # ARABIC LETTER MARK
     "‎‏"  # LEFT-TO-RIGHT / RIGHT-TO-LEFT MARK
@@ -142,29 +132,20 @@ _BIDI_CONTROLS = frozenset(
 
 
 def _escape_unprintable(text: str) -> str:
-    """Replace what a terminal would ACT on, and what stdout cannot encode, with their
-    ``\\uXXXX`` spellings. Ordinary non-ASCII text is left alone, so a traceback quoting a
-    non-English string still reads as that string.
+    """Spell as ``\\uXXXX`` what a terminal would ACT on or stdout cannot encode, leaving
+    ordinary non-ASCII text readable. The JSON renderer used to cover all three for free:
 
-    Two things the JSON renderer used to handle for free, which the echo has to do itself:
-
-    * **Lone surrogates.** ``json.loads('"\\ud800"')`` yields one, so a request body can
-      put it in an exception message. JSONRenderer escapes it to ASCII; printing it raw
-      raises ``UnicodeEncodeError`` on a UTF-8 stdout, which inside an exception handler
+    * **Lone surrogates** (reachable via ``json.loads('"\\ud800"')`` in a request body)
+      raise ``UnicodeEncodeError`` on a UTF-8 stdout, which inside an exception handler
       loses the traceback AND replaces the original exception with the encoding error.
-    * **Terminal controls.** ESC sequences and backspaces were previously escaped inside
-      the JSON string. Emitted raw they let request-derived text clear or rewrite what the
-      reader sees, and a backspace run can rub out the prefix in front of it, which is the
-      one thing that prefix exists to guarantee.
-    * **Bidi controls.** A right-to-left override or an unterminated isolate does not need
-      a terminal to act: any viewer implementing UAX #9 -- an editor, a browser, a chat
-      client the log is pasted into -- reorders the line for the reader. Measured on the
-      echoed line, ``"| ValueError: rejected upload \\u202egnp.eliforp/sdaolpu/"``
-      DISPLAYS as ``| ValueError: rejected upload /uploads/profile.png``, so the path the
-      analyst reads is not the path that was logged. Escaped, not stripped, so the record
-      still says a bidi control was there.
+    * **Terminal controls**: raw ESC lets request-derived text rewrite what the reader
+      sees, and a backspace run can rub out the prefix record forgery depends on.
+    * **Bidi controls** need no terminal -- any UAX #9 viewer reorders the line. Measured:
+      ``"| ValueError: rejected upload \\u202egnp.eliforp/sdaolpu/"`` DISPLAYS as
+      ``| ValueError: rejected upload /uploads/profile.png``. Escaped, not stripped, so
+      the record still says one was there.
 
-    Tab is deliberately kept: it shifts alignment but cannot move the cursor back or erase.
+    Tab is kept: it shifts alignment but cannot move the cursor back or erase.
     """
     out = []
     for ch in text:
@@ -185,20 +166,15 @@ def _escape_unprintable(text: str) -> str:
 
 
 def _echoable(exception: str) -> str:
-    """The traceback as lines that can never be read as a log record, nor act on the
-    terminal reading them.
+    """The traceback as lines that can never read as a log record, nor act on a terminal.
 
     ``splitlines`` also splits on \\r, \\x0b, \\x0c, \\x85 and U+2028/9, so rejoining on
-    \\n normalises every separator a message could smuggle in, including the \\r the
-    export worker's log reader treats as a line break. Whatever control characters survive
-    that are escaped per line, so the prefix is the first thing on the line and stays.
+    \\n normalises every separator a message could smuggle in, including the \\r the export
+    worker's log reader treats as a line break.
 
-    Capped AFTER escaping, because escaping is what makes the size unpredictable: the
-    exception field arrives already bounded by ``truncate_exception`` at
-    ``_MAX_EXC_CHARS``, but every character it replaces becomes six, so a payload that is
-    all C0 controls (a raw request body quoted into an exception message) turns 16 KiB of
-    bounded field into 98 KiB of echo. Capping the input instead would leave that same
-    multiplier in place, so the budget is spent on the escaped text."""
+    Capped AFTER escaping: the field arrives bounded by ``truncate_exception`` at
+    ``_MAX_EXC_CHARS``, but escaping costs six characters each, so an all-C0 payload turns
+    16 KiB of bounded field into 98 KiB of echo. Capping the input keeps that multiplier."""
     lines = [
         f"{_TRACEBACK_ECHO_PREFIX}{_escape_unprintable(part)}"
         for part in exception.rstrip().splitlines()
@@ -209,12 +185,10 @@ def _echoable(exception: str) -> str:
 def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     """Join the echoed lines within `limit` characters, keeping the head and the tail.
 
-    Whole lines where they fit, and the omission notice carries the prefix too, so the
-    invariant the echo rests on holds for every line it emits: nothing here can begin a
-    JSON value. A line too long for its budget is cut rather than dropped, which can land
-    inside a ``\\uXXXX`` escape; that costs one garbled escape and keeps the line. The tail
-    matters most -- it holds the exception type and message, and one control-heavy message
-    is exactly what makes the last line oversized -- so it is cut, never discarded."""
+    Whole lines where they fit, and the omission notice is prefixed too, so no emitted line
+    can begin a JSON value. A line too long for its budget is cut, not dropped: the cut can
+    land inside a ``\\uXXXX`` escape, but the tail holds the exception type and message and
+    a control-heavy message is exactly what makes that last line oversized."""
     if limit <= 0:
         return "\n".join(lines)
     total = sum(len(line) + 1 for line in lines)
@@ -233,9 +207,8 @@ def _cap_echoed_lines(lines: list[str], limit: int) -> str:
     used = 0
     for line in reversed(lines[len(head) :]):
         if used + len(line) + 1 > tail_budget:
-            # The boundary line, cut to what is left rather than dropped: the last line
-            # of a traceback is the exception type and message, and losing it to a cap
-            # would leave the reader the frames and none of the reason.
+            # Cut the boundary line rather than drop it: losing a traceback's last line
+            # leaves the reader every frame and no reason.
             room = tail_budget - used - 1
             if room > 0:
                 tail.append(line[:room])
@@ -256,31 +229,26 @@ def _cap_echoed_lines(lines: list[str], limit: int) -> str:
 
 
 def with_readable_traceback(renderer):
-    """Wrap the JSON renderer so an exception is ALSO written as a real multi-line
-    traceback, on the lines after the record.
+    """Wrap the JSON renderer so an exception is ALSO echoed as a real multi-line traceback
+    on the lines after the record.
 
-    ~/.unsloth/studio/logs is a tee of stdout, and stdout is JSON, so every traceback
-    reached the person reading that file as one enormous line with its newlines escaped
-    to ``\\n``. That is correct JSON and unreadable prose: the reported Image Transform
-    failure ("RuntimeError: Input type (float) and bias type (c10::BFloat16)...") was
-    found in the log with, in the reporter's words, all its newlines mangled -- which is
-    the state the log is in for every crash anyone is ever asked to send in.
+    ~/.unsloth/studio/logs is a tee of stdout and stdout is JSON, so every traceback
+    reached its reader as one enormous line with newlines escaped to ``\\n`` -- correct
+    JSON, unreadable prose. The reported Image Transform failure ("RuntimeError: Input type
+    (float) and bias type (c10::BFloat16)...") arrived that way, and so does every crash
+    anyone is asked to send in.
 
-    The JSON record is emitted UNCHANGED, escaped exception field and all, so anything
-    parsing the file record-by-record still reads every record it read before, and every
-    line the echo adds is prefixed so it can neither parse as a record nor be confused
-    for one. That the file already carries non-JSON lines is not something this relies on
-    by chance -- faulthandler dumps native stacks straight to the same handle.
+    The JSON record is emitted UNCHANGED, so record-by-record readers see what they always
+    saw, and every echoed line is prefixed so it cannot parse as a record. Non-JSON lines
+    in that file are already expected -- faulthandler dumps native stacks to the same
+    handle.
 
-    Emitted as part of the SAME return value rather than written to another stream, so
-    one ``print`` under ``PrintLogger``'s lock keeps the record and its traceback both
-    adjacent and correctly ordered. A processor runs BEFORE that print, so a side-channel
-    write here would put the traceback above the record it belongs to, and the export
-    worker reads stdout and stderr on two separate pipes, which would let them reorder
-    again in the dialog.
+    Returned as part of the SAME string rather than written to another stream, so one
+    ``print`` under ``PrintLogger``'s lock keeps record and traceback adjacent and ordered:
+    a processor runs BEFORE that print, and the export worker reads stdout and stderr on
+    separate pipes.
 
-    Only for the JSON renderer. ConsoleRenderer (development) already prints tracebacks
-    as tracebacks, and wrapping it would print each one twice."""
+    JSON only. ConsoleRenderer (development) already prints tracebacks as tracebacks."""
 
     def _render(logger, method_name, event_dict):
         exception = event_dict.get("exception")

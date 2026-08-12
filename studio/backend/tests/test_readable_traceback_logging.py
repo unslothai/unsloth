@@ -3,13 +3,10 @@
 
 """A traceback in the log file has to be readable as a traceback.
 
-~/.unsloth/studio/logs is a tee of stdout and stdout is JSON, so every stack trace
-reached the reader as one line with its newlines escaped to ``\\n``. Reported from the
-field: the only way to find out why an Image Transform failed was to dig that line out
-of the log, and it arrived with, in the reporter's words, all its newlines mangled.
-
-``with_readable_traceback`` echoes the traceback under the record. The JSON line itself
-must survive byte-for-byte, because that is what anything parsing the file reads.
+~/.unsloth/studio/logs is a tee of stdout and stdout is JSON, so every stack trace reached
+the reader as one line with its newlines escaped to ``\\n`` -- as the reported Image
+Transform failure did. ``with_readable_traceback`` echoes the traceback under the record;
+the JSON line itself must survive byte-for-byte for anything parsing the file.
 """
 
 from __future__ import annotations
@@ -50,12 +47,11 @@ def test_record_without_an_exception_is_a_single_json_line():
 def test_traceback_is_echoed_as_real_lines_after_the_record():
     out = _render({"event": "request_failed", "exception": _TRACEBACK})
     first, _, rest = out.partition("\n")
-    # The JSON record is untouched -- still one parseable line, still carrying the
-    # escaped exception, so a record-by-record reader sees exactly what it saw before.
+    # The record is untouched, so a record-by-record reader sees what it saw before.
     record = json.loads(first)
     assert record["exception"] == _TRACEBACK
-    # ...and the human-readable copy follows, as separate physical lines, each behind a
-    # prefix that keeps it from ever reading as a record of its own.
+    # ...and the readable copy follows as real lines, each behind a prefix so it cannot
+    # read as a record of its own.
     prefix = log_config._TRACEBACK_ECHO_PREFIX
     lines = rest.splitlines()
     assert [line.removeprefix(prefix) for line in lines] == _TRACEBACK.splitlines()
@@ -86,9 +82,8 @@ def test_console_renderer_is_left_alone(monkeypatch):
 
 
 def test_echoed_copy_is_the_redacted_truncated_one():
-    # The wrapper reads event_dict["exception"] AFTER filter_sensitive_data and the
-    # truncation processor have rewritten it, so a secret cannot re-enter the log
-    # through the readable copy and a 2 MB traceback cannot be echoed at full length.
+    # The wrapper reads event_dict["exception"] AFTER filter_sensitive_data and truncation,
+    # so no secret re-enters the log and no 2 MB traceback is echoed whole.
     huge = "HEAD" + ("x" * 4_000_000) + "\nValueError: nope"
     capped = log_config.truncate_exception({"exception": huge})["exception"]
     out = _render({"event": "request_failed", "exception": capped})
@@ -97,10 +92,8 @@ def test_echoed_copy_is_the_redacted_truncated_one():
 
 
 def test_a_control_heavy_traceback_cannot_outgrow_the_cap_by_escaping():
-    # truncate_exception bounds the FIELD, and escaping then multiplies it: every C0
-    # control becomes six characters, so 16 KiB of bounded exception used to leave as
-    # 98 KiB of echo. A request body quoted into an exception message is the reachable
-    # source of that payload, so the budget is spent on the escaped text instead.
+    # truncate_exception bounds the FIELD; escaping then multiplies it six-fold per C0
+    # control, so 16 KiB of bounded exception used to leave as 98 KiB of echo.
     payload = "HEAD\n" + ("\x1b" * 200) + "\n" + "\n".join("\x00" * 400 for _ in range(400))
     capped = log_config.truncate_exception({"exception": payload + "\nValueError: nope"})[
         "exception"
@@ -108,7 +101,7 @@ def test_a_control_heavy_traceback_cannot_outgrow_the_cap_by_escaping():
     out = _render({"event": "request_failed", "exception": capped})
     _, _, echoed = out.partition("\n")
     assert len(echoed) <= log_config._MAX_EXC_CHARS + 200
-    # ...and the invariant survives the cut: the notice is prefixed like every other line.
+    # The notice is prefixed like every other line.
     for line in echoed.split("\n"):
         assert line.startswith("| "), line
     assert "lines omitted" in echoed
@@ -125,11 +118,10 @@ def test_an_uncapped_traceback_is_echoed_whole():
 
 
 def test_an_exception_message_cannot_forge_a_log_record():
-    # CWE-117. Exception messages carry request-derived text (the truncation cap above
-    # exists because a rejected upload embedded a whole request body in one), so a
-    # message holding a newline plus a JSON object is reachable. Every echoed line must
-    # be one json.loads() REJECTS. Indenting would not be enough: RFC 8259 lets a parser
-    # skip leading whitespace, so '  {"a": 1}' parses.
+    # CWE-117. Exception messages carry request-derived text, so a message holding a
+    # newline plus a JSON object is reachable and every echoed line must be one
+    # json.loads() REJECTS. RFC 8259 lets a parser skip leading whitespace, so indenting
+    # would not be enough: '  {"a": 1}' parses.
     forged = json.dumps({"level": "info", "event": "admin_login", "user": "attacker"})
     out = _render(
         {
@@ -160,25 +152,23 @@ def test_every_echoed_line_carries_the_prefix_including_exotic_separators():
 
 def test_a_lone_surrogate_cannot_break_the_log_write():
     # json.loads('"\ud800"') yields a lone surrogate, so a request body can put one in an
-    # exception message. JSONRenderer escaped it to ASCII for free; printing it raw raises
-    # UnicodeEncodeError on a UTF-8 stdout, which inside an exception handler loses the
-    # traceback and replaces the original exception with the encoding error.
+    # exception message. Printed raw it raises UnicodeEncodeError on a UTF-8 stdout, losing
+    # the traceback and replacing the original exception with the encoding error.
     import io
 
     surrogate = json.loads('"\\ud800"')
     out = _render({"event": "request_failed", "exception": f"ValueError: bad prompt: {surrogate}"})
     assert surrogate not in out
     assert "\\ud800" in out
-    # The real test: it survives an actual strict UTF-8 stream, which is what PrintLogger
-    # writes to.
+    # The real test: a strict UTF-8 stream, which is what PrintLogger writes to.
     stream = io.TextIOWrapper(io.BytesIO(), encoding = "utf-8")
     print(out, file = stream)  # must not raise
     out.encode("utf-8")
 
 
 def test_terminal_controls_are_neutralised():
-    # Raw ESC sequences would let request-derived text clear or rewrite what the reader
-    # sees, and a backspace run would rub out the prefix that stops record forgery.
+    # Raw ESC would let request-derived text rewrite what the reader sees, and a backspace
+    # run would rub out the prefix that stops record forgery.
     exception = "ValueError: \x1b[2Jcleared\x08\x08\x08\x7f and \x9b more"
     out = _render({"event": "request_failed", "exception": exception})
     _, _, echoed = out.partition("\n")
@@ -189,18 +179,15 @@ def test_terminal_controls_are_neutralised():
 
 
 def test_bidi_controls_cannot_reorder_the_echoed_line():
-    # UAX #9 / UTR #36, the Trojan Source class (CVE-2021-42574). json.dumps escapes these
-    # for free, so the JSON record has always carried them as \\uXXXX; the echo is the only
-    # place a raw one can reach a viewer. Measured with python-bidi: the logical line
+    # UAX #9 / UTR #36, the Trojan Source class (CVE-2021-42574). json.dumps escapes these,
+    # so the echo is the only place a raw one reaches a viewer. Measured with python-bidi,
     # "| ValueError: rejected upload ‮gnp.eliforp/sdaolpu/" DISPLAYS as
-    # "| ValueError: rejected upload /uploads/profile.png", so an attacker-chosen filename
-    # in a request-derived message rewrites the path the analyst reads.
+    # "| ValueError: rejected upload /uploads/profile.png".
     exception = "ValueError: rejected upload ‮gnp.eliforp/sdaolpu/"
     echoed = _render({"event": "request_failed", "exception": exception}).partition("\n")[2]
     assert "‮" not in echoed
     assert "\\u202e" in echoed
-    # The whole Bidi_Control set, not just the override: an unterminated isolate reorders
-    # a line exactly as well, and a fix that escaped only U+202E would leave it standing.
+    # The whole set, not just the override: an unterminated isolate reorders a line too.
     exotic = "ValueError: " + "".join(sorted(log_config._BIDI_CONTROLS))
     echoed = _render({"event": "e", "exception": exotic}).partition("\n")[2]
     for ch in log_config._BIDI_CONTROLS:
@@ -209,9 +196,8 @@ def test_bidi_controls_cannot_reorder_the_echoed_line():
 
 
 def test_the_escaped_set_is_exactly_unicodes_bidi_controls():
-    # Pinned to PropList.txt's Bidi_Control property so the set cannot quietly widen into
-    # all of category Cf, which would escape ZWJ / ZWNJ / soft hyphen out of legitimate
-    # text, nor narrow back to the override alone.
+    # Pinned to PropList.txt's Bidi_Control so the set cannot widen into all of category Cf
+    # (escaping ZWJ / ZWNJ / soft hyphen out of legitimate text) nor narrow to U+202E.
     assert log_config._BIDI_CONTROLS == frozenset(
         chr(c)
         for c in (
@@ -232,16 +218,15 @@ def test_the_escaped_set_is_exactly_unicodes_bidi_controls():
 
 
 def test_zero_width_and_joining_characters_stay_readable():
-    # Cf, but they reorder nothing: ZWNJ carries meaning in Persian/Arabic and ZWJ builds
-    # emoji sequences, so escaping the whole category would mangle text that reads fine.
+    # Cf, but they reorder nothing: ZWNJ carries meaning in Persian/Arabic, ZWJ builds
+    # emoji sequences.
     exception = "ValueError: ‌بی‌نام and \U0001f469‍\U0001f4bb"
     echoed = _render({"event": "e", "exception": exception}).partition("\n")[2]
     assert "‌" in echoed and "‍" in echoed
 
 
 def test_ordinary_text_is_left_readable():
-    # The escape must not turn a traceback quoting non-English text into hex soup, and a
-    # tab shifts alignment but cannot move the cursor back or erase, so it stays.
+    # Non-English text must not become hex soup, and a tab cannot move the cursor or erase.
     exception = "ValueError: 中文 café — tab:\there"
     echoed = _render({"event": "e", "exception": exception}).partition("\n")[2]
     assert "中文" in echoed and "café" in echoed and "—" in echoed
@@ -249,9 +234,8 @@ def test_ordinary_text_is_left_readable():
 
 
 def test_the_exception_line_survives_a_cap_that_cannot_fit_it():
-    # The last line of a traceback is the exception type and message, and a control-heavy
-    # message is exactly what makes that line too big for the tail budget. Dropping it
-    # whole left the reader every frame and no reason.
+    # A control-heavy message is what makes the last line too big for the tail budget, and
+    # dropping it whole left the reader every frame and no reason.
     frames = "\n".join(f'  File "/app/x{i}.py", line {i}, in fn' for i in range(60))
     payload = (
         "Traceback (most recent call last):\n"
