@@ -129,17 +129,30 @@ def installed_versions(dist_name: str) -> List[str]:
             if name and _canonical(name) == wanted:
                 found.append(dist.version or "")
         except Exception:
-            # One malformed unrelated METADATA must not erase valid records
-            # already found for the requested distribution.
-            continue
+            # A malformed unrelated record is irrelevant, but an unreadable
+            # record for the requested package is itself a conflict. Wheel
+            # metadata directory names escape distribution-name separators as
+            # underscores, so splitting off the final version is unambiguous.
+            path = getattr(dist, "_path", None)
+            stem = os.path.basename(os.fspath(path)) if path is not None else ""
+            if stem.endswith(".dist-info"):
+                stem = stem[: -len(".dist-info")]
+                path_name, separator, _version = stem.rpartition("-")
+                if separator and _canonical(path_name) == wanted:
+                    found.append("")
     return sorted(found)
+
+
+def metadata_conflict(versions: Sequence[str]) -> bool:
+    """Whether matching metadata records are duplicated or unreadable."""
+    return len(versions) > 1 or any(not version for version in versions)
 
 
 def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = None) -> Optional[str]:
     if installed is not None:
         return installed.get(_canonical(dist_name))
     versions = installed_versions(dist_name)
-    return versions[0] if len(versions) == 1 else None
+    return versions[0] if len(versions) == 1 and versions[0] else None
 
 
 def remove_manifest(root: Optional[Path] = None) -> bool:
@@ -400,7 +413,7 @@ def verify_install(
             else []
         )
         if installed is None:
-            current = versions[0] if len(versions) == 1 else None
+            current = versions[0] if len(versions) == 1 and versions[0] else None
         else:
             current = _installed_version(manifest_package, installed)
         foreign_conflicts = {_canonical(name) for name in (installed_conflicts or ())}
@@ -408,7 +421,10 @@ def verify_install(
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
-        if core_conflict or (installed is None and (len(versions) > 1 or len(zoo_versions) > 1)):
+        if core_conflict or (
+            installed is None
+            and (metadata_conflict(versions) or metadata_conflict(zoo_versions))
+        ):
             reason = "studio_install_metadata_conflict"
         elif current and recorded and current != recorded:
             reason = "studio_install_version_changed"

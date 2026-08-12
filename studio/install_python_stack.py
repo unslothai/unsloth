@@ -3585,8 +3585,9 @@ def _repair_duplicate_core_metadata(
         if canonical in seen:
             continue
         seen.add(canonical)
-        record_count = len(install_manifest.installed_versions(name))
-        if record_count > 1:
+        versions = install_manifest.installed_versions(name)
+        record_count = len(versions)
+        if install_manifest.metadata_conflict(versions):
             duplicates.append((name, record_count))
 
     repaired: list[str] = []
@@ -3608,7 +3609,7 @@ def _repair_duplicate_core_metadata(
             record_count = remaining
 
         canonical = re.sub(r"[-_.]+", "-", name).lower()
-        if local_repo:
+        if local_repo and canonical in {"unsloth", "unsloth-zoo"}:
             # install.sh/install.ps1 may already have applied these sources
             # before handing off with SKIP_STUDIO_BASE=1. Install that same
             # provenance directly now that no ambiguous record remains.

@@ -102,6 +102,52 @@ def test_installed_versions_ignores_malformed_unrelated_metadata(tmp_path, monke
     assert im.installed_versions("demo") == ["1.0", "2.0"]
 
 
+def test_installed_versions_marks_malformed_matching_metadata_as_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.metadata_conflict(versions) is True
+    assert im._installed_version("demo") is None
+
+
+def test_single_malformed_matching_metadata_is_a_conflict(tmp_path, monkeypatch):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    malformed = site / "demo_pkg-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    versions = im.installed_versions("demo-pkg")
+    assert versions == [""]
+    assert im.metadata_conflict(versions) is True
+
+
+def test_malformed_matching_metadata_invalidates_the_manifest(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
+
+
 def test_duplicate_package_metadata_invalidates_the_manifest(
     tmp_path, monkeypatch, install_root, req_root
 ):

@@ -233,8 +233,15 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
                     found[canonical] = dist.version or ""
         except Exception:
             # An unrelated malformed record does not make every otherwise
-            # readable distribution in the foreign environment disappear.
-            continue
+            # readable distribution in the foreign environment disappear. A
+            # malformed matching directory is still an inconsistent record.
+            path = getattr(dist, "_path", None)
+            stem = os.path.basename(os.fspath(path)) if path is not None else ""
+            if stem.endswith(".dist-info"):
+                stem = stem[: -len(".dist-info")]
+                path_name, separator, _version = stem.rpartition("-")
+                if separator:
+                    conflicts.add(_canonical(path_name))
     return found, conflicts
 
 

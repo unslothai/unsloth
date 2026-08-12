@@ -658,6 +658,37 @@ class TestDuplicateCoreMetadataRepair:
         source = inspect.getsource(ips.install_python_stack)
         assert "local_repo=local_repo" in source.replace(" ", "")
 
+    def test_local_repair_reinstalls_a_custom_package_from_its_normal_source(
+        self, monkeypatch
+    ):
+        probes = iter((["old", "new"], ["new"], [], ["new"]))
+        installs = []
+
+        monkeypatch.setattr(
+            ips.install_manifest,
+            "installed_versions",
+            lambda _name: next(probes),
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        monkeypatch.setattr(
+            ips,
+            "pip_install",
+            lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
+        )
+
+        assert ips._repair_duplicate_core_metadata(
+            ("custom-package",), local_repo = "/src/unsloth"
+        )
+        assert len(installs) == 1
+        assert installs[0][1] == (
+            "--no-cache-dir",
+            "--no-deps",
+            "--force-reinstall",
+            "custom-package",
+        )
+
     def test_ci_repair_restores_only_the_candidate_unsloth_checkout(self, monkeypatch):
         probes = {
             "unsloth": iter((["old", "new"], ["new"], [], ["new"])),

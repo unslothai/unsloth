@@ -4380,8 +4380,13 @@ sys.path.insert(0, sys.argv[2])
 import install_manifest
 versions = install_manifest.installed_versions(sys.argv[1])
 zoo_versions = install_manifest.installed_versions('unsloth-zoo')
-print(versions[0] if len(versions) == 1 else '')
-sys.exit(2 if len(versions) > 1 or len(zoo_versions) > 1 else (0 if versions else 1))
+print(versions[0] if len(versions) == 1 and versions[0] else '')
+sys.exit(
+    2
+    if install_manifest.metadata_conflict(versions)
+    or install_manifest.metadata_conflict(zoo_versions)
+    else (0 if versions else 1)
+)
 " $_PkgName $PSScriptRoot 2>$null
         $_InstalledVersionProbeExit = $LASTEXITCODE
         ($_installedVersionOutput | Out-String).Trim()

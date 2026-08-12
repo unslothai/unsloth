@@ -138,6 +138,7 @@ def cross_venv(tmp_path, monkeypatch):
         inactive_duplicate_version = "",
         unresolved_active_paths = False,
         malformed_unrelated_metadata = False,
+        malformed_core_metadata = False,
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -173,6 +174,10 @@ def cross_venv(tmp_path, monkeypatch):
             (managed / "lib" / "python3.10" / "site-packages").mkdir(parents = True)
         if malformed_unrelated_metadata:
             malformed = managed_site / "unrelated-1.0.dist-info"
+            malformed.mkdir()
+            (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        if malformed_core_metadata:
+            malformed = managed_site / "unsloth-2.0.dist-info"
             malformed.mkdir()
             (malformed / "METADATA").write_bytes(b"\xff\xfe")
 
@@ -262,6 +267,14 @@ def test_malformed_unrelated_foreign_metadata_does_not_hide_valid_records(cross_
 
     assert state["ok"] is True, state
     assert state["reason"] is None
+
+
+def test_malformed_core_metadata_is_a_foreign_conflict(cross_venv):
+    state = cross_venv(malformed_core_metadata = True)
+
+    assert state["ok"] is False
+    assert state["manifest_ok"] is False
+    assert state["reason"] == "studio_install_metadata_conflict"
 
 
 # ── import name vs distribution name ─────────────────────────────────
