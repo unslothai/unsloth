@@ -253,8 +253,11 @@ def test_the_exception_line_survives_a_cap_that_cannot_fit_it():
     # message is exactly what makes that line too big for the tail budget. Dropping it
     # whole left the reader every frame and no reason.
     frames = "\n".join(f'  File "/app/x{i}.py", line {i}, in fn' for i in range(60))
-    payload = "Traceback (most recent call last):\n" + frames + "\nValueError: rejected upload " + (
-        "\x00" * 3000
+    payload = (
+        "Traceback (most recent call last):\n"
+        + frames
+        + "\nValueError: rejected upload "
+        + ("\x00" * 3000)
     )
     capped = log_config.truncate_exception({"exception": payload})["exception"]
     out = _render({"event": "request_failed", "exception": capped})
