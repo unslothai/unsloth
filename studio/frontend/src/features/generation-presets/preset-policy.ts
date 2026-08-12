@@ -160,6 +160,18 @@ export function videoLoadConfigFromStatus(
   return commonLoadConfigFromStatus(status);
 }
 
+/**
+ * Whether a Reapply of the resident build knows what load options it would submit. Either the
+ * status names them, or the build reports no resolved record at all -- the native sd.cpp engine
+ * takes none of these options, so there is nothing there for a Reapply to silently replace.
+ */
+export function residentLoadConfigIsKnown(
+  status: ResidentLoadStatus | null | undefined,
+  config: unknown,
+): boolean {
+  return Boolean(config) || !status?.resolved;
+}
+
 export function configKey(value: unknown): string {
   return JSON.stringify(value ?? null);
 }

@@ -17,7 +17,7 @@ interface MediaGenerationPresetControlProps {
   kind: "image" | "video";
   presets: readonly { name: string }[];
   activePreset: string;
-  hydrated: boolean;
+  ready: boolean;
   hasUnsavedChanges: boolean;
   onSelect: (name: string) => void;
   onSave: (name: string) => Promise<string | null>;
@@ -28,7 +28,7 @@ export function MediaGenerationPresetControl({
   kind,
   presets,
   activePreset,
-  hydrated,
+  ready,
   hasUnsavedChanges,
   onSelect,
   onSave,
@@ -44,7 +44,7 @@ export function MediaGenerationPresetControl({
     activePreset !== DEFAULT_PRESET_NAME &&
     presets.some((preset) => preset.name === activePreset);
   const canSave =
-    hydrated &&
+    ready &&
     !saving &&
     trimmed.length > 0 &&
     (trimmed !== activePreset ||
@@ -96,7 +96,7 @@ export function MediaGenerationPresetControl({
           type="button"
           variant="outline"
           size="sm"
-          disabled={!hydrated || saving}
+          disabled={!ready || saving}
           aria-label={`Manage ${kind} generation presets`}
           className={cn(
             "relative size-8 shrink-0 gap-1.5 rounded-full border-border/60 bg-background/70 p-0 text-xs font-medium shadow-none backdrop-blur-sm hover:bg-muted/70 sm:h-8 sm:w-auto sm:max-w-40 sm:px-2.5",

@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import {
+  PresetWriteRefused,
   deleteMediaGenerationPreset,
   getMediaGenerationPresetSettings,
   saveMediaGenerationPresetSettings,
@@ -64,6 +65,15 @@ function nextWrite() {
     timestamp: lastWriteTimestamp,
     writer: presetWriter,
   };
+}
+
+function refusalMessage(error: unknown, fallback: string) {
+  return error instanceof PresetWriteRefused ? error.message : fallback;
+}
+
+function claimForm(claim: { current: number }) {
+  claim.current += 1;
+  return claim.current;
 }
 
 function saveState<Params, LoadConfig>(
@@ -124,9 +134,13 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     useState(defaultParams);
   const [activePreset, setActivePreset] = useState(DEFAULT_PRESET_NAME);
   const [hydrationSource, setHydrationSource] = useState<
-    "pending" | "fresh" | "saved"
+    "pending" | "fresh" | "saved" | "unreadable"
   >("pending");
+  // Settled, not readable: an unreadable store still answers "stored settings do not own the form",
+  // which is what the load-state controls wait for. Only the preset UI itself needs a readable store.
   const hydrated = hydrationSource !== "pending";
+  const presetsReady =
+    hydrationSource === "fresh" || hydrationSource === "saved";
   const hasPersistedSettings = hydrationSource === "saved";
   const initialParamsKey = useRef(configKey(currentParams));
   const initialLoadConfigKey = useRef(configKey(currentLoadConfig));
@@ -139,6 +153,9 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
   const baselineParamsRef = useRef(defaultParams);
   const baselineLoadConfigRef = useRef<LoadConfig | undefined>(undefined);
   const activePresetRef = useRef(activePreset);
+  // Bumped by every action that takes over the form, so a write that resolves late can still
+  // update the list without moving a selection the user made while it was in flight.
+  const formClaim = useRef(0);
   const isDefaultUnmodifiedRef = useRef(true);
   const hydratedRef = useRef(hydrated);
   const defaultParamsRef = useRef(defaultParams);
@@ -177,7 +194,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     [customPresets, effectiveDefaultParams],
   );
 
-  const hydrateFreshSettings = useCallback(() => {
+  const hydrateLocalSettings = useCallback((source: "fresh" | "unreadable") => {
     const paramsUntouched =
       configKey(currentParamsRef.current) === initialParamsKey.current;
     baselineParamsRef.current = paramsUntouched
@@ -186,7 +203,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     baselineLoadConfigRef.current = undefined;
     setCustomPresets([]);
     setActivePreset(DEFAULT_PRESET_NAME);
-    setHydrationSource("fresh");
+    setHydrationSource(source);
   }, []);
 
   const hydrateSavedSettings = useCallback(
@@ -233,7 +250,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
           return;
         }
         if (!settings.saved) {
-          hydrateFreshSettings();
+          hydrateLocalSettings("fresh");
           return;
         }
         hydrateSavedSettings(settings);
@@ -242,12 +259,16 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         if (cancelled) {
           return;
         }
+        // The read is the only thing that failed. Settle the page on local defaults so the load
+        // controls that wait on hydration still work, but never write back over a store this
+        // session could not read.
+        hydrateLocalSettings("unreadable");
         toast.error(`Could not load ${kind} presets`);
       });
     return () => {
       cancelled = true;
     };
-  }, [hydrateFreshSettings, hydrateSavedSettings, kind]);
+  }, [hydrateLocalSettings, hydrateSavedSettings, kind]);
 
   const settings = useMemo<MediaGenerationPresetState<Params, LoadConfig>>(
     () => ({
@@ -262,7 +283,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
   }, [settings]);
 
   useEffect(() => {
-    if (!hydrated) {
+    if (!presetsReady) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -271,10 +292,10 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [hydrated, kind, settings]);
+  }, [kind, presetsReady, settings]);
 
   useEffect(() => {
-    if (!hydrated) {
+    if (!presetsReady) {
       return;
     }
     const flush = () => {
@@ -288,11 +309,11 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
       window.removeEventListener("beforeunload", flush);
       flush();
     };
-  }, [hydrated, kind]);
+  }, [kind, presetsReady]);
 
   const selectPreset = useCallback(
     (name: string) => {
-      if (!hydrated) {
+      if (!presetsReady) {
         return;
       }
       const preset =
@@ -302,6 +323,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
       if (!preset) {
         return;
       }
+      claimForm(formClaim);
       const applied = applyParamsRef.current(preset.params);
       const loadConfigChanged =
         configKey(currentLoadConfig) !== configKey(preset.loadConfig);
@@ -315,12 +337,12 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         );
       }
     },
-    [currentLoadConfig, customPresets, hydrated, modelLoaded],
+    [currentLoadConfig, customPresets, modelLoaded, presetsReady],
   );
 
   const savePreset = useCallback(
     async (rawName: string): Promise<string | null> => {
-      if (!hydrated) {
+      if (!presetsReady) {
         return null;
       }
       const trimmed = rawName.trim();
@@ -346,28 +368,63 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         params: currentParamsRef.current,
         ...(currentLoadConfig ? { loadConfig: currentLoadConfig } : {}),
       };
+      const claim = claimForm(formClaim);
       try {
         await enqueuePresetMutation(kind, (write) =>
           upsertMediaGenerationPreset(kind, preset, write),
         );
-      } catch {
-        toast.error(`Could not save ${kind} preset`);
+      } catch (error) {
+        toast.error(refusalMessage(error, `Could not save ${kind} preset`));
         return null;
       }
       setCustomPresets((current) => [
         ...current.filter((candidate) => candidate.name !== name),
         preset,
       ]);
+      if (formClaim.current !== claim) {
+        return name;
+      }
       baselineParamsRef.current = preset.params;
       baselineLoadConfigRef.current = preset.loadConfig;
       setActivePreset(name);
       return name;
     },
-    [currentLoadConfig, customPresets, hydrated, kind],
+    [currentLoadConfig, customPresets, kind, presetsReady],
+  );
+
+  // A delete leaves Default selected. The form itself only follows when the user did not edit it
+  // while the request was in flight; their newer input owns it in that case.
+  const restoreDefaultAfterDelete = useCallback(
+    (paramsBeforeDelete: Params, loadConfigBeforeDelete?: LoadConfig) => {
+      const formUnchanged =
+        paramsKeyRef.current(currentParamsRef.current) ===
+          paramsKeyRef.current(paramsBeforeDelete) &&
+        configKey(currentLoadConfigRef.current) ===
+          configKey(loadConfigBeforeDelete);
+      const applied = formUnchanged
+        ? applyParamsRef.current(defaultParamsRef.current)
+        : defaultParamsRef.current;
+      if (formUnchanged) {
+        applyLoadConfigRef.current(undefined);
+      }
+      baselineParamsRef.current = applied;
+      baselineLoadConfigRef.current = undefined;
+      setActivePreset(DEFAULT_PRESET_NAME);
+      if (
+        formUnchanged &&
+        loadConfigBeforeDelete !== undefined &&
+        modelLoaded
+      ) {
+        toast.info(
+          "Reapply the loaded model to use the automatic load settings.",
+        );
+      }
+    },
+    [modelLoaded],
   );
 
   const deletePreset = useCallback(async (): Promise<boolean> => {
-    if (!hydrated || activePreset === DEFAULT_PRESET_NAME) {
+    if (!presetsReady || activePreset === DEFAULT_PRESET_NAME) {
       return false;
     }
     if (!customPresets.some((preset) => preset.name === activePreset)) {
@@ -376,38 +433,29 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     const deletedName = activePreset;
     const paramsBeforeDelete = currentParamsRef.current;
     const loadConfigBeforeDelete = currentLoadConfigRef.current;
+    const claim = claimForm(formClaim);
     try {
       await enqueuePresetMutation(kind, (write) =>
         deleteMediaGenerationPreset(kind, deletedName, write),
       );
-    } catch {
-      toast.error(`Could not delete ${kind} preset`);
+    } catch (error) {
+      toast.error(refusalMessage(error, `Could not delete ${kind} preset`));
       return false;
     }
     setCustomPresets((current) =>
       current.filter((preset) => preset.name !== deletedName),
     );
-    const formUnchanged =
-      paramsKeyRef.current(currentParamsRef.current) ===
-        paramsKeyRef.current(paramsBeforeDelete) &&
-      configKey(currentLoadConfigRef.current) ===
-        configKey(loadConfigBeforeDelete);
-    const applied = formUnchanged
-      ? applyParamsRef.current(defaultParamsRef.current)
-      : defaultParamsRef.current;
-    if (formUnchanged) {
-      applyLoadConfigRef.current(undefined);
-    }
-    baselineParamsRef.current = applied;
-    baselineLoadConfigRef.current = undefined;
-    setActivePreset(DEFAULT_PRESET_NAME);
-    if (formUnchanged && loadConfigBeforeDelete !== undefined && modelLoaded) {
-      toast.info(
-        "Reapply the loaded model to use the automatic load settings.",
-      );
+    if (formClaim.current === claim) {
+      restoreDefaultAfterDelete(paramsBeforeDelete, loadConfigBeforeDelete);
     }
     return true;
-  }, [activePreset, customPresets, hydrated, kind, modelLoaded]);
+  }, [
+    activePreset,
+    customPresets,
+    kind,
+    presetsReady,
+    restoreDefaultAfterDelete,
+  ]);
 
   const applyDynamicDefault = useCallback((patch: Partial<Params>) => {
     const previousDefault = defaultParamsRef.current;
@@ -475,6 +523,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     isDefaultUnmodifiedRef,
     presets,
     hydrated,
+    presetsReady,
     hasPersistedSettings,
     hasUnsavedChanges,
     selectPreset,

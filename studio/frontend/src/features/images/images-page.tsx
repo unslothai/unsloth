@@ -77,6 +77,7 @@ import {
   chainDynamicDefaultRollback,
   imageLoadConfigFromStatus,
   reapplyTargetFromStatus,
+  residentLoadConfigIsKnown,
   useMediaGenerationPresets,
   useResidentPresetLoadConfig,
 } from "@/features/generation-presets";
@@ -1360,7 +1361,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const residentReapplyReady =
     residentReapplyTarget &&
     imagePresets.hydrated &&
-    (imagePresets.hasPersistedSettings || residentLoadConfig)
+    (imagePresets.hasPersistedSettings ||
+      residentLoadConfigIsKnown(status, residentLoadConfig))
       ? residentReapplyTarget
       : null;
   const applyImageDynamicDefault = imagePresets.applyDynamicDefault;
@@ -3359,7 +3361,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   kind="image"
                   presets={imagePresets.presets}
                   activePreset={imagePresets.activePreset}
-                  hydrated={imagePresets.hydrated}
+                  ready={imagePresets.presetsReady}
                   hasUnsavedChanges={imagePresets.hasUnsavedChanges}
                   onSelect={imagePresets.selectPreset}
                   onSave={imagePresets.savePreset}

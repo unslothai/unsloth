@@ -12,6 +12,7 @@ import {
   imageLoadConfigFromStatus,
   mergeUntouchedParams,
   reapplyTargetFromStatus,
+  residentLoadConfigIsKnown,
   videoLoadConfigFromStatus,
 } from "../src/features/generation-presets/preset-policy.ts";
 
@@ -214,4 +215,26 @@ test("video duration mapping uses the closest supported temporal lattice", () =>
   ];
   assert.equal(closestDurationIndex(options, 4.9), 3);
   assert.equal(closestDurationIndex(options, 2.4), 1);
+});
+
+test("a build reporting no resolved record has no load options to preserve", () => {
+  // The native sd.cpp engine reports no resolved record at all, so Reapply cannot be replacing an
+  // explicit choice it never read: offering it there matches a page-initiated load of the same build.
+  assert.equal(residentLoadConfigIsKnown({}, null), true);
+  assert.equal(residentLoadConfigIsKnown({ resolved: null }, null), true);
+  // A diffusers build names them, so an incomplete parse must keep Reapply off.
+  assert.equal(
+    residentLoadConfigIsKnown(
+      { resolved: { memory_mode: automaticControl("balanced") } },
+      null,
+    ),
+    false,
+  );
+  assert.equal(
+    residentLoadConfigIsKnown(
+      { resolved: { memory_mode: automaticControl("balanced") } },
+      { memoryMode: "balanced" },
+    ),
+    true,
+  );
 });

@@ -23,6 +23,7 @@ export interface ResolvedControl {
   status?: string;
   reason: string;
 }
+
 export type ResolvedBadgeTone = "auto" | "warn";
 
 export interface ResolvedBadgeInfo {

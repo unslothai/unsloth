@@ -10,6 +10,7 @@ export {
   closestResolutionIndex,
   imageLoadConfigFromStatus,
   reapplyTargetFromStatus,
+  residentLoadConfigIsKnown,
   videoLoadConfigFromStatus,
 } from "./preset-policy";
 export type {

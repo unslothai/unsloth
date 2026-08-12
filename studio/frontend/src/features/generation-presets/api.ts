@@ -22,14 +22,20 @@ function orderedWriteHeaders({ timestamp, writer }: OrderedWrite) {
   };
 }
 
+/** A refusal the server explained in words, so the caller can show it instead of a generic toast. */
+export class PresetWriteRefused extends Error {}
+
 async function parseResponse<Result>(response: Response) {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     const detail =
-      body && typeof body === "object" && "detail" in body
-        ? JSON.stringify(body.detail)
-        : `Request failed (${response.status})`;
-    throw new Error(detail);
+      body && typeof body === "object" && "detail" in body ? body.detail : null;
+    if (typeof detail === "string" && detail) {
+      throw new PresetWriteRefused(detail);
+    }
+    throw new Error(
+      detail ? JSON.stringify(detail) : `Request failed (${response.status})`,
+    );
   }
   return body as Result;
 }

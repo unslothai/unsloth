@@ -76,6 +76,7 @@ import {
   closestDurationIndex,
   closestResolutionIndex,
   reapplyTargetFromStatus,
+  residentLoadConfigIsKnown,
   useMediaGenerationPresets,
   useResidentPresetLoadConfig,
   videoLoadConfigFromStatus,
@@ -1221,7 +1222,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const residentReapplyReady =
     residentReapplyTarget &&
     videoPresets.hydrated &&
-    (videoPresets.hasPersistedSettings || residentLoadConfig)
+    (videoPresets.hasPersistedSettings ||
+      residentLoadConfigIsKnown(status, residentLoadConfig))
       ? residentReapplyTarget
       : null;
   const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
@@ -2931,7 +2933,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               kind="video"
               presets={videoPresets.presets}
               activePreset={videoPresets.activePreset}
-              hydrated={videoPresets.hydrated}
+              ready={videoPresets.presetsReady}
               hasUnsavedChanges={videoPresets.hasUnsavedChanges}
               onSelect={videoPresets.selectPreset}
               onSave={videoPresets.savePreset}
