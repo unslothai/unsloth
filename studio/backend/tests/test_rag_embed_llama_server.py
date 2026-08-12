@@ -162,11 +162,15 @@ def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch):
 
     monkeypatch.setattr(_sys, "platform", "darwin")
     monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/inherited")
+    # Pin an inherited value rather than asserting the key is absent: the child
+    # env is a copy of os.environ, so an ambient LD_LIBRARY_PATH would be there
+    # whatever this branch does. What matters is that it is left alone.
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
     b = LlamaServerBackend()
     env = b._build_env("/opt/llama/bin/llama-server", use_gpu = True)
     entries = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
     assert entries == ["/opt/llama/bin", "/opt/inherited"]
-    assert "LD_LIBRARY_PATH" not in env
+    assert env["LD_LIBRARY_PATH"] == "/opt/sentinel"
 
 
 def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch):
