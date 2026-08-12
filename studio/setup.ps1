@@ -4077,6 +4077,7 @@ function Fast-Download {
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
 $LatestVer = ""
+$LatestReqPy = ""
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
@@ -4084,6 +4085,7 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
         $LatestVer = "$($pypiJson.info.version)".Trim()
+        $LatestReqPy = "$($pypiJson.info.requires_python)".Trim()
     } catch { }
 
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
@@ -4781,11 +4783,26 @@ if ($LatestVer) {
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = ($PostVer -eq $LatestVer)
     if (-not $_updateOk -and $PostVer) {
-        # newer than announced is fine (a release can land mid-update)
-        $_postNum = ($PostVer -replace '[^0-9.].*$', '').TrimEnd('.')
-        $_latestNum = ($LatestVer -replace '[^0-9.].*$', '').TrimEnd('.')
-        if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
-            try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
+        # newer than announced is fine (a release can land mid-update); PEP 440
+        # ordering so an installed pre/post/dev build never passes as the release
+        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
+        if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
+            $_updateOk = ($Matches[1] -eq "ge")
+        } else {
+            $_postNum = ($PostVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            $_latestNum = ($LatestVer -replace '[^0-9.].*$', '').TrimEnd('.')
+            if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+') {
+                try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
+            }
+        }
+        if (-not $_updateOk -and $LatestReqPy) {
+            # the announced release cannot install on this interpreter (Requires-Python
+            # bump): pip kept the newest compatible release -- success, not staleness
+            $_reqProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.specifiers import SpecifierSet; from packaging.version import Version; import sys; print('REQPY=' + ('out' if Version('.'.join(map(str, sys.version_info[:3]))) not in SpecifierSet('$LatestReqPy') else 'in'))"
+            if ($_reqProbe.Ok -and $_reqProbe.Output -match '(?m)^REQPY=out\s*$') {
+                substep "$_PkgName $PostVer kept: $LatestVer needs Python $LatestReqPy"
+                $_updateOk = $true
+            }
         }
     }
     if (-not $_updateOk) {

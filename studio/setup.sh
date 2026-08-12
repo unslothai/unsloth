@@ -1501,6 +1501,11 @@ if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
 _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
+# Never inherited from the caller's environment: the post-update check below keys on
+# these, and the block that assigns them is skipped in installer-driven/local/Colab
+# runs (mirrors $LatestVer = "" in setup.ps1).
+LATEST_VER=""
+LATEST_REQ_PY=""
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
@@ -1508,8 +1513,12 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    _PYPI_JSON=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null || echo "")
+    LATEST_VER=$(printf '%s' "$_PYPI_JSON" \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
+        || echo "")
+    LATEST_REQ_PY=$(printf '%s' "$_PYPI_JSON" \
+        | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info'].get('requires_python') or '')" 2>/dev/null \
         || echo "")
 
     if [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
@@ -1657,9 +1666,25 @@ def nums(v):
     m = re.match(r'\d+(\.\d+)*', v)
     if not m: sys.exit(1)
     return [int(x) for x in m.group(0).split('.')]
-sys.exit(0 if nums(sys.argv[1]) >= nums(sys.argv[2]) else 1)
+try:
+    from packaging.version import Version
+    ok = Version(sys.argv[1]) >= Version(sys.argv[2])
+except Exception:
+    ok = nums(sys.argv[1]) >= nums(sys.argv[2])
+sys.exit(0 if ok else 1)
 " "$POST_VER" "$LATEST_VER" 2>/dev/null; then
-            # newer than announced is fine (a release can land mid-update)
+            # newer than announced is fine (a release can land mid-update); PEP 440
+            # ordering so an installed pre/post/dev build never passes as the release
+            _UPDATE_OK=true
+        elif [ -n "$POST_VER" ] && [ -n "${LATEST_REQ_PY:-}" ] && "$VENV_DIR/bin/python" -c "
+import sys
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+sys.exit(1 if Version('.'.join(map(str, sys.version_info[:3]))) in SpecifierSet(sys.argv[1]) else 0)
+" "$LATEST_REQ_PY" 2>/dev/null; then
+            # the announced release cannot install on this interpreter (Requires-Python
+            # bump): pip kept the newest compatible release -- success, not staleness
+            substep "$_PKG_NAME $POST_VER kept: $LATEST_VER needs Python $LATEST_REQ_PY"
             _UPDATE_OK=true
         fi
         if [ "$_UPDATE_OK" = false ]; then
