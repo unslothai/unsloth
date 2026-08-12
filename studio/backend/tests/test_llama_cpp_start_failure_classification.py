@@ -99,6 +99,7 @@ class TestDiffusionArchitectures:
     def test_media_arch_sets_are_disjoint_and_cover_the_union(self):
         sets = (
             LlamaCppBackend._IMAGE_ARCHES,
+            LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES,
             LlamaCppBackend._VIDEO_ARCHES,
             LlamaCppBackend._UNRUNNABLE_MEDIA_ARCHES,
         )

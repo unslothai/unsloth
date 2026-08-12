@@ -8864,9 +8864,20 @@ class LlamaCppBackend:
         (
             "qwen_image",
             "flux",
-            "lumina2",
         )
     )
+    # Archs shared by more than one family, so the header alone does NOT say whether the
+    # Images page can run the file: Z-Image's DiT is a Lumina2 derivative, so its GGUFs
+    # declare "lumina2" too (measured on unsloth/Z-Image-Turbo-GGUF/z-image-turbo-Q2_K.gguf
+    # and on calcuis/lumina-gguf). ``routes.models._arch_to_task`` resolves these from the
+    # repo id and the filename and tags anything that does not resolve
+    # ``image-diffusion-unsupported``, which hides the row from the Images picker -- so the
+    # refusal has to run the SAME resolution before it names that page. Reachable today:
+    # ``neta-art/neta-lumina-gguf/checkpoint-e3_s9658-*.gguf`` declares "lumina2" and
+    # neither its repo id nor its filename resolves to a family ("lumina-2" is not aliased
+    # to bare "lumina"), so the picker refuses it while this branch was sending the user
+    # there. Mirrors ``routes.models._AMBIGUOUS_DIFFUSION_GGUF_ARCHS``.
+    _AMBIGUOUS_IMAGE_ARCHES = frozenset(("lumina2",))
     # Text-to-video architectures the Video page can actually offer. Split from the image
     # set so the refusal names the Video page: sending someone with a Wan / LTX-2 GGUF to
     # Images is a second dead end.
@@ -8906,7 +8917,9 @@ class LlamaCppBackend:
             "hidream",
         )
     )
-    _DIFFUSION_ARCHES = _IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
+    _DIFFUSION_ARCHES = (
+        _IMAGE_ARCHES | _AMBIGUOUS_IMAGE_ARCHES | _VIDEO_ARCHES | _UNRUNNABLE_MEDIA_ARCHES
+    )
 
     # Not architectures: the literal placeholders calcuis / gguf-org's "gguf-connector"
     # writes into general.architecture for its diffusion GGUFs (gguf-org/flux2-dev-gguf
@@ -8916,6 +8929,47 @@ class LlamaCppBackend:
     # as unloadable as any other diffusion file; without this they slip past the arch sets
     # and die in llama-server as the opaque failure this preflight exists to prevent.
     _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
+
+    @staticmethod
+    def _ambiguous_image_arch_is_pickable(
+        gguf_path: Optional[str], model_identifier: Optional[str]
+    ) -> bool:
+        """Whether the Images page would actually OFFER this shared-arch GGUF.
+
+        The same three questions ``routes.models._arch_to_task`` asks in its
+        ``_AMBIGUOUS_DIFFUSION_GGUF_ARCHS`` branch, over the same evidence (repo id, then
+        filename): does a family resolve at all, can a GGUF transformer be assembled for
+        it, and can an engine on THIS host build it. Answering differently here is the
+        thing to avoid -- the picker's answer is what decides whether the row the refusal
+        points at exists.
+
+        Imported lazily, and inside the function: ``routes`` imports this module, so the
+        canonical classifier cannot be imported from here, but the helpers underneath it
+        (``core.inference.diffusion_families`` / ``diffusion_engine_router``) are already
+        reached this way by the no-architecture branch below.
+
+        Fails OPEN on a probe error, like every other family probe on the listing side:
+        naming the page is a nicety, and losing it over a broken import would be a worse
+        answer than the one this method exists to stop."""
+        try:
+            from core.inference.diffusion_engine_router import family_buildable_here
+            from core.inference.diffusion_families import (
+                detect_family_for_pick,
+                family_gguf_loadable,
+            )
+
+            for needle in (model_identifier, os.path.basename(gguf_path or "")):
+                if not needle:
+                    continue
+                fam = detect_family_for_pick(needle)
+                if fam is not None:
+                    return family_gguf_loadable(fam) and family_buildable_here(
+                        fam, model_kind = "gguf"
+                    )
+            return False
+        except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
+            logger.debug("Family probe failed for ambiguous image arch: %s", e)
+            return True
 
     def _non_chat_gguf_refusal(self, gguf_path: str) -> Optional[str]:
         """Why this GGUF cannot be a chat model, decided from its own header BEFORE
@@ -8964,6 +9018,18 @@ class LlamaCppBackend:
                 return (
                     f"This is an image-generation GGUF (architecture '{arch}'), which "
                     "cannot run as a chat model. Open it from the Images page instead."
+                )
+            if arch in self._AMBIGUOUS_IMAGE_ARCHES:
+                if self._ambiguous_image_arch_is_pickable(gguf_path, self._model_identifier):
+                    return (
+                        f"This is an image-generation GGUF (architecture '{arch}'), which "
+                        "cannot run as a chat model. Open it from the Images page instead."
+                    )
+                return (
+                    f"This is an image-generation GGUF (architecture '{arch}'), which "
+                    "cannot run as a chat model. Studio could not tell which model family "
+                    f"this file belongs to -- '{arch}' is shared by several -- so the "
+                    "Images page cannot assemble it either."
                 )
             return None
 
@@ -9217,12 +9283,27 @@ class LlamaCppBackend:
                     "cannot run as a chat/completion model. Open it from "
                     "Unsloth's Video page instead of a chat."
                 )
-            if arch in LlamaCppBackend._IMAGE_ARCHES:
+            if arch in LlamaCppBackend._IMAGE_ARCHES or (
+                arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
+                and LlamaCppBackend._ambiguous_image_arch_is_pickable(
+                    gguf_path, model_identifier
+                )
+            ):
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
                     "llama-server cannot run as a chat/completion model. Use "
                     "Unsloth's Images page to generate with local diffusion "
                     "GGUFs such as FLUX and Qwen-Image."
+                )
+            if arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES:
+                # Same shared-arch resolution as the pre-launch refusal: nothing in the
+                # repo id or filename says which family this is, so the Images picker
+                # tags it image-diffusion-unsupported and the row is not there to open.
+                return (
+                    f"'{arch}' is a diffusion (image-generation) GGUF, which "
+                    "llama-server cannot run as a chat/completion model. Unsloth Studio "
+                    f"could not tell which model family this file is -- '{arch}' is "
+                    "shared by several -- so the Images page cannot assemble it either."
                 )
             if is_ollama:
                 return (

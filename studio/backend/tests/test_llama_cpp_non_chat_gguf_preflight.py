@@ -181,6 +181,65 @@ def test_the_path_probe_agrees_with_the_instance_check(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "identifier,name",
+    [
+        # Measured headers (byte-range read of the live repos): both declare "lumina2".
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q2_K.gguf"),
+        ("Immac/NetaYume-Lumina-Image-2.0-GGUF", "NetaYumev2plus_unet_q2_k.gguf"),
+        # The family keyword lives only in the filename, as it does for a local copy.
+        (None, "lumina2-q4_k_m.gguf"),
+    ],
+)
+def test_a_resolvable_shared_arch_still_names_the_images_page(tmp_path, identifier, name):
+    _, message = _refusal(tmp_path, arch = "lumina2", name = name, identifier = identifier)
+    assert message is not None
+    assert "Open it from the Images page" in message
+
+
+def test_an_unresolvable_shared_arch_promises_no_page(tmp_path):
+    # "lumina2" is shared: Z-Image's DiT is a Lumina2 derivative, so the header alone does
+    # not say which family a file is. neta-art/neta-lumina-gguf ships REAL lumina2 GGUFs
+    # (header read from the live repo: general.architecture = "lumina2", 400 tensors) whose
+    # repo id and filename resolve to no family -- "lumina-2" is deliberately not aliased
+    # to bare "lumina" -- so routes.models._arch_to_task tags them
+    # image-diffusion-unsupported and the Images picker never lists them. Sending the user
+    # there is the empty promise the runnable/unrunnable split exists to remove.
+    _, message = _refusal(
+        tmp_path,
+        arch = "lumina2",
+        name = "checkpoint-e3_s9658-Q2_K.gguf",
+        identifier = "neta-art/neta-lumina-gguf",
+    )
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the" not in message
+
+
+def test_the_shared_arch_verdict_matches_the_pickers(tmp_path):
+    # The one invariant: the refusal may name the Images page exactly when
+    # routes.models._arch_to_task says the row is selectable there. Same evidence, same
+    # answer, or the message points at a list the model is not in.
+    from routes.models import _AMBIGUOUS_DIFFUSION_GGUF_ARCHS, _arch_to_task
+
+    assert LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES == _AMBIGUOUS_DIFFUSION_GGUF_ARCHS
+    for identifier, name in (
+        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q2_K.gguf"),
+        ("neta-art/neta-lumina-gguf", "checkpoint-e3_s9658-Q2_K.gguf"),
+        ("Immac/NetaYume-Lumina-Image-2.0-GGUF", "NetaYumev2plus_unet_q2_k.gguf"),
+        (None, "some-random-denoiser.gguf"),
+    ):
+        for arch in sorted(LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES):
+            _, message = _refusal(tmp_path, arch = arch, name = name, identifier = identifier)
+            task = _arch_to_task(arch, name_hints = (identifier, name))
+            picker_lists_it = task == "text-to-image"
+            assert ("Open it from the Images page" in message) is picker_lists_it, (
+                identifier,
+                name,
+                message,
+            )
+
+
 def test_the_unrunnable_set_mirrors_the_canonical_one():
     # Two places must not drift: routes.models tags these GGUFs
     # image-diffusion-unsupported, which hides them from the Images AND Video pickers, so
