@@ -307,3 +307,21 @@ def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
         task = _arch_to_task("wan", name_hints = (identifier, name))
         assert (task == "text-to-video") is page_named, (identifier, task)
         assert ("Open it from the Video page" in message) is page_named, message
+
+
+def test_an_arch_that_names_its_own_family_still_gets_the_video_page(tmp_path):
+    # _arch_to_task asks detect_video_family("", override = arch) FIRST, and "ltxv" resolves
+    # LTX-2 with no name to go on, so a generically named LTX GGUF IS listed on the Video
+    # page. Resolving by repo id and filename alone answered the opposite and told the user
+    # Studio cannot assemble a model it can.
+    from routes.models import _arch_to_task
+
+    for identifier, name in (
+        ("someone/generic-gguf", "model-Q4_K_M.gguf"),
+        (None, "checkpoint-q4_0.gguf"),
+        ("Lightricks/LTX-Video-gguf", "ltxv-2b-Q4_K_M.gguf"),
+    ):
+        _, message = _refusal(tmp_path, arch = "ltxv", name = name, identifier = identifier)
+        assert message is not None
+        assert _arch_to_task("ltxv", name_hints = (identifier, name)) == "text-to-video"
+        assert "Open it from the Video page" in message, (identifier, name, message)

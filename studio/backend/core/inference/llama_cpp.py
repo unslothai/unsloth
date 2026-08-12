@@ -7257,13 +7257,18 @@ class LlamaCppBackend:
                 return None
             # A copy already in the cache answers this with no request at all, and is the
             # only thing that can answer it while the Hub is unreachable. Resolved with the
-            # SAME precedence _download_gguf uses -- cached_gguf_for_load first, which walks
-            # the cached variant candidates -- because that is the file the load will open.
+            # SAME precedence AND the same verification _download_gguf uses --
+            # cached_gguf_for_load over the cached variant candidates at
+            # verify_sizes = True -- because that is the file the load will open. A
+            # snapshot truncated after its header would otherwise be judged here and
+            # skipped there, which is the same drift under a different name. The size
+            # check retains its offline semantics (it fails open on unreachable
+            # metadata), so the probe still answers with the Hub down.
             # Going by the current listing's filename instead would let the probe judge one
             # GGUF while the load reuses another, whenever a repo renamed the file for a
             # quant and a complete older snapshot is still cached.
             local = cached_gguf_for_load(
-                hf_repo, hf_variant, verify_sizes = False, hf_token = hf_token
+                hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token
             ) or _local_gguf_path(hf_repo, gguf_filename)
             prefix = (
                 _read_local_header(local)
@@ -9028,30 +9033,36 @@ class LlamaCppBackend:
     _PLACEHOLDER_ARCHES = frozenset(("pig", "cow"))
 
     @staticmethod
-    def _ambiguous_video_arch_is_pickable(
-        gguf_path: Optional[str], model_identifier: Optional[str]
+    def _video_arch_is_pickable(
+        arch: Optional[str], gguf_path: Optional[str], model_identifier: Optional[str]
     ) -> bool:
         """Whether the Video page would actually OFFER this GGUF.
 
-        The video archs are shared exactly like the image ones: ``_arch_to_task`` resolves
-        a VideoFamily from the repo id then the filename, and requires both that the family
-        is not an MoE (the GGUF loader cannot assemble those) and that the video engine can
-        build it. QuantStack/Wan2.2-T2V-A14B-GGUF declares "wan" and fails the MoE gate, so
-        promising it the Video page names a picker that hides it."""
+        ``_arch_to_task`` asks in one fixed order and this has to ask in the same one:
+        the ARCHITECTURE first, since some map straight to a family
+        (``detect_video_family("", override = "ltxv")`` resolves LTX-2 with no name to go
+        on), then the repo id, then the filename. Whatever resolves, the family must not be
+        an MoE (the GGUF loader cannot assemble those) and the video engine must be able to
+        build it. Bare "wan" resolves nothing by itself, and
+        QuantStack/Wan2.2-T2V-A14B-GGUF resolves an MoE, so neither is promised the page."""
         try:
             from core.inference.video_families import detect_video_family
 
             from routes.models import _video_family_buildable
 
-            for needle in (model_identifier, os.path.basename(gguf_path or "")):
-                if not needle:
-                    continue
-                fam = detect_video_family(needle)
-                if fam is not None:
-                    return not getattr(fam, "is_moe", False) and _video_family_buildable(fam)
-            return False
+            fam = detect_video_family("", override = (arch or "").strip().lower() or None)
+            if fam is None:
+                for needle in (model_identifier, os.path.basename(gguf_path or "")):
+                    if not needle:
+                        continue
+                    fam = detect_video_family(needle)
+                    if fam is not None:
+                        break
+            if fam is None:
+                return False
+            return not getattr(fam, "is_moe", False) and _video_family_buildable(fam)
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
-            logger.debug("Family probe failed for ambiguous video arch: %s", e)
+            logger.debug("Family probe failed for video arch: %s", e)
             return True
 
     @staticmethod
@@ -9118,9 +9129,17 @@ class LlamaCppBackend:
 
         Naming the destination page is the point, so when the architecture does not say
         which it is, the family detectors are asked about the repo id and the filename."""
-        if not getattr(self, "_gguf_header_parsed", False):
-            return None
         arch = (self._architecture or "").strip().lower()
+        # A declared media architecture is the whole answer, and it is KV #0 in every GGUF
+        # measured, so the remote probe's 256 KiB prefix can carry it while a repo with
+        # bulkier later metadata leaves the walk unfinished. Requiring the walk there threw
+        # away a certain verdict and put the teardown back. The walk still gates the
+        # no-architecture fallback below, which is the case where an incomplete read is
+        # genuinely indistinguishable from a file that declares nothing.
+        if arch not in self._DIFFUSION_ARCHES and not getattr(
+            self, "_gguf_header_parsed", False
+        ):
+            return None
         if arch in self._PLACEHOLDER_ARCHES:
             # A placeholder that names no architecture at all: treat it exactly like a GGUF
             # that declares none, so the name-based branch below still names a page.
@@ -9137,7 +9156,7 @@ class LlamaCppBackend:
                 # Shared exactly like the image archs: the canonical classifier resolves a
                 # VideoFamily by name and rejects an MoE the GGUF loader cannot assemble,
                 # so "wan" alone does not mean the Video page will list it.
-                if self._ambiguous_video_arch_is_pickable(gguf_path, self._model_identifier):
+                if self._video_arch_is_pickable(arch, gguf_path, self._model_identifier):
                     return (
                         f"This is a text-to-video GGUF (architecture '{arch}'), which "
                         "cannot run as a chat model. Open it from the Video page instead."
@@ -9411,7 +9430,7 @@ class LlamaCppBackend:
                     "page accepts it."
                 )
             if arch in LlamaCppBackend._VIDEO_ARCHES:
-                if LlamaCppBackend._ambiguous_video_arch_is_pickable(gguf_path, model_identifier):
+                if LlamaCppBackend._video_arch_is_pickable(arch, gguf_path, model_identifier):
                     return (
                         f"'{arch}' is a text-to-video GGUF, which llama-server "
                         "cannot run as a chat/completion model. Open it from "
@@ -10566,13 +10585,6 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
-            # Kept so a stand-down blamed on the binary can later tell a real update
-            # from the same file still being installed.
-            self._launch_binary_revision = self._binary_revision(binary)
-            # Cleared per load, not only where the fetch runs: a local-file load never
-            # reaches the DFlash fetch, and a verdict left over from the previous model
-            # would make every Apply for this one reload.
-            self._dflash_retry_needed = False
 
             # Every capability answer shaping this launch, latching whether any was a
             # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
@@ -10749,6 +10761,22 @@ class LlamaCppBackend:
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
+            # Both of these describe the process that was just killed, so they are reset
+            # HERE rather than where the binary is resolved: everything above can bail with
+            # the old server still running (a paravirtual or Vulkan stand-down, a non-chat
+            # refusal, a cancel), and resetting them on the way past would tell the next
+            # Apply that the resident process launched from the binary installed now and
+            # that it is owed no DFlash retry. An Apply after `unsloth studio update` or a
+            # retryable sidecar failure would then dedupe against that process instead of
+            # relaunching it. Nothing between the two points reads either field.
+            #
+            # Kept so a stand-down blamed on the binary can later tell a real update
+            # from the same file still being installed.
+            self._launch_binary_revision = self._binary_revision(binary)
+            # Cleared per load, not only where the fetch runs: a local-file load never
+            # reaches the DFlash fetch, and a verdict left over from the previous model
+            # would make every Apply for this one reload.
+            self._dflash_retry_needed = False
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected

@@ -387,3 +387,77 @@ def test_the_probe_falls_back_to_the_listing_when_nothing_is_cached(monkeypatch,
     )
     assert message is not None and "Video page" in message
     assert requests == []
+
+
+def test_a_refused_load_leaves_the_resident_process_state_alone(monkeypatch):
+    # The refusal spares the resident server, so it has to spare what describes it too.
+    # Resetting the launch revision on the way past would say the live process launched
+    # from the binary installed NOW, so an Apply after `unsloth studio update` would dedupe
+    # against it instead of relaunching; clearing the DFlash verdict loses a retry the same
+    # way. Both are per-load resets, so they belong after the teardown commits.
+    backend = LlamaCppBackend()
+    order: list[str] = []
+    _repo_load(monkeypatch, backend, order)
+    backend._launch_binary_revision = ("llama-server", 1, 111.0)
+    backend._dflash_retry_needed = True
+    monkeypatch.setattr(
+        backend, "_download_gguf", lambda **_kwargs: order.append("download") or "/cache/m.gguf"
+    )
+    monkeypatch.setattr(
+        diffusion_compat, "_read_gguf_header", lambda *_a, **_k: _gguf_bytes(arch = "wan")
+    )
+
+    with pytest.raises(ValueError, match = "Video page"):
+        backend.load_model(
+            GgufLoadIntent(
+                hf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+                hf_variant = "Q4_K_M",
+                model_identifier = "unsloth/Wan2.2-TI2V-5B-GGUF",
+            )
+        )
+
+    assert order == []
+    assert backend._launch_binary_revision == ("llama-server", 1, 111.0)
+    assert backend._dflash_retry_needed is True
+
+
+def test_the_per_load_resets_sit_below_the_teardown_in_source():
+    src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+    teardown = src.index("# ── Phase 1: kill old process")
+    assert src.index("self._launch_binary_revision = self._binary_revision(binary)") > teardown
+    assert src.index("self._dflash_retry_needed = False") > teardown
+
+
+def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch, tmp_path):
+    # cached_gguf_for_load(verify_sizes = True) is what _download_gguf uses, so a snapshot
+    # truncated after its header is skipped there. Judging it here anyway would classify
+    # bytes the load never opens: a valid chat repo could be refused off a stale snapshot.
+    cached = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
+    cached.write_bytes(_gguf_bytes(arch = "ltxv"))
+    seen: list[bool] = []
+
+    def _cached(_repo, _variant, *, verify_sizes = False, hf_token = None):
+        seen.append(verify_sizes)
+        return str(cached) if verify_sizes else "/should/not/be/used.gguf"
+
+    monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", _cached)
+    message, requests = _probe(monkeypatch, header = b"", filename = "listing-Q4_K_M.gguf")
+    assert seen == [True]
+    assert message is not None and "Video page" in message
+    assert requests == []
+
+
+def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch, tmp_path):
+    # general.architecture is KV #0 in every GGUF measured, so a repo with bulky later
+    # metadata can declare a media arch inside the 256 KiB prefix and still leave the KV
+    # walk unfinished. Discarding that verdict put the teardown and the full download back
+    # for exactly the files this preflight exists for.
+    header = _gguf_bytes(arch = "flux", declared_kv = 4096)
+    message, _requests = _probe(monkeypatch, header = header, filename = "flux1-dev-Q4_K_M.gguf")
+    assert message is not None and "Images page" in message
+
+    # The no-architecture fallback still needs the complete walk: an unfinished read there
+    # is indistinguishable from a file that declares nothing.
+    quiet = _probe(monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096),
+                   filename = "mystery-Q4_K_M.gguf")[0]
+    assert quiet is None
