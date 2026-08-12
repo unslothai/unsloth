@@ -124,7 +124,12 @@ def _write_gguf(path: Path, architecture: str = "llama") -> Path:
     return path
 
 
-def _backend(tmp_path: Path, memory, *, gated_out = frozenset()):
+def _backend(
+    tmp_path: Path,
+    memory,
+    *,
+    gated_out = frozenset(),
+):
     """Placement harness whose GPU probe HONORS ``for_llama_server``.
 
     ``gated_out`` stands in for the devices whose gfx arch is absent from the
@@ -230,9 +235,9 @@ class TestPlacementOptsInForAutoOnly:
         captured = _launch(backend, gguf)
         env = captured["env"]
         pinned = env.get("HIP_VISIBLE_DEVICES") or env.get("CUDA_VISIBLE_DEVICES")
-        assert pinned is None or "1" not in pinned.split(","), (
-            f"automatic placement selected the uncovered GPU: {pinned!r}"
-        )
+        assert pinned is None or "1" not in pinned.split(
+            ","
+        ), f"automatic placement selected the uncovered GPU: {pinned!r}"
 
 
 # ── Unfiltered by design ────────────────────────────────────────────
@@ -258,9 +263,9 @@ class TestWaitForVramSettleStaysUnfiltered:
             max_wait = 0.05, interval = 0.01, since_kill = _time.monotonic()
         )
         assert seen, "the settle poll never probed"
-        assert all(not call.get("for_llama_server", False) for call in seen), (
-            f"the settle poll opted into the arch gate: {seen}"
-        )
+        assert all(
+            not call.get("for_llama_server", False) for call in seen
+        ), f"the settle poll opted into the arch gate: {seen}"
 
 
 class TestRagAutoStaysUnfiltered:
@@ -281,9 +286,9 @@ class TestRagAutoStaysUnfiltered:
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
         assert embeddings._resolve_auto() == "sentence-transformers"
         assert seen, "_resolve_auto never probed"
-        assert all(not call.get("for_llama_server", False) for call in seen), (
-            f"_resolve_auto opted into the arch gate: {seen}"
-        )
+        assert all(
+            not call.get("for_llama_server", False) for call in seen
+        ), f"_resolve_auto opted into the arch gate: {seen}"
 
 
 class TestEmbedLlamaServerOptsIn:
@@ -303,9 +308,9 @@ class TestEmbedLlamaServerOptsIn:
 
         monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_probe))
         assert LlamaServerBackend._gpu_available() is True
-        assert seen and all(call.get("for_llama_server") is True for call in seen), (
-            f"the embedding llama-server probe was not gated: {seen}"
-        )
+        assert seen and all(
+            call.get("for_llama_server") is True for call in seen
+        ), f"the embedding llama-server probe was not gated: {seen}"
 
 
 # ── Crash recovery edge cases ───────────────────────────────────────
@@ -403,9 +408,9 @@ class TestArchCrashRetryEdgeCases:
         launch that just died. Either a different device set, or nothing."""
         _unified(monkeypatch, unified)
         out = LlamaCppBackend._arch_crash_retry_gpu_ids(selected, enumerated)
-        assert not out or set(out) != set(selected), (
-            f"retry would respawn the identical selection {sorted(set(selected))}"
-        )
+        assert not out or set(out) != set(
+            selected
+        ), f"retry would respawn the identical selection {sorted(set(selected))}"
 
     def test_the_decision_is_stateless_and_so_must_not_be_looped(self, monkeypatch):
         """Pinned deliberately, as a hazard note rather than a bug.
