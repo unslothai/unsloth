@@ -99,6 +99,7 @@ function useResearchActivityScroll(runId: string) {
     let followUntil = performance.now() + ACTIVITY_FOLLOW_SETTLE_MS;
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
+    let settleCheckDue = false;
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -119,12 +120,17 @@ function useResearchActivityScroll(runId: string) {
       if (remaining <= 0) return;
       settleTimer = window.setTimeout(() => {
         settleTimer = null;
+        // The timer lands on the deadline and its tick a frame later, so the window has closed by
+        // then; this grants that tick one last follow pass rather than dropping it to the reconcile.
+        settleCheckDue = true;
         requestTick();
       }, remaining);
     };
     const tick = () => {
       animationFrame = null;
-      if (!detached && performance.now() < followUntil) {
+      const settling = settleCheckDue;
+      settleCheckDue = false;
+      if (!detached && (settling || performance.now() < followUntil)) {
         const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
         if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
@@ -149,6 +155,13 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
+      // A settle check queued by the last quiet frame would otherwise fire mid-scroll and reconcile
+      // isAtBottom back to true whenever the user has moved less than the bottom threshold.
+      if (settleTimer !== null) {
+        window.clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      settleCheckDue = false;
       updateAtBottom(false);
     };
     const innerScrollWillConsumeUpward = (target: EventTarget | null) => {
