@@ -1,0 +1,947 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""OS x GPU-vendor matrix for the #7624 ROCm arch gate in ``_get_gpu_memory``.
+
+The gate drops a device whose gfx arch is missing from the installed llama.cpp
+prebuilt's ``mapped_targets``. It runs on exactly one shape of host -- a ROCm
+torch build, with ``for_llama_server = True`` -- so the interesting assertion on
+every other host is that it is *inert*: the install marker must never even be
+read. Matching output is not enough evidence for that (a gate that ran and
+happened to keep everything looks identical), so the marker reader is spied and
+asserted un-called on every non-ROCm cell.
+
+The matrix is [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]. macOS has
+no ROCm at all, so its "AMD" cell is the two real Apple shapes (Apple Silicon
+MPS and an Intel Mac's Radeon) -- both of which enumerate no ``torch.cuda``
+device and must leave the marker untouched. WSL is its own cell because ROCm on
+WSL is supported and reports through the same torch path, yet ``sys.platform``
+is "linux" there, so the Windows-only free-VRAM cap (#8403) must NOT engage.
+
+There is no AMD GPU and no ROCm runtime on CI or on the machine these were
+written on: every AMD result here is mock-based. torch, its arch attributes,
+``sys.platform`` / ``platform.system``, ``utils.hardware.IS_ROCM``, the install
+marker, and the HIP/ROCR/CUDA visibility masks are all faked, in the shapes the
+#7072 / #7624 / #8403 reports document (AMD SDK wheels leaving
+``torch.version.hip`` unset; ``gcn_arch_name`` / ``arch_name`` /
+``gfx_arch_name`` spellings; ``gfx103X`` bundles omitting the gfx1033/1035/1036
+iGPUs; Windows HIP over-reporting free VRAM).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import struct
+import subprocess
+import sys
+import types
+
+import pytest
+
+# Imported eagerly so a fake torch can never be in place when the real module
+# graph is first loaded.
+from core.inference import llama_cpp
+from core.inference.llama_cpp import (
+    _IGPU_HOST_RESERVE_MIB,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
+from utils.hardware import hardware as hw
+
+MiB = 1024 * 1024
+_TOTAL_BYTES = 32 * 1024**3
+
+# Concrete tokens the published ROCm manifest records for these bundles. The
+# gfx103X list deliberately omits the gfx1033/1035/1036 iGPUs, which is the
+# whole of #7624: those devices enumerate, outrank the dGPU on "free memory",
+# and then have no kernels in the binary.
+GFX103X = ["gfx1030", "gfx1031", "gfx1032", "gfx1034"]
+GFX110X = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
+GFX120X = ["gfx1200", "gfx1201"]
+
+# platform.system() / sys.platform pair per simulated host.
+_OS_CELLS = {
+    "windows": ("win32", "Windows"),
+    "linux": ("linux", "Linux"),
+    "wsl": ("linux", "Linux"),
+    "macos": ("darwin", "Darwin"),
+}
+OS_KEYS = list(_OS_CELLS)
+
+
+# ----------------------------------------------------------------------------- #
+# Fakes
+# ----------------------------------------------------------------------------- #
+def _device(
+    arch = "",
+    *,
+    free_mib = 12000,
+    total_bytes = _TOTAL_BYTES,
+    name = "AMD Radeon RX 6800",
+    is_integrated = 0,
+    arch_attr = "gcnArchName",
+    describe_error = None,
+):
+    """One fake enumerated device. ``describe_error`` makes
+    ``get_device_properties`` raise for it (a card torch cannot describe)."""
+    return {
+        "arch": arch,
+        "free_mib": free_mib,
+        "total_bytes": total_bytes,
+        "name": name,
+        "is_integrated": is_integrated,
+        "arch_attr": arch_attr,
+        "describe_error": describe_error,
+    }
+
+
+class _Props:
+    """hipDeviceProp_t / cudaDeviceProp stand-in. Only the arch attribute the
+    device asks for is set, so the AMD SDK wheels that populate none of the
+    canonical spellings can be reproduced."""
+
+    def __init__(self, spec):
+        self.name = spec["name"]
+        self.total_memory = spec["total_bytes"]
+        self.is_integrated = spec["is_integrated"]
+        if spec["arch"]:
+            setattr(self, spec["arch_attr"], spec["arch"])
+
+
+def _fake_torch(
+    devices,
+    *,
+    vendor = "amd",
+    cuda_available = None,
+    reserved_bytes = 0,
+):
+    """A fake ``torch``.
+
+    vendor:
+      "amd"      -- ROCm wheel (``version.hip`` set).
+      "amd_sdk"  -- AMD SDK / Radeon wheel: ``version.hip`` unset, "rocm" only
+                    in ``__version__`` (the shape ``_torch_is_rocm`` exists for).
+      "nvidia"   -- CUDA wheel.
+      "cpu"      -- CPU-only wheel.
+      "mps"      -- Apple Silicon: a Metal backend, no ``torch.cuda`` devices.
+    """
+    devices = list(devices)
+    torch = types.ModuleType("torch")
+    if vendor == "amd":
+        torch.version = types.SimpleNamespace(hip = "7.1.0", cuda = None)
+        torch.__version__ = "2.9.0+rocm7.1"
+    elif vendor == "amd_sdk":
+        torch.version = types.SimpleNamespace()
+        torch.__version__ = "2.6.0+rocm6.4"
+    elif vendor == "nvidia":
+        torch.version = types.SimpleNamespace(hip = None, cuda = "12.4")
+        torch.__version__ = "2.6.0+cu124"
+    else:
+        torch.version = types.SimpleNamespace(hip = None, cuda = None)
+        torch.__version__ = "2.6.0+cpu"
+    if vendor == "mps":
+        torch.backends = types.SimpleNamespace(mps = types.SimpleNamespace(is_available = lambda: True))
+
+    available = bool(devices) if cuda_available is None else cuda_available
+
+    def _get_device_properties(ordinal):
+        spec = devices[ordinal]
+        if spec["describe_error"] is not None:
+            raise spec["describe_error"]
+        return _Props(spec)
+
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: available,
+        device_count = lambda: len(devices),
+        mem_get_info = lambda o: (devices[o]["free_mib"] * MiB, devices[o]["total_bytes"]),
+        memory_reserved = lambda o = None: reserved_bytes,
+        get_device_properties = _get_device_properties,
+    )
+    return torch
+
+
+def _binary_with_marker(tmp_path, payload):
+    """Lay out ``<root>/UNSLOTH_PREBUILT_INFO.json`` with the binary path below
+    it, matching the managed install layout the marker walk-up covers."""
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(payload), encoding = "utf-8")
+    return str(tmp_path / "build" / "bin" / "llama-server")
+
+
+def _apply_os(
+    monkeypatch,
+    os_key,
+    *,
+    is_rocm = False,
+):
+    """Pin the simulated host OS. ``IS_ROCM`` is the backend's own detection
+    flag and gates the Windows free-VRAM cap, so it travels with the vendor."""
+    platform_name, system_name = _OS_CELLS[os_key]
+    monkeypatch.setattr(llama_cpp.sys, "platform", platform_name)
+    monkeypatch.setattr(hw.sys, "platform", platform_name)
+    monkeypatch.setattr(hw.platform, "system", lambda: system_name)
+    monkeypatch.setattr(hw, "IS_ROCM", is_rocm)
+    if os_key == "wsl":
+        # The WSL prebuilts load the system ROCm libs before the bundled HIP.
+        # Nothing in the probe branches on it; pinned so the cell is a real WSL
+        # host rather than a relabelled Linux one.
+        monkeypatch.setattr(llama_cpp, "_wsl_system_rocm_lib_dirs", lambda: ["/opt/rocm/lib"])
+
+
+@pytest.fixture(autouse = True)
+def _clear_marker_cache():
+    """read_install_marker memoizes per binary path with no invalidation, so a
+    stale entry from another test would answer for this one."""
+    import utils.llama_cpp_freshness as freshness
+
+    freshness._marker_cache.clear()
+    yield
+    freshness._marker_cache.clear()
+
+
+@pytest.fixture
+def marker_spy(monkeypatch):
+    """Records every install-marker read. The inertness claim for non-ROCm
+    hosts is "the gate never ran", which only this can show."""
+    import utils.llama_cpp_freshness as freshness
+
+    real = freshness.read_install_marker
+    calls: list = []
+
+    def _spy(binary_path):
+        calls.append(binary_path)
+        return real(binary_path)
+
+    monkeypatch.setattr(freshness, "read_install_marker", _spy)
+    return calls
+
+
+@pytest.fixture
+def arch_map_spy(monkeypatch):
+    """Records every per-device arch enumeration (the gate's second input)."""
+    real = LlamaCppBackend._rocm_arch_by_physical_id
+    calls: list = []
+
+    def _spy():
+        calls.append(True)
+        return real()
+
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_arch_by_physical_id", staticmethod(_spy))
+    return calls
+
+
+@pytest.fixture
+def probe_env(tmp_path, monkeypatch):
+    """Force ``_get_gpu_memory`` down the torch fallback, hermetically: no
+    nvidia-smi, a binary under tmp_path so a marker can be planted beside it,
+    and no inherited visibility mask."""
+
+    def _no_nvidia_smi(*args, **kwargs):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
+    fake_binary = str(tmp_path / "build" / "bin" / "llama-server")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: fake_binary)
+    )
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    return fake_binary
+
+
+# ----------------------------------------------------------------------------- #
+# Cell builders: one per (os, vendor) pair.
+# ----------------------------------------------------------------------------- #
+def _install_cell(monkeypatch, tmp_path, os_key, vendor):
+    """Set up one matrix cell and return the expected ``_get_gpu_free_memory``
+    result. Every cell plants a marker whose mapped_targets cover NOTHING the
+    cell's devices report, so a gate that runs anywhere it should not is
+    visible as a dropped device rather than as a silent no-op."""
+    if vendor == "nvidia":
+        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
+        if os_key == "macos":
+            # No CUDA on any Mac torch build: the probe enumerates nothing.
+            torch = _fake_torch([], vendor = "nvidia", cuda_available = False)
+            expected = []
+        else:
+            torch = _fake_torch(
+                [
+                    _device(name = "NVIDIA GeForce RTX 4090", free_mib = 22000),
+                    _device(name = "NVIDIA GeForce RTX 3090", free_mib = 18000),
+                ],
+                vendor = "nvidia",
+            )
+            expected = [(0, 22000), (1, 18000)]
+    elif vendor == "amd":
+        if os_key == "macos":
+            # Apple ships no ROCm. The Apple Silicon shape is Metal-only; the
+            # Intel shape is a Radeon behind a CPU/MPS torch build. Neither
+            # enumerates a torch.cuda device, so neither can reach the gate.
+            _apply_os(monkeypatch, os_key, is_rocm = False)
+            _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+            torch = _fake_torch([], vendor = "mps", cuda_available = False)
+            expected = []
+        else:
+            # The #7624 shape: a covered dGPU plus an iGPU the gfx103X bundle
+            # has no kernels for, whose shared-RAM "free memory" outranks it.
+            _apply_os(monkeypatch, os_key, is_rocm = True)
+            _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+            torch = _fake_torch(
+                [
+                    _device("gfx1030", free_mib = 12049, name = "AMD Radeon RX 6800"),
+                    _device(
+                        "gfx1036",
+                        free_mib = 12176,
+                        name = "AMD Radeon Graphics",
+                        is_integrated = 1,
+                    ),
+                ],
+                vendor = "amd",
+            )
+            # Plenty of system RAM, so the iGPU's shared-pool cap never binds
+            # and the only thing that can change its figure is the host reserve.
+            monkeypatch.setattr(
+                LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+            )
+            expected = [(0, 12049)]
+    else:
+        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        torch = _fake_torch([], vendor = "cpu", cuda_available = False)
+        expected = []
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return expected
+
+
+CELLS = [(os_key, vendor) for os_key in OS_KEYS for vendor in ("nvidia", "amd", "cpu")]
+
+
+class TestOsVendorMatrix:
+    """The 12 cells, against the llama-server (gated) probe."""
+
+    @pytest.mark.parametrize("os_key,vendor", CELLS)
+    def test_cell_outcome(
+        self, os_key, vendor, tmp_path, monkeypatch, probe_env, marker_spy, arch_map_spy
+    ):
+        expected = _install_cell(monkeypatch, tmp_path, os_key, vendor)
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == expected
+        if vendor == "amd" and os_key != "macos":
+            # The only cells where the gate is allowed to do anything.
+            assert marker_spy, "the ROCm cell must consult the install marker"
+            assert arch_map_spy, "the ROCm cell must enumerate device archs"
+        else:
+            assert marker_spy == [], f"{os_key}/{vendor} read the install marker"
+            assert arch_map_spy == [], f"{os_key}/{vendor} enumerated device archs"
+
+    @pytest.mark.parametrize("os_key,vendor", CELLS)
+    def test_cell_is_unfiltered_by_default(
+        self, os_key, vendor, tmp_path, monkeypatch, probe_env, marker_spy, arch_map_spy
+    ):
+        """The backwards-compatibility guarantee: every pre-existing caller
+        (``for_llama_server`` defaulted off, including the PyTorch RAG
+        embedding picker) keeps every device on every cell -- including the AMD
+        cell whose iGPU the gated probe drops."""
+        expected = _install_cell(monkeypatch, tmp_path, os_key, vendor)
+        if vendor == "amd" and os_key != "macos":
+            # The iGPU is kept, still with its unified-memory host reserve: the
+            # gate is what must not apply here, not the APU accounting.
+            expected = [(0, 12049), (1, 12176 - _IGPU_HOST_RESERVE_MIB)]
+        assert LlamaCppBackend._get_gpu_free_memory() == expected
+        assert marker_spy == [], f"{os_key}/{vendor} read the install marker unasked"
+        assert arch_map_spy == [], f"{os_key}/{vendor} enumerated device archs unasked"
+
+    @pytest.mark.parametrize("os_key", OS_KEYS)
+    def test_nvidia_smi_path_never_reaches_the_gate(
+        self, os_key, tmp_path, monkeypatch, marker_spy, arch_map_spy
+    ):
+        """The common NVIDIA host answers from nvidia-smi and returns before the
+        torch fallback the gate lives in. Separate from the cell above, which
+        forces the fallback so "inert" is proven on both NVIDIA routes."""
+        _apply_os(monkeypatch, os_key, is_rocm = False)
+        binary = _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
+        monkeypatch.setattr(
+            LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary)
+        )
+        for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(var, raising = False)
+
+        class _Result:
+            returncode = 0
+            stdout = "0, 22000, 24564\n1, 18000, 24564\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Result())
+        # No torch at all: a bare nvidia-smi host must not need one.
+        monkeypatch.setitem(sys.modules, "torch", None)
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == [
+            (0, 22000, 24564),
+            (1, 18000, 24564),
+        ]
+        assert marker_spy == []
+        assert arch_map_spy == []
+
+    @pytest.mark.parametrize("os_key", OS_KEYS)
+    def test_cpu_only_host_without_torch_is_empty_and_quiet(
+        self, os_key, tmp_path, monkeypatch, probe_env, marker_spy
+    ):
+        """CPU-only with no torch installed at all: no GPU, no traceback,
+        empty list (the import failure is swallowed by the probe)."""
+        _apply_os(monkeypatch, os_key, is_rocm = False)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(sys.modules, "torch", None)  # `import torch` -> ImportError
+        assert LlamaCppBackend._get_gpu_memory(for_llama_server = True) == []
+        assert marker_spy == []
+
+    def test_macos_intel_radeon_shape_is_inert(self, tmp_path, monkeypatch, probe_env, marker_spy):
+        """The second Apple shape: an Intel Mac with a Radeon, i.e. a CPU torch
+        build that still reports an AMD device name. No ROCm exists there, so
+        ``_torch_is_rocm`` is false and the marker stays unread."""
+        _apply_os(monkeypatch, "macos", is_rocm = False)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("", name = "AMD Radeon Pro 5500M", free_mib = 8000)],
+                vendor = "cpu",
+                cuda_available = False,
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+        assert marker_spy == []
+
+
+class TestAmdCoverageCases:
+    """The substantive ROCm cells. Mock-based: no AMD hardware here."""
+
+    @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
+    def test_every_device_covered_drops_nothing(self, os_key, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1032", free_mib = 7000)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12049),
+            (1, 7000),
+        ]
+
+    @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
+    def test_uncovered_igpu_is_dropped_and_dgpu_kept(
+        self, os_key, tmp_path, monkeypatch, probe_env
+    ):
+        # #7624 verbatim: gfx1030 dGPU + gfx1036 iGPU against the real gfx103X
+        # bundle, which maps gfx1030/1031/1032/1034 only.
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1030", free_mib = 12049),
+                    _device("gfx1036", free_mib = 12176, is_integrated = 1),
+                ],
+                vendor = "amd",
+            ),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+
+    @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
+    def test_missing_marker_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
+        # Source build / custom link: coverage unknown, so keep every device.
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12049),
+            (1, 12176),
+        ]
+
+    @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
+    def test_empty_mapped_targets_fails_open(self, os_key, tmp_path, monkeypatch, probe_env):
+        # Non-ROCm bundles record []: unknown coverage, not "covers nothing".
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": []})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12049),
+            (1, 12176),
+        ]
+
+    @pytest.mark.parametrize("os_key", ["windows", "linux", "wsl"])
+    def test_every_device_uncovered_empties_the_pool(
+        self, os_key, tmp_path, monkeypatch, probe_env
+    ):
+        """A marker that covers none of the present cards leaves the llama-server
+        probe with nothing. Pinned deliberately: this is the input to the
+        downstream behaviour asserted in TestEveryDeviceUncoveredDownstream."""
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX120X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+        # ... while the unfiltered probe, and therefore every torch caller,
+        # still sees both cards.
+        assert LlamaCppBackend._get_gpu_free_memory() == [(0, 12049), (1, 12176)]
+
+    def test_amd_sdk_wheel_is_gated_on_every_os(self, tmp_path, monkeypatch, probe_env):
+        """AMD SDK / Radeon wheels leave ``version.hip`` unset and only encode
+        "rocm" in ``__version__``; a bare ``version.hip`` test would skip the
+        gate on exactly the hosts #7624 was reported from."""
+        _apply_os(monkeypatch, "windows", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd_sdk",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+
+
+class TestWslIsNotWindows:
+    """ROCm under WSL reports through the same torch path as native Linux, but
+    ``sys.platform`` is "linux" there, so the Windows-only free-VRAM cap (#8403)
+    must not engage -- AMD keeps the WSL2 free reading consistent with native
+    Linux. Same arch gate, different memory accounting."""
+
+    def _probe(self, monkeypatch, tmp_path, os_key):
+        _apply_os(monkeypatch, os_key, is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1030", free_mib = 20000),
+                    _device("gfx1036", free_mib = 12176),
+                ],
+                vendor = "amd",
+                # 24 GiB reserved by this process's own allocator, against a
+                # 32 GiB card: on Windows the driver's "free" is an over-report
+                # and gets capped to total - reserved = 8192 MiB.
+                reserved_bytes = 24 * 1024**3,
+            ),
+        )
+        return LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
+
+    def test_windows_caps_free_against_the_allocator(self, tmp_path, monkeypatch, probe_env):
+        assert self._probe(monkeypatch, tmp_path, "windows") == [(0, 8192)]
+
+    def test_wsl_keeps_the_driver_reading(self, tmp_path, monkeypatch, probe_env):
+        assert self._probe(monkeypatch, tmp_path, "wsl") == [(0, 20000)]
+
+    def test_linux_keeps_the_driver_reading(self, tmp_path, monkeypatch, probe_env):
+        assert self._probe(monkeypatch, tmp_path, "linux") == [(0, 20000)]
+
+
+class TestVisibilityMaskMapping:
+    """The gate keys on PHYSICAL ids while torch enumerates visible ordinals.
+    Every case below is built so that confusing the two drops the wrong card,
+    rather than merely relabelling the surviving one."""
+
+    def test_hip_mask_reversing_the_order_drops_the_right_card(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        # HIP_VISIBLE_DEVICES=1,0 -- ordinal 0 IS physical 1. The unsupported
+        # gfx1036 is physical 1, the supported gfx1030 is physical 0, and the
+        # two have different free VRAM, so an ordinal/physical mix-up returns
+        # (1, 12176) instead of (0, 5000).
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,0")
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1036", free_mib = 12176),  # ordinal 0 = physical 1
+                    _device("gfx1030", free_mib = 5000),  # ordinal 1 = physical 0
+                ],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._rocm_arch_by_physical_id() == {1: "gfx1036", 0: "gfx1030"}
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 5000)]
+
+    def test_rocr_mask_with_a_gap_maps_by_physical_id(self, tmp_path, monkeypatch, probe_env):
+        # ROCR_VISIBLE_DEVICES=2,3 on Linux: an off-by-one on either side would
+        # report GPU 3 (the unsupported card) or drop GPU 2.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(2, 9000)]
+
+    def test_windows_ignores_a_stray_rocr_mask(self, tmp_path, monkeypatch, probe_env):
+        # Windows HIP has no ROCr layer, so ROCR_VISIBLE_DEVICES does not mask
+        # the runtime there and must not be read as the ordinal->physical map.
+        # Reading it would label the surviving card GPU 2 and pin a device that
+        # does not exist.
+        _apply_os(monkeypatch, "windows", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX110X})
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1100", free_mib = 9000), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 9000)]
+
+    def test_hip_mask_wins_over_cuda_mask(self, tmp_path, monkeypatch, probe_env):
+        # Both masks set with different contents: HIP is the one the ROCm
+        # runtime honors, so it decides the physical ids the gate drops by.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,1")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1036", free_mib = 12176), _device("gfx1030", free_mib = 5000)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(1, 5000)]
+
+    def test_empty_mask_reports_no_gpu(self, tmp_path, monkeypatch, probe_env):
+        # HIP_VISIBLE_DEVICES="" hides every agent, so the runtime enumerates
+        # nothing. The gate still resolves its inputs first, and must return an
+        # empty list rather than raise on the empty ordinal->physical map.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch([], vendor = "amd"))
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == []
+
+
+class TestArchStringRobustness:
+    """Both sides of the comparison are normalised: the manifest token and the
+    driver's arch string. A device must never be dropped over spelling."""
+
+    @pytest.mark.parametrize(
+        "reported",
+        [
+            "gfx1030",
+            "GFX1030",
+            "  gfx1030  ",
+            "gfx1030:xnack-",
+            "gfx1030:sramecc+:xnack-",
+            "GFX1030:SRAMECC+:XNACK-",
+        ],
+        ids = [
+            "plain",
+            "uppercase",
+            "whitespace",
+            "xnack",
+            "sramecc_xnack",
+            "uppercase_suffixed",
+        ],
+    )
+    def test_covered_device_survives_every_spelling(
+        self, reported, tmp_path, monkeypatch, probe_env
+    ):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device(reported, free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+
+    @pytest.mark.parametrize(
+        "token", ["GFX1030", " gfx1030 ", "gfx1030:xnack-", "gfx1030:sramecc+:xnack-"]
+    )
+    def test_marker_token_spellings_are_normalised_too(
+        self, token, tmp_path, monkeypatch, probe_env
+    ):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": [token]})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+
+    @pytest.mark.parametrize("attr", ["gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"])
+    def test_every_arch_attribute_spelling_is_read(self, attr, tmp_path, monkeypatch, probe_env):
+        # AMD SDK / Radeon wheels populate only one of these. Reading a single
+        # spelling would leave the map empty and fail the gate open -- the crash
+        # this exists to prevent.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1030", free_mib = 12049, arch_attr = attr),
+                    _device("gfx1036", free_mib = 12176, arch_attr = attr),
+                ],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [(0, 12049)]
+
+    def test_blank_arch_fails_open(self, tmp_path, monkeypatch, probe_env):
+        # A device reporting no arch at all is unknown, not unsupported.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [_device("gfx1030", free_mib = 12049), _device("", free_mib = 12176)],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12049),
+            (1, 12176),
+        ]
+
+    def test_undescribable_device_fails_open(self, tmp_path, monkeypatch, probe_env):
+        # get_device_properties raising (a card the runtime cannot query) must
+        # neither drop the device nor abort the probe for the other cards.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": GFX103X})
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch(
+                [
+                    _device("gfx1030", free_mib = 12049),
+                    _device(
+                        "gfx1036",
+                        free_mib = 12176,
+                        describe_error = RuntimeError("hipGetDeviceProperties failed"),
+                    ),
+                    _device("gfx1036", free_mib = 3000),
+                ],
+                vendor = "amd",
+            ),
+        )
+        assert LlamaCppBackend._get_gpu_free_memory(for_llama_server = True) == [
+            (0, 12049),
+            (1, 12176),
+        ]
+
+    def test_marker_junk_tokens_are_ignored_not_matched(self, tmp_path, monkeypatch, probe_env):
+        # Blank / whitespace-only entries must not become a "" arch that some
+        # device's blank arch could match against.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        _binary_with_marker(tmp_path, {"mapped_targets": ["", "   ", "gfx1030"]})
+        assert LlamaCppBackend._installed_llama_gfx_archs(
+            str(tmp_path / "build" / "bin" / "llama-server")
+        ) == frozenset({"gfx1030"})
+
+
+def _run_auto_load(
+    monkeypatch,
+    tmp_path,
+    torch,
+    marker_targets,
+    *,
+    returncode = 1,
+    output = "",
+):
+    """Drive a real automatic (no explicit GPU pick) llama-server load with the
+    real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
+
+    Everything below the placement decision is faked: the GGUF is a header-only
+    stub, Popen never runs, and the health wait answers from ``returncode``. The
+    point is what placement handed the child, not that llama-server works.
+    """
+    if marker_targets is not None:
+        _binary_with_marker(tmp_path, {"mapped_targets": marker_targets})
+    binary = str(tmp_path / "build" / "bin" / "llama-server")
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    def _gguf_string(value):
+        encoded = value.encode()
+        return struct.pack("<Q", len(encoded)) + encoded
+
+    metadata = _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("llama")
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: None
+    backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
+    backend._find_llama_server_binary = lambda include_denied = False: binary
+    backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
+    backend.probe_server_capabilities = lambda _binary: {"found": True}
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    backend._llama_server_env_for_binary = lambda _binary: {"PATH": os.environ.get("PATH", "")}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: False)
+    )
+
+    launches = []
+
+    class _Process:
+        pid = 123
+        stdout = ()
+
+        def __init__(self, code):
+            self.returncode = code
+
+        def poll(self):
+            return returncode
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return returncode
+
+        def kill(self):
+            return None
+
+    def _popen(cmd, **kwargs):
+        launches.append((list(cmd), dict(kwargs["env"])))
+        return _Process(returncode)
+
+    def _wait_for_health(timeout):
+        backend._stdout_lines = [output]
+        return returncode is None
+
+    backend._wait_for_health = _wait_for_health
+    backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+    try:
+        backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "owner/model",
+            )
+        )
+    except Exception:
+        # A crashing child is one of the cases under test; the launches are the
+        # evidence either way.
+        pass
+    return launches
+
+
+def _visibility(env):
+    return {
+        name: env.get(name)
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if env.get(name) is not None
+    }
+
+
+class TestEveryDeviceUncoveredDownstream:
+    """What the gate emptying the pool actually does to a load.
+
+    Mock-based (no ROCm here). The comparison case is the #7624 shape, where one
+    covered card survives; the case under test is the same host with a marker
+    that covers neither card.
+    """
+
+    def test_one_covered_device_is_pinned(self, tmp_path, monkeypatch, probe_env):
+        """The end-to-end #7624 fix. The iGPU's shared-RAM "free memory"
+        outranks the dGPU's VRAM even after the host reserve, so before this
+        gate automatic placement pinned the iGPU and llama-server died with
+        "device kernel image is invalid". Measured against origin/main with
+        these exact inputs: ROCR_VISIBLE_DEVICES=1 (the gfx1036 iGPU); with the
+        gate: 0."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [
+                _device("gfx1030", free_mib = 12049),
+                _device("gfx1036", free_mib = 30000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        launches = _run_auto_load(monkeypatch, tmp_path, torch, GFX103X, returncode = None)
+        assert len(launches) == 1
+        _cmd, env = launches[0]
+        # The covered dGPU, and only it, is exposed to the child. Masked at the
+        # ROCr layer, because a HIP-only mask still enumerates every agent first
+        # and that enumeration can segfault on the unsupported card.
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
+
+    def test_all_uncovered_leaves_the_child_unmasked(self, tmp_path, monkeypatch, probe_env):
+        """The observable outcome of dropping every device: placement sees no
+        GPU, so it pins nothing and asks llama.cpp to fit by itself -- and the
+        unsupported cards are still visible to the child. It is NOT a clean CPU
+        degradation (no ``--device none``, no ``-ngl 0``) and NOT a traceback or
+        a hang: the child launches, and on real hardware would crash exactly as
+        #7624 describes."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        torch = _fake_torch(
+            [_device("gfx1030", free_mib = 12049), _device("gfx1036", free_mib = 12176)],
+            vendor = "amd",
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            GFX120X,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+        )
+        assert len(launches) == 1, "the arch-crash retry cannot fire without a pinned set"
+        cmd, env = launches[0]
+        assert _visibility(env) == {}
+        assert "--device" not in cmd
+        assert "-ngl" not in cmd and "--gpu-layers" not in cmd
+        assert cmd[cmd.index("--fit") + 1] == "on", "placement left the fit to llama.cpp"
