@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import types
 
-import torch
-
 from core.inference.diffusion import DiffusionBackend
 
 
@@ -39,6 +37,7 @@ class _RecordingVae:
 
 
 def test_encode_input_is_cast_to_the_vae_dtype():
+    import torch
     # The reported crash: fp32 image tensor (text-encoder dtype) into a bf16 VAE.
     vae = _RecordingVae(dtype = torch.bfloat16)
     pipe = types.SimpleNamespace(vae = vae)
@@ -50,6 +49,7 @@ def test_encode_input_is_cast_to_the_vae_dtype():
 
 
 def test_encode_input_is_cast_the_other_direction_too():
+    import torch
     # The mirror mismatch (bf16 image into an fp32 / force_upcast VAE) is the same bug.
     vae = _RecordingVae(dtype = torch.float32)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
@@ -58,6 +58,7 @@ def test_encode_input_is_cast_the_other_direction_too():
 
 
 def test_matching_dtype_is_left_alone_and_extra_args_pass_through():
+    import torch
     vae = _RecordingVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
     x = torch.zeros(1, 3, 64, 64, dtype = torch.bfloat16)
@@ -67,6 +68,7 @@ def test_matching_dtype_is_left_alone_and_extra_args_pass_through():
 
 
 def test_non_tensor_input_passes_through_untouched():
+    import torch
     # Some callers hand encode a list of tensors or a distribution; never guess, just forward.
     vae = _RecordingVae(dtype = torch.bfloat16)
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace(vae = vae))
@@ -75,6 +77,7 @@ def test_non_tensor_input_passes_through_untouched():
 
 
 def test_wrapping_is_idempotent():
+    import torch
     # generate() runs this on every image-conditioned call against a warm pipe; stacking
     # wrappers per generation would be an unbounded call-depth leak.
     vae = _RecordingVae(dtype = torch.bfloat16)
@@ -86,6 +89,7 @@ def test_wrapping_is_idempotent():
 
 
 def test_dtype_is_read_at_call_time_not_wrap_time():
+    import torch
     # _align_vae_dtype may re-cast the VAE after the wrap (and a txt2img decode re-upcasts
     # it), so a dtype snapshotted at wrap time would go stale on the very next call.
     vae = _RecordingVae(dtype = torch.bfloat16)
@@ -96,6 +100,7 @@ def test_dtype_is_read_at_call_time_not_wrap_time():
 
 
 def test_missing_vae_and_broken_probe_are_no_ops():
+    import torch
     # Best-effort: a pipe without a VAE, and a VAE whose parameters() raises, must never
     # turn a working generation into a 500.
     DiffusionBackend._make_vae_encode_dtype_safe(types.SimpleNamespace())
