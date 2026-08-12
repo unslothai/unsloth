@@ -4,23 +4,12 @@
 
 """Refuse a TypeScript file that binds the same import name twice.
 
-#8470 landed a second copy of
-
-    import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
-
-into `model-selector.tsx`, seven lines below the first. `tsc -b` rejects it with
-TS2300 `Duplicate identifier`, so `npm run build` fails, so the frontend build
-step fails -- and every job that builds the frontend goes red with it. On the
-commit that landed it that was eleven jobs across Studio, Chat UI, the GGUF
-smoke and the wheel, on main and on every open PR branch.
-
-Nothing caught it earlier. eslint is not run in CI at all, and its config does
-not enable `no-duplicate-imports` in any case. The first thing to notice was a
-`tsc` error inside the slowest job in the matrix.
-
-This is the cheap check that belongs in Source lint instead: scan the import
-prologue of every committed `.ts`/`.tsx` file and report any local binding name
-introduced twice. It needs no npm, no node and no type information.
+#8470 landed a duplicate import line in `model-selector.tsx`. `tsc -b` rejects
+it with TS2300, so the frontend build fails and every job that builds it goes
+red behind it (eleven, on main and on every open PR branch). eslint is not run
+in CI at all, so nothing saw it until tsc did, inside the slowest job in the
+matrix. This is the cheap Source lint check instead: scan the import prologue of
+every committed `.ts`/`.tsx` file, no npm, no node, no type information.
 
 What counts as a binding, per the ES module grammar:
 
@@ -31,9 +20,9 @@ What counts as a binding, per the ES module grammar:
     import type { T } from "m"              -> T
     import "m"                              -> nothing
 
-`import type` and a value import of the same name collide exactly as two value
-imports do, so they are not distinguished. Two imports of the same *module* are
-legal as long as the names differ, so the module path is not what is compared.
+`import type` collides with a value import of the same name, so the two are not
+distinguished. Two imports of one module are legal when the names differ, so the
+module path is not compared.
 
 Exit codes: 0 = clean, 1 = findings, 2 = usage error.
 Run from repo root: python3 scripts/lint_no_duplicate_ts_imports.py
@@ -47,32 +36,26 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# The frontend root, not `src`, because that is what the build compiles.
-# `npm run build` is `tsc -b && vite build` and `npm run typecheck` is
-# `tsc -b && tsc -p tsconfig.test.json`, so the projects that produce TS2300 are
-# tsconfig.app.json (`src`), tsconfig.node.json (`vite.config.ts`) and
-# tsconfig.test.json (`tests`). Scanning only `src` leaves the other two able to
-# red the frontend build with the very error this step exists to catch first.
+# The frontend root, not `src`: `tsc -b` also builds tsconfig.node.json
+# (`vite.config.ts`) and tsconfig.test.json (`tests`), so scanning only `src`
+# leaves those two able to red the build with the very error this catches.
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "frontend"
 SKIP_PARTS = frozenset({"node_modules", "dist", "build", ".venv", "venv", "__pycache__"})
 
 # One import statement, up to its module specifier. `re.DOTALL` so a clause
-# broken across lines -- which is how prettier formats anything long, and how
-# the #8470 duplicate was formatted -- is still one match.
+# prettier wrapped across lines, as the #8470 duplicate was, is still one match.
 _IMPORT = re.compile(
     r"^[ \t]*import[ \t]+(?P<clause>[^;'\"]*?)[ \t]*from[ \t]*['\"][^'\"]+['\"]",
     re.MULTILINE | re.DOTALL,
 )
-# A bare `import "./styles.css"` binds nothing and is skipped by the `from`
-# requirement above.
+# A bare `import "./styles.css"` binds nothing; the `from` requirement skips it.
 
 
 def _bindings(clause: str) -> list[str]:
     """Local names a single import clause introduces, in source order."""
-    # Prettier keeps line and block comments inside a long import list. Left in,
-    # `piece.split()` reads `//` as the binding, which both loses the real name
-    # and reports the next commented import as a duplicate of it -- a hard CI
-    # fail on ordinary TypeScript.
+    # Prettier keeps comments inside a long import list. Left in, `piece.split()`
+    # reads `//` as the binding, losing the real name and reporting the next
+    # commented import as a duplicate of it -- a CI fail on ordinary TypeScript.
     clause = re.sub(r"/\*.*?\*/", " ", clause, flags = re.DOTALL)
     clause = re.sub(r"//[^\n]*", " ", clause)
     clause = clause.strip()
@@ -90,9 +73,9 @@ def _bindings(clause: str) -> list[str]:
             if piece.startswith("type "):
                 piece = piece[len("type ") :].strip()
             parts = piece.split()
-            # `as` as a token, not as `" as "`: the clause is matched with
-            # DOTALL, so a specifier can wrap around the keyword and a literal
-            # space test then records the imported name instead of the alias.
+            # `as` as a token, not `" as "`: DOTALL lets a specifier wrap around
+            # the keyword, and a literal-space test then records the imported
+            # name instead of the alias.
             names.append(parts[-1] if "as" in parts[:-1] else parts[0])
         clause = clause[: braced.start()]
 
