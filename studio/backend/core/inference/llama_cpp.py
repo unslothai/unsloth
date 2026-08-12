@@ -76,14 +76,9 @@ from core.inference.llama_server_args import (
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
+    StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
@@ -92,14 +87,6 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the GGUF streaming strip stays aligned with the parser.
-from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
-    _strip_bracket_tag_calls,
-    apply_tool_strip_patterns,
-    strip_outside_think,
-)
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -141,11 +128,17 @@ class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
     Subclasses RuntimeError so existing handlers still catch it."""
 
+    __slots__ = ()
+
 
 class _LlamaStreamCancelled(Exception):
     """Internal signal for an expected client/request cancellation."""
 
+    __slots__ = ()
 
+
+# Deliberately NOT ``slots=True``: it drops ``__dict__``, so ``vars(intent)`` raises and
+# every GGUF load breaks. Reflection over this dataclass is part of how it is used.
 @dataclass(frozen = True)
 class GgufLoadIntent:
     """Immutable caller intent replayed by retries and recovery."""
@@ -3145,6 +3138,11 @@ def _llama_lib_dir(binary: str) -> Path:
 
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
+# GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
+_GGML_GPU_BACKEND_RE = re.compile(
+    r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+)
+
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
     """Whether a live process still owns this staged CPU-fallback runtime."""
@@ -3249,6 +3247,12 @@ def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
 
 class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
+
+    __slots__ = ()
+
+
+# Module level so tests can point the orphan sweep at a fixture tree.
+_PROC_ROOT = "/proc"
 
 
 class LlamaCppBackend:
@@ -3434,6 +3438,9 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
+        # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
+        # server is not hidden behind the 500 ms fallback poll.
+        self._health_probe_event = threading.Event()
         # llama-server tee log (see _drain_stdout / _kill_process).
         self._llama_log_fh = None
         self._llama_log_path: Optional[Path] = None
@@ -5481,8 +5488,14 @@ class LlamaCppBackend:
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
+            # Windows ROCm's free reading is an over-report on discrete cards too,
+            # not only on the shared pool handled below (#8403). It is capped
+            # against this process's own allocator, so VRAM a resident torch model
+            # holds in the backend process stops being offered to llama.cpp slots.
+            from utils.hardware import trusted_mem_get_info
+
             for ordinal in range(torch.cuda.device_count()):
-                free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
+                free_bytes, total_bytes = trusted_mem_get_info(ordinal)
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
@@ -6999,6 +7012,13 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
+                    # Two forms across llama.cpp builds. Only readiness lines wake the
+                    # probe: waking on every tensor-load log spins startup.
+                    line_lower = line.lower()
+                    if "server is listening" in line_lower or "model loaded" in line_lower:
+                        health_probe_event = getattr(self, "_health_probe_event", None)
+                        if health_probe_event is not None:
+                            health_probe_event.set()
                     logger.debug(f"[llama-server] {line}")
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
@@ -7012,6 +7032,11 @@ class LlamaCppBackend:
             # Never let the drain thread die: a full stdout pipe can deadlock
             # llama-server (Windows). Pipe-closed on exit is the common case.
             logger.debug("llama-server stdout drain stopped", exc_info = True)
+        finally:
+            # EOF means the process exited; wake the health loop immediately.
+            health_probe_event = getattr(self, "_health_probe_event", None)
+            if health_probe_event is not None:
+                health_probe_event.set()
 
     # GGUF KV type sizes for fast skipping
     _GGUF_TYPE_SIZE = {
@@ -7067,6 +7092,15 @@ class LlamaCppBackend:
             for _ in range(alen):
                 n = struct.unpack("<Q", f.read(8))[0]
                 raw = f.read(n)
+                # Only "<...>" / "[...]" entries survive delimiter_shaped_tokens, so skip
+                # the decode for the rest. UTF-8 is self-synchronising, so no multi-byte
+                # character starts with either byte and the first one settles it. The
+                # bytes are still read rather than seeked past: seeking would move the
+                # cursor differently on a short read, raise a different error on a bad
+                # length, and fail outright on a non-seekable stream. Decoding a
+                # six-figure vocabulary is the cost here, not reading it.
+                if raw[:1] != b"<" and raw[:1] != b"[":
+                    continue
                 # A vocabulary holds arbitrary bytes; a marker is text, so undecodable
                 # entries are simply not markers.
                 try:
@@ -9798,9 +9832,7 @@ class LlamaCppBackend:
             # and let the next stage collect what no live Studio holds.
             (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
             lib_dir = _llama_lib_dir(str(source_binary))
-            gpu_backend = re.compile(
-                r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
-            )
+            gpu_backend = _GGML_GPU_BACKEND_RE
             cpu_library_present = False
             for source in lib_dir.iterdir():
                 try:
@@ -14569,9 +14601,16 @@ class LlamaCppBackend:
         _find_llama_server_binary() can return, so orphans from any
         supported install path are cleaned up.
 
-        Uses psutil for cross-platform support (Linux, macOS, Windows);
-        falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
-        absent.
+        Reads /proc directly on Linux and uses psutil elsewhere (macOS, Windows).
+        The pgrep fallback the psutil-less path used to take is gone: /proc is
+        what that fallback read anyway, and psutil is a hard dependency, so it
+        was unreachable from both directions.
+
+        Candidates are collected first and killed afterwards, so an enumeration
+        that fails part way kills nothing rather than some. The parent check
+        therefore runs after enumeration rather than during it; a parent that
+        exits in between makes the process a genuine orphan, and the start-time
+        check below still refuses to signal a PID that has been reused.
 
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
@@ -14636,108 +14675,169 @@ class LlamaCppBackend:
 
             my_pid = os.getpid()
 
-            # -- Enumerate processes -------------------------------------------
-            # Prefer psutil (cross-platform); fall back to pgrep + /proc on
-            # Linux when psutil is absent.
-            try:
-                import psutil
-                has_psutil = True
-            except ImportError:
-                has_psutil = False
+            # -- Enumerate candidate processes ---------------------------------
+            # (pid, resolved binary, kill callable) per llama-server-looking process;
+            # ownership, orphan and kill handling is shared below so the paths agree.
+            candidates = []
 
-            if has_psutil:
-                for proc in psutil.process_iter(["pid", "name", "exe"]):
-                    try:
-                        if proc.info["pid"] == my_pid:
-                            continue
+            def _looks_like_server(name):
+                return bool(name) and name.lower().startswith("llama-server")
 
-                        name = proc.info.get("name") or ""
-                        if not name.lower().startswith("llama-server"):
-                            continue
+            def _stat_start_time(line):
+                right = line.rfind(b")")
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
 
-                        exe = proc.info.get("exe")
-                        if not exe:
-                            continue
+            def _proc_start_time(proc_dir):
+                """Field 22 of /proc/<pid>/stat, in jiffies since boot."""
+                try:
+                    with open(f"{proc_dir}/stat", "rb") as fh:
+                        line = fh.read()
+                except OSError:
+                    return None
+                right = line.rfind(b")")
+                if right < 0:
+                    return None
+                # Fields after comm start at field 3, so starttime is index 19.
+                fields = line[right + 2 :].split()
+                return fields[19] if len(fields) > 19 else None
 
-                        exe_path = Path(exe).resolve()
-
-                        # Ownership: exact match OR binary under a known root.
-                        is_ours = exe_path in exact_binaries or any(
-                            exe_path.is_relative_to(root) for root in resolved_roots
-                        )
-                        if not is_ours:
-                            continue
-
-                        # A live parent means a running Unsloth (or the user's
-                        # shell) still owns it -- not an orphan.
-                        if LlamaCppBackend._pid_parent_is_alive(proc.info["pid"]):
-                            continue
-
-                        proc.kill()
-                        killed += 1
-                        logger.info(
-                            f"Killed orphaned llama-server process (pid={proc.info['pid']})"
-                        )
-                    except (
-                        psutil.NoSuchProcess,
-                        psutil.AccessDenied,
-                        psutil.ZombieProcess,
-                    ):
-                        pass
-            else:
-                # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
-                if sys.platform != "linux":
-                    return killed
-                result = subprocess.run(
-                    ["pgrep", "-a", "-f", "llama-server"],
-                    capture_output = True,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    timeout = 5,
-                    env = child_env_without_native_path_secret(),
-                )
-                if result.returncode != 0:
-                    return killed
-
-                for line in result.stdout.strip().splitlines():
-                    parts = line.strip().split(None, 1)
-                    if len(parts) < 2:
-                        continue
-                    pid = int(parts[0])
-                    if pid == my_pid:
-                        continue
-
-                    # /proc/<pid>/exe symlinks the real binary, avoiding
-                    # cmdline-parsing ambiguities; fall back to the first
-                    # cmdline token when /proc is unavailable.
-                    proc_exe = Path(f"/proc/{pid}/exe")
-                    try:
-                        binary = proc_exe.resolve(strict = True)
-                    except (OSError, ValueError):
-                        cmdline = parts[1]
-                        token = cmdline.split()[0] if cmdline.strip() else ""
-                        if not token:
-                            continue
-                        binary = Path(token).resolve(strict = False)
-
-                    owned = binary in exact_binaries or any(
-                        binary.is_relative_to(root) for root in resolved_roots
-                    )
-                    if not owned:
-                        continue
-
-                    if LlamaCppBackend._pid_parent_is_alive(pid):
-                        continue
-
+            def _make_signal_killer(proc_dir, pid, start_time):
+                def _kill():
+                    # psutil.Process.kill() refuses to signal a reused PID, so re-check
+                    # identity here too: starttime never changes for a process and a reused
+                    # PID gets a later one, so a mismatch means this is not our process.
+                    if start_time is None or _proc_start_time(proc_dir) != start_time:
+                        return False
                     try:
                         os.kill(pid, signal.SIGKILL)
-                        killed += 1
-                        logger.info(f"Killed orphaned llama-server process (pid={pid})")
-                    except ProcessLookupError:
-                        pass
-                    except PermissionError:
-                        pass
+                    except (ProcessLookupError, PermissionError):
+                        return False
+                    return True
+
+                return _kill
+
+            # /proc is Linux only; a missing one falls back to psutil rather than finding
+            # nothing. Tests point _PROC_ROOT elsewhere to drive either path.
+            proc_root = _PROC_ROOT
+            if sys.platform == "linux" and os.path.isdir(proc_root):
+                # psutil.process_iter(["pid", "name", "exe"]) reads /proc/<pid>/stat several
+                # times per process and resolves exe for every one before the name rejects
+                # almost all. This sweep runs on every backend start and every temporary
+                # LlamaCppBackend(), so read comm once and resolve exe only on a name match.
+                def _proc_exe(proc_dir):
+                    try:
+                        target = os.readlink(f"{proc_dir}/exe")
+                    except OSError:
+                        return None
+                    if not target:
+                        return None
+                    # The kernel appends " (deleted)" once the binary is replaced or removed,
+                    # which is what an upgrade's orphan looks like. psutil strips the marker,
+                    # so strip it here too or that orphan stops being recognised as ours.
+                    if target.endswith(" (deleted)") and not os.path.exists(target):
+                        target = target[: -len(" (deleted)")]
+                    try:
+                        return Path(target).resolve()
+                    except OSError:
+                        return None
+
+                with os.scandir(proc_root) as entries:
+                    for entry in entries:
+                        if not entry.name.isdigit():
+                            continue
+                        try:
+                            pid = int(entry.name)
+                        except ValueError:
+                            continue
+                        if pid == my_pid:
+                            continue
+                        try:
+                            with open(f"{entry.path}/stat", "rb") as fh:
+                                stat_line = fh.read()
+                        except OSError:
+                            continue  # the process exited mid-scan
+                        left = stat_line.find(b"(")
+                        right = stat_line.rfind(b")")
+                        if left < 0 or right <= left:
+                            continue
+                        # comm is truncated to 15 bytes, which still leaves the 12-byte
+                        # "llama-server" prefix intact, so this selects the names psutil does.
+                        name = stat_line[left + 1 : right].decode("utf-8", "replace")
+                        if not _looks_like_server(name):
+                            continue
+                        exe_path = _proc_exe(entry.path)
+                        if exe_path is None:
+                            continue
+                        candidates.append(
+                            (
+                                pid,
+                                exe_path,
+                                _make_signal_killer(entry.path, pid, _stat_start_time(stat_line)),
+                            )
+                        )
+            else:
+                try:
+                    import psutil
+                except ImportError:
+                    psutil = None
+
+                if psutil is not None:
+
+                    def _make_psutil_killer(psutil_mod, proc):
+                        def _kill():
+                            try:
+                                proc.kill()
+                            except (
+                                psutil_mod.NoSuchProcess,
+                                psutil_mod.AccessDenied,
+                                psutil_mod.ZombieProcess,
+                            ):
+                                return False
+                            return True
+
+                        return _kill
+
+                    for proc in psutil.process_iter(["pid", "name", "exe"]):
+                        try:
+                            pid = proc.info["pid"]
+                            if pid == my_pid:
+                                continue
+                            if not _looks_like_server(proc.info.get("name") or ""):
+                                continue
+                            exe = proc.info.get("exe")
+                            if not exe:
+                                continue
+                            candidates.append(
+                                (pid, Path(exe).resolve(), _make_psutil_killer(psutil, proc))
+                            )
+                        except (
+                            psutil.NoSuchProcess,
+                            psutil.AccessDenied,
+                            psutil.ZombieProcess,
+                        ):
+                            pass
+                else:
+                    # Unreachable while the Linux branch above exists; kept so the
+                    # psutil-less path stays correct if that changes.
+                    return killed
+
+            # -- Ownership check, orphan check, kill ---------------------------
+            for pid, binary, kill in candidates:
+                # Ownership: exact match OR binary under a known root.
+                is_ours = binary in exact_binaries or any(
+                    binary.is_relative_to(root) for root in resolved_roots
+                )
+                if not is_ours:
+                    continue
+
+                # A live parent means a running Unsloth (or the user's shell) still owns it.
+                if LlamaCppBackend._pid_parent_is_alive(pid):
+                    continue
+
+                if kill():
+                    killed += 1
+                    logger.info(f"Killed orphaned llama-server process (pid={pid})")
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
         return killed
@@ -15222,8 +15322,14 @@ class LlamaCppBackend:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}/health"
+        health_probe_event = getattr(self, "_health_probe_event", None)
+        if health_probe_event is None:  # Backward-compatible with lightweight test doubles.
+            health_probe_event = self._health_probe_event = threading.Event()
 
         while time.monotonic() < deadline:
+            # Cleared before probing so output during the request stays latched for
+            # the fallback wait below.
+            health_probe_event.clear()
             # Process crashed?
             if self._process.poll() is not None:
                 # Let the drain thread collect final output.
@@ -15261,7 +15367,7 @@ class LlamaCppBackend:
             ):
                 pass
 
-            time.sleep(interval)
+            health_probe_event.wait(interval)
 
         # Leave a marker so _classify_llama_start_failure tells a live but
         # never-healthy load (too large, or a proxy hijacking the loopback
@@ -16143,34 +16249,19 @@ class LlamaCppBackend:
                 text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
+        # Wraps the parser's ``strip_segment`` so the accumulated response is not rescanned
+        # end to end on every content token (that was quadratic in the response length).
+        # Think blocks stay verbatim inside it: a rehearsed call in one must not be deleted.
+        _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
+
+        # The final-answer loop has its own buffer and strips with ``final = False``, so it
+        # needs its own instance rather than sharing the one above.
+        _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-
-            def _seg(segment: str, is_last: bool) -> str:
-                # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
-                # strips first (nested JSON removed whole; literal markup inside a value is that
-                # call's data), then the guarded function-XML / GLM scans, then the regex arms
-                # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-                # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal + markerless
-                # strips are name-gated on the ORIGINAL list (strip/detect aligned).
-                seg = _strip_mistral_closed_calls(segment)
-                seg = _strip_bracket_tag_calls(seg, enabled_tool_names = _enabled_names_gate)
-                if is_last:
-                    seg = _strip_gemma_wrapperless_calls(seg, _enabled_names_gate)
-                seg = _strip_function_xml_calls(seg, final = is_last)
-                seg = _strip_glm_calls(seg, final = is_last)
-                pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
-                for pat in pats:
-                    seg = pat.sub("", seg)
-                if is_last:
-                    seg = apply_tool_strip_patterns(
-                        seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = _enabled_names_gate
-                    )
-                return seg
-
-            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
-            return strip_outside_think(text, _seg)
+            return _streaming_stripper.strip(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -16381,6 +16472,8 @@ class LlamaCppBackend:
                 _reasoning_summary_emitted = False
                 _deferred_reasoning_summary = None
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
+                # A new buffer, not a continuation of the previous iteration's.
+                _streaming_stripper.reset()
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
@@ -17596,7 +17689,11 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         in_thinking = False
                                     cumulative += token
-                                    cleaned = _strip_tool_markup(cumulative)
+                                    cleaned = (
+                                        _final_answer_stripper.strip(cumulative)
+                                        if auto_heal_tool_calls
+                                        else cumulative
+                                    )
                                     # Emit only when cleaned text grows (monotonic).
                                     if len(cleaned) > len(_last_emitted):
                                         _last_emitted = cleaned

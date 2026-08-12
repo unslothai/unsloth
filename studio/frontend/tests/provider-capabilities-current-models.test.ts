@@ -12,8 +12,14 @@ const {
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
+
+  providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
+
+const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
+  "../src/features/chat/external-providers.ts"
+);
 
 // The picker's default_models list (backend core/inference/providers.py) grew a
 // Claude 5 / gpt-5.6 / gemini-3.6 generation. Every table here is prefix-based,
@@ -70,6 +76,38 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
     assert.equal(getExternalMaxOutputTokens("openai", model), 128000, model);
   }
 });
+
+test("ChatGPT subscription models expose Studio-owned search and code tools", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.4": { vision: true, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
+  for (const model of ["gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.6-sol"]) {
+    const caps = getExternalReasoningCapabilities("openai_codex", model);
+    assert.equal(caps.supportsReasoning, true, model);
+    assert.equal(caps.reasoningStyle, "reasoning_effort", model);
+    assert.equal(getExternalMaxOutputTokens("openai_codex", model), 128000, model);
+    assert.equal(providerSupportsBuiltinWebSearch("openai_codex", model), true, model);
+    assert.equal(providerSupportsBuiltinCodeExecution("openai_codex", model), true, model);
+  }
+});
+
+
+test("ChatGPT subscription vision gating follows the curated model", () => {
+
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.3-codex-spark": { vision: false, studio_tools: true },
+    "gpt-5.6-sol": { vision: true, studio_tools: true },
+  });
+  assert.equal(
+    providerModelSupportsVision("openai_codex", "gpt-5.3-codex-spark"),
+    false,
+  );
+  assert.equal(providerModelSupportsVision("openai_codex", "gpt-5.6-sol"), true);
+});
+
 
 test("Gemini 3.x minors keep the thinkingLevel ladder", () => {
   // gemini-3.6-flash must not fall through to the 2.5 integer-budget branch.

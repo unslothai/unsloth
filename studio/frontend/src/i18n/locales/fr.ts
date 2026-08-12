@@ -18,7 +18,10 @@ export const fr = {
     modelSourceAriaLabel: "Source du modèle",
     hubSectionAriaLabel: "Section du Hub",
     pickModelFile: "Choisir un fichier de modèle sur le disque",
-    ejectLoadedModel: "Éjecter le modèle chargé",
+    modelDropped: "N'est plus proposé",
+    modelDroppedByProvider: "{provider} · n'est plus proposé",
+    modelDisabled: "Non activé",
+    modelDisabledByProvider: "{provider} · non activé",
     multipleMatches:
       "Plusieurs {noun} correspondent. Choisissez-en un dans la liste.",
     rateLimitedTitle: "Limite de requêtes Hugging Face atteinte",
@@ -436,11 +439,6 @@ export const fr = {
         saveError:
           "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
-      gettingStarted: "Prise en main",
-      startOnboarding: "Démarrer la prise en main",
-      startOnboardingDescription:
-        "Rouvrir l'assistant de configuration sans modifier votre compte.",
-      startOnboardingAction: "Démarrer la prise en main",
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",
@@ -1277,25 +1275,8 @@ export const fr = {
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
-      hfTokenLabel: "Jeton Hugging Face",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
-      hfTokenGet: "Obtenir un jeton",
-      hfTokenChecking: "Vérification du jeton…",
-      modelPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un modèle entraînable déjà présent sur cet appareil.",
-      trainingMethod: "Méthode d'entraînement",
-      trainingMethodDescription: "Choisissez comment affiner {model}",
-      trainingMethodTooltip:
-        "QLoRA utilise une quantification 4 bits pour réduire au minimum l'utilisation de la VRAM. LoRA utilise des poids 16 bits, tandis que l'affinage complet met à jour tous les poids.",
-      datasetPickerDescription:
-        "Recherchez sur Hugging Face ou choisissez un jeu de données déjà présent sur cet appareil.",
-      uploadDataset: "Téléverser un jeu de données",
-      uploadDatasetDescription:
-        "Prend en charge CSV, JSONL, JSON et Parquet.",
-      chooseFile: "Choisir un fichier",
-      format: "Format",
-      autoDetect: "Détection automatique",
       uploadLocalLabel: "Ou téléverser un fichier local",
       sourceBrowse: "Parcourir",
       releaseToUpload: "Relâchez pour téléverser",
@@ -1465,24 +1446,6 @@ export const fr = {
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
     checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
-    sections: {
-      model: "Modèle",
-      dataset: "Jeu de données",
-      params: "Paramètres",
-      training: "Entraînement",
-      charts: "Graphiques",
-      progress: "Progression de l'entraînement",
-    },
-    configure: {
-      title: "Configurer",
-      description:
-        "Choisissez un modèle, un jeu de données et les paramètres d'entraînement.",
-      startTraining: "Démarrer l'entraînement",
-      starting: "Démarrage...",
-      loadingModel: "Chargement du modèle...",
-      checkingDataset: "Vérification du jeu de données...",
-      trainingConfig: "Configuration d'entraînement",
-    },
     dataset: {
       selectors: {
         subset: "Sous-ensemble",
@@ -1507,7 +1470,6 @@ export const fr = {
         manualTooLong: "Utilisez au maximum 128 caractères.",
         manualInvalid: "Cette valeur contient des caractères non pris en charge.",
       },
-      source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
       localDataset: "Jeu de données local",
       localDatasetRows: " / {count} lignes",
@@ -1524,8 +1486,6 @@ export const fr = {
       fileTooLarge: "Fichier trop volumineux",
       fileTooLargeDescription:
         "{file} fait {size}. Les téléversements d’entraînement sont limités à {limit}.",
-      uploadLimitsHint:
-        "CSV, JSONL, JSON, Parquet · jusqu’à {limit} ; PDF/DOCX/TXT → Learning Recipes",
       documentRedirect: {
         title: "Ce fichier doit d’abord être converti",
         genericFile: "Ce fichier",
@@ -1615,7 +1575,6 @@ export const fr = {
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
-      preview: "Aperçu du jeu de données",
       previewLoadingHuggingFace:
         "Récupération de l’aperçu du jeu de données depuis Hugging Face...",
       previewLoading: "Chargement de l’aperçu...",
@@ -1637,8 +1596,6 @@ export const fr = {
         requiredDescription:
           "Attribuez des rôles aux colonnes à l’aide des menus des en-têtes. Attribuez au minimum {required}.",
       },
-      split: "Split",
-      subset: "Sous-ensemble",
       s3: {
         title: "Configuration S3",
         description:
@@ -1649,21 +1606,11 @@ export const fr = {
         regionPlaceholder: "us-east-1",
         prefix: "Préfixe de chemin",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip:
-          "Chemin facultatif dans le bucket vers vos fichiers de jeu de données",
         accessKeyId: "ID de clé d'accès",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Clé d'accès secrète",
         secretAccessKeyPlaceholder: "Votre clé d'accès secrète AWS",
         useIamRole: "Utiliser un rôle IAM",
-        useIamRoleTooltip:
-          "Utiliser les identifiants d'un rôle IAM au lieu de clés d'accès (recommandé pour EC2/SageMaker)",
-        testConnection: "Tester la connexion",
-        connectionSuccess: "Connexion au bucket S3 réussie",
-        connectionFailed: "Échec de la connexion au bucket S3",
-        comingSoon: "Intégration S3 bientôt disponible",
-        comingSoonDescription:
-          "Le chargement de jeux de données S3 nécessite boto3. Cette fonctionnalité est en cours de développement.",
       },
     },
     params: {
@@ -1857,7 +1804,6 @@ export const fr = {
     },
     history: {
       title: "Historique",
-      emptyTitle: "Aucun entraînement pour le moment",
       emptyDescription:
         "Aucun entraînement pour le moment. Démarrez votre premier entraînement dans l'onglet Configurer.",
       loadError: "Échec du chargement des entraînements",
@@ -1886,9 +1832,6 @@ export const fr = {
         "L'exécution a été supprimée, mais ses fichiers n'ont pas pu être effacés.",
       deleteArtifactsRetainedError:
         "Les fichiers d’adaptateur n’ont pas pu être supprimés. L’entraînement a donc été conservé dans l’historique.",
-      runCount: "{count} entraînements",
-      oneRun: "1 entraînement",
-      resume: "Reprendre",
       resumeTraining: "Reprendre l'entraînement",
       resuming: "Reprise...",
       deleteRun: "Supprimer l'entraînement",
@@ -2026,9 +1969,6 @@ export const fr = {
       dataset: "Jeu de données",
       datasetStreaming: "Jeu de données : streaming (pas de téléchargement complet)",
       modelWeights: "Poids du modèle",
-    },
-    tour: {
-      guidedTour: "Visite guidée",
     },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

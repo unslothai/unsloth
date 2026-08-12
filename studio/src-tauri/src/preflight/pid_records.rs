@@ -559,7 +559,31 @@ mod system_tests {
             c.arg("60");
             c
         };
-        command.spawn().expect("a foreign process should start")
+        let child = command.spawn().expect("a foreign process should start");
+        wait_for_exec(child.id());
+        child
+    }
+
+    /// Block until the spawned child is running its own image.
+    ///
+    /// `Command::spawn` takes the posix_spawn path here, which returns as soon
+    /// as the child exists rather than when it has exec'd. In that window the
+    /// child is still a copy of this test binary, so its executable path is
+    /// inside the record root and it reads as one of ours. Rare, but it turned
+    /// a foreign-process test red on a loaded CI machine.
+    fn wait_for_exec(pid: u32) {
+        let Ok(own) = std::env::current_exe() else {
+            return;
+        };
+        for _ in 0..400 {
+            match crate::process_identity::executable_path(pid) {
+                Some(exe) if exe == own => {}
+                // Its own image, or the OS will not say, which no amount of
+                // waiting changes.
+                _ => return,
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// The reported case reproduced end to end: a backend of this install is

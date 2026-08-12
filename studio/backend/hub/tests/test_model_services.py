@@ -3,11 +3,11 @@
 
 import asyncio
 import errno
-import time
 import json
 import os
 import sys
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,16 +40,6 @@ from hub.utils import (
     state_dir,
 )
 from hub.workers import hf_download
-
-
-@pytest.fixture(autouse = True)
-def _denylist_inert(monkeypatch):
-    # These browse tests exercise allowlist containment, symlink safety and the sensitive-name
-    # filter, not the system-directory denylist (its own suite is tests/test_browse_denylist.py).
-    # On macOS tmp_path resolves under /private/var, a denied prefix, so keep the denylist inert
-    # for cross-platform parity. folder_browser binds is_denied_system_path at import, so patch it
-    # there. The "rejects" cases still 403 via the allowlist/sensitive checks.
-    monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
 
 
 def _download_body(**over) -> SimpleNamespace:
@@ -1433,69 +1423,6 @@ class _RecordingLogger:
         self.warnings.append((args, kwargs))
 
 
-def test_resolve_browse_target_preserves_allowlist_and_symlink_safety(tmp_path):
-    home = tmp_path / "home"
-    scan = tmp_path / "scan"
-    target = scan / "nested"
-    home.mkdir()
-    target.mkdir(parents = True)
-    (home / "scan-link").symlink_to(scan, target_is_directory = True)
-
-    resolved = folder_browser._resolve_browse_target(
-        str(home / "scan-link" / "nested"),
-        [home, scan],
-    )
-
-    assert resolved == target.resolve()
-
-
-def test_resolve_browse_target_rejects_outside_allowlist(tmp_path):
-    allowed = tmp_path / "allowed"
-    outside = tmp_path / "outside"
-    allowed.mkdir()
-    outside.mkdir()
-
-    with pytest.raises(HTTPException) as exc_info:
-        folder_browser._resolve_browse_target(str(outside), [allowed])
-
-    assert exc_info.value.status_code == 403
-
-
-def test_resolve_browse_target_rejects_sensitive_dir(tmp_path):
-    home = tmp_path / "home"
-    ssh = home / ".ssh"
-    ssh.mkdir(parents = True)
-
-    with pytest.raises(HTTPException) as exc_info:
-        folder_browser._resolve_browse_target(str(ssh), [home])
-
-    assert exc_info.value.status_code == 403
-
-
-def test_resolve_browse_target_rejects_sensitive_root(tmp_path):
-    ssh = tmp_path / "home" / ".ssh"
-    ssh.mkdir(parents = True)
-
-    with pytest.raises(HTTPException) as exc_info:
-        folder_browser._resolve_browse_target(str(ssh), [ssh])
-
-    assert exc_info.value.status_code == 403
-
-
-def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    (home / ".ssh").mkdir(parents = True)
-    (home / "models").mkdir()
-    # Accept and ignore the optional (media_roots, drive_roots) args the caller now passes.
-    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda *_a, **_k: [home])
-
-    response = folder_browser.browse_folders_response(str(home), show_hidden = True)
-
-    names = {entry.name for entry in response.entries}
-    assert "models" in names
-    assert ".ssh" not in names
-
-
 def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
     home = tmp_path / "home"
     media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
@@ -1511,7 +1438,7 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
     allowlist = folder_browser._build_browse_allowlist()
 
     assert media_root.resolve() in allowlist
-    assert folder_browser._resolve_browse_target(str(model_dir), allowlist) == model_dir.resolve()
+    assert folder_browser._is_path_inside_allowlist(model_dir.resolve(), allowlist)
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):

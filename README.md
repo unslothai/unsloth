@@ -115,7 +115,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 
 ### Unsloth Desktop (recommended)
 
-The desktop app is the easiest way to use Unsloth and needs no setup, so start here.
+The Tauri based desktop app is the easiest way to use Unsloth and needs no setup, so start here.
 
 <table>
   <tr>
