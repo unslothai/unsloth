@@ -564,3 +564,68 @@ def test_the_route_asks_before_it_takes_the_gpu():
     refusal = src.index("non_chat_gguf_refusal_for_intent")
     acquire = src.index("lambda: gguf_load_stack.enter_context(chat_load_in_flight())")
     assert refusal < acquire
+
+
+def test_the_route_hands_its_verdict_to_the_load(monkeypatch, tmp_path):
+    # The route and the loader ask for the same intent seconds apart, and each ask is a
+    # listing, a cache verification and a range request, all bounded at 15s. The second one
+    # takes the first one's answer instead of paying again.
+    calls: list[str] = []
+
+    def _verdict(**kwargs):
+        calls.append(kwargs["hf_repo"])
+        return "This is a text-to-video GGUF. Open it from the Video page instead."
+
+    monkeypatch.setattr(LlamaCppBackend, "_remote_non_chat_gguf_verdict", _verdict)
+    monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
+    intent = GgufLoadIntent(
+        model_identifier = "unsloth/LTX-2-GGUF",
+        hf_repo = "unsloth/LTX-2-GGUF",
+        hf_variant = "Q4_K_M",
+    )
+    assert LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent) is not None
+    assert calls == ["unsloth/LTX-2-GGUF"]
+
+    # The load that follows reuses it...
+    reused = LlamaCppBackend._remote_non_chat_gguf_refusal(
+        hf_repo = "unsloth/LTX-2-GGUF",
+        hf_variant = "Q4_K_M",
+        hf_token = None,
+        model_identifier = "unsloth/LTX-2-GGUF",
+    )
+    assert reused is not None
+    assert calls == ["unsloth/LTX-2-GGUF"]
+
+    # ...exactly once. A second load probes for itself rather than trusting a stale answer.
+    LlamaCppBackend._remote_non_chat_gguf_refusal(
+        hf_repo = "unsloth/LTX-2-GGUF",
+        hf_variant = "Q4_K_M",
+        hf_token = None,
+        model_identifier = "unsloth/LTX-2-GGUF",
+    )
+    assert calls == ["unsloth/LTX-2-GGUF"] * 2
+
+
+def test_a_handoff_for_another_model_is_not_taken(monkeypatch):
+    calls: list[str] = []
+
+    def _verdict(**kwargs):
+        calls.append(kwargs["hf_repo"])
+        return None
+
+    monkeypatch.setattr(LlamaCppBackend, "_remote_non_chat_gguf_verdict", _verdict)
+    monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
+    LlamaCppBackend.non_chat_gguf_refusal_for_intent(
+        GgufLoadIntent(
+            model_identifier = "owner/a", hf_repo = "owner/a", hf_variant = "Q4_K_M"
+        )
+    )
+    LlamaCppBackend._remote_non_chat_gguf_refusal(
+        hf_repo = "owner/b", hf_variant = "Q4_K_M", hf_token = None, model_identifier = "owner/b"
+    )
+    assert calls == ["owner/a", "owner/b"]
+    # A different variant of the same repo is a different file, so it is not taken either.
+    LlamaCppBackend._remote_non_chat_gguf_refusal(
+        hf_repo = "owner/a", hf_variant = "Q8_0", hf_token = None, model_identifier = "owner/a"
+    )
+    assert calls == ["owner/a", "owner/b", "owner/a"]

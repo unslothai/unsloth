@@ -699,6 +699,10 @@ def _hf_unreachable() -> bool:
     return hf_unreachable()
 
 
+# Distinguishes "no verdict remembered" from a remembered verdict of None (not a media GGUF).
+_MISS = object()
+
+
 # GGUF value-type ids for the unsigned ints, and their widths: uint8, uint16, uint32, uint64.
 _GGUF_UINT_WIDTHS = {0: 1, 2: 2, 4: 4, 10: 8}
 
@@ -7226,19 +7230,47 @@ class LlamaCppBackend:
             if gguf_path and not hf_repo and Path(gguf_path).is_file():
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
+                hf_variant = getattr(intent, "hf_variant", None)
                 # Same offline window the download runs in: the repo probe asks the Hub
                 # before it reads any local header, and those calls would otherwise wait out
                 # their retry backoff on an unreachable Hub.
                 with _hf_offline_if_unreachable():
-                    return cls._remote_non_chat_gguf_refusal(
+                    verdict = cls._remote_non_chat_gguf_verdict(
                         hf_repo = hf_repo,
-                        hf_variant = getattr(intent, "hf_variant", None),
+                        hf_variant = hf_variant,
                         hf_token = getattr(intent, "hf_token", None),
                         model_identifier = identifier,
                     )
+                cls._hand_over_route_verdict(hf_repo, hf_variant, verdict)
+                return verdict
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
         return None
+
+    # The route takes this verdict, then load_model asks for the same intent moments later,
+    # and each ask is a repo listing, a cache verification and a range request, every one
+    # bounded at 15s. So the route HANDS OVER what it learned instead of making a slow Hub
+    # pay twice before a byte is downloaded. Written only by the route entry point and taken
+    # once by the load it belongs to, so a verdict can never outlive its load; the age bound
+    # is only there for a route ask no load ever came for.
+    _HANDOFF_TTL_S = 120.0
+    _route_verdict_handoff: Optional[tuple[tuple[Optional[str], Optional[str]], Optional[str], float]] = None
+
+    @classmethod
+    def _take_route_verdict(cls, hf_repo, hf_variant):
+        """The verdict the route just took for this key, or ``_MISS``. Consumed on read."""
+        handoff = cls._route_verdict_handoff
+        if handoff is None:
+            return _MISS
+        key, verdict, at = handoff
+        if key != (hf_repo, hf_variant) or (time.monotonic() - at) >= cls._HANDOFF_TTL_S:
+            return _MISS
+        cls._route_verdict_handoff = None
+        return verdict
+
+    @classmethod
+    def _hand_over_route_verdict(cls, hf_repo, hf_variant, verdict) -> None:
+        cls._route_verdict_handoff = ((hf_repo, hf_variant), verdict, time.monotonic())
 
     @classmethod
     def _remote_non_chat_gguf_refusal(
@@ -7265,7 +7297,31 @@ class LlamaCppBackend:
 
         Fails open at every step (no filename, unreachable Hub, a 200 instead of a 206, too
         short a prefix) since the post-download check is the backstop. It can only make a
-        refusal cheaper, never refuse a load the full-file check would have allowed."""
+        refusal cheaper, never refuse a load the full-file check would have allowed.
+
+        Takes the route's verdict for this intent when there is one, rather than repeating
+        a listing, a cache verification and a range request the route just paid for."""
+        handed_over = cls._take_route_verdict(hf_repo, hf_variant)
+        if handed_over is not _MISS:
+            logger.debug("Reusing the header verdict the route already took for %s", hf_repo)
+            return handed_over
+        return cls._remote_non_chat_gguf_verdict(
+            hf_repo = hf_repo,
+            hf_variant = hf_variant,
+            hf_token = hf_token,
+            model_identifier = model_identifier,
+        )
+
+    @classmethod
+    def _remote_non_chat_gguf_verdict(
+        cls,
+        *,
+        hf_repo: str,
+        hf_variant: Optional[str],
+        hf_token: Optional[str],
+        model_identifier: Optional[str],
+    ) -> Optional[str]:
+        """The uncached probe: one listing, one cache resolution, one range read."""
         try:
             from core.inference.diffusion_compat import (
                 _read_gguf_header,
