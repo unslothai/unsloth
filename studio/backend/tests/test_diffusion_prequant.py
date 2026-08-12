@@ -29,35 +29,9 @@ from core.inference.diffusion_prequant import (
 
 
 @pytest.fixture(autouse = True)
-def real_prequant_safe_globals(monkeypatch):
-    """Stand in for the allowlist entries this host cannot import, and hand back the real resolver.
-
-    The file header promises these tests run without torchao, and the Backend CI image keeps that
-    promise literally: it installs torch and transformers and no torchao at all. Production then
-    resolves not one entry of ``_PREQUANT_SAFE_GLOBALS``, the registration floor ("TorchVersion
-    plus at least one real torchao class") is not met, every load refuses, and 19 tests in here
-    fail on ``assert None is not None`` -- saying nothing whatever about the loader they are
-    about. The tests also swap ``sys.modules["torch"]`` for a bare module while a load runs, so
-    even ``torch.torch_version`` is unimportable at that moment, torchao or no torchao.
-
-    Standing in only for the names that did NOT resolve keeps a host that has torchao testing the
-    real classes. Which names a given release actually ships is asked separately, by
-    ``test_the_registration_floor_needs_a_real_torchao``, which skips rather than pretends -- and
-    ``test_the_registration_refuses_when_nothing_resolves`` pins the refusal itself, so the gate
-    that the CI image trips is still under test rather than merely worked around.
-    """
-    resolver = pq._prequant_safe_globals
-    resolved = {name: obj for obj, name in resolver()}
-    pairs = [
-        (resolved.get(f"{module}.{name}") or type(name, (), {}), f"{module}.{name}")
-        for module, name in pq._PREQUANT_SAFE_GLOBALS
-    ]
-    monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
-    # Per test rather than per process: the memo is a module global, so one test's registration
-    # would otherwise decide the answer for every test that ran after it.
-    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
-    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
-    return resolver
+def _pin_prequant_safe_globals(real_prequant_safe_globals):
+    """Apply the shared stand-in allowlist (see conftest) to every test in this module."""
+    return real_prequant_safe_globals
 
 
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
