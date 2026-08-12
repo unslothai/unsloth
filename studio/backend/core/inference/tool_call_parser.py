@@ -872,8 +872,12 @@ class StreamingMarkupStripper:
     by ``_SENTINEL_MAX_LEN - 1`` so a sentinel split across two appends is still seen),
     which makes the pre-markup phase amortized constant per token rather than linear.
 
-    The instance assumes append-only growth and re-derives its state if the caller ever
-    passes text that is not an extension of the previous call, so a rewind is safe.
+    The instance assumes append-only growth: one instance per buffer, appended to, with
+    ``reset()`` before a new buffer. A shorter buffer, or one whose sampled head, middle
+    or previous tail no longer matches, re-derives the state, so an ordinary rewind is
+    handled. That check samples rather than compares in full, because comparing in full
+    would be linear in the buffer and reintroduce the cost this class removes, so it is a
+    guard against misuse rather than a guarantee for arbitrary call sequences.
     """
 
     __slots__ = (
@@ -889,6 +893,7 @@ class StreamingMarkupStripper:
         "_open_scanned",
         "_seen_len",
         "_seen_head",
+        "_seen_mid",
         "_seen_tail",
     )
 
@@ -926,6 +931,7 @@ class StreamingMarkupStripper:
         # Length and both end samples of the last buffer, never the buffer itself: see ``_note``.
         self._seen_len = -1
         self._seen_head = ""
+        self._seen_mid = ""
         self._seen_tail = ""
 
     def _think_block(self, text: str, first: int) -> str:
@@ -1043,14 +1049,22 @@ class StreamingMarkupStripper:
         # that forces is bounded by the sample size.
         self._seen_head = text[:_EXTENSION_SAMPLE]
         self._seen_tail = text[-_EXTENSION_SAMPLE:]
+        mid = len(text) // 2
+        self._seen_mid = text[mid : mid + _EXTENSION_SAMPLE]
 
     def _is_extension(self, text: str) -> bool:
         """Cheap check that ``text`` continues the previous call's buffer.
 
         A full ``startswith`` would be linear in the buffer and so reintroduce the
-        quadratic cost this class exists to remove. Callers stream append-only, so this
-        only has to catch a caller that clearly is not: a shorter buffer, or one whose
-        head or previous tail no longer matches. Sampling both ends is O(1).
+        quadratic cost this class exists to remove, so this samples three fixed windows
+        instead: the head, the middle, and the previous buffer's last bytes. All three
+        are O(1) and all three must still match.
+
+        This is a guard against obvious misuse, not a proof. Two different buffers that
+        agree on all three windows and on length would still be taken for a continuation;
+        the middle window exists because head and tail alone missed the case where only
+        the middle changed. The contract remains: one instance per buffer, appended to,
+        and ``reset()`` before a new one. Both callers in this repo do exactly that.
         """
         end = self._seen_len
         if end < 0:
@@ -1058,7 +1072,12 @@ class StreamingMarkupStripper:
         if len(text) < end:
             return False
         sample = _EXTENSION_SAMPLE
-        return text[:sample] == self._seen_head and text[end - sample : end] == self._seen_tail
+        if text[:sample] != self._seen_head:
+            return False
+        if text[end - sample : end] != self._seen_tail:
+            return False
+        mid = end // 2
+        return text[mid : mid + sample] == self._seen_mid
 
     def strip(self, text: str) -> str:
         if not self._is_extension(text):

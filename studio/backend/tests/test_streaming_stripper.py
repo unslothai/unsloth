@@ -27,6 +27,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from core import tool_healing  # noqa: E402
+from core.inference import tool_call_parser  # noqa: E402
 from core.inference.tool_call_parser import (  # noqa: E402
     _STRIP_SENTINELS,
     StreamingMarkupStripper,
@@ -423,20 +424,19 @@ def test_no_reference_to_the_buffer_is_retained():
 
 def test_reset_clears_the_cached_prefix_for_a_new_buffer():
     """The streaming caller keeps one instance across tool iterations, and each iteration
-    starts a fresh ``cumulative_display``. ``_is_extension`` samples the ends rather than
-    comparing, so a new buffer that happens to agree on a length and 64 bytes at each end
-    is accepted, and the scan then resumes at an offset from the previous iteration and
-    never looks below it again. The caller says so explicitly instead.
+    starts a fresh ``cumulative_display``. ``_is_extension`` samples rather than compares,
+    so it cannot be relied on to notice: a new buffer that agreed with the old one on
+    length and on every sampled window would be accepted, the scan would resume at an
+    offset from the previous iteration and never look below it again. The caller says so
+    explicitly rather than depending on the sampling to catch it.
     """
     stripper = StreamingMarkupStripper(ENABLED)
 
     first = "x" * 200 + '<tool_call>{"name": "search", "arguments": {}}</tool_call>' + "y" * 200
     stripper.strip(first)
 
-    # Same length, same first and last 64 bytes, different middle: an accepted impostor.
     second = first[:64] + "z" * (len(first) - 128) + first[-64:]
     assert len(second) == len(first) and second != first
-    assert stripper._is_extension(second)
 
     stripper.reset()
 
@@ -596,3 +596,32 @@ def test_a_cut_never_crosses_an_open_parameter_block():
     for i in range(1, len(closed) + 1):
         got = stripper.strip(closed[:i])
     assert got == _reference_strip(closed, names)
+
+
+def test_a_replaced_middle_is_not_taken_for_a_continuation():
+    """The extension check samples rather than compares in full, so it has to sample
+    somewhere the difference can show. Head and tail alone missed a buffer whose middle
+    was replaced while both ends and the length stayed put, and the stripper then skipped
+    rescanning the part that changed and returned a stale answer."""
+    sample = tool_call_parser._EXTENSION_SAMPLE
+    names = {"a"}
+    first = "A" * sample + "x" * 11 + "Z" * sample
+    second = "A" * sample + "<tool_call>" + "Z" * sample
+    assert len(first) == len(second)
+
+    stripper = StreamingMarkupStripper(names)
+    stripper.strip(first)
+    assert stripper._is_extension(second) is False
+    assert stripper.strip(second) == _reference_strip(second, names)
+
+
+def test_an_append_only_stream_is_still_recognised_as_a_continuation():
+    """Control for the test above: the extra sample must not push the ordinary
+    append-only case onto the slow path, which is the whole point of the class."""
+    names = {"a"}
+    text = "some prose " * 400
+    stripper = StreamingMarkupStripper(names)
+    stripper.strip(text[:500])
+    for i in range(600, len(text), 100):
+        assert stripper._is_extension(text[:i]) is True
+        stripper.strip(text[:i])
