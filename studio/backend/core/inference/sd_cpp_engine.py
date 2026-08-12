@@ -29,6 +29,7 @@ from typing import Callable, Iterator, Optional
 
 from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
@@ -45,6 +46,9 @@ logger = logging.getLogger(__name__)
 # sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
+# The first stable-diffusion.cpp release already exposed all three. Together they distinguish its
+# oldest help text (before it printed the project name) from unrelated tools also called ``sd``.
+_LEGACY_HELP_MARKERS = ("--negative-prompt", "--cfg-scale", "--steps")
 # The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
@@ -229,6 +233,35 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
+def _is_legacy_sd_cpp_binary(binary: str) -> bool:
+    """Whether an ambiguous PATH executable named ``sd`` identifies as stable-diffusion.cpp."""
+    try:
+        result = subprocess.run(
+            [binary, "--help"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            check = False,
+            env = runtime_env(binary),
+            **windows_hidden_subprocess_kwargs(),
+        )
+        help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+    except (OSError, subprocess.SubprocessError):
+        help_text = ""
+    identified = "stable-diffusion.cpp" in help_text.lower() or all(
+        marker in help_text for marker in _LEGACY_HELP_MARKERS
+    )
+    if not identified:
+        logger.warning(
+            "ignoring PATH executable %s named sd because its --help output does not identify "
+            "stable-diffusion.cpp",
+            binary,
+        )
+    return identified
+
+
 def managed_install_root() -> Path:
     """The directory the prebuilt installer owns, so callers can tell a Studio-managed binary
     from a user-supplied one (SD_CLI_PATH / UNSLOTH_SD_CPP_PATH / PATH / an in-tree build).
@@ -407,7 +440,7 @@ def _find_binary(
     # 5. PATH.
     for stem in path_stems:
         on_path = shutil.which(stem)
-        if on_path:
+        if on_path and (stem != _LEGACY_STEM or _is_legacy_sd_cpp_binary(on_path)):
             return on_path
     return None
 

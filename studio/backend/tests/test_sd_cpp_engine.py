@@ -92,6 +92,95 @@ def test_find_falls_back_to_path(tmp_path, monkeypatch):
     assert find_sd_cpp_binary() == "/usr/bin/sd-cli"
 
 
+def test_find_rejects_unrelated_ubuntu_sd_on_path(tmp_path, monkeypatch, caplog):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/usr/bin/sd" if stem == "sd" else None)
+    run_kwargs = {}
+    hidden = object()
+
+    def _run(*_args, **kwargs):
+        run_kwargs.update(kwargs)
+        return types.SimpleNamespace(
+            stdout = "Find & replace occurrences of a pattern\nUsage: sd [OPTIONS] <FIND> <REPLACE>",
+            stderr = "",
+            returncode = 0,
+        )
+
+    monkeypatch.setattr(eng.subprocess, "run", _run)
+    monkeypatch.setattr(eng, "windows_hidden_subprocess_kwargs", lambda: {"startupinfo": hidden})
+
+    assert find_sd_cpp_binary() is None
+    assert "does not identify stable-diffusion.cpp" in caplog.text
+    assert run_kwargs["timeout"] == 10
+    assert run_kwargs["startupinfo"] is hidden
+
+
+def test_find_rejects_legacy_sd_when_identity_probe_times_out(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/usr/bin/sd" if stem == "sd" else None)
+
+    def _timeout(*_args, **_kwargs):
+        raise eng.subprocess.TimeoutExpired("sd", 10)
+
+    monkeypatch.setattr(eng.subprocess, "run", _timeout)
+
+    assert find_sd_cpp_binary() is None
+
+
+def test_find_accepts_genuine_legacy_sd_on_path(tmp_path, monkeypatch):
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(
+        eng.shutil, "which", lambda stem: "/opt/sd.cpp/bin/sd" if stem == "sd" else None
+    )
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            stdout = (
+                "usage: /opt/sd.cpp/bin/sd [arguments]\n"
+                "--model [MODEL]\n--negative-prompt PROMPT\n--cfg-scale SCALE\n--steps STEPS"
+            ),
+            stderr = "",
+            returncode = 0,
+        ),
+    )
+
+    assert find_sd_cpp_binary() == "/opt/sd.cpp/bin/sd"
+
+
+def test_rejected_legacy_sd_allows_managed_install(tmp_path, monkeypatch):
+    import core.inference.sd_cpp_backend as backend
+
+    _clear_env(monkeypatch)
+    monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: "/usr/bin/sd" if stem == "sd" else None)
+    monkeypatch.setattr(
+        eng.subprocess,
+        "run",
+        lambda *_a, **_k: types.SimpleNamespace(
+            stdout = "Find & replace occurrences of a pattern\nUsage: sd [OPTIONS] <FIND> <REPLACE>",
+            stderr = "",
+            returncode = 0,
+        ),
+    )
+    installed = tmp_path / "managed" / "sd-cli"
+    installs = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        return installed
+
+    stub = types.ModuleType("install_sd_cpp_prebuilt")
+    stub.install = _install
+    monkeypatch.setitem(sys.modules, "install_sd_cpp_prebuilt", stub)
+
+    assert backend.ensure_sd_cpp_binary(accelerator = "cpu") == str(installed)
+    assert installs == [{"accelerator": "cpu"}]
+
+
 def test_find_returns_none_when_absent(tmp_path, monkeypatch):
     _clear_env(monkeypatch)
     monkeypatch.setattr(eng.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
