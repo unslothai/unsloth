@@ -1506,6 +1506,7 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # runs (mirrors $LatestVer = "" in setup.ps1).
 LATEST_VER=""
 LATEST_REQ_PY=""
+_PYPI_JSON=""
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
@@ -1676,14 +1677,43 @@ sys.exit(0 if ok else 1)
             # newer than announced is fine (a release can land mid-update); PEP 440
             # ordering so an installed pre/post/dev build never passes as the release
             _UPDATE_OK=true
-        elif [ -n "$POST_VER" ] && [ -n "${LATEST_REQ_PY:-}" ] && "$VENV_DIR/bin/python" -c "
-import sys
-from packaging.specifiers import SpecifierSet
-from packaging.version import Version
-sys.exit(1 if Version('.'.join(map(str, sys.version_info[:3]))) in SpecifierSet(sys.argv[1]) else 0)
-" "$LATEST_REQ_PY" 2>/dev/null; then
+        elif [ -n "$POST_VER" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
+import json, sys
+raw = sys.stdin.read()
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version, InvalidVersion
+    post = Version(sys.argv[1])
+    latest = Version(sys.argv[2])
+    releases = json.loads(raw).get('releases') or {}
+except Exception:
+    sys.exit(1)
+cur = Version('.'.join(map(str, sys.version_info[:3])))
+best = None
+for ver, files in releases.items():
+    try:
+        v = Version(ver)
+    except InvalidVersion:
+        continue
+    if v.is_prerelease:
+        continue
+    for f in files:
+        if f.get('yanked'):
+            continue
+        rp = f.get('requires_python')
+        try:
+            if rp and cur not in SpecifierSet(rp):
+                continue
+        except Exception:
+            pass
+        if best is None or v > best:
+            best = v
+        break
+sys.exit(0 if best is not None and best < latest and post >= best else 1)
+" "$POST_VER" "$LATEST_VER" 2>/dev/null; then
             # the announced release cannot install on this interpreter (Requires-Python
-            # bump): pip kept the newest compatible release -- success, not staleness
+            # bump): accept only the newest release this interpreter CAN install, so a
+            # no-op pass below that bar still fails loudly
             substep "$_PKG_NAME $POST_VER kept: $LATEST_VER needs Python $LATEST_REQ_PY"
             _UPDATE_OK=true
         fi

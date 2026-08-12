@@ -4795,11 +4795,48 @@ if ($LatestVer) {
                 try { $_updateOk = [version]$_postNum -ge [version]$_latestNum } catch {}
             }
         }
-        if (-not $_updateOk -and $LatestReqPy) {
+        if (-not $_updateOk) {
             # the announced release cannot install on this interpreter (Requires-Python
-            # bump): pip kept the newest compatible release -- success, not staleness
-            $_reqProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.specifiers import SpecifierSet; from packaging.version import Version; import sys; print('REQPY=' + ('out' if Version('.'.join(map(str, sys.version_info[:3]))) not in SpecifierSet('$LatestReqPy') else 'in'))"
-            if ($_reqProbe.Ok -and $_reqProbe.Output -match '(?m)^REQPY=out\s*$') {
+            # bump): accept only the newest release this interpreter CAN install, so a
+            # no-op pass below that bar still fails loudly. base64 keeps the multi-line
+            # probe clear of the -c double-quote wrapping in Invoke-BoundedPythonProbe.
+            $_bestCode = @"
+import json, sys, urllib.request
+try:
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version, InvalidVersion
+    post = Version('$PostVer')
+    latest = Version('$LatestVer')
+    with urllib.request.urlopen('https://pypi.org/pypi/$_PkgName/json', timeout=5) as r:
+        releases = json.load(r).get('releases') or {}
+except Exception:
+    sys.exit(1)
+cur = Version('.'.join(map(str, sys.version_info[:3])))
+best = None
+for ver, files in releases.items():
+    try:
+        v = Version(ver)
+    except InvalidVersion:
+        continue
+    if v.is_prerelease:
+        continue
+    for f in files:
+        if f.get('yanked'):
+            continue
+        rp = f.get('requires_python')
+        try:
+            if rp and cur not in SpecifierSet(rp):
+                continue
+        except Exception:
+            pass
+        if best is None or v > best:
+            best = v
+        break
+print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= best else 'stale'))
+"@
+            $_b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_bestCode))
+            $_bestProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import base64; exec(base64.b64decode('$_b64').decode())"
+            if ($_bestProbe.Ok -and $_bestProbe.Output -match '(?m)^VERIFYVER=ok\s*$') {
                 substep "$_PkgName $PostVer kept: $LatestVer needs Python $LatestReqPy"
                 $_updateOk = $true
             }
