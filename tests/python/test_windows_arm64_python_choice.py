@@ -248,3 +248,16 @@ def test_install_ps1_falls_back_to_the_inference_only_tier():
     assert "$script:ArmInferenceOnly = $true" in block
     assert 'UNSLOTH_NO_DATASETS = "1"' in block
     assert "--no-deps" in source[source.index("arm64 inference-only") :][:800]
+
+
+def test_setup_reads_the_tier_marker_not_just_the_env_var():
+    """install.ps1 exports UNSLOTH_NO_DATASETS for its own run only. Without the
+    marker, `unsloth studio update` on a tier install would judge it by the
+    full-install rule and refuse the environment the installer had just built."""
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    index = source.index("$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS")
+    block = source[index : index + 900]
+    assert ".unsloth-no-datasets" in block
+    # And it has to come after the venv interpreter is resolved, or there is no
+    # venv path to look in.
+    assert source.index("$ReusedSetupPython = Resolve-ReusedSetupPython") < index

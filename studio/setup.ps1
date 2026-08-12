@@ -3232,7 +3232,6 @@ function Get-PythonPlatformTag {
 # Ask the interpreter, never the host: an emulated x64 process on an ARM64 box
 # still reports arm64 for the host. The ARM64 inference-only tier deliberately
 # runs on win-arm64 and so is exempt.
-$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS -eq "1")
 function Test-CompatibleSetupPythonArch {
     param([string]$Exe)
     if ((Get-HostMachineArch) -ne "arm64") { return $true }
@@ -3266,6 +3265,21 @@ function Resolve-ReusedSetupPython {
     return $null
 }
 $ReusedSetupPython = Resolve-ReusedSetupPython
+
+# Both sources, and the marker is the one that matters on `unsloth studio update`:
+# install.ps1 exports UNSLOTH_NO_DATASETS for its own run only, so without the marker
+# an update would judge a tier venv by the full-install rule and refuse the very
+# environment it just built. Mirrors install_manifest.recorded_no_datasets().
+$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS -eq "1")
+if (-not $NoDatasetsMode -and $ReusedSetupPython) {
+    try {
+        # <venv>\Scripts\python.exe -> <venv>
+        $_venvRoot = Split-Path -Parent (Split-Path -Parent $ReusedSetupPython)
+        if ($_venvRoot -and (Test-Path -LiteralPath (Join-Path $_venvRoot ".unsloth-no-datasets"))) {
+            $NoDatasetsMode = $true
+        }
+    } catch { }
+}
 
 $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
 $PythonOk = $false
