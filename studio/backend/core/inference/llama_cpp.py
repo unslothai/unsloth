@@ -9375,9 +9375,7 @@ class LlamaCppBackend:
                 )
             if arch in LlamaCppBackend._IMAGE_ARCHES or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
-                and LlamaCppBackend._ambiguous_image_arch_is_pickable(
-                    gguf_path, model_identifier
-                )
+                and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)
             ):
                 return (
                     f"'{arch}' is a diffusion (image-generation) GGUF, which "
