@@ -23,7 +23,8 @@
 # whole job: if the hf process has not exited after STALL_S
 # seconds (default 180 = 3 min), we SIGTERM, then SIGKILL, then
 # start a fresh attempt. Retries are unbounded -- the enclosing
-# GitHub Actions job's `timeout-minutes` is the real bound.
+# GitHub Actions step's (or, absent one, job's) `timeout-minutes` is
+# the real bound, so give every step that calls this script one.
 #
 # See https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
 # for the HF_XET_* documentation, and npm/cli#7308's pattern (silent

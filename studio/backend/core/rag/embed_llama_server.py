@@ -30,7 +30,7 @@ import numpy as np
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
-from utils.process_lifetime import child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from . import config
 
@@ -219,14 +219,17 @@ class LlamaServerBackend:
     def _gpu_available() -> bool:
         """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
         llama_cpp's static probe (nvidia-smi first, so the common path needs no
-        torch)."""
+        torch). This backend IS llama-server, so it opts into the ROCm arch gate:
+        a device the installed prebuilt has no kernels for would crash the
+        embedding server the same way it crashes a chat load (#7624)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
             return True  # bundled mac build offloads to Metal
         from core.inference.llama_cpp import LlamaCppBackend
 
-        gpus = LlamaCppBackend._get_gpu_free_memory()  # [(idx, free_mib)], honors CVD
+        # [(idx, free_mib)], honors CVD
+        gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
 
     def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
@@ -340,6 +343,9 @@ class LlamaServerBackend:
             **child_popen_kwargs(),
         )
         self._process = proc
+        # Long-lived, and child_popen_kwargs() is empty on macOS, so the crash
+        # record is the only thing that can reap it after a force quit.
+        adopt_pid(proc.pid)
         self._port = port
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout,
@@ -425,6 +431,10 @@ class LlamaServerBackend:
         except Exception as e:  # noqa: BLE001
             logger.warning("error killing llama-server embedder: %s", e)
         finally:
+            # Only once it is confirmed gone: a survivor must stay recorded so
+            # the next startup sweep can reap it.
+            if proc.poll() is not None:
+                forget_pid(proc.pid)
             self._process = None
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)

@@ -27,16 +27,24 @@ import structlog
 # sweeping a local one costs a forged turn.
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
+# The subset documenting "continue_final_message" + "add_generation_prompt" on
+# /v1/chat/completions.
+_CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
+
+# The subset documenting stream_options.include_usage. An OAI-compatible stream omits
+# usage without it, and these providers report no llama.cpp timings either, so the
+# monitor has no token count to derive a speed from. Same caution as the flag above:
+# "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
+# "openai" is absent because it never reaches this body: it routes to /v1/responses,
+# which reports usage on its own.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature/top_p/top_k — the API
-# 400s "<param> is deprecated for this model" on a non-default value. 3.x and
-# 4.5/4.6 still accept them, so match the 4-7 line strictly. Ref:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -58,9 +66,71 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+# Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k;
+# Mythos Preview has the same restriction. The API 400s with "<param> is
+# deprecated for this model" on a non-default value. Ref:
+#   https://platform.claude.com/docs/en/about-claude/model-deprecations
+# `[a-z]+` family (not `[a-z0-9]+`) so legacy version-first ids like
+# `claude-3-5-sonnet-...` don't parse as major=5. Minor accepts `-` or `.`, and
+# is capped at two digits so the release date in a snapshot id such as
+# `claude-opus-4-20250514` is not read as minor 20250514 (which would sort that
+# Opus 4.0 model above 4.7 and strip the caller's sampling params).
+_ANTHROPIC_MODEL_VERSION = re.compile(
+    r"^claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[-.](?P<minor>\d{1,2}))?(?:[-.]|$)",
+    re.IGNORECASE,
+)
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
-_OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+# Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
+_GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
+_GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+
+
+def _anthropic_sampling_params_removed(model: str) -> bool:
+    """Whether Anthropic rejects non-default sampling params for ``model``."""
+    normalized = model.strip().lower()
+    if normalized == "claude-mythos-preview" or normalized.startswith("claude-mythos-preview-"):
+        return True
+
+    match = _ANTHROPIC_MODEL_VERSION.match(normalized)
+    if match is None:
+        return False
+
+    family = match.group("family")
+    version = (int(match.group("major")), int(match.group("minor") or 0))
+    return version[0] >= 5 or (family == "opus" and version >= (4, 7))
+
+
+def _openai_response_error_message(event: Any) -> str:
+    """Extract a useful message from a Responses failure event."""
+    if not isinstance(event, dict):
+        return "OpenAI response failed without error details."
+
+    response = event.get("response")
+    if not isinstance(response, dict):
+        response = {}
+    for candidate in (response.get("error"), event.get("error")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            message = candidate.get("message")
+            code = candidate.get("code") or candidate.get("type")
+            if isinstance(message, str) and message.strip():
+                return f"{message.strip()} ({code})" if code else message.strip()
+
+    message = event.get("message")
+    code = event.get("code")
+    if isinstance(message, str) and message.strip():
+        return f"{message.strip()} ({code})" if code else message.strip()
+
+    details = response.get("incomplete_details")
+    if isinstance(details, dict):
+        reason = details.get("reason") or details.get("message")
+        if isinstance(reason, str) and reason.strip():
+            return f"OpenAI response failed: {reason.strip()}"
+
+    response_id = response.get("id")
+    suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
+    return f"OpenAI response failed without error details{suffix}."
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -92,15 +162,9 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
             text = part.get("text")
             if isinstance(text, str):
                 summary_parts.append({"type": "summary_text", "text": text})
-    replay_item: dict[str, Any] = {
-        "type": "reasoning",
-        "id": item_id,
-        "summary": summary_parts,
-    }
-    status = item.get("status")
-    if isinstance(status, str) and status in _OPENAI_REASONING_STATUSES:
-        replay_item["status"] = status
-    return replay_item
+    # `id` and `summary` only: Responses rejects `status` on an input item
+    # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
+    return {"type": "reasoning", "id": item_id, "summary": summary_parts}
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
@@ -232,11 +296,28 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
+    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an
+    # explicit disable. Fable/Mythos 5 400 on it (thinking is always on).
+    thinking_default_on: bool = False
+    can_disable: bool = True
 
 
 _ANTHROPIC_THINKING_SPECS = (
     _AnthropicThinkingSpec(
-        prefixes = ("claude-opus-4-7",),
+        prefixes = ("claude-fable-5", "claude-mythos-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+        can_disable = False,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-5", "claude-sonnet-5"),
+        kind = "adaptive",
+        efforts = ("none", "low", "medium", "high", "xhigh", "max"),
+        thinking_default_on = True,
+    ),
+    _AnthropicThinkingSpec(
+        prefixes = ("claude-opus-4-8", "claude-opus-4-7"),
         kind = "adaptive",
         efforts = ("none", "low", "medium", "high", "xhigh", "max"),
     ),
@@ -266,15 +347,19 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
 # filtering and free-with-search pricing. Pick the newest combo the model
 # accepts, else the GA `_20250305`/`_20250910`/`_20250825` defaults. Ref:
 # https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference
-_ANTHROPIC_NEW_WEB_PREFIXES = (
+_ANTHROPIC_5_PREFIXES = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-opus-4-8",
+)
+_ANTHROPIC_NEW_WEB_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
 )
-_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
+_ANTHROPIC_NEW_CODE_EXEC_PREFIXES = _ANTHROPIC_NEW_WEB_PREFIXES + (
     "claude-opus-4-5",
     "claude-sonnet-4-5",
 )
@@ -311,10 +396,11 @@ _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
 # Anthropic server-side context compaction (beta compact-2026-01-12), supported
-# on Opus 4.6/4.7, Sonnet 4.6 and Mythos Preview. Same beta header for all; the
-# dated `compact_20260112` type lives in body `context_management.edits`. Models
-# outside the prefix list are silently ignored so we don't 400 upstream.
-_ANTHROPIC_COMPACTION_PREFIXES = (
+# on Claude 5, Opus 4.6/4.7/4.8, Sonnet 4.6 and Mythos Preview. Same beta header
+# for all; the dated `compact_20260112` type lives in body
+# `context_management.edits`. Models outside the prefix list are silently
+# ignored so we don't 400 upstream.
+_ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
@@ -327,13 +413,16 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
+# Anthropic fast-mode beta (Opus 5 / Opus 4.8 only, per
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Opus 4.7 400s on `speed`; Opus 4.6 accepts it but runs at standard speed and
+# reports `usage.speed: "standard"`, so exposing the toggle there promises a
+# speed-up that never happens. Sonnet 5 never had it.
 # Mutually exclusive with the Priority service tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
-    "claude-opus-4-7",
-    "claude-opus-4-6",
+    "claude-opus-5",
+    "claude-opus-4-8",
 )
 
 
@@ -841,6 +930,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        continue_final_message: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -854,7 +944,7 @@ class ExternalProviderClient:
         provider-capability map already filters these per provider, so they're
         opt-in here.
 
-        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
+        ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
         """
         # tool_choice="none" hard-disables hosted/builtin tools across every
@@ -974,6 +1064,16 @@ class ExternalProviderClient:
                     tool_choice = None
                 tools = safe_tools
 
+        # Both are set because a server rejects continuing while a generation prompt is
+        # still asked for. Sent only to the two documenting the pair: "custom" is any
+        # user-supplied base_url, and a strict endpoint 400s on an unknown field, so it
+        # keeps the trailing assistant turn on its own as before.
+        _continue_body = (
+            {"continue_final_message": True, "add_generation_prompt": False}
+            if continue_final_message and self.provider_type in _CONTINUATION_FLAG_PROVIDERS
+            else {}
+        )
+
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -981,7 +1081,11 @@ class ExternalProviderClient:
             "temperature": temperature,
             "top_p": top_p,
             "presence_penalty": presence_penalty,
+            **_continue_body,
         }
+        # Only alongside stream=True: the field is rejected on a non-streaming request.
+        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+            body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
             if self.provider_type == "openai":
@@ -1463,6 +1567,9 @@ class ExternalProviderClient:
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
+            # This path returns before the common body injection, and Kimi reports no
+            # engine timings, so without this the row has neither tokens nor a speed.
+            fallback_body["stream_options"] = {"include_usage": True}
             try:
                 async with _http_client.stream(
                     "POST",
@@ -1921,10 +2028,10 @@ class ExternalProviderClient:
                     continue
                 filtered.append(msg)
 
-        # Claude 4.7 removed temperature/top_p/top_k entirely (400 "deprecated
-        # for this model"). Latch the match and reuse it wherever those are set,
-        # including the thinking-mode override below that used to force temp=1.
-        sampling_removed = bool(_ANTHROPIC_4_7_SAMPLING_REMOVED.match(model))
+        # Newer Claude models removed temperature/top_p/top_k entirely (400
+        # "deprecated for this model"). Reuse the capability wherever those
+        # fields are set, including the thinking-mode temperature override.
+        sampling_removed = _anthropic_sampling_params_removed(model)
 
         body: dict[str, Any] = {
             "model": model,
@@ -1997,8 +2104,18 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
+        # Models that think by default need an explicit disable; omitting the
+        # field leaves thinking on. Anthropic only accepts it at effort <= high,
+        # so send it alone (server default effort is high).
+        if (
+            effort == "none"
+            and thinking_spec
+            and thinking_spec.thinking_default_on
+            and thinking_spec.can_disable
+        ):
+            body["thinking"] = {"type": "disabled"}
         # Normalize one semantic Thinking control into Anthropic's two model-era
-        # APIs: adaptive effort on Claude 4.6/4.7, manual budget_tokens on 4.5.
+        # APIs: adaptive effort on Claude 4.6+, manual budget_tokens on 4.5.
         if effort and effort != "none":
             # Anthropic rejects top_k whenever thinking is enabled.
             body.pop("top_k", None)
@@ -2120,7 +2237,7 @@ class ExternalProviderClient:
                 ]
             }
 
-        # fast_mode is Opus 4.6/4.7 only; silently drop elsewhere. Incompatible
+        # fast_mode is Opus 5 / 4.8 only; silently drop elsewhere. Incompatible
         # with the Priority service_tier (frontend gate prevents both at once;
         # backend lets Anthropic 400 if combined).
         fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
@@ -3538,23 +3655,21 @@ class ExternalProviderClient:
         # thinkingBudget (int). Gemini 3 has no full-off; minimum is
         # "minimal" on Flash, "low" on Pro.
         # https://ai.google.dev/gemini-api/docs/thinking
-        _GEMINI3_THINKING_PREFIXES = (
-            "gemini-3.5-",
-            "gemini-3.1-",
-            "gemini-3-",
+        # Match the 3.x family by pattern, not by enumerating minors: a new
+        # `gemini-3.6-*` would otherwise fall through to the 2.5 branch and get
+        # an int budget, which Gemini 3 rejects (400 on thinkingBudget=0).
+        _GEMINI3_ALIASES = (
             "gemini-pro-latest",
             "gemini-flash-latest",
             "gemini-flash-lite-latest",
         )
-        _GEMINI3_PRO_PREFIXES = (
-            "gemini-3.5-pro",
-            "gemini-3.1-pro",
-            "gemini-3-pro",
-            "gemini-pro-latest",
-        )
         _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
-        is_gemini3_thinking = any(model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES)
-        is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
+        is_gemini3_thinking = bool(_GEMINI3_FAMILY.match(model_lc)) or model_lc.startswith(
+            _GEMINI3_ALIASES
+        )
+        is_gemini3_pro = bool(_GEMINI3_PRO.match(model_lc)) or model_lc.startswith(
+            "gemini-pro-latest"
+        )
         _is_pro_thinking_only = any(
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
@@ -3573,9 +3688,8 @@ class ExternalProviderClient:
                 level = "high"
             elif effort_lc in _G3_LEVELS:
                 # Coerce legacy 3-Pro (low/high only) inputs.
-                _is_legacy_gemini3_pro = model_lc.startswith(
-                    ("gemini-3-pro-preview", "gemini-3-pro")
-                ) and not model_lc.startswith(("gemini-3.1-pro", "gemini-3.5-pro"))
+                # Undotted `gemini-3-pro` only; any dotted minor is 3.1+.
+                _is_legacy_gemini3_pro = model_lc.startswith("gemini-3-pro")
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
                 elif _is_legacy_gemini3_pro and effort_lc == "medium":
@@ -5052,7 +5166,7 @@ class ExternalProviderClient:
                         yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
 
-                    # NOTE: same manual __anext__ loop as stream_chat_completion —
+                    # NOTE: same manual __anext__ loop as stream_chat_completion --
                     # see comment there for the GeneratorExit / aclose ordering.
                     lines_gen = response.aiter_lines().__aiter__()
                     done_emitted = False
@@ -5890,13 +6004,9 @@ class ExternalProviderClient:
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; the outer
                                 # route emits [DONE] as part of its cleanup.
-                                error_payload = event.get("response", {}).get("error", {}) or {
-                                    "message": event.get("message", "Unknown error"),
-                                    "code": event.get("code"),
-                                }
                                 yield _error_sse_line(
                                     502,
-                                    _json.dumps(error_payload),
+                                    _openai_response_error_message(event),
                                     self.provider_type,
                                 )
                                 break
@@ -6261,13 +6371,67 @@ def _friendly_provider_error_text(
     return raw_message
 
 
+def _readable_provider_error(status_code: int, message: str, provider_type: str) -> str:
+    """Reduce an upstream error body to the sentence it carries.
+
+    OpenAI, Anthropic and Gemini all nest the text under `error`, so the raw
+    body would otherwise reach the UI as a JSON blob. Non-JSON input (already
+    friendly text) passes through unchanged.
+    """
+    import json
+
+    try:
+        payload = json.loads(message)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = None
+
+    text = code = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        source = error if isinstance(error, dict) else payload
+        text = error if isinstance(error, str) else source.get("message")
+        # Gemini sends an int `code`; prefer whichever label is a string.
+        code = next(
+            (
+                c
+                for c in (source.get("code"), source.get("type"), source.get("status"))
+                if isinstance(c, str) and c
+            ),
+            None,
+        )
+        if not isinstance(text, str) or not text.strip():
+            # FastAPI-style bodies (vllm, llama.cpp, custom OpenAI-compat) carry
+            # `detail`: a string, or a validation list of `{msg, loc}` entries.
+            detail = payload.get("detail")
+            if isinstance(detail, str):
+                text = detail
+            elif isinstance(detail, list):
+                msgs = [
+                    d["msg"]
+                    for d in detail
+                    if isinstance(d, dict) and isinstance(d.get("msg"), str)
+                ]
+                text = "; ".join(msgs) or None
+
+    if not isinstance(text, str) or not text.strip():
+        # Not JSON means already-friendly text: collapse whitespace and cap so
+        # a stray HTML page can't flood the chat.
+        raw = " ".join(message.split())[:500] if isinstance(message, str) else ""
+        if isinstance(payload, dict) or not raw:
+            return f"{provider_type} returned HTTP {status_code} with no error details."
+        return raw
+
+    text = text.strip()
+    return f"{text} ({code})" if code and code not in text else text
+
+
 def _error_sse_line(status_code: int, message: str, provider_type: str) -> str:
     """Format an error as an SSE data line in OpenAI error format."""
     import json
 
     error_obj = {
         "error": {
-            "message": message,
+            "message": _readable_provider_error(status_code, message, provider_type),
             "type": "provider_error",
             "code": str(status_code),
             "provider": provider_type,

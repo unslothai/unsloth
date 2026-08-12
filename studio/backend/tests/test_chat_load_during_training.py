@@ -1175,6 +1175,299 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
 
+    @staticmethod
+    def _dspark_capable(supported = True):
+        """The sizing gate asks the binary whether it can run draft-dspark, so the
+        probe must be stubbed or these assertions track the host's llama.cpp."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
+        )
+
+    def test_local_dspark_sidecar_is_only_counted_when_requested(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                off_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                )
+                dspark_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                )
+                extras_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                    llama_extra_args = ["--spec-type", "draft-dspark"],
+                )
+        self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
+    def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
+        """The loader's DSpark branch falls back to --spec-default, which loads no
+        drafter, so charging the MTP one would refuse a load that fits. Auto is
+        different: it falls through to the MTP branch and keeps that charge."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            mtp = p / "mtp-model.gguf"
+            target.write_bytes(b"x" * 2000)
+            mtp.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_dspark_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(False),
+            ):
+                forced = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+                auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+        self.assertAlmostEqual(forced, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
+
+    def test_validate_request_carries_the_mode_the_load_will_use(self):
+        """The estimate is mode-dependent, so /validate must be told the mode or
+        its verdict disagrees with the /load that follows it: a user with
+        speculative decoding off and a sidecar on disk would be refused at the
+        preflight for a load that would have been admitted."""
+        from models.inference import ValidateModelRequest
+
+        req = ValidateModelRequest(
+            model_path = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            speculative_type = "off",
+            spec_draft_n_max = 3,
+        )
+        self.assertEqual(req.speculative_type, "off")
+        self.assertEqual(req.spec_draft_n_max, 3)
+        # Omitted stays None rather than defaulting to a mode, so the estimate
+        # keeps its previous behaviour for callers that do not send it.
+        self.assertIsNone(ValidateModelRequest(model_path = "org/repo").speculative_type)
+
+    def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
+        """The loader skips the ~11 GB fetch when llama.cpp has no usable
+        draft-dspark, so charging it here would refuse a load that never opens it
+        and would evict nothing."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                with self._dspark_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "dspark"
+                    )
+                with self._dspark_capable(True):
+                    capable = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(capable, 5000 / (1024**3), places = 9)
+
+    def test_split_dspark_sidecar_counts_every_shard(self):
+        """Discovery hands back shard 1, so sizing it with stat() alone would let the
+        guard admit a load that evicts the training run it exists to protect."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            target.write_bytes(b"x" * 2000)
+            shard1 = p / "dspark-model-Q8_0-00001-of-00002.gguf"
+            shard1.write_bytes(b"y" * 3000)
+            (p / "dspark-model-Q8_0-00002-of-00002.gguf").write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(shard1),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                with self._dspark_capable():
+                    gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+        self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
+
+    @staticmethod
+    def _dflash_capable(supported = True):
+        """Same shape as _dspark_capable: the DFlash sizing gate asks the binary
+        whether it can run draft-dflash."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_dflash": supported}),
+        )
+
+    def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
+        """--model-draft usually names the very sidecar discovery already found,
+        and charging it on both paths billed a 1.5 GiB drafter as 3 GiB, so the
+        guard refused an inference load that fits. Identity is the resolved path,
+        so a symlink or another spelling of the same file dedupes too, while a
+        genuinely separate drafter outside the model directory is still charged.
+        """
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            link = p / "linked-dflash.gguf"
+            os.symlink(sidecar, link)
+            elsewhere = p / "other" / "dflash-elsewhere.gguf"
+            elsewhere.parent.mkdir()
+            elsewhere.write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = None,
+                gguf_dflash_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dflash_capable(),
+            ):
+                plain = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+                same = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(sidecar)],
+                )
+                through_link = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(link)],
+                )
+                separate = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(elsewhere)],
+                )
+        self.assertAlmostEqual(plain, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(same, 5000 / (1024**3), places = 9)  # not 8000
+        self.assertAlmostEqual(through_link, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(separate, 9000 / (1024**3), places = 9)  # 2000+3000+4000
+
+    def test_extras_owning_spec_type_charge_only_their_own_drafter(self):
+        """--spec-type in the extras ends _build_speculative_flags before discovery's
+        sidecar is emitted, so llama-server opens the extras' --model-draft alone and
+        charging the configured one too billed two drafters for the one that loads."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            custom = p / "custom-dflash.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            custom.write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = None,
+                gguf_dflash_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dflash_capable(),
+            ):
+                owned = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "auto",
+                    llama_extra_args = [
+                        "--spec-type",
+                        "draft-dflash",
+                        "--model-draft",
+                        str(custom),
+                    ],
+                )
+        # 2000 weights + 4000 for the drafter that actually launches, not 9000.
+        self.assertAlmostEqual(owned, 6000 / (1024**3), places = 9)
+
+    def test_remote_weights_stay_in_the_estimate_beside_a_local_extra_args_drafter(self):
+        """A remote repo has no local main weight, so a local --model-draft was
+        the only thing making the local branch fire: it returned ~1.5 GiB and
+        skipped the listing that prices the target model entirely. The drafter is
+        a companion, not evidence of local weights, so it is added to whichever
+        branch produces the estimate."""
+        import tempfile
+
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with tempfile.TemporaryDirectory() as d:
+            drafter = Path(d) / "dflash-kquant.gguf"
+            drafter.write_bytes(b"y" * 3000)
+            with (
+                patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+                self._dflash_capable(),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(drafter)],
+                )
+        # The 10 GB target weights, not just the drafter beside them.
+        self.assertAlmostEqual(gb, 10.0 + 3000 / (1024**3), places = 9)
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
@@ -1197,11 +1490,480 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
+            self._dspark_capable(),
         ):
-            gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
+            gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                hf_token = "tok",
+                speculative_type = "dspark",
+            )
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+        self.assertFalse(comp.call_args.kwargs["include_mtp"])
+        self.assertTrue(comp.call_args.kwargs["include_dspark"])
+
+    def test_remote_companions_choose_preferred_dspark_sidecar(self):
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 100),
+            SimpleNamespace(rfilename = "dspark/dspark-model-BF16.gguf", size = 300),
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
+            SimpleNamespace(rfilename = "dflash-model-Q8_0.gguf", size = 400),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_dspark = True,
+            )
+        self.assertEqual(total, 300)  # root MTP plus the preferred Q8_0 DSpark file
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            dspark_only = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+            )
+        self.assertEqual(dspark_only, 200)
+
+    def test_auto_charges_only_dspark_when_a_repo_publishes_both_sidecars(self):
+        """The loader stands down on the DFlash fetch once DSpark has resolved
+        under Auto, so those bytes are never resident. Charging both is not the
+        safe over-estimate it is for an unlisted repo -- the listing has answered
+        by then -- it is a 409 for a load that fits."""
+        both = [
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 400),
+        ]
+
+        def _companion_bytes(siblings, **kwargs):
+            with patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ):
+                return self.route._remote_gguf_companion_bytes(
+                    "org/repo",
+                    hf_token = None,
+                    include_mmproj = False,
+                    include_mtp = False,
+                    **kwargs,
+                )
+
+        self.assertEqual(
+            _companion_bytes(both, include_dspark = True, include_dflash = True, dspark_first = True),
+            200,
+        )
+        # Only one kind published: Auto still charges whichever the repo has.
+        self.assertEqual(
+            _companion_bytes(
+                [both[1]], include_dspark = True, include_dflash = True, dspark_first = True
+            ),
+            400,
+        )
+        # An explicit DFlash request is not the Auto race and still pays for it.
+        self.assertEqual(_companion_bytes(both, include_dflash = True), 400)
+
+    def test_auto_tells_the_companion_sizing_that_dspark_comes_first(self):
+        """The remote branch is where both kinds can be asked for at once, so it
+        is the caller that has to pass the loader's Auto rule down."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0) as comp,
+            self._dspark_capable(),
+        ):
+            self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+            self.assertTrue(comp.call_args.kwargs["dspark_first"])
+            self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+            self.assertFalse(comp.call_args.kwargs["dspark_first"])
+
+    _MULTI_FAMILY_SIBLINGS = [
+        SimpleNamespace(rfilename = "model-A-Q4_K_M.gguf", size = 10 * 1024**3),
+        SimpleNamespace(rfilename = "model-B-Q4_K_M.gguf", size = 10 * 1024**3),
+        # Named after model A and higher precision, so the name-only key ranks it
+        # first for every weight in the repo.
+        SimpleNamespace(rfilename = "dflash-model-A-Q8_0.gguf", size = 1024**3),
+        SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
+    ]
+
+    def test_remote_dflash_sizing_bounds_every_candidate_the_fallback_can_reach(self):
+        """_download_dflash reads a candidate's header only after paying for the
+        bytes, and a rejection falls through to the next name in the ranking, so
+        the file that lands can be any candidate -- including one LARGER than the
+        best-ranked pick. Sizing the first-ranked entry alone under-charged model
+        A by 3 GiB and admitted a load that then exhausts VRAM beside a running
+        training job. Headers are unreadable from a listing, so the bound has to
+        cover the whole reachable set."""
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        # 4 GiB, the largest reachable candidate, for either weight in the repo:
+        # model A's own 1 GiB sidecar is merely the one tried FIRST.
+        self.assertEqual(total, 4 * 1024**3)
+
+    def test_remote_dflash_sizing_totals_every_shard_of_a_split_sidecar(self):
+        """A split sidecar is picked as its first shard, and the download then
+        fetches every sibling; llama-server keeps the whole set resident. Sizing
+        one shard budgeted a two-shard 2 GiB sidecar at 1 GiB and let it lose the
+        comparison to a smaller single-file candidate, which is the direction that
+        admits a load and then exhausts VRAM beside a running training job."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00002-of-00002.gguf", size = 1024**3),
+            # Bigger than either shard, smaller than the set they form.
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3 // 2),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        # The set totals 2 GiB and is the largest thing the fallback can land on.
+        self.assertEqual(total, 2 * 1024**3)
+
+    def test_remote_dflash_sizing_charges_a_split_set_once(self):
+        """The other half: every shard is a listed dflash- name, so a rule that
+        totalled the candidates rather than taking the safe maximum across shard
+        SETS would double-charge this repo and 409 a load that fits."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00002-of-00002.gguf", size = 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 2 * 1024**3)
+
+    def test_remote_dflash_sizing_ignores_a_nested_dflash_named_weight(self):
+        """The picker is root level only, so a quants/dflash-*.gguf is an ordinary
+        weight there and can never be fetched as the drafter. Charging it made the
+        bound track a file the load cannot reach."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "quants/dflash-model-Q8_0.gguf", size = 9 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 1024**3)
+
+    def test_remote_estimate_bounds_the_dflash_fallback_end_to_end(self):
+        """End to end: the guard's own estimate has to carry the same bound, or
+        the multi-family repo above is under-charged by the whole difference."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "model-A-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+        )
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
+            ),
+            self._dflash_capable(),
+        ):
+            gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+        # 10 GiB of weights plus the 4 GiB the fallback can still land on, not the
+        # 1 GiB candidate that merely goes first.
+        self.assertAlmostEqual(gb, 14.0, places = 6)
+
+    def test_auto_does_not_charge_dflash_when_extra_args_own_speculation(self):
+        """Extra args setting --spec-type stop the loader's Auto promotion, so the
+        sidecar is never opened. Charging it anyway refused a chat load with 409 for
+        ~1.5 GiB nothing would load. Extra args asking for draft-dflash still pay."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "model-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+        )
+        siblings = [SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 2 * 1024**3)]
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ),
+            self._dflash_capable(),
+        ):
+            owned = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec-type", "ngram-mod"],
+            )
+            asked = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "auto",
+                llama_extra_args = ["--spec-type", "draft-dflash"],
+            )
+            # Same for the forced mode: _build_speculative_flags returns before any
+            # mode branch when extra args own --spec-type, so dflash never emits.
+            forced = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "dflash",
+                llama_extra_args = ["--spec-type", "ngram-mod"],
+            )
+        self.assertAlmostEqual(owned, 10.0, places = 6)
+        self.assertAlmostEqual(asked, 12.0, places = 6)
+        self.assertAlmostEqual(forced, 10.0, places = 6)
+
+    def test_remote_dflash_sizing_drops_a_candidate_too_big_to_be_a_drafter(self):
+        """The fetch refuses an oversized root dflash-*.gguf, so charging for it is a
+        409 for bytes that will never be resident."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-model-BF16.gguf", size = 40 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+                weight_bytes = 10 * 1024**3,
+            )
+        self.assertEqual(charged, 1024**3)
+
+    def test_remote_dspark_sizing_totals_every_shard_of_a_split_sidecar(self):
+        """llama-server maps every shard, so pricing the one the ranking picked
+        halved a two-shard sidecar and let the guard admit a load that evicts
+        the training run it protects."""
+        siblings = [
+            SimpleNamespace(rfilename = "dspark/dspark-00001-of-00002.gguf", size = 5 * 1024**3),
+            SimpleNamespace(rfilename = "dspark/dspark-00002-of-00002.gguf", size = 5 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+            )
+        self.assertEqual(charged, 10 * 1024**3)
+
+    def test_auto_budgets_dflash_when_the_dspark_set_is_incomplete(self):
+        """A listing missing a DSpark shard is not a load this can end up on: the
+        fetch refuses it and falls through to DFlash, which can be the larger of
+        the two, so granting first refusal on the listing under-charged."""
+        siblings = [
+            SimpleNamespace(rfilename = "dspark/dspark-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+                include_dflash = True,
+                dspark_first = True,
+            )
+        self.assertEqual(charged, 4 * 1024**3)
+
+    # ── Auto charges ONE drafter, the one the promotion leaves resident ──
+
+    def _auto_companion_bytes(self, siblings):
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            return self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = True,
+                include_dspark = True,
+                include_dflash = True,
+                dspark_first = True,
+            )
+
+    def test_auto_does_not_charge_the_mtp_drafter_dflash_replaces(self):
+        """Under Auto the caller asks for MTP and DFlash together, but the loader
+        promotes DFlash and overwrites mtp_draft_path with it, so the two are
+        never resident at once. Charging the sum was a 409 for a load that fits.
+
+        The DFlash sidecar is the larger of the two here, so the bound is its
+        size alone -- the MTP bytes are not added on top."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 3 * 1024**3)
+
+    def test_auto_keeps_the_mtp_charge_when_the_dflash_candidates_may_all_fail(self):
+        """The other half of the same rule: every DFlash candidate can still be
+        turned away on its header, and the load then keeps the MTP drafter it has
+        already fetched. That outcome is genuinely unknown from a listing, so the
+        larger of the two is charged -- here the MTP one."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 5 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 5 * 1024**3)
+
+    def test_auto_charges_the_largest_reachable_dflash_against_the_mtp_drafter(self):
+        """Items 2 and 5 together, which is the only way they are coherent: the
+        DFlash side of the comparison is the whole reachable candidate set (4
+        GiB), not the first-ranked pick (1 GiB), and it is compared against the
+        MTP drafter rather than added to it. Fixing only one of the two lands on
+        the wrong number from either side: summing the first-ranked pick charges
+        3 GiB, and comparing against the first-ranked pick charges 2 GiB."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 2 * 1024**3),
+            *self._MULTI_FAMILY_SIBLINGS,
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 4 * 1024**3)
+
+    def test_auto_charges_dspark_alone_over_both_of_the_others(self):
+        """DSpark takes first refusal in the promotion and has no post-fetch
+        rejection, so a listed sidecar settles the load: the DFlash fetch stands
+        down and mtp_draft_path is replaced. Neither of the other two is
+        resident."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 2 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 2 * 1024**3)
+
+    def test_auto_still_charges_the_mtp_drafter_when_the_repo_ships_no_sidecar(self):
+        """Positive control: with nothing to promote, Auto launches the MTP
+        drafter and it keeps its charge."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 1024**3)
+
+    def test_an_explicit_request_is_not_the_auto_race(self):
+        """dspark_first off means the caller already narrowed the kinds to the one
+        it asked for, so nothing here may drop a charge it passed in."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = True,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 4 * 1024**3)
+
+    def test_native_drafter_accept_applies_the_lease_before_the_scan_reads(self):
+        """The load route's boundary, in the shape ModelConfig.from_identifier
+        takes. Discovery runs inside from_identifier and opens a DFlash
+        candidate's header, so a dflash-*.gguf symlinked out of the granted
+        directory was read before the validated rescan could reject it, and no
+        later rejection takes a read back."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            leased = Path(d) / "leased"
+            leased.mkdir()
+            outside = Path(d) / "outside"
+            outside.mkdir()
+            weight = leased / "model-Q4_K_M.gguf"
+            weight.write_bytes(b"x")
+            inside = leased / "dflash-kquant.gguf"
+            inside.write_bytes(b"y")
+            target = outside / "dflash-escape.gguf"
+            target.write_bytes(b"z")
+            escape = leased / "dflash-escape.gguf"
+            os.symlink(target, escape)
+
+            accept = self.route._native_drafter_accept
+            self.assertTrue(accept(str(inside), str(weight), "dflash", str(leased)))
+            self.assertFalse(accept(str(target.resolve()), str(weight), "dflash", str(leased)))
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
@@ -1279,6 +2041,29 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 seen["n_ubatch"] = n_ubatch
                 seen["flash_attn"] = flash_attn
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
+
+            _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 0
+
+            # zeroed: this test pins the kv sizing, not the compute buffers
+            def _estimate_compute_buffer_bytes(
+                self,
+                *,
+                n_ubatch = None,
+                n_parallel = 1,
+                per_device_tensor = False,
+            ):
+                seen["compute_n_ubatch"] = n_ubatch
+                return 0
+
+            def _compute_buffer_ctx_bytes(
+                self,
+                n_ctx,
+                n_ubatch = None,
+                cache_type_kv = None,
+                *,
+                layer_split = False,
+            ):
+                return 0
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route

@@ -231,11 +231,7 @@ async fn provision_desktop_auth() -> Result<(), String> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
     // Scrub so provisioning writes match what the Rust auth code reads.
@@ -247,7 +243,11 @@ async fn provision_desktop_auth() -> Result<(), String> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let output = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output())
+    let child = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    })
+    .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
         .await
         .map_err(|_| "Desktop auth provisioning timed out after 30s".to_string())?
         .map_err(|e| format!("Desktop auth provisioning failed: {}", e))?;

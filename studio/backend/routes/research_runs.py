@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -43,7 +45,15 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-_DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
+_DELTA_ONLY_EVENTS = {
+    "reasoning.updated",
+    "report.updated",
+    "phase.progress",
+    "phase.started",
+    "phase.ended",
+}
+# Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
+_EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
 class CreateResearchRun(BaseModel):
@@ -245,6 +255,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": 40,
         "modelTimeoutSeconds": 900,
         "toolTimeoutSeconds": 120,
+        "firstOutputTimeoutSeconds": 120,
     }
     for key, value in (payload.budgets or {}).items():
         if key not in budgets:
@@ -255,6 +266,8 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": (1, 100),
         "modelTimeoutSeconds": (10, 3600),
         "toolTimeoutSeconds": (5, 600),
+        # Same range as its parent: slow CPU and offloaded models need minutes to first token.
+        "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
         if not minimum <= budgets[key] <= maximum:
@@ -283,7 +296,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
 
 
 @router.post("", status_code = 202)
-async def create_research_run(
+def create_research_run(
     payload: CreateResearchRun,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -320,6 +333,12 @@ async def create_research_run(
         )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        # The thread can be deleted between the check above and this insert, and the foreign key
+        # then fails. Report it gone rather than as a server fault.
+        raise HTTPException(status_code = 404, detail = "Thread not found") from exc
+    if run is None:
+        raise HTTPException(status_code = 404, detail = "Thread not found")
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
         supervisor.note_request_port(request)
@@ -328,7 +347,7 @@ async def create_research_run(
 
 
 @router.get("/active")
-async def active_research_runs(
+def active_research_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {
@@ -338,12 +357,12 @@ async def active_research_runs(
 
 
 @router.get("/{run_id}")
-async def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     return _require_run(run_id)
 
 
 @router.put("/{run_id}/plan")
-async def update_research_plan(
+def update_research_plan(
     run_id: str,
     payload: UpdatePlan,
     current_subject: str = Depends(get_current_subject),
@@ -359,7 +378,7 @@ async def update_research_plan(
 
 
 @router.post("/{run_id}/approve")
-async def approve_research_plan(
+def approve_research_plan(
     run_id: str,
     payload: ApprovePlan,
     request: Request,
@@ -380,7 +399,7 @@ async def approve_research_plan(
 
 
 @router.post("/{run_id}/cancel")
-async def cancel_research_run(
+def cancel_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -396,7 +415,7 @@ async def cancel_research_run(
 
 
 @router.post("/{run_id}/retry")
-async def retry_research_run(
+def retry_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -415,7 +434,10 @@ async def retry_research_run(
     return run
 
 
-@router.get("/{run_id}/events")
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+@router.post("/{run_id}/events")
+# Separate registration, out of the schema: one api_route would give both verbs one operationId.
+@router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,
     request: Request,
@@ -429,13 +451,18 @@ async def research_events(
 
     async def stream():
         nonlocal cursor
+        loop = asyncio.get_running_loop()
         while True:
-            events = await asyncio.to_thread(
+            # off the default executor: parked followers there starved the run's own db writes.
+            events = await loop.run_in_executor(
+                _EVENT_WAIT_EXECUTOR,
                 db.wait_for_events,
                 run_id,
                 cursor,
                 15,
             )
+            # Not the wait executor: this read is short, and queueing it behind parked waits
+            # would delay every follower once the pool is full.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

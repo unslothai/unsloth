@@ -32,19 +32,19 @@ export function TrainingHighlightsCard({ stats }: { stats: ProfileStats }) {
     >
       <div className="grid grid-cols-2 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile
-          value={formatFullNumber(training.runs)}
+          value={formatFullNumber(training.runs, locale)}
           label={t("settings.profile.stats.trainingRuns")}
         />
         <StatTile
-          value={formatFullNumber(training.completed)}
+          value={formatFullNumber(training.completed, locale)}
           label={t("settings.profile.stats.trainingCompleted")}
         />
         <StatTile
-          value={formatCompactNumber(training.steps)}
+          value={formatCompactNumber(training.steps, locale)}
           label={t("settings.profile.stats.trainingSteps")}
         />
         <StatTile
-          value={formatCompactNumber(training.tokens)}
+          value={formatCompactNumber(training.tokens, locale)}
           label={t("settings.profile.stats.trainingTokens")}
         />
         <StatTile

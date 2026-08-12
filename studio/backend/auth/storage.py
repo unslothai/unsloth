@@ -3,6 +3,8 @@
 
 """SQLite storage for auth data (user credentials + JWT secret)."""
 
+from contextlib import contextmanager
+
 import hashlib
 import hmac
 import ipaddress
@@ -12,7 +14,7 @@ import sqlite3
 import tempfile
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
 
@@ -246,6 +248,26 @@ def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str
     return credential_generation(secret) if secret is not None else None
 
 
+@contextmanager
+def credential_generation_guard(username: str, expect_gen: Optional[str]) -> Iterator[None]:
+    """Hold the auth write lock while a credential-derived write commits elsewhere."""
+    conn = get_connection()
+    try:
+        if expect_gen is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            if _current_generation(conn, username) != expect_gen:
+                raise CredentialRotated(
+                    "The credential this request authenticated with was revoked."
+                )
+        yield
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
@@ -419,6 +441,45 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
+# Dedicated AES-256 key used to encrypt Studio credentials in studio.db.
+# It intentionally lives in auth.db so copying studio.db alone does not expose
+# provider or Hugging Face tokens, and survives password changes/resets.
+_CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
+_credential_encryption_key_cache: Optional[bytes] = None
+
+
+def get_or_create_credential_encryption_key() -> bytes:
+    """Return the install-local credential encryption key, creating it once."""
+    global _credential_encryption_key_cache
+    if _credential_encryption_key_cache is not None:
+        return _credential_encryption_key_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+        if len(secret) != 32:
+            raise ValueError("Invalid credential encryption key")
+    finally:
+        conn.close()
+
+    _credential_encryption_key_cache = secret
+    return secret
+
+
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof
@@ -524,6 +585,8 @@ def _pbkdf2_desktop_secret(raw_secret: str) -> str:
 # enforced by the SQLite read on every call, so a cache hit only skips the KDF.
 # Only keys present in the DB are cached, so unknown-key spam can't grow it.
 _api_key_hash_cache: dict[str, str] = {}
+# Whether each memoized key was minted internally; set once, since minting decides it.
+_api_key_internal_cache: dict[str, bool] = {}
 _API_KEY_HASH_CACHE_MAX = 4096
 _api_key_hash_cache_lock = threading.Lock()
 
@@ -539,6 +602,7 @@ def _reset_api_key_hash_cache() -> None:
     """Drop memoized derivations (tests / salt change)."""
     with _api_key_hash_cache_lock:
         _api_key_hash_cache.clear()
+        _api_key_internal_cache.clear()
 
 
 def is_initialized() -> bool:
@@ -705,6 +769,7 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
+    preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
 
@@ -720,6 +785,11 @@ def update_password(
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
     Returns False when the credential moved underneath it.
+
+    ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
+    for a caller that already authenticated as the desktop app: revoking the
+    secret it is currently using would break desktop auto-auth for a change the
+    desktop itself made.
     """
     from .hashing import hash_password
 
@@ -750,7 +820,8 @@ def update_password(
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
-            clear_desktop_secret()
+            if not preserve_desktop_secret:
+                clear_desktop_secret()
             return jwt_secret
         return None
     finally:
@@ -1086,6 +1157,40 @@ def revoke_internal_api_key(key_id: int) -> bool:
         conn.close()
 
 
+def is_internal_api_key(raw_key: str) -> bool:
+    """Whether *raw_key* is a workflow-minted internal key rather than a user's own.
+
+    Lets request-scoped code (the API monitor) tell Studio's own background work from a
+    third party using Unsloth as an API server. The answer is memoized because this runs on
+    the event loop for every API-key request and a key's origin is fixed when it is minted.
+    """
+    if not raw_key.startswith(API_KEY_PREFIX):
+        return False
+    cache_id = _api_key_cache_id(raw_key)
+    cached_internal = _api_key_internal_cache.get(cache_id)
+    if cached_internal is not None:
+        return cached_internal
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT is_internal FROM api_keys WHERE key_hash = ?", (key_hash,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return False
+    internal = bool(row["is_internal"])
+    with _api_key_hash_cache_lock:
+        if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
+            _api_key_hash_cache.clear()
+            _api_key_internal_cache.clear()
+        _api_key_hash_cache[cache_id] = key_hash
+        _api_key_internal_cache[cache_id] = internal
+    return internal
+
+
 def validate_api_key(raw_key: str) -> Optional[str]:
     """Validate *raw_key* and return the owning username, or ``None``."""
     verified = validate_api_key_with_credential(raw_key)
@@ -1118,6 +1223,10 @@ def validate_api_key_with_credential(raw_key: str) -> Optional[Tuple[str, str]]:
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
                     _api_key_hash_cache.clear()
+                    # is_internal_api_key sizes itself against the hash cache, so clearing one
+                    # without the other lets the origin cache grow past the bound. Deep Research
+                    # mints a fresh internal key per model call, so that adds up.
+                    _api_key_internal_cache.clear()
                 _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:
             return None

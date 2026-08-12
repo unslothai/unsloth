@@ -23,18 +23,34 @@ import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Block,
+  type BlockProps,
+  Streamdown,
+  StreamdownContext,
+  type StreamdownProps,
+} from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 const { withSmoothContextProvider } = INTERNAL;
+
+// Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React
+// transition. A continuous token stream can starve that transition for seconds.
+// Its animated path commits every block update directly; zero duration preserves
+// that scheduling behavior without adding a visible text animation.
+const STREAMDOWN_IMMEDIATE_UPDATES = {
+  duration: 0,
+  stagger: 0,
+} satisfies NonNullable<StreamdownProps["animated"]>;
 
 const STREAMDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: React.ComponentProps<"a">) => (
@@ -232,6 +248,12 @@ function CodeBlockActions({
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
+  // Streamdown memoises each block on its content, so a block that finished
+  // streaming is never re-parsed and keeps the per-word animation wrappers the
+  // animated path added. Keying the block on the animating flag re-parses each
+  // one once when the message completes, without remounting the whole message.
+  const { isAnimating } = useContext(StreamdownContext);
+  const blockKey = isAnimating ? "live" : "done";
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
@@ -325,7 +347,7 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
-  return <Block {...props} />;
+  return <Block {...props} key={blockKey} />;
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
@@ -378,10 +400,11 @@ const MarkdownTextImpl = () => {
   // Parts are keyed by index, so switching conversations hands this instance a different
   // message, and Streamdown only extends its parsed blocks: key it per message instead.
   const messageId = useAuiState(({ message }) => message.id);
-  const displayText = useRafCoalescedText(text, status.type === "running");
+  const isStreaming = status.type === "running";
+  const displayText = useRafCoalescedText(text, isStreaming);
   const processedText = useMemo(
-    () => preprocessLaTeX(displayText),
-    [displayText],
+    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
+    [displayText, isStreaming],
   );
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -394,7 +417,8 @@ const MarkdownTextImpl = () => {
       <Streamdown
         key={messageId}
         mode="streaming"
-        isAnimating={status.type === "running"}
+        isAnimating={isStreaming}
+        animated={STREAMDOWN_IMMEDIATE_UPDATES}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
         urlTransform={safeMarkdownUrl}

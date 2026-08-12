@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { idleProbeVerdict } from "./adopt-rules";
 import { disposableTimeoutSignal } from "../lib/abort-signals";
 import {
   getActiveDatasetDownloads,
   getAllActiveModelDownloads,
   type DownloadJobState,
 } from "./api";
-import { DOWNLOAD_KIND } from "./constants";
+import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
 import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
 import {
   apiGetProgress,
@@ -65,6 +66,7 @@ function removeLocalActivePeers(
   const activeJobKey = jobKeyOf(kind, repoId, variant);
   const snapshotJobKey = jobKeyOf(kind, repoId, null);
   for (const job of Object.values(getState().jobs)) {
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (repoKeyOf(job.kind, job.repoId) !== activeRepoKey) continue;
     if (variant !== null && kind === DOWNLOAD_KIND.MODEL) {
@@ -97,6 +99,12 @@ async function adoptActiveModelDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -118,6 +126,12 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -166,14 +180,34 @@ async function probeHydratedIdleProgress(
     );
     const current = getState().jobs[key];
     if (!current || !ACTIVE_STATES.has(current.state)) return "settled";
-    const { downloadedBytes } = applyProgressUpdate(key, current, progressResp);
+    applyProgressUpdate(key, current, progressResp);
     const updated = getState().jobs[key];
     if (!updated || !ACTIVE_STATES.has(updated.state)) return "settled";
     if (hasObservedExpectedBytes(updated)) {
       finalize(key, "complete", { bytes: updated.downloadedBytes });
       return "settled";
     }
-    return downloadedBytes > 0 ? "active" : "gone";
+    // The raw reading decides this one, not the figure the card keeps. Whether
+    // anything is on disk is a question about the cache, and a persisted job
+    // whose cache was wiped has to read "gone" here rather than adopt and sit
+    // in the panel as a phantom download until the idle-evict grace expires
+    // sixty seconds later, blocking a fresh start for the same repo meanwhile.
+    // The reason the resolved figure holds a zero over -- an unresolvable
+    // variant file set -- is answered on the backend now, so a finished
+    // download does not reach this line reading zero in the first place.
+    //
+    // A zero alone is still not proof, though: a transient measurement failure comes back as a
+    // perfectly successful all-zero response, and calling that "gone" drops a job whose partial
+    // cache is sitting right there. cache_path is the discriminator -- the backend only answers
+    // null when no cache dir for this repo exists at all, and a dir it scanned and measured at
+    // zero still names itself. So the cache being absent is what retires the card, not the
+    // counter being zero.
+    return idleProbeVerdict(
+      progressResp.downloaded_bytes,
+      progressResp.cache_path,
+      progressResp.target_present,
+      progressResp.cache_measured,
+    );
   } catch {
     return "active";
   }
@@ -262,6 +296,8 @@ export function hydrateDownloadManager(): void {
   void hydrateBackendActiveDownloads();
   const jobs = Object.values(getState().jobs);
   for (const job of jobs) {
+    // External jobs are live in memory and have no hub job to probe.
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;

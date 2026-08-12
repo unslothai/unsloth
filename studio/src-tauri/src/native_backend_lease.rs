@@ -18,6 +18,7 @@ pub enum NativePathOperation {
     DatasetPreview,
     DatasetImport,
     Attach,
+    LinkDocuments,
     Reveal,
     Open,
 }
@@ -28,6 +29,7 @@ pub enum NativePathKind {
     Model,
     Dataset,
     Attachment,
+    DocumentFolder,
     Artifact,
 }
 
@@ -41,7 +43,7 @@ pub enum NativePathSourceKind {
     Artifact,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativePathType {
     File,
@@ -64,6 +66,8 @@ pub struct NativePathLeasePayload {
     pub display_label: String,
     pub size_bytes: Option<u64>,
     pub modified_ms: Option<u64>,
+    pub device_id: Option<String>,
+    pub file_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,38 +105,46 @@ pub fn random_nonce() -> String {
     hex_bytes(&rand::random::<[u8; 16]>())
 }
 
+pub struct NativePathLeaseRequest {
+    pub operation: NativePathOperation,
+    pub canonical_path: String,
+    pub path_kind: NativePathKind,
+    pub path_type: NativePathType,
+    pub source_kind: NativePathSourceKind,
+    pub token: String,
+    pub display_label: String,
+    pub size_bytes: Option<u64>,
+    pub modified_ms: Option<u64>,
+    pub device_id: Option<String>,
+    pub file_id: Option<String>,
+}
+
 pub fn sign_path_lease(
     secret: &[u8],
-    operation: NativePathOperation,
-    canonical_path: String,
-    path_kind: NativePathKind,
-    path_type: NativePathType,
-    source_kind: NativePathSourceKind,
-    token: &str,
-    display_label: String,
-    size_bytes: Option<u64>,
-    modified_ms: Option<u64>,
+    request: NativePathLeaseRequest,
 ) -> Result<NativePathLeaseResponse, String> {
     let issued_at_ms = now_ms();
     let expires_at_ms = issued_at_ms + LEASE_TTL.as_millis() as u64;
     let payload = NativePathLeasePayload {
         version: LEASE_VERSION,
-        operation,
-        canonical_path,
-        path_kind,
-        path_type,
-        source_kind,
-        token_id_hash: token_hash(token),
+        operation: request.operation,
+        canonical_path: request.canonical_path,
+        path_kind: request.path_kind,
+        path_type: request.path_type,
+        source_kind: request.source_kind,
+        token_id_hash: token_hash(&request.token),
         issued_at_ms,
         expires_at_ms,
         nonce: random_nonce(),
-        display_label: display_label.clone(),
-        size_bytes,
-        modified_ms,
+        display_label: request.display_label.clone(),
+        size_bytes: request.size_bytes,
+        modified_ms: request.modified_ms,
+        device_id: request.device_id,
+        file_id: request.file_id,
     };
     sign_payload(secret, &payload).map(|native_path_lease| NativePathLeaseResponse {
         native_path_lease,
-        display_label,
+        display_label: request.display_label,
         expires_at_ms,
     })
 }
@@ -168,6 +180,11 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn decode_payload(lease: &str) -> serde_json::Value {
+        let payload = lease.split('.').next().unwrap();
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
+    }
+
     #[test]
     fn token_hash_is_stable_hex_sha256() {
         assert_eq!(
@@ -180,20 +197,59 @@ mod tests {
     fn signed_lease_has_two_base64url_parts() {
         let lease = sign_path_lease(
             b"01234567890123456789012345678901",
-            NativePathOperation::ValidateModel,
-            "/tmp/model.gguf".to_string(),
-            NativePathKind::Model,
-            NativePathType::File,
-            NativePathSourceKind::Dialog,
-            "token",
-            "model.gguf".to_string(),
-            Some(123),
-            Some(456),
+            NativePathLeaseRequest {
+                operation: NativePathOperation::ValidateModel,
+                canonical_path: "/tmp/model.gguf".to_string(),
+                path_kind: NativePathKind::Model,
+                path_type: NativePathType::File,
+                source_kind: NativePathSourceKind::Dialog,
+                token: "token".to_string(),
+                display_label: "model.gguf".to_string(),
+                size_bytes: Some(123),
+                modified_ms: Some(456),
+                device_id: Some("7".to_string()),
+                file_id: Some("8".to_string()),
+            },
         )
         .unwrap();
         let parts: Vec<&str> = lease.native_path_lease.split('.').collect();
         assert_eq!(parts.len(), 2);
         assert!(!parts[0].contains('='));
         assert!(!parts[1].contains('='));
+    }
+
+    #[test]
+    fn document_folder_lease_payload_has_backend_contract_values() {
+        let lease = sign_path_lease(
+            b"01234567890123456789012345678901",
+            NativePathLeaseRequest {
+                operation: NativePathOperation::LinkDocuments,
+                canonical_path: "/tmp/knowledge".to_string(),
+                path_kind: NativePathKind::DocumentFolder,
+                path_type: NativePathType::Directory,
+                source_kind: NativePathSourceKind::Dialog,
+                token: "path_token".to_string(),
+                display_label: "knowledge".to_string(),
+                size_bytes: None,
+                modified_ms: None,
+                device_id: Some("7".to_string()),
+                file_id: Some("8".to_string()),
+            },
+        )
+        .unwrap();
+        let payload = decode_payload(&lease.native_path_lease);
+
+        assert_eq!(payload["operation"], "link-documents");
+        assert_eq!(payload["path_kind"], "document-folder");
+        assert_eq!(payload["path_type"], "directory");
+        assert_eq!(payload["source_kind"], "dialog");
+        assert_eq!(payload["token_id_hash"], token_hash("path_token"));
+        let issued_at_ms = payload["issued_at_ms"].as_u64().unwrap();
+        let expires_at_ms = payload["expires_at_ms"].as_u64().unwrap();
+        assert!(expires_at_ms > issued_at_ms);
+        assert_eq!(expires_at_ms - issued_at_ms, 120_000);
+        assert!(payload["modified_ms"].is_null());
+        assert_eq!(payload["device_id"], "7");
+        assert_eq!(payload["file_id"], "8");
     }
 }

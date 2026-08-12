@@ -3,15 +3,16 @@
 
 "use client";
 
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat";
+
+import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -21,7 +22,6 @@ import {
   Download01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
-  Search01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -34,22 +34,30 @@ import {
   useRef,
   useState,
 } from "react";
-import { isOllamaLinkPath } from "../model-config/model-identity";
+import {
+  isOllamaLinkPath,
+  modelDisplayName,
+} from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
 } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
-import { PillTabs } from "./model-selector/pill-tabs";
 import {
-  buildSourceTabs,
-  isFineTunedSource,
-} from "./model-selector/source-tabs";
+  type ExternalConnectionRef,
+  missingExternalModel,
+} from "./model-selector/missing-external-model";
+import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
+import type { CatalogGroup } from "./model-selector/model-catalog";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import { PillTabs } from "./model-selector/pill-tabs";
+import { isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
+  ModelDownloadFootprintResolver,
   ModelOption,
   ModelPickTarget,
   ModelSelectorChangeMeta,
@@ -121,19 +129,39 @@ export type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
+export type { ExternalConnectionRef } from "./model-selector/missing-external-model";
 
 interface ModelSelectorProps {
   models: ModelOption[];
+  /** Models a task-specific runtime confirms are locally loadable even when
+   * their specialized cache layout is absent from the generic Hub inventory. */
+  additionalOnDeviceModels?: ModelOption[];
+  /** Task-owned runtime residency when it is separate from Chat's main slot. */
+  loadedModelIdOverride?: string;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
+  /**
+   * The connections behind `externalModels`, carrying each one's cached catalogue.
+   * `externalModels` lists only the models the user ticked, so it cannot tell a model the
+   * user turned off from one the provider withdrew; the catalogue can.
+   */
+  externalConnections?: ExternalConnectionRef[];
   value?: string;
   defaultValue?: string;
+  /**
+   * Whether the selection is actually resident. Omitted means "a selection is
+   * a load", which is what every caller assumed until an image or video load
+   * started evicting the chat model out from under this tick.
+   */
+  loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeGgufContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
+  /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
@@ -148,6 +176,15 @@ interface ModelSelectorProps {
   triggerDataTour?: string;
   contentDataTour?: string;
   showCloudIndicator?: boolean;
+  /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
+  task?: HfTaskFilter;
+  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
+  catalog?: CatalogGroup[];
+  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
+   *  whose runtime loads arbitrary publishers. */
+  communityModelPolicy?: CommunityModelPolicy;
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
+  placeholder?: string;
 }
 
 function ModelSelectorTrigger({
@@ -159,6 +196,8 @@ function ModelSelectorTrigger({
   className,
   dataTour,
   onEject,
+  // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
+  placeholder = "Select model",
 }: {
   currentModel?: ModelOption;
   isLoaded: boolean;
@@ -168,6 +207,7 @@ function ModelSelectorTrigger({
   className?: string;
   dataTour?: string;
   onEject?: () => void;
+  placeholder?: string;
 }) {
   return (
     <PopoverTrigger asChild={true}>
@@ -176,16 +216,15 @@ function ModelSelectorTrigger({
         data-tour={dataTour}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
-          // Suppress the pill's hover background while the eject hit area is
-          // hovered, so only the dot's own circle reacts.
+          // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
             "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
-          // More left padding than right; the chevron is pulled close to the
-          // label (below) so the trigger reads balanced around the text.
+          // More left padding than right; the chevron is pulled close to the label so the trigger reads
+          // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
           size === "default" && "h-9 pl-4 pr-2 text-sm",
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
@@ -194,11 +233,9 @@ function ModelSelectorTrigger({
       >
         {isLoaded &&
           (onEject ? (
-            // Loaded status doubles as a mouse eject shortcut (checkmark at rest,
-            // eject icon on hover). A plain span keeps it out of the trigger
-            // button's content model (no focusable descendants); keyboard/SR users
-            // eject via the "Eject model" button. aria-hidden marks it decorative;
-            // stopPropagation stops the popover toggling. On touch (no hover)
+            // Loaded status doubles as a mouse eject shortcut (checkmark at rest, eject on hover). A plain
+            // span keeps it out of the trigger button's content model; keyboard/SR users eject via the
+            // "Eject model" button. stopPropagation stops the popover toggling, and on touch (no hover)
             // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
@@ -209,8 +246,7 @@ function ModelSelectorTrigger({
                 event.stopPropagation();
                 onEject();
               }}
-              // Hit area larger than the icon, with a hover circle. Negative
-              // margin keeps the icon in the dot's original spot.
+              // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
               className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
@@ -234,7 +270,7 @@ function ModelSelectorTrigger({
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
-            {currentModel?.name ?? "Select model"}
+            {currentModel?.name ?? placeholder}
             {showCloudIndicator ? (
               <HugeiconsIcon
                 icon={CloudIcon}
@@ -266,13 +302,11 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "custom" | "connected";
+type HubSection = "downloaded" | "recommended" | "connected";
 
-// The user's most recently clicked Hub section, restored on every open so the
-// selector returns to the tab they last used.
+// The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
-// Last tab the user actually clicked, or null when none is stored yet. Only
-// On Device / Recommended persist (Connected is provider-conditional).
+// Last tab the user actually clicked, or null. Only On Device / Recommended persist.
 function loadLastHubSection(): HubSection | null {
   try {
     const raw = localStorage.getItem(HUB_SECTION_KEY);
@@ -289,12 +323,13 @@ function saveLastHubSection(section: HubSection): void {
     // Ignore unavailable storage.
   }
 }
-// Default the Hub section: the last tab the user clicked; first time, On Device
-// when they have downloads, else Recommended.
-function defaultHubSection(): HubSection {
+// Default the Hub section: the last tab clicked; first time, On Device with downloads else Recommended.
+function defaultHubSection(hasAdditionalOnDeviceModels = false): HubSection {
   return (
     loadLastHubSection() ??
-    (hasDownloadedModels() ? "downloaded" : "recommended")
+    (hasDownloadedModels() || hasAdditionalOnDeviceModels
+      ? "downloaded"
+      : "recommended")
   );
 }
 
@@ -314,6 +349,8 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
 function ModelSelectorContent({
   open,
   models,
+  additionalOnDeviceModels,
+  loadedModelIdOverride,
   loraModels,
   externalModels,
   value,
@@ -323,6 +360,7 @@ function ModelSelectorContent({
   selectedConfig,
   selectedGgufVariant,
   onSelect,
+  resolveDownloadFootprint,
   onEject,
   onFoldersChange,
   onPickLocalModel,
@@ -331,9 +369,14 @@ function ModelSelectorContent({
   deleteDisabled,
   className,
   dataTour,
+  task,
+  catalog,
+  communityModelPolicy,
 }: {
   open: boolean;
   models: ModelOption[];
+  additionalOnDeviceModels?: ModelOption[];
+  loadedModelIdOverride?: string;
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
@@ -343,6 +386,7 @@ function ModelSelectorContent({
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
@@ -351,31 +395,19 @@ function ModelSelectorContent({
   deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
+  task?: HfTaskFilter;
+  catalog?: CatalogGroup[];
+  communityModelPolicy?: CommunityModelPolicy;
 }) {
+  const t = useT();
   const hasSelection = Boolean(value);
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
-  // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
-  // Ollama, custom folders) carry source "local" and live in the Hub tab instead.
+  // The Fine-tuned tab is for fine-tuned models only; local models (LM Studio, Ollama, custom folders) live in Hub.
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
-  );
-  const chatOnlyTabsDefault = useMemo(
-    () =>
-      value && externalModels.some((model) => model.id === value)
-        ? "external"
-        : "hub",
-    [externalModels, value],
-  );
-  const studioTabsDefault = useMemo((): "hub" | "external" => {
-    if (value && externalModels.some((model) => model.id === value)) {
-      return "external";
-    }
-    return "hub";
-  }, [externalModels, value]);
 
-  const tabs = useMemo(() => buildSourceTabs(), []);
+  );
   // Connected sits in the section toggle, shown only with external providers.
   const hubSectionTabs = useMemo(
     () =>
@@ -392,20 +424,17 @@ function ModelSelectorContent({
           ]
         : HUB_SECTION_TABS,
     [hasExternal],
-  );
 
-  const [activeTab, setActiveTab] = useState<string>(() =>
-    chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
   );
-  // Fall back to the first tab if the active one disappears.
-  const effectiveTab = tabs.some((tab) => tab.value === activeTab)
-    ? activeTab
-    : tabs[0].value;
-  // Open on Connected when the active model comes from a connected provider.
-  const wantsConnectedDefault =
-    (chatOnly ? chatOnlyTabsDefault : studioTabsDefault) === "external";
+  const wantsConnectedDefault = Boolean(
+    value && externalModels.some((model) => model.id === value),
+  );
+  const hasAdditionalOnDeviceModels =
+    (additionalOnDeviceModels?.length ?? 0) > 0;
   const [hubSection, setHubSection] = useState<HubSection>(() =>
-    wantsConnectedDefault ? "connected" : defaultHubSection(),
+    wantsConnectedDefault
+      ? "connected"
+      : defaultHubSection(hasAdditionalOnDeviceModels),
   );
   // Connected is only valid while external providers exist; fall back otherwise.
   const effectiveHubSection: HubSection =
@@ -415,27 +444,22 @@ function ModelSelectorContent({
     null,
   );
 
-  // The picker remounts on each open but this tab state does not, so re-derive
-  // the default tab on the open edge (else a lora/external selection reopens on Hub).
+  // The picker remounts on each open but this section state does not, so
+  // re-derive the default section on the open edge.
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
-      setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
-      // Connected when an external model is active, else On Device when the
-      // user has downloads, else their last section.
-      setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
+      setHubSection(
+        wantsConnectedDefault
+          ? "connected"
+          : defaultHubSection(hasAdditionalOnDeviceModels),
+      );
     }
     if (!open && wasOpen.current) {
       setConfigTarget(null);
     }
     wasOpen.current = open;
-  }, [
-    open,
-    chatOnly,
-    chatOnlyTabsDefault,
-    studioTabsDefault,
-    wantsConnectedDefault,
-  ]);
+  }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -487,8 +511,7 @@ function ModelSelectorContent({
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
       isGguf,
-      // Ollama's models sit under a link dir the resolver skips, so mirroring their
-      // settings would advertise a load the API can never make.
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would advertise an impossible load.
       apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
@@ -517,11 +540,11 @@ function ModelSelectorContent({
           ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
-              // Sized so the left-packed row keeps uniform gaps and the last
-              // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches the
+              // pill's left gap. Widths track the controls they hold so the single-line row does not wrap.
               hasExternal
-                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
         className,
       )}
@@ -572,81 +595,53 @@ function ModelSelectorContent({
           />
         ) : (
           <>
-        {tabs.length > 1 ? (
-          <PillTabs
-            ariaLabel="Model source"
-            tabs={tabs}
-            value={effectiveTab}
-            onValueChange={setActiveTab}
-            fit={true}
-            className="mb-2"
-          />
-        ) : null}
+            <HubModelPicker
+              models={models}
+              additionalOnDeviceModels={additionalOnDeviceModels}
+              loadedModelIdOverride={loadedModelIdOverride}
+              loraModels={fineTunedModels}
+              externalModels={externalModels}
+              value={value}
+              onSelect={handlePick}
+              resolveDownloadFootprint={resolveDownloadFootprint}
+              onFoldersChange={onFoldersChange}
+              onBrowseHub={onBrowseHub}
+              onModelsChange={onModelsChange}
+              onConfigure={openConfigPage}
+              deleteDisabled={deleteDisabled}
+              onEject={hasSelection && onEject ? onEject : undefined}
+              task={task}
+              catalog={catalog}
+              communityModelPolicy={communityModelPolicy}
+              section={effectiveHubSection}
+              sectionToggle={
+                <PillTabs
+                  ariaLabel={t("picker.hubSectionAriaLabel")}
+                  tabs={hubSectionTabs}
+                  value={effectiveHubSection}
+                  onValueChange={(next) => {
+                    const section = next as HubSection;
+                    setHubSection(section);
+                    saveLastHubSection(section);
+                  }}
+                  fit={true}
+                />
+              }
+            />
 
-        {effectiveTab === "hub" ? (
-          <HubModelPicker
-            models={models}
-            loraModels={fineTunedModels}
-            externalModels={externalModels}
-            value={value}
-            onSelect={handlePick}
-            onFoldersChange={onFoldersChange}
-            onBrowseHub={onBrowseHub}
-            onModelsChange={onModelsChange}
-            onConfigure={openConfigPage}
-            deleteDisabled={deleteDisabled}
-            onEject={hasSelection && onEject ? onEject : undefined}
-            section={effectiveHubSection}
-            sectionToggle={
-              <PillTabs
-                ariaLabel="Hub section"
-                tabs={hubSectionTabs}
-                value={effectiveHubSection}
-                onValueChange={(next) => {
-                  const section = next as HubSection;
-                  setHubSection(section);
-                  saveLastHubSection(section);
-                }}
-                fit={true}
-              />
-            }
-          />
-        ) : null}
-
-        {effectiveTab === "external" ? (
-          <ExternalModelPicker
-            externalModels={externalModels}
-            value={value}
-            onSelect={onSelect}
-          />
-        ) : null}
-
-        {onPickLocalModel ? (
-          <div className="mt-1.5 border-t border-border/70 pt-1.5">
-            <button
-              type="button"
-              onClick={onPickLocalModel}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-              title="Pick a model file from disk"
-            >
-              <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-              Pick a model file from disk
-            </button>
-          </div>
-        ) : null}
-        {effectiveTab !== "hub" && hasSelection && onEject ? (
-          <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
-            <button
-              type="button"
-              onClick={onEject}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-              title="Eject model"
-            >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject loaded model
-            </button>
-          </div>
-        ) : null}
+            {onPickLocalModel ? (
+              <div className="mt-1.5 border-t border-border/70 pt-1.5">
+                <button
+                  type="button"
+                  onClick={onPickLocalModel}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+                  title={t("picker.pickModelFile")}
+                >
+                  <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+                  {t("picker.pickModelFile")}
+                </button>
+              </div>
+            ) : null}
           </>
         )}
       </TooltipProvider>
@@ -656,8 +651,11 @@ function ModelSelectorContent({
 
 export function ModelSelector({
   models,
+  additionalOnDeviceModels = [],
+  loadedModelIdOverride,
   loraModels = [],
   externalModels = [],
+  externalConnections = [],
   value,
   defaultValue,
   activeGgufVariant,
@@ -666,6 +664,7 @@ export function ModelSelector({
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
+  resolveDownloadFootprint,
   onEject,
   onFoldersChange,
   onPickLocalModel,
@@ -680,15 +679,23 @@ export function ModelSelector({
   triggerDataTour,
   contentDataTour,
   showCloudIndicator = false,
+  task,
+  catalog,
+  communityModelPolicy = "none",
+  placeholder,
+  loaded,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
   const navigate = useNavigate();
+  const t = useT();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
-  const isLoaded = selected !== "";
+  // A selection is only a load when the caller has not said otherwise: the chat
+  // model can be evicted by an image or video load while the pick survives.
+  const isLoaded = selected !== "" && (loaded ?? true);
 
   const optionById = useMemo(() => {
     const all = new Map<string, ModelOption>();
@@ -742,14 +749,49 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
+    // A pick whose connection no longer offers it takes its option away and leaves the
+    // id in the checkpoint, and the generic fallback below cannot shorten an
+    // `external::` id. Name the model the user picked, and say why it is unusable: it
+    // cannot be loaded, so a tidy name on its own would hide the failure until the next
+    // send (#8405). The connections carry the cached catalogue, which is what separates a
+    // model the user unticked from one the provider withdrew.
+    const missingExternal = found
+      ? null
+      : missingExternalModel(selected, externalModels, externalConnections);
+    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
+    // The leaf, not the namespaced public id (#7966), matches the catalog row that
+    // later replaces this one.
+    const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
-        : { id: selected, name: selected, description: desc };
+        : { id: selected, name: fallbackName, description: desc };
     }
-    return found ?? { id: selected, name: selected };
-  }, [selected, optionById, activeGgufVariant]);
+    if (missingExternal) {
+      const disabled = missingExternal.state === "disabled";
+      return {
+        id: selected,
+        name: fallbackName,
+        description: missingExternal.providerName
+          ? t(
+              disabled
+                ? "picker.modelDisabledByProvider"
+                : "picker.modelDroppedByProvider",
+              { provider: missingExternal.providerName },
+            )
+          : t(disabled ? "picker.modelDisabled" : "picker.modelDropped"),
+      };
+    }
+    return found ?? { id: selected, name: fallbackName };
+  }, [
+    selected,
+    optionById,
+    activeGgufVariant,
+    externalModels,
+    externalConnections,
+    t,
+  ]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {
@@ -786,10 +828,13 @@ export function ModelSelector({
         className={className}
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
+        placeholder={placeholder}
       />
       <ModelSelectorContent
         open={open}
         models={models}
+        additionalOnDeviceModels={additionalOnDeviceModels}
+        loadedModelIdOverride={loadedModelIdOverride}
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}
@@ -799,14 +844,22 @@ export function ModelSelector({
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}
+        resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        onBrowseHub={handleBrowseHub}
+        // A curated task picker (Images / Video) is self-contained, so it omits this.
+        // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        onBrowseHub={
+          task && communityModelPolicy === "none" ? undefined : handleBrowseHub
+        }
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
+        task={task}
+        catalog={catalog}
+        communityModelPolicy={communityModelPolicy}
       />
     </Popover>
   );
@@ -814,112 +867,3 @@ export function ModelSelector({
 
 ModelSelector.Trigger = ModelSelectorTrigger;
 ModelSelector.Content = ModelSelectorContent;
-
-function normalizeForSearch(value: string): string {
-  return value.toLowerCase().replace(/[\s_.-]/g, "");
-}
-
-function ExternalModelPicker({
-  externalModels,
-  value,
-  onSelect,
-}: {
-  externalModels: ExternalModelOption[];
-  value?: string;
-  onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
-}) {
-  const [query, setQuery] = useState("");
-  const grouped = useMemo(() => {
-    const needle = normalizeForSearch(query.trim());
-    const byProvider = new Map<
-      string,
-      { providerName: string; models: ExternalModelOption[] }
-    >();
-    for (const model of externalModels) {
-      const searchText = normalizeForSearch(
-        `${model.name} ${model.providerName} ${model.id}`,
-      );
-      if (needle && !searchText.includes(needle)) continue;
-      const prev = byProvider.get(model.providerId);
-      if (prev) {
-        prev.models.push(model);
-      } else {
-        byProvider.set(model.providerId, {
-          providerName: model.providerName,
-          models: [model],
-        });
-      }
-    }
-    return [...byProvider.entries()]
-      .map(([providerId, group]) => ({
-        providerId,
-        providerName: group.providerName,
-        models: group.models.sort((a, b) => a.name.localeCompare(b.name)),
-      }))
-      .sort((a, b) => a.providerName.localeCompare(b.providerName));
-  }, [externalModels, query]);
-
-  return (
-    <div className="space-y-2">
-      <div className="relative">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
-        />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search models"
-          className="h-9 pl-8"
-        />
-      </div>
-      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">
-        <div className="space-y-2 p-1">
-          {grouped.length === 0 ? (
-            <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
-              {externalModels.length === 0 ? (
-                <>
-                  No models from your connections. Set up in Settings →
-                  Connections.
-                </>
-              ) : (
-                "No models match your search."
-              )}
-            </div>
-          ) : (
-            grouped.map((group) => (
-              <div key={group.providerId}>
-                <div className="flex items-center gap-2 px-2.5 py-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-                  <ExternalProviderLogo
-                    providerType={group.models[0]?.providerType}
-                    className="size-3.5"
-                    title={group.providerName}
-                  />
-                  <span className="min-w-0 truncate">{group.providerName}</span>
-                </div>
-                {group.models.map((model) => (
-                  <button
-                    key={model.id}
-                    type="button"
-                    onClick={() =>
-                      onSelect(model.id, {
-                        source: "external",
-                        isLora: false,
-                      })
-                    }
-                    className={cn(
-                      "flex w-full items-center rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-                      value === model.id && "bg-accent/60",
-                    )}
-                  >
-                    <span className="min-w-0 truncate">{model.name}</span>
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}

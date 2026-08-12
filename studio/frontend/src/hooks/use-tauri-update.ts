@@ -22,8 +22,10 @@ export type UpdateStatus =
 export interface UpdateInfo {
   version: string;
   currentVersion: string;
-  // Backend release this build pins; CHANGELOG.md is keyed by it, not the SemVer.
+  // Backend release this build pins, which preflight checks against.
   pypiVersion?: string;
+  // latest.json's `notes`: a static download blurb, the same every release.
+  // Kept as updater metadata, not shown; the popup fetches the real notes.
   body?: string;
   date?: string;
 }
@@ -66,8 +68,18 @@ export interface RetainedUpdateFailure {
 const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   mode: "in_app",
   releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
-  releaseTagPrefix: "desktop-v",
+  releaseTagPrefix: "v",
 };
+
+// Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
+function publishShellUpdateActive(active: boolean): void {
+  if (!isTauri) return;
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) =>
+      invoke("set_renderer_activity", { kind: "shell_update", active }),
+    )
+    .catch(() => {});
+}
 
 const UPDATE_VERSION_RE = /^v?\d+\.\d+\.\d+(?:(?:[-+][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)|(?:\.(?:post|dev|rc)\d*)|(?:(?:post|dev|rc|a|b)\d*))?$/;
 
@@ -107,6 +119,25 @@ export function useTauriUpdate(isExternalServer = false) {
   const startupScheduledRef = useRef(false);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
+  // Windows kill-on-close: false once a re-arm has failed, and every path that
+  // starts a backend has to check it or the orphan risk comes straight back.
+  const cleanupRearmedRef = useRef(true);
+  // A webview reload rebuilds this hook with the ref back at its initial value
+  // while the native job may still be disarmed, so the first gate of a mount
+  // asks the native side instead of trusting it.
+  const cleanupCheckedRef = useRef(false);
+
+  async function resumeCleanup(): Promise<boolean> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("resume_desktop_update_cleanup");
+      cleanupRearmedRef.current = true;
+    } catch (e) {
+      console.error("Could not re-arm crash cleanup after a failed update:", e);
+      cleanupRearmedRef.current = false;
+    }
+    return cleanupRearmedRef.current;
+  }
 
   function replaceInfo(nextInfo: UpdateInfo | null) {
     infoRef.current = nextInfo;
@@ -281,8 +312,10 @@ export function useTauriUpdate(isExternalServer = false) {
     updatingRef.current = true;
 
     const cleanups: (() => void)[] = [];
-
     try {
+      // A retry re-enters here, and start_backend_update spawns an
+      // environment-mutating child of its own.
+      if (!(await crashCleanupReady())) return;
       const { policy } = await resolveUpdatePolicy();
       if (policy.mode === "manual_linux_package") {
         const version = info?.version ?? updateRef.current?.version;
@@ -348,32 +381,70 @@ export function useTauriUpdate(isExternalServer = false) {
 
       let downloaded = 0;
       let contentLength = 0;
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case "Started":
-            contentLength = event.data.contentLength ?? 0;
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            if (contentLength > 0) {
-              setUpdateProgress(Math.round((downloaded / contentLength) * 100));
-            }
-            break;
-          case "Finished":
-            setUpdatePhase("shell_install");
-            setStatus("installing");
-            break;
-        }
-      });
+      // `update::is_update_running` is already false here, and quitting mid-install
+      // leaves a half-updated app.
+      publishShellUpdateActive(true);
+      try {
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case "Started":
+              contentLength = event.data.contentLength ?? 0;
+              break;
+            case "Progress":
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                setUpdateProgress(
+                  Math.round((downloaded / contentLength) * 100),
+                );
+              }
+              break;
+            case "Finished":
+              setUpdatePhase("shell_install");
+              setStatus("installing");
+              break;
+          }
+        });
+      } catch (installError) {
+        // Failed or cancelled: we keep running, so the cleanup the pre-exit hook
+        // stood down has to come back.
+        await resumeCleanup();
+        throw installError;
+      } finally {
+        publishShellUpdateActive(false);
+      }
 
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      // Deliberately NOT re-arming kill-on-close before the restart: relaunch()
+      // starts the replacement as a child, so it inherits this job, and re-arming
+      // would make this process kill it on the way out.
+      // The whole handoff is inside the recovery scope: anything that throws here
+      // leaves this process running with cleanup still stood down.
+      try {
+        // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a
+        // login start. It only fails when there is a --hidden to suppress, so let it stop the
+        // restart.
+        await invoke("mark_in_app_relaunch");
+        const { relaunch } = await import("@tauri-apps/plugin-process");
+        await relaunch();
+      } catch (relaunchError) {
+        // No replacement process, so the marker would outlive it and unhide a later login start.
+        await invoke("clear_in_app_relaunch").catch(() => {});
+        // Still this process, so the cleanup has to come back after all.
+        await resumeCleanup();
+        throw relaunchError;
+      }
     } catch (e) {
       console.error("Update failed:", e);
       const msg = String(e);
 
       // Shell update failed, so restart the backend on the updated code.
       if (phaseRef.current === "shell_download" || phaseRef.current === "shell_install") {
+        // A backend started under a job that still has kill-on-close disabled is
+        // the orphan this PR exists to prevent, so retry the re-arm and stop here
+        // if it will not take.
+        if (!(await crashCleanupReady())) {
+          retainFailure(msg, phaseRef.current ?? "shell_install");
+          return;
+        }
         try {
           const { invoke } = await import("@tauri-apps/api/core");
           await invoke("start_server", { port: 8888 });
@@ -407,8 +478,33 @@ export function useTauriUpdate(isExternalServer = false) {
     await installUpdate();
   }
 
+  /** Every path that starts a child has to clear this first. */
+  async function crashCleanupReady(): Promise<boolean> {
+    if (!cleanupCheckedRef.current) {
+      cleanupCheckedRef.current = true;
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        cleanupRearmedRef.current = await invoke<boolean>("desktop_update_cleanup_armed");
+      } catch {
+        // On the desktop this is the one answer we cannot assume: fail closed
+        // and let the gate below re-arm. In the browser there is no job at all.
+        cleanupRearmedRef.current = !isTauri;
+      }
+    }
+    if (cleanupRearmedRef.current) return true;
+    if (await resumeCleanup()) return true;
+    setError(
+      "Crash cleanup could not be re-armed. Restart Unsloth before continuing.",
+    );
+    setStatus("error");
+    return false;
+  }
+
   async function skipAndRestart() {
     const skippedError = error;
+    // Same gate as the recovery path: this is offered on every error, so it is
+    // the other way a user could start a backend under a disarmed job.
+    if (!(await crashCleanupReady())) return;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("start_server", { port: 8888 });

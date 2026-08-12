@@ -20,6 +20,7 @@ never triggers the heavy load.
 
 from __future__ import annotations
 
+import os
 import threading
 from functools import partial
 from pathlib import Path
@@ -35,6 +36,10 @@ DEFAULT_HEARTBEAT_INTERVAL = 30.0
 DEFAULT_STALL_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 90.0
 DEFAULT_HTTP_STALL_TIMEOUT = 180.0
+# Xet workers spent per download before the transport changes. A wedged transfer usually clears on a
+# fresh process, and the retry replays only the in-flight file: the worker runs
+# snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
+DEFAULT_XET_ATTEMPTS = 2
 
 # --- lazy shared-backend loader ----------------------------------------------------------------
 _shared: Any = None
@@ -46,6 +51,29 @@ _shared_import_error: Optional[BaseException] = None
 # it set for the life of the process. RLock because child_environment_for_spawn holds it across a
 # spawn and legitimately nests (its own _spawn_env_lock is an RLock for the same reason).
 _load_lock = threading.RLock()
+
+
+def _gpu_present() -> bool:
+    """Whether this host has a usable accelerator, decided WITHOUT importing unsloth_zoo.
+
+    Only torch is consulted (already imported by the time any download helper runs), and any
+    failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    """
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 -- no torch at all: the light path is the right one
+        return False
+    for probe in (
+        lambda: torch.cuda.is_available(),
+        lambda: torch.backends.mps.is_available(),
+        lambda: torch.xpu.is_available(),
+    ):
+        try:
+            if probe():
+                return True
+        except Exception:  # noqa: BLE001 -- a missing backend is just "not this one"
+            continue
+    return False
 
 
 def _load_shared() -> bool:
@@ -70,6 +98,21 @@ def _load_shared() -> bool:
             # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
             _shared_import_error = exc
             import os as _os
+
+            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path, injecting triton and bitsandbytes
+            # STUBS into sys.modules for the process. On a working GPU box those stubs raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
+            if _gpu_present():
+                _shared_available = False
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                    "disabled. Not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host "
+                    "has an accelerator and that path would stub out triton/bitsandbytes for the "
+                    "whole process.",
+                    exc,
+                )
+                return False
 
             global _gpu_init_override_depth
             _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
@@ -215,12 +258,65 @@ def xet_env_overrides() -> "dict[str, str]":
         return {}
 
 
+def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dict[str, str]]":
+    """Let unsloth_zoo size a download worker's ``HF_XET_*`` in *env*, in place.
+
+    Returns what it wrote, or ``None`` when the installed zoo has no opinion, which is the caller's
+    signal to fall back. ``fail_fast`` suits a supervised child: our Xet -> HTTP ladder acts on the
+    failure, so short Xet timeouts are right here and wrong process-wide.
+
+    *env* is a copy of this process's environment, which already carries the zoo's import-time
+    sizing, and applying is setdefault: on a zoo that can resize we recompute for *cache_dir*
+    instead, so a backend whose cache has since moved does not hand the worker the old volume's
+    numbers. Older zoos keep the previous behaviour."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    if module is None or not hasattr(module, "apply_xet_env"):
+        return None
+    try:
+        resize = getattr(module, "resize_for_cache_dir", None)
+        if resize is not None:
+            return dict(resize(env, cache_dir))
+        return dict(module.apply_xet_env(env, fail_fast = True))
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("apply_xet_env failed: %s", exc)
+        return None
+
+
 def child_should_disable_xet(config: dict) -> bool:
     """Single source of truth for the per-worker Xet env flip (mirrors
     ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Deliberately lightweight: importing or
     calling it must NOT pull in unsloth_zoo/transformers, so the worker can decide before activating
     the transformers sidecar (see the module docstring)."""
     return bool(config.get("disable_xet"))
+
+
+def is_data_phase_stall(message: str) -> bool:
+    """Whether a watchdog verdict fired AFTER bytes had flowed (mirrors
+    ``unsloth_zoo.hf_xet_fallback.is_data_phase_stall``).
+
+    "did not start" is the pre-first-byte trip, as likely slow metadata or a cache lock as a broken
+    Xet; the others mean the transfer moved and then wedged, which a fresh worker recovers from. The
+    lifecycle decides both whether to spend another Xet worker and whether to charge a health
+    failure on this one rule, so the two cannot disagree. Local for the same reason as
+    ``child_should_disable_xet``: the stall path must not depend on the heavy import."""
+    return "did not start" not in (message or "")
+
+
+def xet_attempts() -> int:
+    """Xet workers a download may spend before HTTP (mirrors
+    ``unsloth_zoo.hf_xet_fallback.xet_attempts``): ``UNSLOTH_XET_ATTEMPTS``, default 2, clamped to 8;
+    junk or non-positive falls back to the default. ``1`` restores the straight-to-HTTP ladder."""
+    raw = os.environ.get("UNSLOTH_XET_ATTEMPTS")
+    if not raw:
+        return DEFAULT_XET_ATTEMPTS
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_XET_ATTEMPTS
+    if value <= 0:
+        return DEFAULT_XET_ATTEMPTS
+    return min(value, 8)
 
 
 # --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
@@ -444,12 +540,16 @@ __all__ = [
     "DEFAULT_HEARTBEAT_INTERVAL",
     "DEFAULT_HTTP_STALL_TIMEOUT",
     "DEFAULT_STALL_TIMEOUT",
+    "DEFAULT_XET_ATTEMPTS",
     "DownloadStallError",
     "child_should_disable_xet",
+    "is_data_phase_stall",
+    "xet_attempts",
     "get_hf_download_state",
     "record_xet_outcome",
     "start_watchdog",
     "xet_env_overrides",
+    "apply_xet_env",
     "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",
@@ -498,12 +598,38 @@ def hf_hub_download_with_xet_fallback(
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
     cache_dir: Optional[str] = None,
+    reuse_other_cache_root: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
-    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path)."""
+    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
+
+    ``reuse_other_cache_root`` (opt-in) resolves a file cached ONLY under huggingface_hub's
+    import-time root through that root. Studio's cache folder is a setting, so after it changes every
+    cached asset is invisible to a call pinned to the new root: GBs re-download, and a gated base with
+    no valid token 401s even though the bytes are there and the preflight (which checks both roots)
+    already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
+    resolves and a republished file is picked up; the blob is reused, and offline/401
+    hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
+    ``force_download``, whose point is to re-fetch."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
+    if reuse_other_cache_root and not force_download and cache_dir is not None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Only a str is a cached path; a miss is None and a known-absent file is a sentinel.
+            here = try_to_load_from_cache(
+                repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = cache_dir
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(
+                    repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = None
+                )
+                if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                    cache_dir = None
+        except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
     # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
     # shared layer pick its per-transport defaults.

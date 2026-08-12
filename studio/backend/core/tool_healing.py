@@ -90,6 +90,10 @@ _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
     _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
     _TC_FUNC_CLOSED_PAT: "</function>",
+    # Literal in both rehearsal patterns: skips the sub AND its _code_spans scan on the
+    # common answer that has no rehearsal at all.
+    _REHEARSAL_CLOSED_STRIP_RE: "[ARGS]",
+    _REHEARSAL_TAIL_STRIP_RE: "[ARGS]",
 }
 
 
@@ -103,6 +107,28 @@ def strip_tool_patterns(text: str, patterns) -> str:
     return text
 
 
+def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
+    """Replacement for one rehearsal strip match: "" to remove it, else what to keep.
+
+    An inactive name or a quoted example is kept. The tail pattern runs to EOF, so a match
+    that opens on a quoted example can still cover a later real call; keep the quoted part
+    and strip from that call on, or the truncated markup leaks into the answer."""
+    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        return m.group(0)
+    if not _in_code(spans, m.start()):
+        return ""
+    pos = m.start()
+    while True:
+        nxt = pat.search(text, pos + 1)
+        if nxt is None or nxt.start() >= m.end():
+            return m.group(0)
+        if not _in_code(spans, nxt.start()) and (
+            enabled_tool_names is None or nxt.group(1) in enabled_tool_names
+        ):
+            return m.group(0)[: nxt.start() - m.start()]
+        pos = nxt.start()
+
+
 def apply_tool_strip_patterns(
     text: str,
     patterns,
@@ -110,14 +136,19 @@ def apply_tool_strip_patterns(
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
     strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
-    ``None``); every other pattern is removed unconditionally. A closed-pair pattern whose
-    close token is absent is skipped so an unclosed-marker stream stays linear."""
+    ``None``) and the match is not inside markdown code; every other pattern is removed
+    unconditionally. A closed-pair pattern whose close token is absent is skipped so an
+    unclosed-marker stream stays linear."""
     for pat in patterns:
         token = _PAT_REQUIRED_TOKEN.get(pat)
         if token is not None and token not in text:
             continue
-        if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
+        if pat in _REHEARSAL_STRIP_PATS:
+            # Same two gates the parser applies in _iter_bracket_spans, so a rehearsal that
+            # is not promoted to a call stays visible instead of vanishing from the answer.
+            spans = _code_spans(text)
+            _t = text
+            text = pat.sub(lambda m: _rehearsal_strip(m, pat, _t, spans, enabled_tool_names), text)
         else:
             text = pat.sub("", text)
     return text
@@ -166,6 +197,24 @@ _MISTRAL_BRACKET_RE = re.compile(
 # from being taken as the function name.
 _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 
+# Markdown code: a fenced block (closing fence optional so a streaming block counts) or
+# an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
+# documentation stays text instead of executing. ``>`` container prefixes are allowed so
+# a fence inside a block quote counts. A backtick fence's info string cannot itself contain
+# backticks, so ```` ```a``` ```` opening a line is an inline span and not a fence running
+# to EOF; the closer tolerates a CR so a CRLF block still closes. Both would otherwise
+# swallow the rest of the message and drop a real call after it. Inline runs are enumerated by length (double before
+# single) rather than backreferenced: ``code`` must be one span and not two empty pairs
+# around live markup, but a ``(`+)..\1`` form backtracks over every candidate length and
+# turned 21 KB of unmatched runs into a 1.8s scan. A lone backtick is valid content inside
+# a doubled span, so only a run of two closes it.
+_CODE_SPAN_RE = re.compile(
+    r"^[ \t]*(?:>[ \t]*)*(?:```+[^`\n]*|~~~+[^\n]*)$"
+    r".*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t\r]*$|\Z)"
+    r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
+    re.DOTALL | re.MULTILINE,
+)
+
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
 
@@ -207,7 +256,14 @@ def _balanced_brace_end(
     brace_start: int,
     *,
     gemma_quotes: bool = False,
-) -> int:
+) -> int | None:
+    """Index of the ``}`` matching the ``{`` at ``brace_start``, or None.
+
+    Shared with ``core/inference/tool_call_parser.py``. The guard makes a mispositioned
+    call return None instead of reporting an unrelated brace.
+    """
+    if brace_start >= len(content) or content[brace_start] != "{":
+        return None
     depth = 0
     i = brace_start
     in_string = False
@@ -236,12 +292,27 @@ def _balanced_brace_end(
             if depth == 0:
                 return i
         i += 1
-    return -1
+    return None
 
 
-def _balanced_bracket_end(src: str, start: int) -> int:
-    """Index of the ``]`` matching the ``[`` at ``start``, or -1. Tracks nested
-    ``[]``/``{}`` and double-quoted strings."""
+def _balanced_bracket_end(
+    src: str,
+    start: int,
+    *,
+    braces_count: bool = True,
+) -> int | None:
+    """Index of the ``]`` matching the ``[`` at ``start``, or None. Tracks nesting and
+    double-quoted strings.
+
+    With ``braces_count`` (the default) braces count toward the same depth, so a
+    truncated object cannot close an array early; the Gemma array normalizer needs that.
+    The display strip in ``tool_call_parser.py`` counts brackets only, so a stray ``}``
+    cannot end the span early and leave the rest of a malformed call visible.
+    """
+    if start >= len(src) or src[start] != "[":
+        return None
+    openers = "[{" if braces_count else "["
+    closers = "]}" if braces_count else "]"
     depth = 0
     i = start
     in_string = False
@@ -255,14 +326,14 @@ def _balanced_bracket_end(src: str, start: int) -> int:
                 in_string = False
         elif ch == '"':
             in_string = True
-        elif ch in "[{":
+        elif ch in openers:
             depth += 1
-        elif ch in "]}":
+        elif ch in closers:
             depth -= 1
             if depth == 0:
                 return i
         i += 1
-    return -1
+    return None
 
 
 def _decode_array_items(text: str, body_start: int, body_end: int):
@@ -297,6 +368,25 @@ def _decode_array_items(text: str, body_start: int, body_end: int):
     return objs, ends
 
 
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Markdown code spans, used to keep a quoted rehearsal out of the call set.
+
+    A line-start fence cannot occur inside a call's JSON body (a raw newline is
+    invalid JSON there), so no tool-markup exclusion is needed; a stray inline span
+    can at worst hide a same-line rehearsal, which drops a call rather than
+    inventing one. Spans are ordered and non-overlapping, so ``_in_code`` bisects
+    them instead of rescanning from the front per candidate."""
+    if "`" not in text and "~~~" not in text:
+        return []
+    return [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+
+
+def _in_code(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``spans`` (ordered, non-overlapping)."""
+    i = bisect.bisect_right(spans, (pos, pos)) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
+
+
 def _iter_bracket_spans(
     text: str,
     start: int = 0,
@@ -312,6 +402,12 @@ def _iter_bracket_spans(
     prose ``foo[ARGS]{..}`` (foo disabled) is neither parsed nor stripped. Explicit
     [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric.
 
+    A rehearsal inside markdown code (fenced block or inline span) is documentation
+    for the same reason -- the syntax has no sentinel, so quoting it would otherwise
+    BE a call -- and is likewise neither parsed nor stripped. Explicit markers stay
+    unconditional there too: a ```json block is still a real call for the templates
+    that emit one.
+
     Balance-only (no JSON validation) so strip and parse share one scan. The cursor
     jumps past each consumed span, so a marker inside consumed JSON is never
     re-matched and each regex re-searches only once its match falls behind: linear."""
@@ -323,6 +419,7 @@ def _iter_bracket_spans(
     )
     nexts = {kind: rx.search(text, start) for kind, rx in specs}
     cursor = start
+    code_spans: list | None = None  # computed on the first rehearsal candidate only
     while cursor < n:
         for kind, rx in specs:
             m = nexts[kind]
@@ -334,7 +431,6 @@ def _iter_bracket_spans(
         kind, m = min(live, key = lambda km: km[1].start())
         if kind == "array":
             end = _balanced_bracket_end(text, m.end())
-            end = None if end < 0 else end
         else:
             end = _balanced_json_span(text, m.end())
         if end is None:
@@ -349,6 +445,13 @@ def _iter_bracket_spans(
             # Inactive-name rehearsal is prose: advance past its body without yielding.
             cursor = end + 1
             continue
+        if kind == "rehearsal":
+            if code_spans is None:
+                code_spans = _code_spans(text)
+            if _in_code(code_spans, m.start()):
+                # Quoted syntax, not a call: advance past its body without yielding.
+                cursor = end + 1
+                continue
         yield (m.start(), end + 1, kind, m)
         cursor = end + 1
 
@@ -489,7 +592,7 @@ def _quote_gemma_object_keys(src: str) -> str:
                 # Array value: quote bare string elements (e.g. labels:[bug,ui])
                 # so json.loads succeeds instead of dropping the call.
                 arr_end = _balanced_bracket_end(src, i)
-                if arr_end < 0:
+                if arr_end is None:
                     parts.append(src[i:])
                     i = len(src)
                 else:
@@ -529,20 +632,42 @@ def _gemma_arguments_to_json(args_src: str) -> dict:
     return json.loads(src)
 
 
-def _inside_open_parameter(content: str, pos: int) -> bool:
-    """Return True when ``pos`` falls inside an unclosed parameter value."""
+def _inside_open_parameter(
+    content: str,
+    pos: int,
+    *,
+    param_start_re = None,
+    param_closers = (_PARAM_CLOSE_TAG,),
+    func_closers = (_FUNC_CLOSE_TAG,),
+) -> bool:
+    """Return True when ``pos`` falls inside an unclosed parameter value.
+
+    The opener regex and closer tags are parameters so
+    ``core/inference/tool_call_parser.py`` can share this body with its wider vocabulary
+    (``<param name="...">`` openers, ``</param>`` / ``</tool_call>`` closers).
+    """
+    if param_start_re is None:
+        param_start_re = _TC_PARAM_START_RE
     last_param_start = -1
-    for match in _TC_PARAM_START_RE.finditer(content, 0, pos):
+    for match in param_start_re.finditer(content, 0, pos):
         last_param_start = match.start()
     if last_param_start < 0:
         return False
     # The parameter's OWN close tag decides: if it closes after ``pos`` the position is
     # argument data (even across literal function closes); an unclosed one falls back to func close.
-    own_close = content.find(_PARAM_CLOSE_TAG, last_param_start)
-    if own_close >= 0:
-        return own_close > pos
-    func_close = content.find(_FUNC_CLOSE_TAG, last_param_start)
-    return func_close < 0 or pos < func_close
+    own_closes = [
+        found
+        for found in (content.find(tag, last_param_start) for tag in param_closers)
+        if found >= 0
+    ]
+    if own_closes:
+        return min(own_closes) > pos
+    func_closes = [
+        found
+        for found in (content.find(tag, last_param_start) for tag in func_closers)
+        if found >= 0
+    ]
+    return not func_closes or pos < min(func_closes)
 
 
 def _func_close_index(content: str, body_start: int, body: str) -> int:
@@ -619,7 +744,8 @@ def _build_markers(content: str):
             if _inside_open_parameter(content, m.start()):
                 continue
             brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            markers.append((m.start(), brace_end, kind, m))
+            # Keep the ``-1`` sentinel: ``marker_coverage`` consumers test ``brace_end < 0``.
+            markers.append((m.start(), -1 if brace_end is None else brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
     return markers
 
@@ -975,7 +1101,7 @@ def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
         if start < cursor:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
-        if brace_end < 0:
+        if brace_end is None:
             # Unbalanced: nothing completes from here on. Drop the rest if final,
             # else keep it; stop either way (rescanning would be quadratic).
             if final:
@@ -1006,7 +1132,7 @@ def _gemma_span_ranges(text: str) -> list:
         if start < cursor:
             continue
         brace_end = _balanced_brace_end(text, match.end() - 1, gemma_quotes = True)
-        if brace_end < 0:
+        if brace_end is None:
             break
         close = _TC_GEMMA_END_TAG_RE.search(text, brace_end + 1)
         if close is None:

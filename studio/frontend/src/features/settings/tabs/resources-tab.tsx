@@ -11,6 +11,10 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuVramUsedIsPerDevice,
+  resolveGpuVramUsedGb,
+} from "@/hooks/gpu-vram";
+import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
@@ -26,9 +30,11 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -183,10 +189,14 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 
 export function ResourcesTab() {
   const t = useT();
-  const [liveUpdates, setLiveUpdates] = useState(true);
+  const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
+  const setLiveUpdates = useSettingsPanelPrefsStore(
+    (s) => s.setResourcesLiveUpdates,
+  );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  // always fetch once: the switch is persisted now, so gating the hook on it
+  // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
-    enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
@@ -232,15 +242,13 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const vramTotal = aggregateGpuMemoryTotalGb(devices);
-    // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-    // fabricates a 0-used total, so the aggregate is unknown if any device is.
-    const vramUsageKnown =
-      devices.length > 0 &&
-      devices.every((device) => isFiniteNumber(device.vram_used_gb));
-    const vramUsed = vramUsageKnown
-      ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
-      : null;
-    const vramFree = vramUsageKnown
+    // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+    // total, so the device's own row stays unknown. The host figure can still be
+    // known when no device's is (#7452).
+    const perDeviceKnown = gpuVramUsedIsPerDevice(devices);
+    const vramUsed = resolveGpuVramUsedGb(displayedGpu);
+    const vramUsageKnown = vramUsed !== null;
+    const vramFree = perDeviceKnown
       ? devices.reduce(
           (sum, device) =>
             sum +
@@ -251,7 +259,9 @@ export function ResourcesTab() {
               )),
           0,
         )
-      : null;
+      : vramUsed !== null
+        ? Math.max(0, vramTotal - vramUsed)
+        : null;
     const vramPercent =
       vramUsageKnown && isFiniteNumber(vramUsed) && vramTotal > 0
         ? (vramUsed / vramTotal) * 100
@@ -448,14 +458,16 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.gpu.title")}>
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
-            <span className="text-muted-foreground">GGUF inference</span>
+            <span className="text-muted-foreground">
+              {t("settings.resources.gpu.ggufInference")}
+            </span>
             <span className="text-right font-mono text-xs uppercase text-foreground">
               {separateInferenceGpu.backend ?? "GPU"}
               {separateInferenceGpu.available
                 ? inferenceVramTotal
                   ? ` · ${formatGiB(inferenceVramTotal)}`
                   : ""
-                : " · unavailable"}
+                : ` · ${t("settings.resources.gpu.unavailable")}`}
             </span>
           </div>
         )}
@@ -560,6 +572,8 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
+      <ModelMemorySection />
+
       <SettingsSection title={t("settings.resources.storage.title")}>
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
@@ -574,6 +588,7 @@ export function ResourcesTab() {
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
+          hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">

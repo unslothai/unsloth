@@ -26,11 +26,10 @@ export {
   type ApiModelOverride,
   type ApiModelOverrides,
 } from "./api/model-overrides";
-export {
-  useActiveModelConfig,
-} from "./hooks/use-active-model-config";
+export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
@@ -48,6 +47,8 @@ export {
   normalizeMaxSeqLength,
   type PerModelConfig,
   adoptLegacyConfigKey,
+  isServedByMlx,
+  presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

@@ -30,9 +30,11 @@ def _make_run(
     cuda_version = "12.8",
     torch_rc = 0,
     smi_rc = 0,
+    compute_caps = ("8.6",),
 ):
     """subprocess.run side_effect: torch-classify probe (sys.executable, bytes
-    stdout) vs nvidia-smi version probe (smi path, text=True), keyed on the executable."""
+    stdout) vs the nvidia-smi version / compute-capability probes (smi path,
+    text=True), keyed on the executable."""
 
     def _run(cmd, *args, **kwargs):
         result = MagicMock()
@@ -41,9 +43,11 @@ def _make_run(
             result.returncode = torch_rc
             result.stdout = (torch_state + "\n").encode()
             return result
-        # nvidia-smi version probe (text = True)
         result.returncode = smi_rc
-        out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
+        if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
+            out = "".join(f"{cap}\n" for cap in compute_caps)
+        else:
+            out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
         result.stdout = out if kwargs.get("text") else out.encode()
         return result
 
@@ -58,6 +62,8 @@ def _run_cuda_repair(
     cuda_version = "12.8",
     torch_rc = 0,
     smi_rc = 0,
+    compute_caps = ("8.6",),
+    machine = "x86_64",
     is_macos = False,
     is_windows = False,
     no_torch = False,
@@ -71,7 +77,10 @@ def _run_cuda_repair(
 
     cvd controls CUDA_VISIBLE_DEVICES: None removes it from the env, any string sets it.
     index_family sets UNSLOTH_TORCH_INDEX_FAMILY (the explicit wheel-index pin).
-    index_url sets UNSLOTH_TORCH_INDEX_URL (the full-URL pin form)."""
+    index_url sets UNSLOTH_TORCH_INDEX_URL (the full-URL pin form).
+    compute_caps is what nvidia-smi reports for --query-gpu=compute_cap; machine
+    pins platform.machine() so the architecture policy behaves the same on any test
+    host."""
     env = {}
     if rocm_marker:
         env["UNSLOTH_ROCM_TORCH_INSTALLED"] = "1"
@@ -92,6 +101,7 @@ def _run_cuda_repair(
         patch.object(stack_mod, "IS_MACOS", is_macos),
         patch.object(stack_mod, "IS_WINDOWS", is_windows),
         patch.object(stack_mod, "NO_TORCH", no_torch),
+        patch.object(stack_mod.platform, "machine", return_value = machine),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
@@ -99,7 +109,7 @@ def _run_cuda_repair(
         patch.object(
             stack_mod.subprocess,
             "run",
-            side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc),
+            side_effect = _make_run(torch_state, cuda_version, torch_rc, smi_rc, compute_caps),
         ),
         patch.dict(stack_mod.os.environ, env, clear = False),
     ):
@@ -407,6 +417,244 @@ class TestCudaIndexResolution:
         ):
             url = _detect_cuda_torch_index_url()
         assert url == f"{stack_mod._PYTORCH_WHL_BASE}/cu126"
+
+
+# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs a
+# pre-Turing GPU its llama.cpp GGUF bundle, so such hosts get cu126 (#7765).
+
+
+class TestPreTuringWheelFamily:
+    def test_volta_host_selects_cu126_over_the_driver_family(self):
+        assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0",)))
+
+    def test_pascal_host_selects_cu126_over_the_driver_family(self):
+        assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "12.8", compute_caps = ("6.1",)))
+
+    def test_turing_host_keeps_the_driver_family(self):
+        assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.5",)))
+
+    def test_mixed_host_within_cu126_range_is_capped(self):
+        # cu126 spans sm_50-90, so serving the older card costs the newer one nothing.
+        for caps in (("7.0", "8.6"), ("6.1", "9.0"), ("5.0", "7.5")):
+            assert "cu126" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
+
+    def test_mixed_host_outside_cu126_range_keeps_the_driver_family(self):
+        # Blackwell is past cu126's ceiling and Kepler is under its floor, so no family
+        # covers either mix whole. Capping would strand the newer card entirely.
+        for caps in (("7.0", "12.0"), ("3.7", "8.6")):
+            assert "cu130" in _index_url(_run_cuda_repair(cuda_version = "13.0", compute_caps = caps))
+
+    def test_cu126_venv_is_repaired_after_a_blackwell_upgrade(self):
+        # The span cuts both ways: a cu126 venv predating a GPU swap has nothing for
+        # sm_120, and a fresh install on that host would pick cu130.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu126|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("12.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu130" in _index_url(mock_pip)
+
+    def test_cu126_venv_is_kept_when_the_driver_allows_nothing_newer(self):
+        # Same host, CUDA 12.6 driver: cu130 is not installable, so leave it rather
+        # than reinstall cu126 over itself on every update.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu126|2.11.0",
+            cuda_version = "12.6",
+            compute_caps = ("12.0",),
+        )
+        mock_pip.assert_not_called()
+
+    def test_partial_family_is_not_traded_for_another_partial_family(self):
+        # A working V100 + cu126 box gains a Blackwell card. Neither family covers both,
+        # so swapping to cu130 would kill the Volta to revive the Blackwell.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu126|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+        )
+        mock_pip.assert_not_called()
+
+    def test_cu118_kepler_build_is_kept(self):
+        # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement
+        # would strand the GPU that works today.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu118|2.7.1",
+            cuda_version = "13.0",
+            compute_caps = ("3.7",),
+        )
+        mock_pip.assert_not_called()
+
+    def test_uncovered_mix_is_not_repaired_in_a_loop(self):
+        # The cap declines, so the replacement equals the installed family.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu130|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "12.0"),
+        )
+        mock_pip.assert_not_called()
+
+    def test_mixed_host_within_cu126_range_is_repaired(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu130|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0", "8.6"),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_partial_inventory_keeps_the_driver_family(self):
+        assert "cu130" in _index_url(
+            _run_cuda_repair(cuda_version = "13.0", compute_caps = ("7.0", "N/A"))
+        )
+
+    def test_incompatible_family_is_repaired(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu130|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_pre_211_cu128_volta_build_is_kept(self):
+        # torch 2.10's cu128 wheels still shipped sm_70; no reinstall is warranted.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu128|2.10.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        mock_pip.assert_not_called()
+
+    def test_pre_211_cu128_pascal_build_is_repaired(self):
+        # ... but they never shipped sm_61, which only cu126 carries.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu128|2.10.0",
+            cuda_version = "13.0",
+            compute_caps = ("6.1",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_compatible_family_is_kept(self):
+        for state, caps in (
+            ("cuda|cu126|2.11.0", ("7.0",)),
+            ("cuda|cu130|2.11.0", ("7.5",)),
+            ("cuda|cu130|2.11.0", ("7.0", "12.0")),
+            ("cuda|cu130|2.11.0", ("7.0", "N/A")),
+        ):
+            mock_pip = _run_cuda_repair(torch_state = state, cuda_version = "13.0", compute_caps = caps)
+            mock_pip.assert_not_called()
+
+    def test_explicit_pin_wins_over_the_architecture_policy(self):
+        for pin in ("index_family", "index_url"):
+            value = "cu130" if pin == "index_family" else "https://example.test/whl/cu130"
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu130|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("7.0",),
+                **{pin: value},
+            )
+            mock_pip.assert_not_called()
+
+    def test_untagged_cuda_build_is_left_alone(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda||2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        mock_pip.assert_not_called()
+
+    def test_non_x86_host_keeps_the_driver_family(self):
+        # No aarch64 CUDA family ships sm_<80 kernels, so cu126 cannot help there.
+        volta = MagicMock(returncode = 0, stdout = "7.0\n")
+        with patch.object(stack_mod.subprocess, "run", return_value = volta):
+            with patch.object(stack_mod.platform, "machine", return_value = "aarch64"):
+                assert stack_mod._cap_cuda_family_for_pre_turing("cu130", "smi") == "cu130"
+            with patch.object(stack_mod.platform, "machine", return_value = "x86_64"):
+                assert stack_mod._cap_cuda_family_for_pre_turing("cu130", "smi") == "cu126"
+
+    def test_permissive_family_is_never_probed(self):
+        # cu126 has nothing older to fall back to, so it must not spawn nvidia-smi.
+        with (
+            patch.object(stack_mod.platform, "machine", return_value = "x86_64"),
+            patch.object(stack_mod.subprocess, "run") as mock_run,
+        ):
+            assert stack_mod._cap_cuda_family_for_pre_turing("cu126", "smi") == "cu126"
+            assert stack_mod._cap_cuda_family_for_pre_turing("cpu", "smi") == "cpu"
+        mock_run.assert_not_called()
+
+    def test_family_spans_track_the_pytorch_wheel_matrix(self):
+        # Read off pytorch's .ci/manywheel/build_cuda.sh at each release tag. cu118 kept
+        # Kepler: torch 2.7 still built sm_37 for it.
+        assert stack_mod._cuda_family_sm_range("cu118") == (37, 90)
+        assert stack_mod._cuda_family_sm_range("cu124") == (50, 90)
+        assert stack_mod._cuda_family_sm_range("cu126") == (50, 90)
+        assert stack_mod._cuda_family_sm_range("cu126", "2.10.0") == (50, 90)
+        assert stack_mod._cuda_family_sm_range("cu128") == (75, 120)
+        assert stack_mod._cuda_family_sm_range("cu128", "2.11.0") == (75, 120)
+        assert stack_mod._cuda_family_sm_range("cu129", "2.9.0") == (70, 120)
+        assert stack_mod._cuda_family_sm_range("cu130", "2.10.0") == (75, 120)
+        assert stack_mod._cuda_family_sm_range("cpu") is None
+        assert stack_mod._cuda_family_sm_range("") is None
+
+    def test_cu128_volta_window_opens_at_torch_28(self):
+        # 2.7's cu128 dropped sm_50-70 when CUDA 12.8 deprecated them; 2.8 put sm_70
+        # back and 2.11 took it away again.
+        assert stack_mod._cuda_family_sm_range("cu128", "2.7.1")[0] == 75
+        assert stack_mod._cuda_family_sm_range("cu128", "2.8.0")[0] == 70
+        assert stack_mod._cuda_family_sm_range("cu128", "2.10.0")[0] == 70
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu128|2.7.1",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+    def test_untagged_pypi_wheel_is_classified_by_its_cuda_runtime(self):
+        # PyPI forbids local versions, so a torch from PyPI has no +cuXXX tag;
+        # torch.version.cuda is the only clue that it is a CUDA 13 build.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda||2.11.0|cu130",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        assert mock_pip.call_count == 1
+        assert "cu126" in _index_url(mock_pip)
+
+        healthy = _run_cuda_repair(
+            torch_state = "cuda||2.11.0|cu126",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+        )
+        healthy.assert_not_called()
+
+    def test_repair_is_skipped_when_it_would_reinstall_the_same_family(self):
+        # aarch64 has no CUDA family below sm_80, so the cap declines and the replacement
+        # would be the condemned wheel itself, once per update forever.
+        mock_pip = _run_cuda_repair(
+            torch_state = "cuda|cu130|2.11.0",
+            cuda_version = "13.0",
+            compute_caps = ("7.0",),
+            machine = "aarch64",
+        )
+        mock_pip.assert_not_called()
+
+    def test_compute_sms_rejects_an_unreadable_inventory(self):
+        def _sms(stdout, returncode = 0):
+            with patch.object(
+                stack_mod.subprocess,
+                "run",
+                return_value = MagicMock(returncode = returncode, stdout = stdout),
+            ):
+                return stack_mod._nvidia_compute_sms("nvidia-smi")
+
+        assert _sms("7.0\n12.0\n") == [70, 120]
+        assert _sms("  8.6  \n\n") == [86]
+        assert _sms("7.0\nN/A\n") is None
+        assert _sms("") is None
+        assert _sms("7.0\n", returncode = 1) is None
 
 
 if __name__ == "__main__":

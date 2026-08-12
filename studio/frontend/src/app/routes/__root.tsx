@@ -6,7 +6,11 @@ import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
-import { hasAuthToken } from "@/features/auth";
+import {
+  AUTH_SESSION_CLEARED_EVENT,
+  AUTH_SESSION_STORED_EVENT,
+  hasAuthToken,
+} from "@/features/auth";
 import {
   ChatPage,
   type ChatSearch,
@@ -16,6 +20,7 @@ import {
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
@@ -33,7 +38,18 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
-import { Suspense, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  lazy,
+
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+
+  useState,
+} from "react";
 import { AppProvider } from "../provider";
 
 declare module "@tanstack/react-router" {
@@ -54,9 +70,63 @@ function RouteFallback() {
   );
 }
 
+// ImagesPage is mounted persistently below (not via the /images route) so an in-flight batch survives leaving the tab,
+// mirroring ChatPage. Kept lazy so its bundle still loads only on the first /images visit.
+const ImagesPage = lazy(() =>
+  import("@/features/images").then((m) => ({ default: m.ImagesPage })),
+);
+
+// VideoPage gets the same persistent mount so an in-flight generation survives leaving the tab; still lazy on first /video visit.
+const VideoPage = lazy(() =>
+  import("@/features/video").then((m) => ({ default: m.VideoPage })),
+);
+
+// AudioPage gets the same persistent mount so an in-flight generation keeps its UI state; still lazy on first /audio visit.
+const AudioPage = lazy(() =>
+  import("@/features/audio").then((m) => ({ default: m.AudioPage })),
+);
+
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
   return null;
+}
+
+
+function CredentialBootstrapGate({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  const runRevision = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    const reconcile = () => {
+      const revision = ++runRevision.current;
+      if (!hasAuthToken()) {
+        setReady(false);
+        return;
+      }
+      setReady(false);
+      void bootstrapPersistedCredentials().finally(() => {
+        if (
+          active &&
+          revision === runRevision.current &&
+          hasAuthToken()
+        ) {
+          setReady(true);
+        }
+      });
+    };
+
+    window.addEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
+    window.addEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
+    reconcile();
+    return () => {
+      active = false;
+      runRevision.current += 1;
+      window.removeEventListener(AUTH_SESSION_CLEARED_EVENT, reconcile);
+      window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
+    };
+  }, []);
+  return ready ? children : <RouteFallback />;
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -75,10 +145,31 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/api-monitor",
 ]);
 
+// Paths that render their own "still checking" state and self-gate once the verdict lands.
+// The redirect below is one-way, so acting on the pre-measurement guess strands a healthy host
+// on /chat; these two wait it out instead. Everything else keeps the old behaviour.
+// /video is allowed outright below, so this is in practice what keeps /studio off the guess. It
+// stays listed so that admission is the only thing /video depends on, not both.
+const SELF_GATED_WHILE_UNKNOWN = ["/studio", "/video"];
+
+function waitsOutUnknownVerdict(pathname: string): boolean {
+  return SELF_GATED_WHILE_UNKNOWN.some(
+    (base) => pathname === base || pathname.startsWith(`${base}/`),
+  );
+}
+
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
+  // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
+  if (pathname === "/images" || pathname.startsWith("/images/")) return true;
+  // Audio inference is CPU-capable too: GGUF TTS through llama.cpp and STT through the whisper.cpp / mtmd sidecars.
+  if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
+  // Video follows /export: the page explains an unsupported host itself from the backend's video
+  // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
+  // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
+  if (pathname === "/video" || pathname.startsWith("/video/")) return true;
   return false;
 }
 
@@ -87,15 +178,20 @@ export const Route = createRootRoute({
     // Fetch platform info before the chat-only guard. fetchDeviceType caches,
     // so later navigations are instant.
     await fetchDeviceType();
-    const chatOnly = usePlatformStore.getState().isChatOnly();
-    if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
+    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const unmeasured = capabilitiesUnknown();
+    if (
+      isChatOnly() &&
+      !isChatOnlyAllowed(location.pathname) &&
+      !(unmeasured && waitsOutUnknownVerdict(location.pathname))
+    ) {
       throw redirect({ to: "/chat" });
     }
   },
   component: RootLayout,
 });
 
-const HIDDEN_NAVBAR_ROUTES = ["/onboarding", "/login", "/change-password"];
+const HIDDEN_NAVBAR_ROUTES = ["/login", "/change-password"];
 
 // Fallback when no matched route declares a `staticData.title`.
 const DEFAULT_DOCUMENT_TITLE = "Unsloth";
@@ -147,6 +243,35 @@ function RootLayout() {
   }
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
+
+  // Same persistent mount for /images so a long batch keeps generating off-tab. Mounts lazily on first visit, then stays
+  // mounted, hidden+inert while off-route. `active` is a visibility flag only: it lags the matches by a render, so ImagesPage
+  // reads ?model= from its own match instead of trusting it.
+  const isImagesRoute = pathname === "/images";
+  const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
+  if (isImagesRoute && !imagesMounted) {
+    setImagesMounted(true);
+  }
+  const shouldMountImages = isImagesRoute || imagesMounted;
+
+  // Same persistent mount for /video so a long generation keeps running off-tab. Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
+  const isVideoRoute = pathname === "/video";
+  const [videoMounted, setVideoMounted] = useState(isVideoRoute);
+  if (isVideoRoute && !videoMounted) {
+    setVideoMounted(true);
+  }
+  const shouldMountVideo = isVideoRoute || videoMounted;
+
+  // Same persistent mount for /audio so generation UI state survives leaving the tab.
+  const isAudioRoute = pathname === "/audio";
+  const [audioMounted, setAudioMounted] = useState(isAudioRoute);
+  if (isAudioRoute && !audioMounted) {
+    setAudioMounted(true);
+  }
+  const shouldMountAudio = isAudioRoute || audioMounted;
+  // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
+  // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -227,8 +352,8 @@ function RootLayout() {
     chatRuntime.setIncognito(false);
   }, [isChatRoute]);
 
-  return (
-    <AppProvider>
+  const content = (
+    <>
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
@@ -253,11 +378,11 @@ function RootLayout() {
         >
           <AppSidebar />
           <SidebarInset
-            className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}
+            className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
           >
             <Navbar />
             <div
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
@@ -275,12 +400,57 @@ function RootLayout() {
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
+              {/* Same keep-alive treatment for Images so a long batch keeps generating off-tab; `active` force-closes its body-portaled overlays (model selector, recipe popover, aspect dropdown) so none bleed over another tab while hidden. */}
+              {shouldMountImages && (
+                <div
+                  className={
+                    isImagesRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isImagesRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <ImagesPage active={isImagesRoute} />
+                  </Suspense>
+                </div>
+              )}
+              {/* Same keep-alive treatment for Video so a long generation keeps running off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
+              {shouldMountVideo && (
+                <div
+                  className={
+                    isVideoRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isVideoRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <VideoPage active={isVideoRoute} />
+                  </Suspense>
+                </div>
+              )}
+              {/* Same keep-alive treatment for Audio so generation and training UI state survive off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
+              {shouldMountAudio && (
+                <div
+                  className={
+                    isAudioRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isAudioRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <AudioPage active={isAudioRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}
@@ -299,6 +469,16 @@ function RootLayout() {
             </div>
           </SidebarInset>
         </SidebarProvider>
+      )}
+    </>
+  );
+
+  return (
+    <AppProvider>
+      {!isAuthFlowRoute ? (
+        <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
+      ) : (
+        content
       )}
     </AppProvider>
   );

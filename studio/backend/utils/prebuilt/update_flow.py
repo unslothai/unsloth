@@ -25,7 +25,7 @@ from typing import Callable, Optional
 import structlog
 
 from utils.child_stdio import utf8_child_env
-from utils.process_lifetime import child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid, terminate_pid
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +36,10 @@ RESOLVE_TTL_SECONDS = 24 * 60 * 60
 # Matches the installer's download progress lines, e.g.
 # "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
 PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
+# The installer announces each server it starts to validate a build. They are
+# grandchildren, so a parent-death signal or a sweep of the installer pid alone
+# never reaches them, and one left running holds the GPU and the staged files.
+CHILD_PID_LINE_RE = re.compile(r"\AUNSLOTH_INSTALLER_CHILD (started|stopped) (\d+)\Z")
 # The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
 
@@ -282,6 +286,34 @@ def rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
+class AnnouncedChildren:
+    """The pids the installer reported started, drained one at a time.
+
+    Two threads drain it: the timeout watchdog, and the reader thread in its
+    `finally` (``Timer.cancel()`` does not stop a callback that has already
+    begun). A bare ``while pids: pids.pop()`` raises KeyError out of the loser
+    of that race, replacing the installer error the caller is meant to see, so
+    emptiness and the take are decided together.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pids: set[int] = set()
+
+    def add(self, pid: int) -> None:
+        with self._lock:
+            self._pids.add(pid)
+
+    def discard(self, pid: int) -> None:
+        with self._lock:
+            self._pids.discard(pid)
+
+    def take(self) -> Optional[int]:
+        """One pid, or None once there are none left."""
+        with self._lock:
+            return self._pids.pop() if self._pids else None
+
+
 def stream_installer(
     cmd: list[str],
     env: dict[str, str],
@@ -310,13 +342,34 @@ def stream_installer(
         errors = "replace",
         # Make the Python child emit the UTF-8 we decode above.
         env = utf8_child_env(env),
+        # Deliberately NOT start_new_session: the desktop stop path force-kills
+        # this backend's process group, and a session of its own would take the
+        # installer out of it, leaving it rewriting files after the app reports
+        # the backend stopped.
         **child_popen_kwargs(),
     )
+    # The kwargs above are empty on macOS, so record it: an installer that
+    # outlives its owner keeps replacing files under the next launch.
+    adopt_pid(proc.pid)
     timed_out = threading.Event()
+
+    announced = AnnouncedChildren()
+
+    def _stop_announced() -> None:
+        # This process keeps running after an installer error, so no startup
+        # sweep is coming and its own record shields these from one anyway: a
+        # validation server left here holds the GPU and the staged files
+        # through the retry that follows.
+        while True:
+            pid = announced.take()
+            if pid is None:
+                return
+            terminate_pid(pid)
 
     def _kill_on_timeout() -> None:
         timed_out.set()
         proc.kill()
+        _stop_announced()
 
     watchdog = threading.Timer(timeout_seconds, _kill_on_timeout)
     watchdog.daemon = True
@@ -328,6 +381,18 @@ def stream_installer(
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
+            child = CHILD_PID_LINE_RE.match(line.strip())
+            if child is not None:
+                # Recorded while it runs and dropped when the installer says it
+                # stopped; one it never got to report stays for the sweep.
+                started, child_pid = child.group(1) == "started", int(child.group(2))
+                if started:
+                    adopt_pid(child_pid)
+                    announced.add(child_pid)
+                else:
+                    forget_pid(child_pid)
+                    announced.discard(child_pid)
+                continue
             m = PROGRESS_LINE_RE.search(line)
             if m is None:
                 continue
@@ -335,6 +400,11 @@ def stream_installer(
         returncode = proc.wait()
     finally:
         watchdog.cancel()
+        if proc.poll() is not None:
+            forget_pid(proc.pid)
+        # Anything it started and never reported as stopped, whether it timed
+        # out, exited nonzero, or died mid-line.
+        _stop_announced()
     if timed_out.is_set():
         raise RuntimeError(f"installer timed out after {timeout_seconds}s")
     if returncode != 0:

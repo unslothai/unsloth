@@ -25,14 +25,9 @@ from loggers import get_logger
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     _strip_mistral_reasoning,
+    strip_segment as _parser_strip_segment,
     BUDGET_EXHAUSTED_NUDGE,
     MAX_ACT_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS,
@@ -48,14 +43,9 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
     _THINK_CLOSE_RE,
-    _strip_bracket_tag_calls,
     _think_spans_outside_tool_markup,
-    apply_tool_strip_patterns,
     strip_outside_think,
 )
 from core.inference.tool_loop_controller import (
@@ -65,6 +55,10 @@ from core.inference.tool_loop_controller import (
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
+)
+from core.inference.chat_template_helpers import (
+    append_assistant_turn,
+    trailing_assistant_text,
 )
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
@@ -267,24 +261,12 @@ def strip_tool_markup_streaming(
     text = _strip_mistral_reasoning(text)
 
     def _seg(segment: str, is_last: bool) -> str:
-        # Same scan order as the parser's _strip_segment (seg_final -> is_last): balanced
-        # strips first, then the guarded function-XML / GLM scans, then the regex arms
-        # (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-        # segment (a bare ``foo[ARGS]`` before <think> is prose). Rehearsal strips are name-gated.
-        seg = _strip_mistral_closed_calls(segment)
-        seg = _strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
-        if is_last:
-            seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
-        seg = _strip_function_xml_calls(seg, final = is_last)
-        seg = _strip_glm_calls(seg, final = is_last)
-        pats = _PARSER_TOOL_ALL_PATS if is_last else _PARSER_TOOL_CLOSED_PATS
-        for pat in pats:
-            seg = pat.sub("", seg)
-        if is_last:
-            seg = apply_tool_strip_patterns(
-                seg, [_REHEARSAL_TAIL_STRIP_RE], enabled_tool_names = enabled_tool_names
-            )
-        return seg
+        # Scan order lives in the parser's ``strip_segment`` so this path, the GGUF
+        # streaming path and ``strip_tool_markup`` cannot drift. Its end-of-turn arms
+        # run only on the last segment.
+        return _parser_strip_segment(
+            segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
+        )
 
     # Preserve think blocks verbatim: stripping a rehearsed call inside one shrinks then
     # regrows the cumulative text, corrupting append-by-length consumers.
@@ -492,6 +474,7 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
 ) -> Generator[dict, None, None]:
@@ -540,9 +523,11 @@ def run_safetensors_tool_loop(
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
+    # A resumed turn must keep the partial trailing: autoinject appends a tool call
+    # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    )
+    ) or bool(continue_final_message and trailing_assistant_text(conversation))
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
@@ -1047,7 +1032,13 @@ def run_safetensors_tool_loop(
                         MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": intent_text})
+                    # Merges into a resumed partial: the nudge that follows is a user
+                    # turn, so a second assistant turn breaks alternation.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": intent_text},
+                        continue_final_message = continue_final_message,
+                    )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {
@@ -1189,7 +1180,11 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    conversation.append(assistant_msg)
+                    append_assistant_turn(
+                        conversation,
+                        assistant_msg,
+                        continue_final_message = continue_final_message,
+                    )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # A provisional render_html card is already on screen for
@@ -1213,7 +1208,13 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                conversation.append(assistant_msg)
+                # Merges into a resumed partial, so a continued turn that calls a tool
+                # stays one assistant message.
+                append_assistant_turn(
+                    conversation,
+                    assistant_msg,
+                    continue_final_message = continue_final_message,
+                )
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
