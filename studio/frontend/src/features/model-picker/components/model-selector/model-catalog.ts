@@ -83,19 +83,6 @@ const bnb4bit = (
   ...extra,
 });
 
-const fp8Single = (
-  repoId: string,
-  filename: string,
-  approxSizeGb: number,
-): ModelArtifact => ({
-  repoId,
-  format: "fp8",
-  loadKind: "single_file",
-  filename,
-  label: "FP8",
-  approxSizeGb,
-  keywords: ["fp8", "float8"],
-});
 
 const fp8Pipeline = (
   repoId: string,

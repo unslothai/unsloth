@@ -7,6 +7,7 @@ import {
   useMonitorFrameStore,
   useMonitorOverlayStore,
 } from "@/features/settings";
+import { resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import {
@@ -465,14 +466,11 @@ function FloatingMonitorPanel({
     : 0;
   const devices = displayedGpu?.devices ?? [];
   const vramTotal = aggregateGpuMemoryTotalGb(devices);
-  // null usage = unknown (e.g. Windows ROCm perf counter): treating it as 0
-  // fabricates a 0-used readout, so the aggregate is unknown if any device is.
-  const vramUsageKnown =
-    devices.length > 0 &&
-    devices.every((device) => Number.isFinite(device.vram_used_gb));
-  const vramUsed = vramUsageKnown
-    ? devices.reduce((sum, device) => sum + (device.vram_used_gb ?? 0), 0)
-    : 0;
+  // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
+  // readout. The host figure can still be known when no device's is (#7452).
+  const resolvedVramUsed = resolveGpuVramUsedGb(displayedGpu);
+  const vramUsageKnown = resolvedVramUsed !== null;
+  const vramUsed = resolvedVramUsed ?? 0;
   const vramPercent = clampPercent(
     vramUsageKnown && vramTotal > 0 ? (vramUsed / vramTotal) * 100 : 0,
   );

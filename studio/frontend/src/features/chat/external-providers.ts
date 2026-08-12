@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type {
+  ProviderAuthKind,
+  ProviderAuthStatus,
+} from "./api/providers-api";
+
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -16,6 +21,10 @@ export interface ExternalProviderConfig {
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
+
+  /** Sanitized backend-owned authorization state; never contains OAuth material. */
+  authKind?: ProviderAuthKind;
+  authStatus?: ProviderAuthStatus;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**
@@ -105,6 +114,84 @@ export function providerTypeSupportsVision(
   if (NON_VISION_PROVIDER_TYPES.has(providerType)) return false;
   if (VISION_CAPABLE_PROVIDER_TYPES.has(providerType)) return true;
   return null;
+}
+
+
+const REGISTRY_MODEL_CAPABILITIES = new Map<
+  string,
+  Record<string, { vision?: boolean; studio_tools?: boolean }>
+>();
+
+const REGISTRY_MODEL_CAPABILITIES_KEY =
+  "unsloth_chat_provider_model_capabilities";
+let registryCapabilitiesHydrated = false;
+
+function hydrateProviderModelCapabilities(): void {
+  if (registryCapabilitiesHydrated) return;
+  registryCapabilitiesHydrated = true;
+  if (!canUseStorage()) return;
+  try {
+    const parsed = JSON.parse(
+      localStorage.getItem(REGISTRY_MODEL_CAPABILITIES_KEY) ?? "{}",
+    ) as Record<
+      string,
+      Record<string, { vision?: boolean; studio_tools?: boolean }>
+    >;
+    for (const [providerType, capabilities] of Object.entries(parsed)) {
+      if (capabilities && typeof capabilities === "object") {
+        REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
+      }
+    }
+  } catch {
+    // Ignore invalid browser state; the backend registry will repopulate it.
+  }
+}
+
+function persistProviderModelCapabilities(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(
+      REGISTRY_MODEL_CAPABILITIES_KEY,
+      JSON.stringify(Object.fromEntries(REGISTRY_MODEL_CAPABILITIES)),
+    );
+  } catch {
+    // Ignore storage failures; capabilities remain valid for this session.
+  }
+}
+
+export function setProviderModelCapabilities(
+  providerType: string,
+  capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+): void {
+  hydrateProviderModelCapabilities();
+  if (capabilities) REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
+  else REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+  persistProviderModelCapabilities();
+}
+
+
+export function providerModelSupportsVision(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+
+  hydrateProviderModelCapabilities();
+  if (providerType && modelId) {
+    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    if (typeof capability?.vision === "boolean") return capability.vision;
+  }
+  return providerTypeSupportsVision(providerType);
+}
+
+
+export function providerModelSupportsStudioTools(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+  if (!providerType || !modelId) return null;
+  hydrateProviderModelCapabilities();
+  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
+  return typeof value === "boolean" ? value : null;
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";

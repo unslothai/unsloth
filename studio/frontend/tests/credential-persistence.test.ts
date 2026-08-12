@@ -554,7 +554,7 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
 
 
 
-test("pending HF edits can be drained before onboarding navigation", async () => {
+test("pending HF edits can be drained before navigation", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
   const originalFetch = globalThis.fetch;
@@ -631,16 +631,6 @@ test("a superseded successful HF write advances the rollback baseline", async ()
 });
 
 
-test("onboarding exits wait for the latest HF save", () => {
-  for (const relativePath of [
-    "../src/features/onboarding/components/wizard-footer.tsx",
-    "../src/features/onboarding/components/wizard-sidebar.tsx",
-    "../src/features/onboarding/components/wizard-layout.tsx",
-  ]) {
-    const source = readFileSync(new URL(relativePath, import.meta.url), "utf8");
-    assert.match(source, /await waitForHfTokenPersistence\(\)/);
-  }
-});
 
 
 test("new HF edits never write the token back to localStorage", () => {
@@ -704,7 +694,7 @@ test("credential gate follows authentication session transitions", () => {
 
   assert.match(rootSource, /AUTH_SESSION_CLEARED_EVENT, reconcile/);
   assert.match(rootSource, /AUTH_SESSION_STORED_EVENT, reconcile/);
-  assert.match(rootSource, /!isAuthFlowRoute \|\| pathname === "\/onboarding"/);
+  assert.match(rootSource, /\{!isAuthFlowRoute \? \(/);
   assert.match(sessionSource, /const sessionStarted = !localStorage\.getItem\(AUTH_TOKEN_KEY\)/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
   const bootstrapSource = readFileSync(
