@@ -8964,6 +8964,14 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
     # are documented remote modes (README), and the tools run on the host serving
     # Studio, which is then not the device the user is looking at.
+    # _TERMINAL_SHELL_NOTE is carried through unchanged except here: its Git Bash
+    # branch promises a detached program's window appears on the user's desktop,
+    # which only holds while Studio is local.
+    (
+        "opens a window on the user's desktop.",
+        "opens a window on that machine's desktop, which the user sees only if "
+        "they are sitting at it.",
+    ),
     (
         " You are on Windows, and this runs on the user's own machine.",
         " You are on Windows, and this runs wherever Unsloth Studio is running, "
@@ -8991,8 +8999,10 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                               prefix is special only while absent, which is why
 #                               the clause names one inside a conditional and
 #                               never categorically
-#   python, unpatched API    -> only open/io.open/os.open and the mkdir family are
-#                               wrapped: os.rename and os.symlink raise, while
+#   API coverage differs per rewrite -> _makedirs calls _remap only, so the
+#                               generic fallback is open/io.open/os.open alone and
+#                               os.makedirs under a missing parent creates the REAL
+#                               host path. os.rename and os.symlink raise, while
 #                               shutil.copy writes the rewritten file through open
 #                               and then raises in copymode
 #   terminal                 -> the shell's own rules, except for Python it
@@ -9007,11 +9017,13 @@ _FULL_ACCESS_CLAUSE = {
         "already sitting there; under any other missing directory only the base "
         "name is kept, and the write fails outright if that name is taken by an "
         "unrelated file, though rewriting the same absolute path just replaces "
-        "what your own earlier call left there. Both reach only open() and the "
-        "mkdir calls, so os.rename, os.symlink and the like are never rewritten "
-        "and simply fail, and a helper such as shutil.copy can write the "
-        "rewritten file and still raise on a later step. Report where a file "
-        "actually landed rather than the path you asked for."
+        "what your own earlier call left there. The convention rewrite covers "
+        "open() and the mkdir calls; the other covers open() alone, so "
+        "os.makedirs under a missing absolute parent really does create it. "
+        "Neither touches os.rename or os.symlink, which simply fail, and a helper "
+        "such as shutil.copy can write the rewritten file and still raise on a "
+        "later step. Report where a file actually landed rather than the path you "
+        "asked for."
     ),
     "terminal": (
         " The code sandbox is disabled, so absolute paths do resolve as the shell "

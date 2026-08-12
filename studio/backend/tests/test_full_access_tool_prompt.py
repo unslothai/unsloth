@@ -141,7 +141,12 @@ def test_the_substitutions_land_on_every_platform(monkeypatch, platform, tool_na
         # Only open/io.open/os.open and the mkdir family are wrapped. Measured:
         # os.rename and os.symlink raise, and shutil.copy writes the rewritten
         # file through open and then raises in copymode.
-        assert "reach only open() and the mkdir calls" in full
+        # Measured: os.makedirs under a missing absolute parent creates the REAL
+        # host path, because _makedirs calls _remap only and never the generic
+        # fallback, so the two rewrites do NOT cover the same APIs.
+        assert "The convention rewrite covers open() and the mkdir calls" in full
+        assert "the other covers open() alone" in full
+        assert "os.makedirs under a missing absolute parent really does create it" in full
         assert "shutil.copy can write the rewritten file and still raise" in full
     else:
         assert "absolute paths do resolve as the shell resolves them" in full
@@ -169,6 +174,22 @@ def test_python_full_access_description_still_omits_the_shell():
     """Same reason as the sandboxed one: naming a shell there points a model at
     subprocess/os.system instead of the terminal tool."""
     assert "shell" not in _desc(PYTHON_TOOL_FULL_ACCESS).lower()
+
+
+def test_full_access_drops_the_local_desktop_promise(monkeypatch):
+    """The Git Bash branch of the shell note says a detached program opens a
+    window on the user's desktop, which only holds while Studio is local. The
+    Full access text now says it may be remote or containerized, so the two
+    would contradict each other."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\bash.exe")
+    note = tools._build_terminal_shell_note()
+    assert "opens a window on the user's desktop" in note
+    full = tools._to_full_access("X." + note, "terminal")
+    assert "opens a window on the user's desktop" not in full
+    assert "on that machine's desktop" in full
+    # The shell-selection guidance itself has to survive.
+    assert "The shell is bash (Git for Windows)" in full
 
 
 def test_terminal_full_access_keeps_the_shell_note():
