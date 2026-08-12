@@ -268,11 +268,7 @@ def _glob_variants(pattern: str) -> list[str]:
     head, sep, tail = pattern.partition("**/")
     if not sep:
         return [pattern]
-    return [
-        f"{head}{prefix}{t}"
-        for t in _glob_variants(tail)
-        for prefix in ("**/", "")
-    ]
+    return [f"{head}{prefix}{t}" for t in _glob_variants(tail) for prefix in ("**/", "")]
 
 
 def _is_valid_owner(token: str) -> bool:
@@ -305,11 +301,7 @@ def _pattern_matches(pattern: str, path: str) -> bool:
         candidates += [
             "/".join(segments[j:i]) for i in range(1, len(segments) + 1) for j in range(1, i)
         ]
-    return any(
-        fnmatch.fnmatch(c, variant)
-        for c in candidates
-        for variant in _glob_variants(body)
-    )
+    return any(fnmatch.fnmatch(c, variant) for c in candidates for variant in _glob_variants(body))
 
 
 def _effective_owners(text: str, path: str) -> list[str]:
