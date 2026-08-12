@@ -36,7 +36,11 @@ from unsloth.models._attn_mask_compat import _prepare_4d_attention_mask_for_sdpa
 import transformers
 from packaging.version import Version
 import re
-from transformers import AutoModel, AutoConfig
+from transformers import AutoModel, AutoConfig, AutoProcessor
+try:
+    from transformers import AutoModelForImageTextToText
+except ImportError:  # older transformers
+    AutoModelForImageTextToText = None
 import tempfile
 from huggingface_hub import HfApi, get_token
 from ..save import unsloth_save_pretrained_torchao, unsloth_save_pretrained_gguf
@@ -1003,6 +1007,7 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        processor_kwargs = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
@@ -1051,6 +1056,14 @@ class FastSentenceTransformer(FastModel):
             original_model_from_pretrained = AutoModel.from_pretrained
             original_processor_from_pretrained = AutoProcessor.from_pretrained
             original_tokenizer_from_pretrained = AutoTokenizer.from_pretrained
+            # Defensive: a future ST version may build a multimodal model via the
+            # VLM auto-class instead of AutoModel. Redirect it to the same
+            # pre-loaded model so we never load weights twice or pick the wrong
+            # (logits-returning) class. None on older transformers.
+            _patch_vlm_auto_model = AutoModelForImageTextToText is not None
+            original_vlm_from_pretrained = (
+                AutoModelForImageTextToText.from_pretrained if _patch_vlm_auto_model else None
+            )
 
             def return_existing_model(*args, **kwargs):
                 if is_requested_model_name(args, kwargs):
@@ -1067,11 +1080,18 @@ class FastSentenceTransformer(FastModel):
                     return tokenizer
                 return original_processor_from_pretrained(*args, **kwargs)
 
+            def return_existing_vlm_model(*args, **kwargs):
+                if is_requested_model_name(args, kwargs):
+                    return model
+                return original_vlm_from_pretrained(*args, **kwargs)
+
             try:
                 # Temporarily redirect Auto* loading to return our pre-loaded objects
                 AutoModel.from_pretrained = return_existing_model
                 AutoProcessor.from_pretrained = return_existing_processor
                 AutoTokenizer.from_pretrained = return_existing_tokenizer
+                if _patch_vlm_auto_model:
+                    AutoModelForImageTextToText.from_pretrained = return_existing_vlm_model
 
                 transformer_init_params = inspect.signature(Transformer.__init__).parameters
                 trust_remote_code_kwargs = {"trust_remote_code": trust_remote_code}
@@ -1085,10 +1105,17 @@ class FastSentenceTransformer(FastModel):
                 else:
                     transformer_kwargs["model_args"] = trust_remote_code_kwargs.copy()
                     transformer_kwargs["config_args"] = trust_remote_code_kwargs.copy()
+                # Thread user-supplied processor controls (e.g. min_pixels /
+                # max_pixels for VLM embedders) into whichever kwarg ST exposes.
+                extra_processor_kwargs = dict(processor_kwargs or {})
                 if "processor_kwargs" in transformer_init_params:
-                    transformer_kwargs["processor_kwargs"] = trust_remote_code_kwargs.copy()
+                    _pk = trust_remote_code_kwargs.copy()
+                    _pk.update(extra_processor_kwargs)
+                    transformer_kwargs["processor_kwargs"] = _pk
                 elif "tokenizer_args" in transformer_init_params:
-                    transformer_kwargs["tokenizer_args"] = trust_remote_code_kwargs.copy()
+                    _pk = trust_remote_code_kwargs.copy()
+                    _pk.update(extra_processor_kwargs)
+                    transformer_kwargs["tokenizer_args"] = _pk
 
                 # Build via Transformer.load so the saved modality_config is honored: plain
                 # Transformer(...) makes ST 5.x infer a "message" modality for chat-template
@@ -1134,6 +1161,8 @@ class FastSentenceTransformer(FastModel):
                 AutoModel.from_pretrained = original_model_from_pretrained
                 AutoProcessor.from_pretrained = original_processor_from_pretrained
                 AutoTokenizer.from_pretrained = original_tokenizer_from_pretrained
+                if _patch_vlm_auto_model:
+                    AutoModelForImageTextToText.from_pretrained = original_vlm_from_pretrained
 
         # On sentence-transformers >=5.4 `tokenizer` is a read-only property backed
         # by `self.processor` (already wired via the redirect above). On older
@@ -1213,6 +1242,7 @@ class FastSentenceTransformer(FastModel):
         trust_remote_code = False,
         cache_dir = None,
         revision = None,
+        processor_kwargs = None,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
 
@@ -1246,6 +1276,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        processor_kwargs = processor_kwargs,
                     )
                     modules[name] = transformer_module
                 else:
@@ -1289,6 +1320,7 @@ class FastSentenceTransformer(FastModel):
             token,
             cache_dir,
             revision,
+            processor_kwargs = processor_kwargs,
         )
         modules["0"] = transformer_module
 
@@ -1449,6 +1481,24 @@ class FastSentenceTransformer(FastModel):
         return model
 
     @staticmethod
+    def _is_vlm_embedding_config(config):
+        """Detect a multimodal (vision) decoder embedding model from its config.
+
+        Mirrors the VLM detection in loader.py (`vision_config` present, or a
+        `*ForConditionalGeneration` architecture). Used to swap the text
+        tokenizer for an AutoProcessor so images become `pixel_values`, while
+        keeping `auto_model = AutoModel` (the base model returns
+        `last_hidden_state`, which the ST Pooling layer needs -- the
+        `*ForConditionalGeneration` class would return logits and corrupt it).
+        """
+        if config is None:
+            return False
+        if hasattr(config, "vision_config"):
+            return True
+        architectures = getattr(config, "architectures", None) or []
+        return any(str(a).endswith("ForConditionalGeneration") for a in architectures)
+
+    @staticmethod
     def from_pretrained(
         model_name,
         max_seq_length = None,
@@ -1474,6 +1524,7 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
+        processor_kwargs = None,
         **kwargs,
     ):
         try:
@@ -1564,6 +1615,13 @@ class FastSentenceTransformer(FastModel):
             return st_model
 
         # Load-mode validation already ran before the prefetch above.
+        # Keep AutoModel even for multimodal (VLM) embedding models: for e.g.
+        # `qwen3_vl`, AutoModel maps to the base `Qwen3VLModel` whose forward
+        # returns `last_hidden_state` (what the ST Pooling layer reads) and
+        # accepts `pixel_values` / `image_grid_thw`. AutoModelForImageTextToText
+        # would map to `*ForConditionalGeneration`, which returns logits and
+        # corrupts pooling. The image path is enabled via the processor swap
+        # below, not by changing the model class.
         if "auto_model" not in kwargs:
             kwargs["auto_model"] = AutoModel
 
@@ -1577,6 +1635,11 @@ class FastSentenceTransformer(FastModel):
             model_type = getattr(config, "model_type", "")
         except:
             pass
+
+        # Multimodal (vision) decoder embedding models (e.g. Qwen3-VL-Embedding)
+        # need an AutoProcessor so images are turned into `pixel_values`; the
+        # text-only tokenizer that the load path returns by default cannot.
+        is_vlm_embedding = FastSentenceTransformer._is_vlm_embedding_config(config)
 
         # Fast encoder path: Use native torch.compile for encoder models (6x speedup)
         # This bypasses Unsloth's auto-compiler which adds @torch.compiler.disable decorators
@@ -1856,6 +1919,27 @@ class FastSentenceTransformer(FastModel):
         finally:
             os.environ["UNSLOTH_WARN_UNINITIALIZED"] = old_environ
 
+        # For multimodal embedding models, the load path above returns a
+        # text-only tokenizer (auto_model = AutoModel => is_vlm False in the
+        # vision loader, so it picks AutoTokenizer). Swap in a real processor so
+        # images are turned into `pixel_values`. sentence-transformers' Transformer
+        # module then reads `processor.image_processor` for image inputs, while the
+        # `_create_transformer_module` AutoProcessor redirect hands it this object.
+        if is_vlm_embedding and not hasattr(tokenizer, "image_processor"):
+            try:
+                tokenizer = AutoProcessor.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    revision = revision,
+                    **(processor_kwargs or {}),
+                )
+            except Exception as e:
+                print(
+                    f"Unsloth Warning: Failed to load AutoProcessor for multimodal "
+                    f"embedding model ({e}). Image inputs may not work."
+                )
+
         from sentence_transformers import SentenceTransformer
 
         modules, no_modules = FastSentenceTransformer._load_modules(
@@ -1872,6 +1956,7 @@ class FastSentenceTransformer(FastModel):
             or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
             # Same revision as the weight load so modules hit the warm (None = default branch).
             revision = revision,
+            processor_kwargs = processor_kwargs,
         )
 
         st_device = device_map
@@ -2024,6 +2109,11 @@ class FastSentenceTransformer(FastModel):
         modules_to_save = None,
         init_lora_weights = True,
         loftq_config = {},
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
+        finetune_last_n_layers = None,
         **kwargs,
     ):
         from sentence_transformers import SentenceTransformer
@@ -2166,9 +2256,31 @@ class FastSentenceTransformer(FastModel):
 
                 return model
 
-            # Original path for non-fast-encoder models
+            # Original path for non-fast-encoder models (decoder text + VLM embedders)
             transformer_module = model[0]
             inner_model = transformer_module.auto_model
+
+            # For multimodal (vision) embedding models, thread the vision/language
+            # LoRA selectors through to FastModel.get_peft_model, which routes them
+            # to unsloth_zoo.peft_utils.get_peft_regex. Only do this for VLMs so the
+            # existing text-decoder embedding path (which passes an explicit
+            # target_modules list) is byte-for-byte unchanged.
+            inner_config = getattr(inner_model, "config", None)
+            is_vlm_inner = inner_config is not None and hasattr(inner_config, "vision_config")
+            extra_peft_kwargs = {}
+            if is_vlm_inner:
+                extra_peft_kwargs = dict(
+                    finetune_vision_layers = finetune_vision_layers,
+                    finetune_language_layers = finetune_language_layers,
+                    finetune_attention_modules = finetune_attention_modules,
+                    finetune_mlp_modules = finetune_mlp_modules,
+                    finetune_last_n_layers = finetune_last_n_layers,
+                )
+                # The BERT-oriented default target_modules do not exist on a
+                # decoder VLM. Fall back to None so get_peft_regex builds the
+                # correct regex from the finetune_* flags above.
+                if target_modules == ["query", "key", "value", "dense"]:
+                    target_modules = None
 
             peft_model = FastModel.get_peft_model(
                 model = inner_model,
@@ -2187,6 +2299,7 @@ class FastSentenceTransformer(FastModel):
                 modules_to_save = modules_to_save,
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
+                **extra_peft_kwargs,
                 **kwargs,
             )
 
