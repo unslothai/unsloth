@@ -295,8 +295,14 @@ export function usePersonalizationSync(enabled: boolean): void {
           ) {
             useAppearanceCustomStore.getState().replaceAll(nextCustomization);
           }
-          if (nextLanguage !== latestLanguageRef.current)
-            setLocale(nextLanguage);
+          if (
+            nextLanguage !== latestLanguageRef.current &&
+            !(await setLocale(nextLanguage))
+          ) {
+            // Keep outbound saves paused. Otherwise the unchanged local
+            // preference would look like an edit and overwrite the remote one.
+            return;
+          }
           // lastSaved records what the server actually has (server-side defaults
           // for legacy fields) so the debounced push re-uploads preserved local
           // values.

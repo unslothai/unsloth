@@ -10,6 +10,23 @@ import {
 
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
+const windowListeners = new Map<string, Set<EventListener>>();
+Object.assign(globalThis.window, {
+  addEventListener(type: string, listener: EventListener) {
+    const listeners = windowListeners.get(type) ?? new Set<EventListener>();
+    listeners.add(listener);
+    windowListeners.set(type, listeners);
+  },
+  removeEventListener(type: string, listener: EventListener) {
+    windowListeners.get(type)?.delete(listener);
+  },
+});
+
+function fireWindowEvent(type: string): void {
+  for (const listener of windowListeners.get(type) ?? []) {
+    listener(new Event(type));
+  }
+}
 
 let documentLanguage = "";
 Object.assign(globalThis, {
@@ -24,9 +41,10 @@ Object.assign(globalThis, {
     },
   },
 });
+const navigatorState = { language: "en-US", languages: ["en-US"] };
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
-  value: { language: "en-US", languages: ["en-US"] },
+  value: navigatorState,
 });
 
 const messagesModule = await import("../src/i18n/messages.ts");
@@ -89,7 +107,7 @@ test("a selection is shown as pending and persisted only after loading", async (
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "it");
 
   finishLoading();
-  await selected;
+  assert.equal(await selected, true);
 
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(localeStore.getLocale(), "ja");
@@ -105,12 +123,62 @@ test("a failed selection keeps the active and persisted language", async () => {
   assert.equal(localeStore.getPendingLocalePreference(), "ko");
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
 
-  await selected;
+  assert.equal(await selected, false);
 
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(localeStore.getLocale(), "ja");
   assert.equal(localeStore.getLocalePreference(), "ja");
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
+});
+
+test("a browser language change cannot supersede a pending explicit choice", async () => {
+  assert.equal(localeStore.setLocale("auto", () => undefined), true);
+  const unsubscribe = localeStore.subscribeLocale(() => undefined);
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  const selected = localeStore.setLocale("de", () => loading);
+  navigatorState.language = "fr-FR";
+  navigatorState.languages = ["fr-FR"];
+  fireWindowEvent("languagechange");
+
+  assert.equal(localeStore.getPendingLocalePreference(), "de");
+  finishLoading();
+  assert.equal(await selected, true);
+  unsubscribe();
+
+  assert.equal(localeStore.getLocale(), "de");
+  assert.equal(localeStore.getLocalePreference(), "de");
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "de");
+});
+
+test("a browser language change refreshes a pending auto choice", async () => {
+  assert.equal(localeStore.setLocale("it", () => undefined), true);
+  navigatorState.language = "de-DE";
+  navigatorState.languages = ["de-DE"];
+  const unsubscribe = localeStore.subscribeLocale(() => undefined);
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  const selected = localeStore.setLocale("auto", () => loading);
+  navigatorState.language = "en-US";
+  navigatorState.languages = ["en-US"];
+  fireWindowEvent("languagechange");
+
+  assert.equal(localeStore.getPendingLocalePreference(), null);
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(localeStore.getLocalePreference(), "auto");
+  finishLoading();
+  assert.equal(await selected, false);
+  unsubscribe();
+
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(localeStore.getLocalePreference(), "auto");
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "auto");
 });
 
 test("a catalog timeout preserves the preference and finishes later", async () => {

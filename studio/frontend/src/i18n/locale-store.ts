@@ -23,6 +23,7 @@ const subscribers = new Set<() => void>();
 let currentPreference: LocalePreference = DEFAULT_LOCALE_PREFERENCE;
 let currentLocale: Locale = DEFAULT_LOCALE;
 let pendingPreference: LocalePreference | null = null;
+let pendingPreferenceShouldPersist = false;
 let areListenersActive = false;
 
 export function isLocalePreference(value: unknown): value is LocalePreference {
@@ -121,8 +122,8 @@ function commitPreference(
   locale: Locale,
   revision: number,
   persist: boolean,
-): void {
-  if (revision !== preferenceRevision) return;
+): boolean {
+  if (revision !== preferenceRevision) return false;
   if (persist) writeStoredPreference(preference);
   const didChange =
     preference !== currentPreference ||
@@ -131,8 +132,10 @@ function commitPreference(
   currentPreference = preference;
   currentLocale = locale;
   pendingPreference = null;
+  pendingPreferenceShouldPersist = false;
   syncDocumentLang(locale);
   if (didChange) notifySubscribers();
+  return true;
 }
 
 function commitFallbackLocale(
@@ -147,6 +150,7 @@ function commitFallbackLocale(
   currentPreference = preference;
   currentLocale = DEFAULT_LOCALE;
   pendingPreference = null;
+  pendingPreferenceShouldPersist = false;
   syncDocumentLang(currentLocale);
   if (didChange) notifySubscribers();
 }
@@ -156,6 +160,7 @@ type LocaleCatalogLoader = (locale: Locale) => Promise<void> | undefined;
 function failPreference(revision: number): void {
   if (revision !== preferenceRevision || pendingPreference === null) return;
   pendingPreference = null;
+  pendingPreferenceShouldPersist = false;
   notifySubscribers();
 }
 
@@ -163,7 +168,7 @@ function applyPreference(
   preference: LocalePreference,
   persist = false,
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
-): Promise<void> | undefined {
+): boolean | Promise<boolean> {
   const revision = ++preferenceRevision;
   const locale = resolvePreference(preference);
   let pending: Promise<void> | undefined;
@@ -171,17 +176,20 @@ function applyPreference(
     pending = loadMessages(locale);
   } catch {
     failPreference(revision);
-    return undefined;
+    return false;
   }
   if (!pending) {
-    commitPreference(preference, locale, revision, persist);
-    return undefined;
+    return commitPreference(preference, locale, revision, persist);
   }
   pendingPreference = preference;
+  pendingPreferenceShouldPersist = persist;
   notifySubscribers();
   return pending.then(
     () => commitPreference(preference, locale, revision, persist),
-    () => failPreference(revision),
+    () => {
+      failPreference(revision);
+      return false;
+    },
   );
 }
 
@@ -208,9 +216,11 @@ function handleStorageEvent(event: StorageEvent): void {
 }
 
 function handleLanguageChange(): void {
-  // Only auto mode tracks the browser language.
-  if (currentPreference !== AUTO_LOCALE) return;
-  void applyPreference(currentPreference);
+  // A pending choice is the effective preference. Browser changes may refresh
+  // a pending auto request, but must not supersede an explicit user choice.
+  const effectivePreference = pendingPreference ?? currentPreference;
+  if (effectivePreference !== AUTO_LOCALE) return;
+  void applyPreference(effectivePreference, pendingPreferenceShouldPersist);
 }
 
 function startListeners(): void {
@@ -285,6 +295,7 @@ export function initializeLocale({
   }
 
   pendingPreference = preference;
+  pendingPreferenceShouldPersist = false;
   notifySubscribers();
 
   return new Promise((resolve) => {
@@ -332,7 +343,7 @@ export function getPendingLocalePreference(): LocalePreference | null {
 export function setLocale(
   preference: LocalePreference,
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
-): Promise<void> | undefined {
+): boolean | Promise<boolean> {
   const requestedPreference = normalizePreference(preference);
   return applyPreference(requestedPreference, true, loadMessages);
 }
