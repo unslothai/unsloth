@@ -396,8 +396,20 @@ def get_base_url(provider_type: str) -> str | None:
 # credentials to whoever asked. No LLM endpoint ever lives here, so this is
 # refused on every deployment. Keep in sync with the tool-approval gate's list in
 # core/inference/tools.py (which is function-local, hence duplicated).
-_METADATA_HOST_LITERALS = frozenset(
+_METADATA_HOST_NAMES = frozenset(
     {
+        "metadata",
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.tencentyun.com",
+        "instance-data.ec2.internal",
+    }
+)
+# Held parsed, so every spelling of the same address matches: fd00:ec2::254,
+# fd00:0ec2:0000:0000:0000:0000:0000:0254 and fd00:ec2::0.0.2.84 are one host.
+_METADATA_IPS = frozenset(
+    ipaddress.ip_address(address)
+    for address in (
         "169.254.169.254",
         "169.254.169.252",
         "169.254.170.2",
@@ -405,12 +417,7 @@ _METADATA_HOST_LITERALS = frozenset(
         "fd00:ec2::254",
         "100.100.100.200",
         "100.100.100.110",
-        "metadata",
-        "metadata.google.internal",
-        "metadata.goog",
-        "metadata.tencentyun.com",
-        "instance-data.ec2.internal",
-    }
+    )
 )
 # Link-local, where the IPv4 metadata services live. Matched as a network so a
 # DNS name that merely starts with those digits (169.254.gateway.example.com) is
@@ -451,7 +458,7 @@ def _canonical_host(hostname: str) -> str:
 def _metadata_host(hostname: str) -> bool:
     """True when ``hostname`` names a cloud metadata service."""
     hostname = _canonical_host(hostname.translate(_IDNA_DOTS).rstrip("."))
-    if hostname in _METADATA_HOST_LITERALS:
+    if hostname in _METADATA_HOST_NAMES:
         return True
     try:
         ip = ipaddress.ip_address(hostname)
@@ -461,7 +468,7 @@ def _metadata_host(hostname: str) -> bool:
     for candidate in (getattr(ip, "ipv4_mapped", None), getattr(ip, "sixtofour", None)):
         if candidate is not None and _metadata_host(candidate.compressed):
             return True
-    return ip.version == 4 and ip in _METADATA_NETWORK
+    return ip in _METADATA_IPS or (ip.version == 4 and ip in _METADATA_NETWORK)
 
 
 def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:

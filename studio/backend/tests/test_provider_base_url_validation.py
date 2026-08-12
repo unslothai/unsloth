@@ -48,6 +48,8 @@ _SUPPORTED = [
     "http://169.254.gateway.example.com/v1",
     # An internationalized host is left alone.
     "https://例え.テスト/v1",
+    # A neighbour of the metadata address is an ordinary host.
+    "http://[fd00:ec2::255]/v1",
     "https://[2606:4700:4700::1111]/v1",
     # Self-hosted gateways behind basic auth keep working.
     "https://user:pass@gw.example/v1",
@@ -128,6 +130,11 @@ def test_rejected_url_shapes(url, error):
         "http://169｡254｡169｡254/latest/meta-data/",
         "http://169.254.169.254。/latest/meta-data/",
         "http://metadata。google。internal/computeMetadata/v1/",
+        # Equivalent spellings of the same IPv6 metadata address.
+        "http://[fd00:0ec2:0000:0000:0000:0000:0000:0254]/latest/meta-data/",
+        "http://[fd00:ec2::0.0.2.84]/latest/meta-data/",
+        "http://[FD00:EC2::254]/latest/meta-data/",
+        "http://[0:0:0:0:0:ffff:a9fe:a9fe]/latest/meta-data/",
     ],
 )
 def test_cloud_metadata_endpoints_are_always_refused(url, monkeypatch):
