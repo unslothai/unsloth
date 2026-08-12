@@ -21,6 +21,9 @@ export interface GpuDevice {
 export interface SystemGpuInfo {
   available: boolean;
   backend?: string;
+  /** Used VRAM across the visible GPUs when no single device's usage could be
+   * attributed. Windows ROCm only; null everywhere else. See #7452. */
+  vram_used_gb_aggregate?: number | null;
   /** Whether GGUF loads accept explicit gpu_ids in the device records'
    * declared index space. */
   gguf_gpu_ids_supported?: boolean;

@@ -55,6 +55,14 @@ function Install-UnslothStudio {
     # shadows the caller's table for this scope and below only.
     $PSDefaultParameterValues = $_UnslothKeptDefaults
 
+    # Windows PowerShell 5.1 redraws the Invoke-WebRequest progress bar on every read, and the
+    # redraw, not the link, sets the rate: on a windows-latest runner the python.org installer
+    # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
+    # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
+    # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
+    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    $ProgressPreference = 'SilentlyContinue'
+
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
     # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
     # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
@@ -3303,9 +3311,19 @@ exit 0
         }
         if (-not $HasROCm) {
             try {
-                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match "AMD|Radeon" } |
-                    Select-Object -First 1
+                # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
+                # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
+                # that is not the active one, and since a mapped arch installs ROCm wheels right
+                # here, a disabled Radeon listed ahead of a healthy one bought wheels for the
+                # dead card while the live one went unserved.
+                # If the filter leaves none, keep the full list: code 45 ("not connected") is
+                # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
+                # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
+                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyAdapters = @($amdAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
         }
@@ -3456,11 +3474,12 @@ exit 0
     # detect -- would block a bare `& python -c ...` forever. ProcessStartInfo, not &, so stderr
     # cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import cannot
     # deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-    # (timeout, crash, exception) reads as .Ok = $false. Defined above the Intel scan, since
-    # PowerShell binds a function only when its definition runs.
+    # (timeout, crash, exception) reads as .Ok = $false; .Error carries WHICH one, since stderr
+    # used to be drained and discarded, leaving a driver-level DLL load error and a missing torch
+    # indistinguishable. Defined above the Intel scan: PowerShell binds a function when it runs.
     function Invoke-BoundedPythonProbe {
         param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-        $result = [pscustomobject]@{ Ok = $false; Output = "" }
+        $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
         if (-not $PythonExe -or -not $Code) { return $result }
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -3475,13 +3494,20 @@ exit 0
             $errTask = $proc.StandardError.ReadToEndAsync()
             if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
                 try { $proc.Kill() } catch {}
+                # Synthesised, not read back: waiting on the reader tasks of a wedged child
+                # would reintroduce the hang this helper exists to bound.
+                $result.Error = "python did not answer within $TimeoutSec seconds"
                 return $result
             }
             $result.Output = $outTask.GetAwaiter().GetResult()
-            [void]$errTask.GetAwaiter().GetResult()
+            # Kept, not discarded: the only place a failed probe's OSError / WinError text exists.
+            $result.Error = $errTask.GetAwaiter().GetResult()
             $result.Ok = ($proc.ExitCode -eq 0)
             return $result
-        } catch { return $result }
+        } catch {
+            $result.Error = $_.Exception.Message
+            return $result
+        }
     }
 
     # Bounded Win32_VideoController scan: the query can block forever on a degraded WMI
@@ -4173,7 +4199,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -4187,7 +4213,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -4314,7 +4340,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -4326,7 +4352,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.14" "unsloth-zoo>=2026.8.10" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -4354,7 +4380,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.14" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.10" "unsloth>=2026.8.15" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -4616,6 +4642,15 @@ exit 0
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
+    # The torch family THIS run settled on, for setup.ps1's preserve guard (full rationale there,
+    # at $InstallerTorchTag): "a GPU wheel is in the venv" is not on its own evidence that this
+    # installer put it there -- the migrated-venv arm above installs unsloth only and never
+    # touches torch. Empty means "no answer": --no-torch, or a custom index whose leaf names no
+    # flavor. Always assigned so a previous run in the same session cannot leak a value; 7.5+
+    # keeps it present and blank, 5.1 / 7.0-7.4 remove it, and setup.ps1 treats both as unknown.
+    $env:UNSLOTH_INSTALLER_TORCH_TAG = if ($SkipTorch) { "" } else {
+        [string](Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl)
+    }
     # Tauri desktop app bundles its own frontend — skip Node/npm/frontend build
     $env:SKIP_STUDIO_FRONTEND = if ($TauriMode) { "1" } else { "0" }
     # Always set STUDIO_LOCAL_INSTALL explicitly to avoid stale values from
@@ -4671,6 +4706,24 @@ exit 0
     # installer looked, and there is none".
     $env:_UNSLOTH_PS_PROXY_DEFAULTS =
         if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
+    # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
+    # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
+    # reports "needs repair", the installer rolls back, and the app retries that forever.
+    #
+    # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
+    # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
+    # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
+    # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
+    # come up empty, and nested installers never see it.
+    $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
+    $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
+    if ($ROCmGfxArch) {
+        $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
+    } else {
+        # Cleared, not left alone: an inherited value from an outer process is not this run's
+        # answer, and handing it down would forward an arch nothing here detected.
+        Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
+    }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4689,6 +4742,11 @@ exit 0
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousRocmGfxHandoff) {
+            $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $previousRocmGfxHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
         if ($hadPreviousProxyHandoff) {
             $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff

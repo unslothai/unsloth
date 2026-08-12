@@ -1666,6 +1666,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
+# Whether the *most recent* forward handed back real logits instead of hidden
+# states. The warning attribute above is warn-once bookkeeping and is never
+# cleared, so it answers "ever degraded", not "degraded on the call the caller
+# is about to dispatch on".
+_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR = "_unsloth_grpo_hidden_states_degraded"
 
 
 def _module_returns_logits(module):
@@ -1774,10 +1779,22 @@ def _get_num_logits_to_keep(forward_signature, args, kwargs):
 
 
 def _warn_grpo_hidden_states_fallback_once(model, message):
+    # The degradation flag is per call: whether the tensor this forward is about
+    # to return is real logits. Degradation is not a property of the model -- a
+    # forward that splats **kwargs into a sub-module only reached by some inputs
+    # (a vision tower, say) raises for the batches that reach it and succeeds for
+    # the rest -- so a sticky flag would keep routing later, genuine hidden
+    # states through the raw-logits helper, skipping the lm_head matmul.
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
     if getattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, False):
         return
     setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR, True)
     logger.warning(message)
+
+
+def _note_grpo_hidden_states_success(model):
+    """Record that the forward about to return really is handing back hidden states."""
+    setattr(model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, False)
 
 
 def _replace_outputs_logits(outputs, hidden_states):
@@ -1815,9 +1832,17 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         while len(args) != 0 and args[0] is target_model:
             args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
+            # nobody asked for hidden states, so this returns real logits
+            setattr(target_model, _UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR, True)
             return original_forward(*args, **kwargs)
 
-        forward_kwargs = _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
+        # copy: _drop_forward_kwargs_consumed_positionally hands `kwargs` straight
+        # back when there is nothing to drop, so mutating it below would poison the
+        # caller's dict and make the fallback calls further down re-send the very
+        # kwargs the model just rejected.
+        forward_kwargs = dict(
+            _drop_forward_kwargs_consumed_positionally(forward_signature, args, kwargs)
+        )
         num_logits_to_keep = _get_num_logits_to_keep(forward_signature, args, forward_kwargs)
         forward_kwargs["output_hidden_states"] = True
         forward_kwargs["return_dict"] = True
@@ -1843,6 +1868,7 @@ def _install_grpo_hidden_states_forward_wrapper(model):
         hidden_states = hidden_states[-1]
         if num_logits_to_keep != 0:
             hidden_states = hidden_states[:, -num_logits_to_keep:, :]
+        _note_grpo_hidden_states_success(target_model)
         return _replace_outputs_logits(outputs, hidden_states)
 
     wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True

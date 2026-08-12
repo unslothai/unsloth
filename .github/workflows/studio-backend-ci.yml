@@ -97,6 +97,13 @@ jobs:
           # keeps the install ~250 MB / ~1 min on a clean runner.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
           pip install 'transformers>=4.51,<5.5'
+          # torchao: the pre-quant allowlist is built by importing the torchao tensor
+          # constructors a checkpoint names, and registration refuses unless at least one of
+          # them resolves. Without it every pre-quant load returns None and 21 tests across
+          # test_diffusion_prequant.py and test_diffusion_convrot.py fail on an install that is
+          # simply missing a dependency they need. CPU-only is fine: it declines to load its cpp
+          # extensions under torch < 2.11 and the pure-Python constructors still import.
+          pip install torchao
 
       - name: Backend tests
         working-directory: studio/backend

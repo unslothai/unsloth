@@ -2521,9 +2521,35 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "read_pickle",
     }
 )
-# Pickle-backed loaders that can execute code embedded in the file; gated by
-# receiver module (torch.load, joblib.load) since bare `load` is too common.
-_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# Loaders that can execute code embedded in the data they deserialize; gated by
+# receiver module (torch.load, yaml.load) since bare `load` is too common.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# The load entry points on those modules. yaml.load runs whatever its Loader=
+# builds, and !!python/object/apply in the data is a call, so it asks like the
+# pickle-backed ones do. yaml.safe_load is untouched.
+_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
+# Loader classes: the same deserialize one level down (yaml.Loader(s).get_data())
+# and what a custom loader subclasses. Ordinary words, so matched by receiver.
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "Constructor"})
+# Names no other library uses, so they are matched wherever they appear rather
+# than by receiver: an alias, a subclass, a loop, a helper or a factory all name
+# one of these somewhere, and following the value through every binding form is
+# a game without an end.
+_AUTO_UNSAFE_YAML_LOADERS = frozenset(
+    {
+        "unsafe_load",
+        "unsafe_load_all",
+        "full_load",
+        "full_load_all",
+        "UnsafeLoader",
+        "CUnsafeLoader",
+        "FullLoader",
+        "CFullLoader",
+        "CLoader",
+        "UnsafeConstructor",
+        "FullConstructor",
+    }
+)
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3922,6 +3948,58 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     and _wraps_write_callable(_default.args[0])
                 ):
                     dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
+    # Naming a code-executing loader asks, wherever the name appears. Presence
+    # rather than dataflow: a loader can be aliased, subclassed, packed into a
+    # container, returned from a helper or picked by a conditional, and following
+    # it through all of those is a game without an end. A safe read names none of
+    # these, so yaml.safe_load and json.load are unaffected.
+    _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
+    _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
+    _imported_modules = set()  # only the module itself, for the return rule
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _root = alias.name.split(".")[0]
+                if _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _imported_modules.add(alias.asname or _root)
+        elif isinstance(node, ast.ImportFrom):
+            _root = (node.module or "").split(".")[0]
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_YAML_LOADERS or (
+                    _root in _AUTO_UNSAFE_PY_LOAD_MODULES
+                    and (
+                        alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                        or alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                    )
+                ):
+                    _bare_names.add(alias.asname or alias.name)
+                elif _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    # from yaml import loader as yl, so yl.Loader still reads as one.
+                    _module_names.add(alias.asname or alias.name)
+    _module_names |= _imported_modules
+
+    def _loader_receiver(node) -> bool:
+        # yaml, a submodule of it (yaml.loader.Loader), or an import alias.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in _module_names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
+                return True
+            if (
+                node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or node.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+            ) and _loader_receiver(node.value):
+                return True
+        elif isinstance(node, ast.Name) and node.id in _bare_names:
+            return True
+        # Handing the module out of a function hands out every loader on it, and
+        # the caller's name for it cannot be seen from here.
+        elif isinstance(node, (ast.Return, ast.Lambda)):
+            _out = node.value if isinstance(node, ast.Return) else node.body
+            if isinstance(_out, ast.Name) and _out.id in _imported_modules:
+                return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -11045,6 +11123,7 @@ def _check_signal_escape_patterns(code: str):
             "upload_folder",
             "upload_large_folder",
             "create_commit",
+            "preupload_lfs_files",
         }
     )
     # Cloud-metadata / link-local hosts.
@@ -11302,6 +11381,19 @@ def _check_signal_escape_patterns(code: str):
         }
     )
 
+    _HF_UPLOAD_PATH_VIOLATION = (
+        "HF upload path must be a sandbox-local relative-path literal "
+        "(no absolute paths, no '..' segments, no dynamic expressions)"
+    )
+
+    # Upload methods that take CommitOperation* objects rather than a path, and
+    # the kwarg each one carries them in. `preupload_lfs_files` sends the file
+    # bytes to the LFS store on its own, so it needs the same gate as a commit.
+    _HF_OPERATIONS_KWARG = {
+        "create_commit": "operations",
+        "preupload_lfs_files": "additions",
+    }
+
     def _is_os_environ(node: ast.AST) -> bool:
         return (
             isinstance(node, ast.Attribute)
@@ -11403,14 +11495,49 @@ def _check_signal_escape_patterns(code: str):
                     "HF upload cannot include os.environ / os.getenv / subprocess "
                     "env reads; secrets and tokens must not be exfiltrated"
                 )
-        if method_name == "create_commit":
+        if method_name in _HF_OPERATIONS_KWARG:
+            ops_kwarg = _HF_OPERATIONS_KWARG[method_name]
+            # A `*args` / `**kwargs` splat can smuggle in the operations or a token,
+            # and either may sit after `operations=`, so scan before resolving.
+            if any(isinstance(a, ast.Starred) for a in node.args or []):
+                return _HF_UPLOAD_PATH_VIOLATION
+            if any(kw.arg is None for kw in node.keywords or []):
+                return _HF_UPLOAD_PATH_VIOLATION
+            # Both methods take the operation list as their 2nd positional param.
+            operations_node: ast.AST | None = node.args[1] if len(node.args or []) > 1 else None
             for kw in node.keywords or []:
-                if kw.arg == "operations" and isinstance(kw.value, ast.List):
-                    for elt in kw.value.elts:
-                        if isinstance(elt, ast.Call):
-                            inner = _hf_upload_violation(elt, "upload_file")
-                            if inner:
-                                return inner
+                if kw.arg == ops_kwarg:
+                    operations_node = kw.value
+                    break
+            if operations_node is None:
+                return None  # no operations -> nothing is read off disk
+            if not isinstance(operations_node, (ast.List, ast.Tuple)):
+                return _HF_UPLOAD_PATH_VIOLATION
+            for elt in operations_node.elts:
+                if not isinstance(elt, ast.Call):
+                    return _HF_UPLOAD_PATH_VIOLATION
+                inner = _hf_upload_violation(elt, "commit_operation")
+                if inner:
+                    return inner
+            return None
+        if method_name == "commit_operation":
+            # A CommitOperation* constructor from the list above. Delete and copy get
+            # no exemption: a by-name one would trust a name sandboxed code can rebind.
+            # Add is (path_in_repo, path_or_fileobj) so both positionals are checked,
+            # and other keywords must be literals -- a computed one reads the file.
+            path_nodes = list(node.args or [])
+            for kw in node.keywords or []:
+                if kw.arg is None:
+                    return _HF_UPLOAD_PATH_VIOLATION
+                if kw.arg == "path_or_fileobj":
+                    path_nodes.append(kw.value)
+                elif not isinstance(kw.value, ast.Constant):
+                    return _HF_UPLOAD_PATH_VIOLATION
+            if not path_nodes:
+                return _HF_UPLOAD_PATH_VIOLATION
+            for p in path_nodes:
+                if not _path_arg_is_sandbox_local(p):
+                    return _HF_UPLOAD_PATH_VIOLATION
             return None
         path_node: ast.AST | None = node.args[0] if node.args else None
         for kw in node.keywords or []:
@@ -11418,10 +11545,7 @@ def _check_signal_escape_patterns(code: str):
                 path_node = kw.value
                 break
         if not _path_arg_is_sandbox_local(path_node):
-            return (
-                "HF upload path must be a sandbox-local relative-path literal "
-                "(no absolute paths, no '..' segments, no dynamic expressions)"
-            )
+            return _HF_UPLOAD_PATH_VIOLATION
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
