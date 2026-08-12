@@ -1676,7 +1676,12 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn
   ) {
-    return {};
+    // No pill is on, but a CLI policy (unsloth run --enable-tools) can still make
+    // the backend inject python/terminal, and the completion sends the permission
+    // level on every local chat. Carry the flag so that count renders the same
+    // Full access prompt the completion will. Without a policy the backend never
+    // builds a tool list for a count, so the flag is inert.
+    return { bypass_permissions: bypassPermissions };
   }
 
   return {

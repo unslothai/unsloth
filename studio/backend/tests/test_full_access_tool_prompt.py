@@ -214,6 +214,11 @@ def test_nudge_states_the_environment_under_full_access():
     nudge = _build_tool_action_nudge(tools = _CODE_TOOLS, model_name = "test-8B", full_access = True)
     assert "machine running Unsloth Studio" in nudge
     assert "code sandbox and the approval prompts disabled" in nudge
+    # Scoped to the two local tools: execute_tool passes disable_sandbox to
+    # python/terminal only, web_search is a network call, and an MCP tool may run
+    # on a remote server, so an unqualified "tool calls run here" is wrong when
+    # any of those are enabled alongside.
+    assert nudge.count("The python and terminal tools run on") == 1
     # Studio can be served remotely, so the tools' host is not necessarily the
     # device in front of the user.
     assert "not always the device the user is viewing this on" in nudge

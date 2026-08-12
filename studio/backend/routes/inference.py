@@ -3061,12 +3061,12 @@ _TOOL_CODE_TIP = (
 # data rather than reading its own tool list, so the environment is stated
 # outright and the guess is redirected to a tool call.
 _TOOL_FULL_ACCESS_TIP = (
-    "Tool calls run on the machine running Unsloth Studio, with the code sandbox "
-    "and the approval prompts disabled, so you can inspect and change the real "
-    "files and system there. That machine is not always the device the user is "
-    "viewing this on: Studio can be served remotely. When asked what you can see "
-    "or do on it, check with a tool call instead of assuming you are isolated "
-    "from it."
+    "The python and terminal tools run on the machine running Unsloth Studio, "
+    "with the code sandbox and the approval prompts disabled, so you can inspect "
+    "and change the real files and system there. That machine is not always the "
+    "device the user is viewing this on: Studio can be served remotely. When "
+    "asked what you can see or do on it, check with a tool call instead of "
+    "assuming you are isolated from it."
 )
 _TOOL_ARTIFACT_TIP = (
     "For HTML, CSS, or JavaScript canvas requests, call render_html once when "
