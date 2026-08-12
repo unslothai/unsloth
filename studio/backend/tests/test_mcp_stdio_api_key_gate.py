@@ -415,3 +415,63 @@ def test_data_recipe_validate_refuses_stdio_recipe_from_api_key():
     with pytest.raises(HTTPException) as exc:
         validate(payload, via_api_key = True)
     assert exc.value.status_code == 403
+
+
+# ── reading back a command the gate would not let a key define ──────
+
+
+def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
+    """A key that may not define a command may not read one back: `url` is the
+    argv (carries credentials) and `headers` is the subprocess env."""
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(
+        id = "stdio1",
+        display_name = "FS",
+        url = "npx server --token sk-argv-secret",
+        headers_json = '{"API_KEY": "sk-env-secret"}',
+    )
+    mcp_servers_db.create_server(
+        id = "http1",
+        display_name = "R",
+        url = "https://example.com/mcp",
+        headers_json = '{"Authorization": "Bearer t"}',
+    )
+
+    keyed = asyncio.run(routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = True))
+    assert [row.id for row in keyed] == ["http1"]
+    serialized = repr([row.model_dump() for row in keyed])
+    assert "sk-argv-secret" not in serialized
+    assert "sk-env-secret" not in serialized
+    # http(s) MCP stays fully usable from a key, headers included.
+    assert keyed[0].headers == {"Authorization": "Bearer t"}
+
+
+def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(
+        id = "stdio1",
+        display_name = "FS",
+        url = "npx server --token sk-argv-secret",
+        headers_json = '{"API_KEY": "sk-env-secret"}',
+    )
+    rows = asyncio.run(routes_mcp.list_mcp_servers(current_subject = "u", via_api_key = False))
+    assert [row.id for row in rows] == ["stdio1"]
+    assert rows[0].url == "npx server --token sk-argv-secret"
+    assert rows[0].headers == {"API_KEY": "sk-env-secret"}
+
+
+def test_studio_mcp_surface_refuses_stdio_recipes():
+    """mcp_server.py calls the validate route function directly, so the ViaApiKey
+    dependency never runs and its `= False` default would read as a UI session.
+    That remote static bearer surface must pass True itself or the gate is dead."""
+    import inspect
+
+    import mcp_server
+
+    assert "validate(RecipePayload(recipe = recipe), via_api_key = True)" in inspect.getsource(
+        mcp_server
+    )

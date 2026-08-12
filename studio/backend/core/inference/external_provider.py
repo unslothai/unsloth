@@ -862,7 +862,13 @@ class ExternalProviderClient:
         timeout: float = 120.0,
     ):
         self.provider_type = provider_type
-        self.base_url = base_url.rstrip("/")
+        # Single choke point for every outbound provider request (chat, models,
+        # responses, messages, containers): the URL is caller-controlled, so it
+        # is validated here even when a route already checked it. Routes turn the
+        # ValueError into a 400; reaching it here means a caller bypassed them.
+        from core.inference.providers import validate_provider_base_url
+
+        self.base_url = validate_provider_base_url(base_url)
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs
         # saved before the native switch still route correctly. Custom proxy
         # paths ending in `/openai` are left untouched.

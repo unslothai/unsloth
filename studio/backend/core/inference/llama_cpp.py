@@ -2718,37 +2718,51 @@ def _extra_args_mtp_draft_path(
     --spec-draft-hf/-hfd/...), else the LLAMA_ARG_SPEC_DRAFT_MODEL/_HF_REPO env,
     else None. An HF repo isn't a local file, so the budget can't size it (falls
     back to the flat reserve), but recognizing it avoids sizing the wrong one."""
-    flags = {
-        "--model-draft",
-        "--spec-draft-model",
-        "-md",
-        "--spec-draft-hf",
-        "-hfd",
-        "-hfrd",
-        "--hf-repo-draft",
-    }
+    return _extra_args_mtp_draft_source(extra_args, env)[0]
+
+
+_HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
+_LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
+
+
+def _extra_args_mtp_draft_source(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[Optional[str], bool]:
+    """The drafter the launch resolves to, and whether it is a repo id.
+
+    The two travel together on purpose. Draft flags are last-wins, so a remote flag
+    followed by a local one leaves a local path as the winner; a caller that asks
+    only "does any remote flag appear" would then price a filesystem path as a
+    Hugging Face repository and charge a reserve for something llama-server will
+    not load. Only the winning flag decides which of the two the value is.
+    """
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
+    found_remote = False
     for i, raw in enumerate(args):
         flag = _flag_name(raw)
         _, eq, inline = raw.partition("=")
-        if flag not in flags:
+        if flag not in _HF_DRAFT_FLAGS and flag not in _LOCAL_DRAFT_FLAGS:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if value and not value.startswith("-"):
             found = value
+            found_remote = flag in _HF_DRAFT_FLAGS
     if found is not None:
-        return found
+        return found, found_remote
     e = os.environ if env is None else env
-    return (
-        e.get("LLAMA_ARG_SPEC_DRAFT_MODEL")
-        or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO")
-        # Pre-b8955 spellings, live between the launchable floor (2025-08-30) and the
-        # rename (2026-04-28).
-        or e.get("LLAMA_ARG_MODEL_DRAFT")
-        or e.get("LLAMA_ARG_HFD_REPO")
-        or None
-    )
+    # The value lookup's own precedence; with no flag to read, the env spelling says
+    # local or remote. The last two are pre-b8955 (2025-08-30 to 2026-04-28).
+    for var, remote in (
+        ("LLAMA_ARG_SPEC_DRAFT_MODEL", False),
+        ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", True),
+        ("LLAMA_ARG_MODEL_DRAFT", False),
+        ("LLAMA_ARG_HFD_REPO", True),
+    ):
+        value = e.get(var)
+        if value:
+            return value, remote
+    return None, False
 
 
 def _extra_args_draft_cache_types(
@@ -3378,6 +3392,8 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
         self._embedding_length: Optional[int] = None
+        # llama_pooling_type from the GGUF; present and non-zero marks an embedding model.
+        self._pooling_type: Optional[int] = None
         # For the compute-graph buffer estimate; vocab from the tokens array len.
         self._feed_forward_length: Optional[int] = None
         self._vocab_size: Optional[int] = None
@@ -4265,6 +4281,19 @@ class LlamaCppBackend:
         if not self._n_experts or not self._n_layers:
             return 0
         return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    _EMBEDDING_POOLING_TYPES = frozenset({1, 2, 3})  # llama_pooling_type MEAN, CLS, LAST
+
+    @property
+    def is_embedding_gguf(self) -> bool:
+        """Whether the loaded GGUF is an embedding model, from its pooling type.
+
+        Only MEAN, CLS and LAST pool into the one vector per sequence that
+        `/v1/embeddings` returns. NONE (0) pools nothing, and RANK (4) is a reranker
+        head: llama_context sizes its pooled buffer to n_cls_out while llama-server's
+        send_embedding reads n_embd_out floats out of it.
+        """
+        return getattr(self, "_pooling_type", None) in self._EMBEDDING_POOLING_TYPES
 
     @staticmethod
     def _resolve_cpu_moe_flag(
@@ -6660,9 +6689,11 @@ class LlamaCppBackend:
             compute = 2 * act_scratch + out_buffer * par
         else:
             # Each extra concurrent slot adds one output buffer (chat decode sizes
-            # ~one logit row per slot; would under-count embeddings/--logits-all,
-            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
-            compute = act_scratch + out_buffer * max(0, par - 1)
+            # ~one logit row per slot). Embedding mode outputs the whole first
+            # micro-batch too, so it pays for every slot rather than slots past one.
+            # Matches measured chat {1:36,2:492,4:1388,8:3220} MiB.
+            output_slots = par if self.is_embedding_gguf else max(0, par - 1)
+            compute = act_scratch + out_buffer * output_slots
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
     def _compute_buffer_ctx_bytes(
@@ -7154,6 +7185,7 @@ class LlamaCppBackend:
         self._n_kv_heads_by_layer = None
         self._n_heads = None
         self._embedding_length = None
+        self._pooling_type = None
         self._feed_forward_length = None
         self._vocab_size = None
         self._kv_key_length = None
@@ -7198,6 +7230,7 @@ class LlamaCppBackend:
             # Arch-specific keys added dynamically once we know the arch.
             arch_keys: dict[str, str] = {}  # gguf_key -> attribute name
             arch = None
+            pooling_by_arch: dict[str, int] = {}
             sliding_window_pattern_period: Optional[int] = None
             general: dict[str, str] = {}
 
@@ -7229,7 +7262,7 @@ class LlamaCppBackend:
                         break
 
                     try:
-                        if key in WANTED or key in arch_keys:
+                        if key in WANTED or key in arch_keys or key.endswith(".pooling_type"):
                             if vtype == 8:  # STRING
                                 slen = struct.unpack("<Q", f.read(8))[0]
                                 val_s = f.read(slen).decode("utf-8")
@@ -7246,6 +7279,7 @@ class LlamaCppBackend:
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
+                                        f"{arch}.pooling_type": "pooling_type",
                                         f"{arch}.feed_forward_length": "feed_forward_length",
                                         f"{arch}.attention.key_length": "kv_key_length",
                                         f"{arch}.attention.value_length": "kv_value_length",
@@ -7273,6 +7307,8 @@ class LlamaCppBackend:
                                 )
                                 if key == "diffusion.canvas_length":
                                     canvas_seen = True
+                                if key.endswith(".pooling_type"):
+                                    pooling_by_arch[key] = val_i
                                 attr = arch_keys.get(key)
                                 if attr:
                                     if attr == "sliding_window_pattern":
@@ -7312,6 +7348,11 @@ class LlamaCppBackend:
                         # fetch); break so the resolver fallback runs on
                         # what we have.
                         break
+
+            # GGUF metadata has no key-order contract. Pooling can precede
+            # general.architecture, so bind the buffered value after the sweep.
+            if arch is not None:
+                self._pooling_type = pooling_by_arch.get(f"{arch}.pooling_type", self._pooling_type)
 
             # Decide diffusion routing before the SWA resolver below: it can raise on an arch transformers
             # does not know, which would otherwise drop a DiffusionGemma model to plain llama-server.
@@ -10565,6 +10606,25 @@ class LlamaCppBackend:
                     )
 
                 _effective_ubatch = _ubatch_for_slots(n_parallel)
+                # --embedding forces n_batch = n_ubatch, which aborts a load below the slots.
+                if (
+                    self.is_embedding_gguf
+                    and _effective_ubatch is not None
+                    and _effective_ubatch < n_parallel
+                ):
+                    # max(): a degenerate "-b 0" extra resolves to 0, and --parallel 0 is
+                    # rejected at arg parse.
+                    _embedding_slots = max(1, _effective_ubatch)
+                    logger.warning(
+                        "Reducing serving slots from %d to %d: llama-server caps the batch "
+                        "at the %d-token micro-batch under --embedding and aborts when that "
+                        "is below the slot count.",
+                        n_parallel,
+                        _embedding_slots,
+                        _effective_ubatch,
+                    )
+                    n_parallel = _embedding_slots  # allow-slot-clamp: llama-server would abort
+                    _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -10774,6 +10834,9 @@ class LlamaCppBackend:
                 _vulkan_explicit_unmatched = False
                 _vulkan_requested_ids: list[int] = []
                 _vulkan_available_ordinals: list[int] = []
+                # Auto dropped the drafter because only the target fit. Bound before the
+                # try: the launch below reads it either way.
+                _spec_dropped_no_vram = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -11016,6 +11079,11 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
+                    # Will a SEPARATE drafter be emitted at all, taken before the CPU
+                    # nulling below. Not mtp_draft_path: extras owning --spec-type return
+                    # before Studio's sidecar becomes --model-draft, which
+                    # _studio_draft_for_budget already encodes.
+                    _separate_draft_launches = bool(_mtp_draft_for_budget)
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
@@ -11185,43 +11253,18 @@ class LlamaCppBackend:
                     # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    # Flat MTP reserve fraction: used only as the fallback when the
-                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
-                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
-                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
-                    # GPU regardless of draft-offload flags (keep its reserve).
-                    _flat_mtp_engages = _mtp_will_engage and (
-                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    # Nothing speculative on the GPU: the drafter that launches is the
+                    # separate CPU-offloaded one, and a sidecar wins over an embedded head
+                    # (llama.cpp loads the draft model on has_dft()). A head with no
+                    # sidecar is still GPU-resident and still reserved.
+                    _draft_cpu_no_embedded = _draft_on_cpu and (
+                        _separate_draft_launches or not self._nextn_predict_layers
                     )
-                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
-                    # MTP reserves GPU VRAM unless its only drafter is a separate
-                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
-                    # path reserves like the layer path; gate both on this.
-                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
-                    _flat_mtp_reserve = (
-                        _MTP_VRAM_RESERVE_FRAC
-                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
-                        else 0.0
-                    )
-                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
-                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
-                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
-                    # MTP draft-graph buffers exist on every backend.
-                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
-                    if effective_is_vision and mmproj_size > 0:
-                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
-                    if _mtp_reserves_gpu:
-                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
-                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
-
-                    def _subset_model_size(n_gpus: int) -> int:
-                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
-
-                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
-                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
-
+                    # The two tensor -> layer downgrades that need nothing the probe
+                    # decides run BEFORE it: the probe is gated on `not tensor_parallel`
+                    # and must answer for any load that ends up layer-split. Running them
+                    # first also hands it the restored KV type that load will use.
                     def _restore_after_tensor_downgrade():
                         # Restore the quantized KV + extras tensor dropped (layer
                         # split supports them), minus --split-mode.
@@ -11304,6 +11347,293 @@ class LlamaCppBackend:
                         # dropped; restore the original cache type + extras (minus
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
+
+                    # Target pins but the drafter's reserve tips it over: Auto drops the
+                    # drafter rather than pay for speed with context (or a --fit offload,
+                    # where decode collapses ~3x). Priced over the SAME ranked subsets the
+                    # placement loop walks, at the context the target alone would get, so
+                    # it drops only when no placement could have held both. Carried to the
+                    # launch as drafter_no_vram. Skipped under tensor parallelism, whose
+                    # per-device buffer has its own geometry these numbers do not model;
+                    # `tensor_parallel` already reflects the downgrades hoisted above, so
+                    # a request that ends up layer-split IS probed. The pooled tensor
+                    # weight-budget check below still escapes, since it prices the reserve
+                    # this probe may clear and running it first would be circular. The
+                    # gate reads the user's choice, not _mtp_effective, which by here is
+                    # the kind Auto resolved and can no longer tell the two apart.
+                    if (
+                        _mtp_will_engage
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        # A bare --model-draft / --spec-draft-hf sets neither flag above
+                        # (both key off --spec-type), yet llama.cpp loads whatever it
+                        # names anyway: load_model gates the draft on has_dft(). Dropping
+                        # here would free the reserve for a drafter that still loads.
+                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        and not _draft_cpu_no_embedded
+                        and not tensor_parallel
+                        and gpus
+                        and effective_ctx > 0
+                        and self._can_estimate_kv()
+                    ):
+
+                        def _probe_frac(drafter: bool) -> float:
+                            # The flat fraction is the reserve whenever _mtp_bytes is 0.
+                            return self._GPU_PIN_VRAM_FRACTION - (
+                                _MTP_VRAM_RESERVE_FRAC
+                                if (drafter and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                                else 0.0
+                            )
+
+                        def _probe_base(drafter: bool, n: int) -> int:
+                            # model_size_fit's terms, before it is built below.
+                            _soft = self._CUDA_CONTEXT_RESERVE_BYTES
+                            if effective_is_vision and mmproj_size > 0:
+                                _soft += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            if drafter:
+                                _soft += self._MTP_DRAFT_COMPUTE_BYTES
+                            return (
+                                model_size
+                                + _compute_buffer_pipeline
+                                + _soft
+                                + max(0, n - 1) * _pipeline_overhead_bytes
+                            )
+
+                        # Fewest GPUs first, ranked by usable VRAM: the same order and
+                        # the same budget the auto placement loop uses, so the answer is
+                        # about placements that loop could actually choose.
+                        def _probe_rank(drafter: bool) -> list:
+                            return sorted(
+                                gpus,
+                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                reverse = True,
+                            )
+
+                        _probe_overhead_mib = _pipeline_overhead_bytes / (1024 * 1024)
+
+                        def _probe_floor(ranked: list, drafter: bool) -> int:
+                            # Same floor as the placement loop's _auto_min_gpus: a tensor
+                            # downgrade raises _layer_min_gpus to keep the request
+                            # multi-GPU, and a one-GPU placement the loop is forbidden to
+                            # choose must not be the one that saves the drafter.
+                            return max(
+                                1,
+                                min(
+                                    _layer_min_gpus,
+                                    sum(
+                                        1
+                                        for g in ranked
+                                        if _gpu_usable(g, _probe_frac(drafter))
+                                        > _probe_overhead_mib
+                                    )
+                                    or 1,
+                                ),
+                            )
+
+                        # Both rankings: an unsized drafter costs five points of pin
+                        # fraction, which can reorder heterogeneous cards (a busy 80 GB
+                        # can lead at 0.97, an idle 24 GB at 0.92). The placement loop
+                        # sorts under the fraction that load ends up with, so a prefix
+                        # only the drafter's ranking produces is still one it can choose.
+                        # Identical whenever the orders agree, i.e. every uniform machine.
+                        _probe_orders = [_probe_rank(False)]
+                        _ranked_w = _probe_rank(True)
+                        if [id(g) for g in _ranked_w] != [id(g) for g in _probe_orders[0]]:
+                            _probe_orders.append(_ranked_w)
+                        _target_fits_somewhere = False
+                        _both_fit_somewhere = False
+                        _probe_ctx = 0
+                        _probe_need = _probe_have = 0.0
+                        for _probe_ranked in _probe_orders:
+                            if _both_fit_somewhere:
+                                break
+                            _probe_min_gpus = _probe_floor(_probe_ranked, False)
+                            for _n in range(_probe_min_gpus, len(_probe_ranked) + 1):
+                                _subset = _probe_ranked[:_n]
+                                _cc_n = lambda c, _k = _n: _cc_bytes(c, _k)
+                                _base_wo = _probe_base(False, _n)
+                                _budget_wo = _pool_budget_mib(_subset, _probe_frac(False))
+                                # Explicit context is honored verbatim, so that is what the
+                                # drafter has to fit alongside; Auto gets its own best cap.
+                                _ctx_wo = (
+                                    effective_ctx
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        effective_ctx,
+                                        _budget_wo,
+                                        _base_wo,
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = False,
+                                        mtp_overhead_fn = None,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if _ctx_wo <= 0:
+                                    continue
+                                _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                if _foot_wo > _budget_wo:
+                                    continue
+                                # The pooled figure hides the compute buffer every device
+                                # replicates, so the weakest card may not hold the context
+                                # the pool priced and the placement loop caps to what it
+                                # does. Charging the drafter at the uncapped context
+                                # condemns it at a context this load never reaches. Same
+                                # reserve and cap the auto-context loop below applies, so
+                                # the two cannot disagree. Auto only: an explicit context
+                                # is honored verbatim and overflows to --fit.
+                                _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
+                                _probe_reserve_at = lambda c, _k = _n: (
+                                    (_pipeline_overhead_bytes if _k > 1 else 0)
+                                    + _cc_bytes(c, _k) // _k
+                                )
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_wo, _probe_reserve_at(_ctx_wo)
+                                ):
+                                    if explicit_ctx:
+                                        # Nothing to cap: this subset cannot hold it, and
+                                        # _select_gpus_split_aware will go to --fit too.
+                                        # Calling it a fit would drop the drafter and then
+                                        # report a pin that never happened.
+                                        continue
+                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                        _ctx_wo, _usable_wo, _probe_reserve_at
+                                    )
+                                    if _ctx_wo <= 0:
+                                        continue
+                                    # Every pooled term shrinks with the context, so this
+                                    # cannot newly fail; re-price rather than lean on it.
+                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                    if _foot_wo > _budget_wo:
+                                        continue
+                                _foot_w = (
+                                    _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
+                                ) / (1024 * 1024)
+                                _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
+                                if not _target_fits_somewhere:
+                                    _target_fits_somewhere = True
+                                    _probe_ctx, _probe_need, _probe_have = (
+                                        _ctx_wo,
+                                        _foot_w,
+                                        _budget_w,
+                                    )
+                                if _foot_w <= _budget_w:
+                                    _both_fit_somewhere = True
+                                    break
+                                # Both do not fit at the target's own context. The loop does
+                                # not move on: it re-caps the context WITH the drafter and
+                                # takes this subset at whatever that leaves. So a smaller
+                                # context holding both here IS the placement the load takes,
+                                # paying for the drafter in context, which is the trade being
+                                # refused. Only if no context fits both does it widen.
+                                _ctx_w = (
+                                    0
+                                    if explicit_ctx
+                                    else self._fit_context_to_vram(
+                                        _ctx_wo,
+                                        _budget_w,
+                                        _probe_base(True, _n),
+                                        cache_type_kv,
+                                        swa_full = swa_full,
+                                        n_parallel = n_parallel,
+                                        kv_unified = planned_kv_unified,
+                                        n_ubatch = _effective_ubatch,
+                                        flash_attn = planned_flash_attn,
+                                        mtp_engaged = True,
+                                        mtp_overhead_fn = mtp_overhead_fn,
+                                        compute_ctx_bytes_fn = _cc_n,
+                                        budget_frac = 1.0,
+                                        total_mib = None,
+                                    )
+                                )
+                                if (
+                                    _ctx_w > 0
+                                    and (
+                                        _probe_base(True, _n)
+                                        + _kv_bytes(_ctx_w)
+                                        + _cc_n(_ctx_w)
+                                        + _mtp_bytes(_ctx_w)
+                                    )
+                                    / (1024 * 1024)
+                                    <= _budget_w
+                                ):
+                                    break
+                        if _target_fits_somewhere and not _both_fit_somewhere:
+                            _spec_dropped_no_vram = True
+                            _mtp_will_engage = False
+                            # Clearing the flag alone leaves the reserve: the _mtp_bytes
+                            # sites are unconditional and _fit_context_to_vram invokes any
+                            # non-None mtp_overhead_fn whatever mtp_engaged says, so the
+                            # fit would still shrink the context for a drafter that no
+                            # longer launches. _mtp_kv_unsized goes with it, or
+                            # _flat_mtp_engages swaps the flat fraction in as replacement.
+                            mtp_overhead_fn = None
+                            _mtp_kv_unsized = False
+                            logger.warning(
+                                "Speculative decoding disabled for this load: the model "
+                                "fits in VRAM at context %d but its drafter does not "
+                                "(needs %.1f GB of a %.1f GB budget, on any GPU subset). "
+                                "Auto keeps the context rather than shrink it for a speed "
+                                "option. Select the drafter in Settings to force it.",
+                                _probe_ctx,
+                                _probe_need / 1024,
+                                _probe_have / 1024,
+                            )
+
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        mtp_overhead_fn = None
+                        _mtp_kv_unsized = False
+
+                    # Flat MTP reserve fraction: used only as the fallback when the
+                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
+                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
+                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
+                    # GPU regardless of draft-offload flags (keep its reserve).
+                    _flat_mtp_engages = _mtp_will_engage and (
+                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    )
+                    # MTP reserves GPU VRAM unless its only drafter is a separate
+                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
+                    # path reserves like the layer path; gate both on this.
+                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                    _flat_mtp_reserve = (
+                        _MTP_VRAM_RESERVE_FRAC
+                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
+                        else 0.0
+                    )
+                    _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    # Charge the soft overhead _CTX_FIT_VRAM_FRACTION under-covers on tight
+                    # tiers, gated so plain dense loads (#5106) only pay the CUDA-ctx base.
+                    # CUDA/cuBLAS context is discrete-GPU only (not Metal); the mmproj and
+                    # MTP draft-graph buffers exist on every backend.
+                    _soft_overhead = self._CUDA_CONTEXT_RESERVE_BYTES if gpus else 0
+                    if effective_is_vision and mmproj_size > 0:
+                        _soft_overhead += int(mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                    if _mtp_reserves_gpu:
+                        _soft_overhead += self._MTP_DRAFT_COMPUTE_BYTES
+                    model_size_fit = model_size + _compute_buffer_pipeline + _soft_overhead
+
+                    def _subset_model_size(n_gpus: int) -> int:
+                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
+                    # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
+                    _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -11842,6 +12172,10 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
+                # llama-server 501s on /v1/embeddings without this; pooling stays model-default.
+                if self.is_embedding_gguf:
+                    cmd.append("--embedding")
+
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     # Two separate aborts, both reachable from the picker since the input
@@ -12161,6 +12495,7 @@ class LlamaCppBackend:
                     dspark_fit_sized = not use_fit,
                     dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
                     dflash_fit_sized = not use_fit,
+                    drafter_no_vram = _spec_dropped_no_vram,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -12502,6 +12837,13 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # The GGUF header controls pooling; ignore inherited defaults.
+                for _pooling_var in (
+                    "LLAMA_ARG_POOLING",
+                    "LLAMA_ARG_RERANKING",
+                    "LLAMA_ARG_EMBEDDINGS",
+                ):
+                    env.pop(_pooling_var, None)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
@@ -13527,6 +13869,7 @@ class LlamaCppBackend:
         dspark_fit_sized: bool = True,
         dflash_draft_path: Optional[str] = None,
         dflash_fit_sized: bool = True,
+        drafter_no_vram: bool = False,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -13906,7 +14249,41 @@ class LlamaCppBackend:
         # UD-Q4_K_XL + mmproj-kquant + dflash-kquant, b10342, B200, n_max=2, greedy,
         # ~545 image tokens gave 92.1 -> 114.2 tok/s at 0.646 acceptance with output
         # byte-identical to the drafter-free run.
-        if dspark_draft_path and caps.get("supports_dspark"):
+        # Which drafter Auto would have emitted had VRAM allowed. An MLA model with no
+        # sidecar is already dropped by policy below, and reporting the VRAM reason
+        # would invite forcing MTP at a smaller context: slower than the ngram-mod it
+        # gets. Let it fall through to the MLA branch, which gives the real reason.
+        _no_vram_drops_a_real_drafter = (
+            bool(dspark_draft_path and caps.get("supports_dspark"))
+            or bool(dflash_draft_path and caps.get("supports_dflash"))
+            or not _auto_mla_embedded_mtp
+        )
+        if drafter_no_vram and _no_vram_drops_a_real_drafter:
+            # The fit found room for the target but not for the drafter's reserve,
+            # and reserved nothing for it, so emitting one now would OOM the load.
+            # Same downgrade as the MLA branch below: ngram-mod costs no VRAM, and
+            # spec-off when the build lacks it. The drafter paths stay recorded, so
+            # the UI still names the kind and a repeat Apply still dedupes.
+            self._spec_fallback_reason = "drafter_no_vram"
+            if caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so it is dropped and ngram-mod (zero-VRAM) takes its "
+                    "place. Choose the drafter in the Speculative Decoding dropdown to "
+                    "force it at a smaller context."
+                )
+                _emit_ngram_mod()
+            else:
+                # spec-off: --spec-type ngram-mod is not a value this build's enum
+                # carries, and llama-server aborts on one it cannot parse rather than
+                # ignoring it. Mirrors the MLA and sub-3B branches below.
+                logger.info(
+                    "Auto: the drafter does not fit in VRAM alongside the model at this "
+                    "context, so speculative decoding is disabled (this llama-server "
+                    "does not advertise ngram-mod). Choose the drafter in the "
+                    "Speculative Decoding dropdown to force it at a smaller context."
+                )
+        elif dspark_draft_path and caps.get("supports_dspark"):
             # DSpark first: load_model only hands a sidecar down once it has one
             # this binary can launch, and it beats every other Auto outcome for
             # this architecture (1.84x on 4x B200, 1.91x on one). Without it these
@@ -14230,6 +14607,7 @@ class LlamaCppBackend:
             self._n_kv_heads_by_layer = None
             self._n_heads = None
             self._embedding_length = None
+            self._pooling_type = None
             self._kv_key_length = None
             self._kv_value_length = None
             self._sliding_window = None
