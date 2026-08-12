@@ -13,6 +13,17 @@ generated launcher:
 
     python -X utf8 -I -m unsloth_cli studio -p 8888
 
+Use -I when that `python` is the managed Studio interpreter, which is what every
+command Unsloth prints does. `-m` resolves the package before this file runs, so a
+shell standing in a directory that has an `unsloth_cli` folder would otherwise run
+that copy, and -I drops the working directory from sys.path first.
+
+A `pip install --user` install is the exception: -I implies -s, so it hides the very
+user site the package lives in and the command cannot find it at all. There, run the
+same bootstrap the internal call sites use, which strips only the working directory:
+
+    python -X utf8 -c "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()" studio -p 8888
+
 Output is identical to the console script, which takes three things:
 
   * argv[0] is rewritten, so anything reading it sees the name the console
@@ -30,15 +41,6 @@ Output is identical to the console script, which takes three things:
 
 import sys
 
-# Every command this project prints spells the module route `-I -m unsloth_cli`, and the
-# -I is not decoration. `-m` resolves the package before this file runs, so a shell
-# sitting in a directory that has an `unsloth_cli` folder (an unsloth checkout, most
-# obviously) would run that one instead of the managed install, and nothing here could
-# tell or correct it. -I drops the working directory from sys.path first. It is the
-# advertised recovery command that needs this, not the internal call sites: those use
-# the -c trampoline, which strips the same entry without -I's other effects, because
-# they have to behave exactly like the console script they replace.
-#
 # Before the import, so a direct `python path/to/unsloth_cli/__main__.py` run
 # takes the console-script gate in __init__ rather than needing the call below.
 sys.argv[0] = "unsloth"

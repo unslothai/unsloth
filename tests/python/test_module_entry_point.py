@@ -308,16 +308,19 @@ def test_the_advertised_module_route_ignores_a_shadowing_directory(tmp_path):
 
 
 def test_every_advertised_module_route_is_isolated():
-    """Runs everywhere: the strings we print must not lose their -I.
+    """Runs everywhere: the commands we print must not lose their -I.
 
-    Source-contract, because the commands live in hint text rather than in code we
-    can call, and a copy that drops the flag reintroduces the shadowing silently.
+    Source-contract, because they live in hint text rather than in code we can call,
+    and a copy that drops the flag reintroduces the shadowing silently.
+
+    Only the three that name the MANAGED interpreter. -I implies -s, so it hides a
+    `pip install --user` install from itself; __main__.py's docstring documents that
+    case and offers the -c bootstrap instead, so it is not held to this rule.
     """
     advertised = {
         "studio/backend/routes/auth.py",
         "studio/backend/run.py",
         "install.ps1",
-        "unsloth_cli/__main__.py",
     }
     for name in sorted(advertised):
         source = (_REPO_ROOT / name).read_text(encoding = "utf-8")
@@ -329,3 +332,18 @@ def test_every_advertised_module_route_is_isolated():
             if "Usage:" in line:
                 continue
             assert "-I -m unsloth_cli" in line, f"{name}: unisolated module route: {line.strip()}"
+
+
+def test_the_module_docstring_documents_the_user_site_exception():
+    """-I implies -s, so the advertised form cannot see a --user install.
+
+    Measured: with the package in the user site, `python -m unsloth_cli` runs and
+    `python -I -m unsloth_cli` reports "No module named unsloth_cli". Anyone hitting
+    that has a launcher under %APPDATA% -- exactly the user-writable location a
+    default AppLocker policy denies -- so it is the population this route exists for.
+    """
+    source = (_REPO_PACKAGE / "__main__.py").read_text(encoding = "utf-8")
+    assert "pip install --user" in source
+    assert "-I implies -s" in source
+    # The escape hatch it points at has to be the real one.
+    assert "sys.path[:1] = [x for x in sys.path[:1] if x not in ('', os.getcwd())]" in source

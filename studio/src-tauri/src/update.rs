@@ -499,7 +499,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_update_command_uses_python_not_replaceable_console_stub() {
-        use std::ffi::{OsStr, OsString};
+        use std::ffi::OsString;
 
         let dir =
             std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
@@ -526,12 +526,9 @@ mod tests {
                 OsString::from("update")
             ]
         );
-        for name in ["PYTHONHOME", "PYTHONPATH"] {
-            assert!(
-                !cmd.get_envs().any(|(key, _)| key == OsStr::new(name)),
-                "{name} must be inherited, not overridden"
-            );
-        }
+        // The updater's PYTHONHOME / PYTHONPATH handling is asserted once, in
+        // windows_update_command_still_scrubs_the_python_search_path below. This
+        // test owns the program and the argument vector.
         std::fs::remove_dir_all(dir).unwrap();
     }
 
