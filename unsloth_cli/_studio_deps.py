@@ -109,6 +109,14 @@ def _resolved(path: Path) -> Path:
         return path
 
 
+def _venv_executables(root: Path) -> tuple[Path, ...]:
+    return (
+        (root / "Scripts" / "python.exe",)
+        if os.name == "nt"
+        else (root / "bin" / "python", root / "bin" / "python3")
+    )
+
+
 def _venv_site_packages(root: Path) -> List[Path]:
     """The site-packages roots used by this venv's active interpreter.
 
@@ -141,17 +149,12 @@ def _venv_site_packages(root: Path) -> List[Path]:
         if current:
             return current
 
-    executables = (
-        (root / "Scripts" / "python.exe",)
-        if os.name == "nt"
-        else (root / "bin" / "python", root / "bin" / "python3")
-    )
     probe = (
         "import json, sysconfig; "
         "p = sysconfig.get_paths(); "
         "print(json.dumps([p.get('purelib'), p.get('platlib')]))"
     )
-    for executable in executables:
+    for executable in _venv_executables(root):
         if not executable.is_file():
             continue
         try:
@@ -241,6 +244,32 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
 def _requirements_root_in(root: Path) -> Optional[Path]:
     for path in _venv_site_packages(root):
         reqs = path / "studio" / "backend" / "requirements"
+        if reqs.is_dir():
+            return reqs
+    # An editable install can keep studio/ only in its source checkout. Ask the
+    # foreign interpreter to follow its .pth/finder instead of treating the
+    # absent site-packages copy as an incomplete environment.
+    probe = (
+        "import json, pathlib, studio; "
+        "print(json.dumps(str(pathlib.Path(studio.__file__).resolve().parent / "
+        "'backend' / 'requirements')))"
+    )
+    for executable in _venv_executables(root):
+        if not executable.is_file():
+            continue
+        try:
+            reqs = Path(
+                json.loads(
+                    subprocess.check_output(
+                        [str(executable), "-I", "-c", probe],
+                        stderr = subprocess.DEVNULL,
+                        text = True,
+                        timeout = 5,
+                    )
+                )
+            )
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+            continue
         if reqs.is_dir():
             return reqs
     return None

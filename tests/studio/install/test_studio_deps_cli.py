@@ -140,6 +140,7 @@ def cross_venv(tmp_path, monkeypatch):
         malformed_unrelated_metadata = False,
         malformed_core_metadata = False,
         nameless_core_metadata = False,
+        editable_requirements = False,
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -187,11 +188,27 @@ def cross_venv(tmp_path, monkeypatch):
             (nameless / "METADATA").write_text(
                 "Metadata-Version: 2.1\nVersion: 2.0\n", encoding = "utf-8"
             )
+        checkout_requirements = None
+        if editable_requirements:
+            checkout_studio = tmp_path / "checkout" / "studio"
+            shutil.move(str(managed_site / "studio"), checkout_studio)
+            checkout_requirements = checkout_studio / "backend" / "requirements"
+            executable = managed / "bin" / "python"
+            executable.parent.mkdir(parents = True, exist_ok = True)
+            executable.write_text("probe placeholder", encoding = "utf-8")
 
         (caller_site / "unsloth_cli").mkdir(parents = True)
         shutil.copy(DEPS_PATH, caller_site / "unsloth_cli" / "_studio_deps.py")
         monkeypatch.setattr(sys, "prefix", str(caller))
         deps = _load(caller_site / "unsloth_cli" / "_studio_deps.py", "studio_deps_cross_venv")
+        if checkout_requirements is not None:
+
+            def editable_paths(args, **_kwargs):
+                if "sysconfig" in args[-1]:
+                    return json.dumps([str(managed_site), str(managed_site)])
+                return json.dumps(str(checkout_requirements))
+
+            monkeypatch.setattr(deps.subprocess, "check_output", editable_paths)
         if inactive_duplicate_version:
             executable = managed / "bin" / "python"
             executable.parent.mkdir(parents = True)
@@ -286,6 +303,13 @@ def test_nameless_core_metadata_is_a_foreign_conflict(cross_venv):
     assert state["ok"] is False
     assert state["manifest_ok"] is False
     assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_editable_foreign_install_follows_its_requirements_checkout(cross_venv):
+    state = cross_venv(editable_requirements = True)
+
+    assert state["ok"] is True, state
+    assert state["reason"] is None
 
 
 # ── import name vs distribution name ─────────────────────────────────
