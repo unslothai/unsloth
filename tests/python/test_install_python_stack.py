@@ -366,12 +366,10 @@ class TestSdistOnlyBuildArgs:
             req = next((k for k in node.keywords if k.arg == "req"), None)
             if req is None or "diffusers-pin.txt" not in ast.unparse(req.value):
                 continue
-            splat = " ".join(
-                ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred)
-            )
-            assert "_sdist_only_build_args('diffusers')" in splat, (
-                f"the diffusers pin at line {node.lineno} must exempt the source archive"
-            )
+            splat = " ".join(ast.unparse(a.value) for a in node.args if isinstance(a, ast.Starred))
+            assert (
+                "_sdist_only_build_args('diffusers')" in splat
+            ), f"the diffusers pin at line {node.lineno} must exempt the source archive"
             assert "version_info >= (3, 10)" in splat, (
                 "the exemption must be guarded so the pre-3.10 wheel is not forced "
                 f"through a source build (line {node.lineno})"
