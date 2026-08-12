@@ -135,6 +135,7 @@ def cross_venv(tmp_path, monkeypatch):
         extra_requirement = "",
         with_manifest = True,
         duplicate_versions = (),
+        inactive_duplicate_version = "",
     ):
         caller = tmp_path / "caller_venv"
         caller_site = _make_venv(caller, unsloth_version = caller_version, distributions = [])
@@ -156,11 +157,34 @@ def cross_venv(tmp_path, monkeypatch):
                 f"Metadata-Version: 2.1\nName: unsloth\nVersion: {version}\n",
                 encoding = "utf-8",
             )
+        if inactive_duplicate_version:
+            inactive_site = managed / "lib" / "python3.10" / "site-packages"
+            dist_info = inactive_site / f"unsloth-{inactive_duplicate_version}.dist-info"
+            dist_info.mkdir(parents = True)
+            (dist_info / "METADATA").write_text(
+                "Metadata-Version: 2.1\n"
+                "Name: unsloth\n"
+                f"Version: {inactive_duplicate_version}\n",
+                encoding = "utf-8",
+            )
 
         (caller_site / "unsloth_cli").mkdir(parents = True)
         shutil.copy(DEPS_PATH, caller_site / "unsloth_cli" / "_studio_deps.py")
         monkeypatch.setattr(sys, "prefix", str(caller))
         deps = _load(caller_site / "unsloth_cli" / "_studio_deps.py", "studio_deps_cross_venv")
+        if inactive_duplicate_version:
+            executable = managed / "bin" / "python"
+            executable.parent.mkdir(parents = True)
+            executable.write_text("probe placeholder", encoding = "utf-8")
+
+            def active_paths(*_args, **_kwargs):
+                return deps.subprocess.CompletedProcess(
+                    args = [],
+                    returncode = 0,
+                    stdout = json.dumps([str(managed_site), str(managed_site)]),
+                )
+
+            monkeypatch.setattr(deps.subprocess, "run", active_paths)
         return deps.install_state(extra_roots = (managed,))
 
     return build
@@ -207,6 +231,13 @@ def test_duplicate_metadata_in_a_foreign_managed_venv_is_not_collapsed(
     assert state["ok"] is False
     assert state["manifest_ok"] is False
     assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_inactive_python_site_packages_do_not_create_a_foreign_conflict(cross_venv):
+    state = cross_venv(inactive_duplicate_version = "2025.1.1")
+
+    assert state["ok"] is True, state
+    assert state["reason"] is None
 
 
 # ── import name vs distribution name ─────────────────────────────────

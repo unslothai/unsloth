@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import inspect
+import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -108,10 +110,87 @@ def _resolved(path: Path) -> Path:
 
 
 def _venv_site_packages(root: Path) -> List[Path]:
-    out: List[Path] = []
-    for pattern in ("lib/python*/site-packages", "Lib/site-packages"):
-        out.extend(sorted(root.glob(pattern)))
-    return out
+    """The site-packages roots used by this venv's active interpreter.
+
+    A venv upgraded in place can retain lib/pythonX.Y directories from older
+    interpreters. Globbing all of them makes ordinary packages look duplicated,
+    even though only the active interpreter's directory is importable.
+    """
+
+    def existing_inside_root(values) -> List[Path]:
+        resolved_root = _resolved(root)
+        out: List[Path] = []
+        for value in values:
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_dir():
+                continue
+            try:
+                _resolved(path).relative_to(resolved_root)
+            except ValueError:
+                continue
+            if path not in out:
+                out.append(path)
+        return out
+
+    if _resolved(root) == _resolved(Path(sys.prefix)):
+        import sysconfig
+
+        try:
+            configured = sysconfig.get_paths()
+        except Exception:
+            configured = {}
+        current = existing_inside_root(configured.get(key) for key in ("purelib", "platlib"))
+        if current:
+            return current
+
+    executables = (
+        (root / "Scripts" / "python.exe",)
+        if os.name == "nt"
+        else (root / "bin" / "python", root / "bin" / "python3")
+    )
+    probe = (
+        "import json, sysconfig; "
+        "p = sysconfig.get_paths(); "
+        "print(json.dumps([p.get('purelib'), p.get('platlib')]))"
+    )
+    for executable in executables:
+        if not executable.is_file():
+            continue
+        try:
+            result = subprocess.run(
+                [str(executable), "-I", "-c", probe],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 5,
+            )
+            values = json.loads(result.stdout) if result.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        active = existing_inside_root(values if isinstance(values, list) else [])
+        if active:
+            return active
+
+    windows_site = root / "Lib" / "site-packages"
+    if windows_site.is_dir():
+        return [windows_site]
+
+    try:
+        config = (root / "pyvenv.cfg").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        config = ""
+    match = re.search(r"(?im)^\s*version\s*=\s*(\d+\.\d+)", config)
+    if match:
+        versioned = root / "lib" / f"python{match.group(1)}" / "site-packages"
+        if versioned.is_dir():
+            return [versioned]
+
+    # Test fixtures and incomplete venvs may not have a runnable interpreter or
+    # version entry yet. One directory is unambiguous; several are not.
+    candidates = sorted(root.glob("lib/python*/site-packages"))
+    return candidates if len(candidates) == 1 else []
 
 
 def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:

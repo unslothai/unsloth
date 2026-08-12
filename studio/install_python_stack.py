@@ -3569,43 +3569,61 @@ def _repair_duplicate_core_metadata(
 ) -> bool:
     """Reinstall managed core packages whose metadata has more than one record.
 
-    A no-dependency reinstall is intentional. It gives pip or uv one package
-    transaction in which to remove every superseded dist-info without asking a
-    resolver to replace the existing torch build. The normal dependency pass
-    still follows this repair and applies current requirements.
+    Remove every record first because pip's force-reinstall only uninstalls the
+    one record its finder selects. Repeating a dependency-free uninstall keeps
+    removing the selected record until none remain, after which the requested
+    source can be installed without asking a resolver to replace the existing
+    torch build. The normal dependency pass still follows this repair.
     """
-    duplicates: list[str] = []
+    duplicates: list[tuple[str, int]] = []
     seen: set[str] = set()
     for name in package_names:
         canonical = re.sub(r"[-_.]+", "-", name).lower()
         if canonical in seen:
             continue
         seen.add(canonical)
-        if len(install_manifest.installed_versions(name)) > 1:
-            duplicates.append(name)
+        record_count = len(install_manifest.installed_versions(name))
+        if record_count > 1:
+            duplicates.append((name, record_count))
 
-    for name in duplicates:
+    repaired: list[str] = []
+    for name, record_count in duplicates:
         _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
-        pip_install(
-            f"Repairing duplicate metadata for {name}",
-            "--no-cache-dir",
-            "--no-deps",
-            "--force-reinstall",
-            name,
-        )
+        while record_count:
+            run(
+                f"Removing an installed metadata record for {name}",
+                [sys.executable, "-m", "pip", "uninstall", "-y", name],
+            )
+            importlib.invalidate_caches()
+            remaining = len(install_manifest.installed_versions(name))
+            if remaining >= record_count:
+                _safe_print(
+                    _red(f"   could not remove every metadata record for {name}"),
+                    file = sys.stderr,
+                )
+                return False
+            record_count = remaining
 
-    # install.sh/install.ps1 may already have overlaid a checkout and git-main
-    # zoo before handing off with SKIP_STUDIO_BASE=1. The bare reinstall above
-    # repairs metadata, but changes provenance to PyPI; restore only sources the
-    # repair touched before the skipped base branch can declare success.
-    if duplicates and local_repo:
-        _overlay_local_core_packages(local_repo, duplicates)
+        if local_repo:
+            # install.sh/install.ps1 may already have applied these sources
+            # before handing off with SKIP_STUDIO_BASE=1. Install that same
+            # provenance directly now that no ambiguous record remains.
+            _overlay_local_core_packages(local_repo, (name,))
+        else:
+            pip_install(
+                f"Repairing duplicate metadata for {name}",
+                "--no-cache-dir",
+                "--no-deps",
+                "--force-reinstall",
+                name,
+            )
+        repaired.append(name)
 
     importlib.invalidate_caches()
-    remaining = [name for name in duplicates if len(install_manifest.installed_versions(name)) > 1]
+    remaining = [name for name in repaired if len(install_manifest.installed_versions(name)) != 1]
     if remaining:
         _safe_print(
-            _red("   duplicate package metadata remains after reinstall: " + ", ".join(remaining)),
+            _red("   package metadata is inconsistent after reinstall: " + ", ".join(remaining)),
             file = sys.stderr,
         )
         return False

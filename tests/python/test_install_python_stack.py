@@ -545,13 +545,21 @@ class TestBuildPipCmdUpgradeIntent:
 
 
 class TestDuplicateCoreMetadataRepair:
-    def test_only_duplicate_core_packages_are_reinstalled(self, monkeypatch):
+    def test_every_duplicate_record_is_uninstalled_before_reinstall(self, monkeypatch):
         probes = {
-            "unsloth": iter((["2026.8.12", "2026.8.15"], ["2026.8.15"])),
+            "unsloth": iter(
+                (
+                    ["2026.8.12", "2026.8.15"],
+                    ["2026.8.15"],
+                    [],
+                    ["2026.8.15"],
+                )
+            ),
             "unsloth-zoo": iter((["2026.8.10"],)),
         }
         installs = []
         invalidations = []
+        commands = []
 
         monkeypatch.setattr(
             ips.install_manifest,
@@ -562,26 +570,44 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: invalidations.append(True))
         monkeypatch.setattr(
             ips,
+            "run",
+            lambda label, cmd: commands.append((label, cmd)),
+        )
+        monkeypatch.setattr(
+            ips,
             "pip_install",
             lambda label, *args, **kwargs: installs.append((label, args, kwargs)),
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
+        assert [command for _label, command in commands] == [
+            [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"],
+            [sys.executable, "-m", "pip", "uninstall", "-y", "unsloth"],
+        ]
         assert len(installs) == 1
         assert installs[0][1] == ("--no-cache-dir", "--no-deps", "--force-reinstall", "unsloth")
-        assert invalidations == [True]
+        assert len(invalidations) == 3
 
-    def test_repair_fails_when_duplicate_metadata_survives(self, monkeypatch, capsys):
+    def test_repair_fails_when_uninstall_does_not_remove_a_record(self, monkeypatch, capsys):
+        probes = iter(
+            (
+                ["2026.8.12", "2026.8.15"],
+                ["2026.8.12", "2026.8.15"],
+            )
+        )
         monkeypatch.setattr(
             ips.install_manifest,
             "installed_versions",
-            lambda _name: ["2026.8.12", "2026.8.15"],
+            lambda _name: next(probes),
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
+        installs = []
+        monkeypatch.setattr(ips, "pip_install", lambda *a, **k: installs.append((a, k)))
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
-        assert "duplicate package metadata remains" in capsys.readouterr().err
+        assert installs == []
+        assert "could not remove every metadata record" in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         "duplicate, overlay_args",
@@ -602,7 +628,11 @@ class TestDuplicateCoreMetadataRepair:
         self, monkeypatch, duplicate, overlay_args
     ):
         probes = {
-            name: iter((["old", "new"], ["new"]) if name == duplicate else (["new"],))
+            name: iter(
+                (["old", "new"], ["new"], [], ["new"])
+                if name == duplicate
+                else (["new"],)
+            )
             for name in ("unsloth", "unsloth-zoo")
         }
         installs = []
@@ -614,6 +644,7 @@ class TestDuplicateCoreMetadataRepair:
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "run", lambda *a, **k: None)
         monkeypatch.setattr(
             ips,
             "pip_install",
@@ -623,9 +654,9 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._repair_duplicate_core_metadata(
             ("unsloth", "unsloth-zoo"), local_repo = "/src/unsloth"
         )
-        assert installs[0][1] == ("--no-cache-dir", "--no-deps", "--force-reinstall", duplicate)
-        assert installs[1][1] == overlay_args
-        assert installs[1][2]["constrain"] is False
+        assert len(installs) == 1
+        assert installs[0][1] == overlay_args
+        assert installs[0][2]["constrain"] is False
 
     def test_install_pass_hands_local_provenance_to_duplicate_repair(self):
         source = inspect.getsource(ips.install_python_stack)
