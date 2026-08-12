@@ -60,6 +60,23 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
+def _chat_history_storage_disabled() -> bool:
+    try:
+        from utils.no_chat_history_settings import get_no_chat_history_enabled
+
+        return get_no_chat_history_enabled()
+    except Exception:
+        return False
+
+
+def _reject_chat_history_writes() -> None:
+    if _chat_history_storage_disabled():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Chat history storage is disabled on this server.",
+        )
+
+
 class ChatThread(BaseModel):
     id: str
     title: str = "New Chat"
@@ -285,6 +302,8 @@ def list_threads(
     include_archived: bool = Query(True),
     current_subject: str = Depends(get_current_subject),
 ):
+    if _chat_history_storage_disabled():
+        return ChatThreadListResponse(threads = [])
     threads = list_chat_threads(
         model_type = model_type,
         pair_id = pair_id,
@@ -309,6 +328,7 @@ def _deleted_thread_error(thread_id: str) -> HTTPException:
 
 @router.post("/threads", response_model = ChatThread)
 def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+    _reject_chat_history_writes()
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise _missing_project_error(payload.projectId)
     try:
@@ -325,6 +345,8 @@ def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
 def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    if _chat_history_storage_disabled():
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -337,6 +359,7 @@ def patch_thread(
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_chat_history_writes()
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
     expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
@@ -543,6 +566,8 @@ def list_attachments(
     current_subject: str = Depends(get_current_subject),
 ) -> dict:
     """One bounded page of chat uploads for the settings Data tab."""
+    if _chat_history_storage_disabled():
+        return {"attachments": [], "nextOffset": None}
     attachments, next_offset = list_chat_attachments_page(limit = limit, offset = offset)
     return {"attachments": attachments, "nextOffset": next_offset}
 
@@ -675,6 +700,8 @@ def delete_attachment(
 def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
+    if _chat_history_storage_disabled():
+        return ChatProjectListResponse(projects = [])
     return ChatProjectListResponse(
         projects = [
             ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
@@ -685,11 +712,17 @@ def list_projects(
 
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+    _reject_chat_history_writes()
     return ChatProject(**upsert_chat_project(payload.model_dump()))
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
 def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
+    if _chat_history_storage_disabled():
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -705,6 +738,7 @@ def patch_project(
     payload: ChatProjectPatch,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_chat_history_writes()
     patch = payload.model_dump(exclude_unset = True)
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
@@ -904,6 +938,8 @@ async def delete_project(
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
 def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    if _chat_history_storage_disabled():
+        return ChatMessageListResponse(messages = [])
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -916,6 +952,10 @@ def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
+    if _chat_history_storage_disabled():
+        return ChatMessagesBatchResponse(
+            messagesByThreadId = {tid: [] for tid in payload.threadIds},
+        )
     by_thread: dict[str, list[ChatMessage]] = {tid: [] for tid in payload.threadIds}
     for m in list_chat_messages_for_threads(payload.threadIds):
         tid = m["threadId"]
@@ -930,6 +970,8 @@ def get_thread_message(
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
+    if _chat_history_storage_disabled():
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     message = get_chat_message(thread_id, message_id)
@@ -945,6 +987,7 @@ def save_thread_message(
     payload: ChatMessage,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_chat_history_writes()
     if thread_id != payload.threadId or message_id != payload.id:
         raise HTTPException(status_code = 400, detail = "Message id mismatch")
     if get_chat_thread(thread_id) is None:
@@ -971,6 +1014,7 @@ def replace_thread_messages(
     payload: ChatMessageSyncRequest,
     current_subject: str = Depends(get_current_subject),
 ):
+    _reject_chat_history_writes()
     mismatched_ids = [message.id for message in payload.messages if message.threadId != thread_id]
     if mismatched_ids:
         preview = ", ".join(mismatched_ids[:5])
@@ -1009,6 +1053,8 @@ def replace_thread_messages(
 
 @router.get("/count", response_model = ChatCountResponse)
 def count_threads(current_subject: str = Depends(get_current_subject)):
+    if _chat_history_storage_disabled():
+        return ChatCountResponse(count = 0)
     return ChatCountResponse(count = count_chat_threads())
 
 
@@ -1026,6 +1072,7 @@ def record_import_ledger(
     payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
+    _reject_chat_history_writes()
     accepted, inserted = upsert_chat_legacy_imports(payload.threadIds)
     return ChatImportLedgerRecordResponse(accepted = accepted, inserted = inserted)
 
@@ -1139,6 +1186,7 @@ def fork_thread(
     `containerSnapshotWarning` and the fork still succeeds with a
     clean sandbox.
     """
+    _reject_chat_history_writes()
     import uuid
 
     source = get_chat_thread(thread_id)
@@ -1191,12 +1239,24 @@ def get_fork_count(
     message_id: str,
     current_subject: str = Depends(get_current_subject),
 ):
+    if _chat_history_storage_disabled():
+        return ChatForkCountResponse(count = 0)
     return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
 
 
 @router.get("/export", response_model = ChatExportResponse)
 def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
+
+    if _chat_history_storage_disabled():
+        return ChatExportResponse(
+            exportedAt = datetime.now(timezone.utc).isoformat(),
+            version = 1,
+            threadCount = 0,
+            projects = [],
+            threads = [],
+            messages = [],
+        )
     projects, threads, messages = build_chat_history_export()
     return ChatExportResponse(
         exportedAt = datetime.now(timezone.utc).isoformat(),

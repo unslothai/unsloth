@@ -104,6 +104,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
+    "settings.data.noChatHistory.label",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",

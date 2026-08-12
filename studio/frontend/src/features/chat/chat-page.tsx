@@ -1847,6 +1847,7 @@ export function ChatPage({
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
+  const incognitoLocked = useChatRuntimeStore((s) => s.incognitoLocked);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
     ? "Turn off temporary chat"
@@ -2356,10 +2357,11 @@ export function ChatPage({
   // never implies a saved thread is temporary.
   useEffect(() => {
     const onFreshSingleChat = view.mode === "single" && !view.threadId;
+    if (incognitoLocked) return;
     if (incognito && !onFreshSingleChat) {
       setIncognito(false);
     }
-  }, [view, incognito, setIncognito]);
+  }, [view, incognito, incognitoLocked, setIncognito]);
 
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
@@ -3451,7 +3453,7 @@ export function ChatPage({
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}
-            {view.mode === "single" && (
+            {view.mode === "single" && !incognitoLocked && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button

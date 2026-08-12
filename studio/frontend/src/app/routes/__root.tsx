@@ -25,6 +25,7 @@ import { backfillModelOverrides } from "@/features/model-picker/api/migrate-mode
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { NoChatHistoryBootstrap } from "@/features/settings/components/no-chat-history-bootstrap";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -327,7 +328,9 @@ function RootLayout() {
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
+        if (!chatRuntime.incognitoLocked) {
+          chatRuntime.setIncognito(false);
+        }
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -349,12 +352,15 @@ function RootLayout() {
     if (anyRunning) return;
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
-    chatRuntime.setIncognito(false);
+    if (!chatRuntime.incognitoLocked) {
+      chatRuntime.setIncognito(false);
+    }
   }, [isChatRoute]);
 
   const content = (
     <>
       <PersonalizationSyncMount />
+      <NoChatHistoryBootstrap />
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
       {!isAuthFlowRoute && <ApiMonitorOverlay />}

@@ -44,6 +44,12 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.no_chat_history_settings import (
+    DEFAULT_NO_CHAT_HISTORY_ENABLED,
+    get_no_chat_history_enabled,
+    no_chat_history_forced_by_env,
+    set_no_chat_history_enabled,
+)
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.model_memory_settings import (
@@ -195,6 +201,16 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class NoChatHistoryPayload(BaseModel):
+    enabled: bool
+
+
+class NoChatHistoryResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_NO_CHAT_HISTORY_ENABLED
+    forced_by_env: bool
 
 
 class ModelMemoryPayload(BaseModel):
@@ -370,6 +386,13 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+def _no_chat_history_response(enabled: bool | None = None) -> NoChatHistoryResponse:
+    return NoChatHistoryResponse(
+        enabled = get_no_chat_history_enabled() if enabled is None else enabled,
+        forced_by_env = no_chat_history_forced_by_env(),
+    )
+
+
 # Distinct from None, which is a real launch this policy does not govern.
 _NO_LAUNCH = object()
 
@@ -520,6 +543,30 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/no-chat-history", response_model = NoChatHistoryResponse)
+def get_no_chat_history(
+    current_subject: str = Depends(get_current_subject),
+) -> NoChatHistoryResponse:
+    return _no_chat_history_response()
+
+
+@router.put("/no-chat-history", response_model = NoChatHistoryResponse)
+def update_no_chat_history(
+    payload: NoChatHistoryPayload, current_subject: str = Depends(get_current_subject)
+) -> NoChatHistoryResponse:
+    try:
+        enabled = set_no_chat_history_enabled(payload.enabled)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid no chat history setting."),
+            event = "settings.update_no_chat_history_failed",
+            log = logger,
+        ) from exc
+    return _no_chat_history_response(enabled)
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)

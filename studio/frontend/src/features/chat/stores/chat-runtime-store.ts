@@ -1168,6 +1168,8 @@ type ChatRuntimeStore = {
    * backend settings, so a refresh always exits incognito.
    */
   incognito: boolean;
+  /** When true, the server policy forces temporary chat and the toggle is hidden. */
+  incognitoLocked: boolean;
   settingsPanelOpen: boolean;
   editingMessageId: string | null;
   pendingAudioBase64: string | null;
@@ -1246,6 +1248,7 @@ type ChatRuntimeStore = {
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
+  setIncognitoLocked: (locked: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
   setEditingMessageId: (id: string | null) => void;
   clearCheckpoint: () => void;
@@ -1687,6 +1690,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   queuedSettingsEpoch: 0,
   activeProjectId: null,
   incognito: false,
+  incognitoLocked: false,
   settingsPanelOpen: false,
   editingMessageId: null,
   pendingAudioBase64: null,
@@ -2040,6 +2044,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
+    const state = get();
+    if (!incognito && state.incognitoLocked) {
+      return;
+    }
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     set(
       incognito
@@ -2047,6 +2055,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         : { incognito },
     );
   },
+  setIncognitoLocked: (incognitoLocked) => set({ incognitoLocked }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
   setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {

@@ -967,6 +967,15 @@ export const en = {
       exportFailed: "Could not export chats",
       description:
         "Manage chat history and uploaded files stored on this device.",
+      noChatHistory: {
+        label: "Don't store chat history",
+        description:
+          "Keep every chat temporary so concurrent users on a shared Studio host do not see each other's conversations. New messages are not saved to studio.db.",
+        forcedByEnv:
+          "Locked by UNSLOTH_NO_CHAT_HISTORY. Restart without it to change this in Settings.",
+        loadError: "Failed to load chat history policy.",
+        saveError: "Failed to update chat history policy.",
+      },
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
       archivedImages: "Archived images",

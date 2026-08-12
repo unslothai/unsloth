@@ -78,6 +78,11 @@ import {
   type FineTuneAction,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import {
+  type NoChatHistorySettings,
+  loadNoChatHistorySettings,
+  updateNoChatHistorySettings,
+} from "../api/no-chat-history";
 
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
@@ -112,6 +117,12 @@ export function DataTab() {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
+  const [noChatHistory, setNoChatHistory] =
+    useState<NoChatHistorySettings | null>(null);
+  const [noChatHistoryError, setNoChatHistoryError] = useState<string | null>(
+    null,
+  );
+  const [isSavingNoChatHistory, setIsSavingNoChatHistory] = useState(false);
   // Chat-only hosts redirect /studio back to /chat, so loading a dataset in
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
@@ -148,6 +159,27 @@ export function DataTab() {
       cancelled = true;
     };
   }, [archivedRequested, consumeArchivedChatsRequest]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadNoChatHistorySettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setNoChatHistory(settings);
+        setNoChatHistoryError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setNoChatHistoryError(
+          error instanceof Error
+            ? error.message
+            : t("settings.data.noChatHistory.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
@@ -195,6 +227,28 @@ export function DataTab() {
   useEffect(() => {
     void countAllChats().then(setCount);
   }, []);
+
+  const saveNoChatHistory = async (enabled: boolean) => {
+    setIsSavingNoChatHistory(true);
+    setNoChatHistoryError(null);
+    try {
+      const settings = await updateNoChatHistorySettings(enabled);
+      setNoChatHistory(settings);
+      const store = useChatRuntimeStore.getState();
+      store.setIncognitoLocked(settings.enabled);
+      if (settings.enabled) {
+        store.setIncognito(true);
+      }
+    } catch (error) {
+      setNoChatHistoryError(
+        error instanceof Error
+          ? error.message
+          : t("settings.data.noChatHistory.saveError"),
+      );
+    } finally {
+      setIsSavingNoChatHistory(false);
+    }
+  };
 
   const handleExport = async () => {
     setExporting(true);
@@ -667,6 +721,32 @@ export function DataTab() {
             checked={confirmDeleteChats}
             onCheckedChange={setConfirmDeleteChats}
           />
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.noChatHistory.label")}
+          description={t("settings.data.noChatHistory.description")}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={noChatHistory?.enabled ?? false}
+              disabled={
+                !noChatHistory ||
+                isSavingNoChatHistory ||
+                noChatHistory.forcedByEnv
+              }
+              onCheckedChange={(enabled) => void saveNoChatHistory(enabled)}
+            />
+            {noChatHistory?.forcedByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.data.noChatHistory.forcedByEnv")}
+              </span>
+            ) : noChatHistoryError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {noChatHistoryError}
+              </span>
+            ) : null}
+          </div>
         </SettingsRow>
 
         <SettingsRow
