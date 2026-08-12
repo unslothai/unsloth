@@ -8,32 +8,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   AUTO_LOCALE,
   LOCALES,
   isLocalePreference,
   setLocale,
-  useT,
   useLocalePreference,
+  usePendingLocalePreference,
+  useT,
 } from "@/i18n";
 
 export function LanguageSelect() {
   const t = useT();
   const preference = useLocalePreference();
+  const pendingPreference = usePendingLocalePreference();
 
   return (
     <Select
-      value={preference}
+      value={pendingPreference ?? preference}
       onValueChange={(value) => {
         if (isLocalePreference(value)) setLocale(value);
       }}
     >
       <SelectTrigger
         aria-label={t("settings.appearance.language.label")}
+        aria-busy={pendingPreference !== null}
         className="w-40"
         size="sm"
       >
         <SelectValue />
+        {pendingPreference !== null ? <Spinner className="size-3.5" /> : null}
       </SelectTrigger>
       <SelectContent
         style={{

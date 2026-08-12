@@ -3,18 +3,7 @@
 
 import { getLocale } from "./locale-store";
 import { en } from "./locales/en";
-import { zhCN } from "./locales/zh-CN";
-import { ptBR } from "./locales/pt-br";
-import { ja } from "./locales/ja";
-import { es } from "./locales/es";
-import { hi } from "./locales/hi";
-import { ar } from "./locales/ar";
-import { fr } from "./locales/fr";
-import { ru } from "./locales/ru";
-import { de } from "./locales/de";
-import { ko } from "./locales/ko";
-import { it } from "./locales/it";
-import type { InterpolationValues, MessageKey } from "./types";
+import type { InterpolationValues, MessageKey, MessageTree } from "./types";
 
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
@@ -34,20 +23,48 @@ export const LOCALES = {
 export type Locale = keyof typeof LOCALES;
 export type TranslationKey = MessageKey<typeof en>;
 
-export const messages = {
+const loadedMessages: Partial<Record<Locale, MessageTree>> = {
   en,
-  "zh-CN": zhCN,
-  ja,
-  ko,
-  es,
-  "pt-BR": ptBR,
-  fr,
-  de,
-  it,
-  ru,
-  hi,
-  ar,
-} as const;
+};
+export const messages = loadedMessages as typeof loadedMessages & {
+  en: typeof en;
+};
+
+const localeLoaders: Record<
+  Exclude<Locale, "en">,
+  () => Promise<MessageTree>
+> = {
+  "zh-CN": () => import("./locales/zh-CN").then((module) => module.zhCN),
+  ja: () => import("./locales/ja").then((module) => module.ja),
+  ko: () => import("./locales/ko").then((module) => module.ko),
+  es: () => import("./locales/es").then((module) => module.es),
+  "pt-BR": () => import("./locales/pt-br").then((module) => module.ptBR),
+  fr: () => import("./locales/fr").then((module) => module.fr),
+  de: () => import("./locales/de").then((module) => module.de),
+  it: () => import("./locales/it").then((module) => module.it),
+  ru: () => import("./locales/ru").then((module) => module.ru),
+  hi: () => import("./locales/hi").then((module) => module.hi),
+  ar: () => import("./locales/ar").then((module) => module.ar),
+};
+
+const localeLoads = new Map<Locale, Promise<void>>();
+
+export function loadLocaleMessages(locale: Locale): Promise<void> | undefined {
+  if (loadedMessages[locale] !== undefined) return undefined;
+  const pending = localeLoads.get(locale);
+  if (pending) return pending;
+
+  if (locale === "en") return undefined;
+  const load = localeLoaders[locale]()
+    .then((loaded) => {
+      loadedMessages[locale] = loaded;
+    })
+    .finally(() => {
+      localeLoads.delete(locale);
+    });
+  localeLoads.set(locale, load);
+  return load;
+}
 
 const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;
 

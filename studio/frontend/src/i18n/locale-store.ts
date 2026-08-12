@@ -2,11 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
-import { isSupportedLocale, LOCALES, type Locale } from "./messages";
+import {
+  LOCALES,
+  type Locale,
+  isSupportedLocale,
+  loadLocaleMessages,
+} from "./messages";
 
 export const DEFAULT_LOCALE: Locale = "en";
 export const AUTO_LOCALE = "auto";
 export const LOCALE_STORAGE_KEY = "unsloth_locale";
+export const LOCALE_INITIALIZATION_TIMEOUT_MS = 2_000;
 
 export type LocalePreference = Locale | typeof AUTO_LOCALE;
 
@@ -16,6 +22,7 @@ const subscribers = new Set<() => void>();
 
 let currentPreference: LocalePreference = DEFAULT_LOCALE_PREFERENCE;
 let currentLocale: Locale = DEFAULT_LOCALE;
+let pendingPreference: LocalePreference | null = null;
 let areListenersActive = false;
 
 export function isLocalePreference(value: unknown): value is LocalePreference {
@@ -71,7 +78,9 @@ function normalizePreference(value: unknown): LocalePreference {
   // Return a value re-derived from our own locale table rather than the raw
   // input, so only known language codes are ever persisted.
   const locales = Object.keys(LOCALES) as Locale[];
-  return locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE;
+  return (
+    locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE
+  );
 }
 
 function resolvePreference(preference: LocalePreference): Locale {
@@ -105,13 +114,75 @@ function notifySubscribers(): void {
   for (const subscriber of subscribers) subscriber();
 }
 
-function applyPreference(preference: LocalePreference): void {
-  const locale = resolvePreference(preference);
-  if (preference === currentPreference && locale === currentLocale) return;
+let preferenceRevision = 0;
+
+function commitPreference(
+  preference: LocalePreference,
+  locale: Locale,
+  revision: number,
+  persist: boolean,
+): void {
+  if (revision !== preferenceRevision) return;
+  if (persist) writeStoredPreference(preference);
+  const didChange =
+    preference !== currentPreference ||
+    locale !== currentLocale ||
+    pendingPreference !== null;
   currentPreference = preference;
   currentLocale = locale;
+  pendingPreference = null;
   syncDocumentLang(locale);
+  if (didChange) notifySubscribers();
+}
+
+function commitFallbackLocale(
+  preference: LocalePreference,
+  revision: number,
+): void {
+  if (revision !== preferenceRevision) return;
+  const didChange =
+    preference !== currentPreference ||
+    currentLocale !== DEFAULT_LOCALE ||
+    pendingPreference !== null;
+  currentPreference = preference;
+  currentLocale = DEFAULT_LOCALE;
+  pendingPreference = null;
+  syncDocumentLang(currentLocale);
+  if (didChange) notifySubscribers();
+}
+
+type LocaleCatalogLoader = (locale: Locale) => Promise<void> | undefined;
+
+function failPreference(revision: number): void {
+  if (revision !== preferenceRevision || pendingPreference === null) return;
+  pendingPreference = null;
   notifySubscribers();
+}
+
+function applyPreference(
+  preference: LocalePreference,
+  persist = false,
+  loadMessages: LocaleCatalogLoader = loadLocaleMessages,
+): Promise<void> | undefined {
+  const revision = ++preferenceRevision;
+  const locale = resolvePreference(preference);
+  let pending: Promise<void> | undefined;
+  try {
+    pending = loadMessages(locale);
+  } catch {
+    failPreference(revision);
+    return undefined;
+  }
+  if (!pending) {
+    commitPreference(preference, locale, revision, persist);
+    return undefined;
+  }
+  pendingPreference = preference;
+  notifySubscribers();
+  return pending.then(
+    () => commitPreference(preference, locale, revision, persist),
+    () => failPreference(revision),
+  );
 }
 
 function isLocaleStorageEvent(event: StorageEvent): boolean {
@@ -133,17 +204,13 @@ function handleStorageEvent(event: StorageEvent): void {
     event.key === null
       ? DEFAULT_LOCALE_PREFERENCE
       : normalizePreference(event.newValue);
-  applyPreference(nextPreference);
+  void applyPreference(nextPreference);
 }
 
 function handleLanguageChange(): void {
   // Only auto mode tracks the browser language.
   if (currentPreference !== AUTO_LOCALE) return;
-  const locale = detectLocale();
-  if (locale === currentLocale) return;
-  currentLocale = locale;
-  syncDocumentLang(locale);
-  notifySubscribers();
+  void applyPreference(currentPreference);
 }
 
 function startListeners(): void {
@@ -176,6 +243,14 @@ function getServerPreferenceSnapshot(): LocalePreference {
   return DEFAULT_LOCALE_PREFERENCE;
 }
 
+function getPendingPreferenceSnapshot(): LocalePreference | null {
+  return pendingPreference;
+}
+
+function getServerPendingPreferenceSnapshot(): null {
+  return null;
+}
+
 export function subscribeLocale(listener: () => void): () => void {
   const shouldStartListeners = subscribers.size === 0;
   subscribers.add(listener);
@@ -187,13 +262,59 @@ export function subscribeLocale(listener: () => void): () => void {
   };
 }
 
-export function initializeLocale(): Locale {
+export function initializeLocale({
+  loadMessages = loadLocaleMessages,
+  timeoutMs = LOCALE_INITIALIZATION_TIMEOUT_MS,
+}: {
+  loadMessages?: LocaleCatalogLoader;
+  timeoutMs?: number;
+} = {}): Locale | Promise<Locale> {
   const preference = readStoredPreference();
-  currentPreference = preference;
-  currentLocale = resolvePreference(preference);
-  syncDocumentLang(currentLocale);
+  const locale = resolvePreference(preference);
+  const revision = ++preferenceRevision;
+  let pending: Promise<void> | undefined;
+  try {
+    pending = loadMessages(locale);
+  } catch {
+    commitFallbackLocale(preference, revision);
+    return currentLocale;
+  }
+  if (!pending) {
+    commitPreference(preference, locale, revision, false);
+    return currentLocale;
+  }
+
+  pendingPreference = preference;
   notifySubscribers();
-  return currentLocale;
+
+  return new Promise((resolve) => {
+    let didResolve = false;
+    const finish = () => {
+      if (didResolve) return;
+      didResolve = true;
+      resolve(currentLocale);
+    };
+    const timeout = globalThis.setTimeout(
+      () => {
+        commitFallbackLocale(preference, revision);
+        finish();
+      },
+      Math.max(0, timeoutMs),
+    );
+
+    pending.then(
+      () => {
+        globalThis.clearTimeout(timeout);
+        commitPreference(preference, locale, revision, false);
+        finish();
+      },
+      () => {
+        globalThis.clearTimeout(timeout);
+        commitFallbackLocale(preference, revision);
+        finish();
+      },
+    );
+  });
 }
 
 export function getLocale(): Locale {
@@ -204,14 +325,16 @@ export function getLocalePreference(): LocalePreference {
   return currentPreference;
 }
 
-export function setLocale(preference: LocalePreference): void {
-  const requestedPreference = normalizePreference(preference);
-  writeStoredPreference(requestedPreference);
+export function getPendingLocalePreference(): LocalePreference | null {
+  return pendingPreference;
+}
 
-  currentPreference = requestedPreference;
-  currentLocale = resolvePreference(requestedPreference);
-  syncDocumentLang(currentLocale);
-  notifySubscribers();
+export function setLocale(
+  preference: LocalePreference,
+  loadMessages: LocaleCatalogLoader = loadLocaleMessages,
+): Promise<void> | undefined {
+  const requestedPreference = normalizePreference(preference);
+  return applyPreference(requestedPreference, true, loadMessages);
 }
 
 export function useLocale(): Locale {
@@ -227,5 +350,13 @@ export function useLocalePreference(): LocalePreference {
     subscribeLocale,
     getPreferenceSnapshot,
     getServerPreferenceSnapshot,
+  );
+}
+
+export function usePendingLocalePreference(): LocalePreference | null {
+  return useSyncExternalStore(
+    subscribeLocale,
+    getPendingPreferenceSnapshot,
+    getServerPendingPreferenceSnapshot,
   );
 }
