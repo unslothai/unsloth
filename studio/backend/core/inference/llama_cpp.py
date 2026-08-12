@@ -10482,9 +10482,7 @@ class LlamaCppBackend:
             # cannot be settled this early (the file only exists after Phase 2), so that
             # path is caught by the same check after the download instead.
             if gguf_path and not hf_repo and Path(gguf_path).is_file():
-                _early_non_chat = self._non_chat_gguf_refusal_for_path(
-                    gguf_path, model_identifier
-                )
+                _early_non_chat = self._non_chat_gguf_refusal_for_path(gguf_path, model_identifier)
                 if _early_non_chat:
                     logger.error(
                         "Refusing non-chat GGUF before teardown: %s (%s)",

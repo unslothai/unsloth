@@ -111,7 +111,6 @@ class TestDiffusionArchitectures:
     # page since before the video split and is left to its own change.
     def test_no_runnable_video_arch_is_tagged_unsupported_by_the_picker(self):
         from routes.models import _UNSUPPORTED_DIFFUSION_GGUF_ARCHS
-
         assert not (LlamaCppBackend._VIDEO_ARCHES & _UNSUPPORTED_DIFFUSION_GGUF_ARCHS)
 
 

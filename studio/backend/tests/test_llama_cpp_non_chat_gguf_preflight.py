@@ -160,9 +160,7 @@ def test_the_path_probe_does_not_touch_the_live_backend(tmp_path):
     live._gguf_header_parsed = True
 
     video = _write_gguf(tmp_path / "minimax_h3-Q2_K.gguf", arch = None)
-    message = LlamaCppBackend._non_chat_gguf_refusal_for_path(
-        str(video), "unsloth/MiniMax-H3-GGUF"
-    )
+    message = LlamaCppBackend._non_chat_gguf_refusal_for_path(str(video), "unsloth/MiniMax-H3-GGUF")
     assert message is not None and "Video page" in message
     # The resident model's metadata is untouched.
     assert live._architecture == "qwen3"
@@ -211,8 +209,6 @@ def test_a_placeholder_architecture_still_refuses(tmp_path, repo):
     # architecture; measured on gguf-org/flux2-dev-gguf/flux2-dev-iq4_nl.gguf. llama.cpp
     # knows no such arch, so without normalising it the file slips past every set and dies
     # in llama-server as the opaque failure this preflight exists to prevent.
-    _, message = _refusal(
-        tmp_path, arch = "pig", name = "flux2-dev-iq4_nl.gguf", identifier = repo
-    )
+    _, message = _refusal(tmp_path, arch = "pig", name = "flux2-dev-iq4_nl.gguf", identifier = repo)
     assert message is not None
     assert "cannot" in message
