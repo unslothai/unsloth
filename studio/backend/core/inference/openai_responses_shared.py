@@ -8,21 +8,66 @@ from __future__ import annotations
 from typing import Any
 
 
+def _normalize_schema_node(schema: Any) -> Any:
+    if not isinstance(schema, dict):
+        return schema
+
+    normalized = dict(schema)
+    for key in (
+        "additionalProperties",
+
+        "additionalItems",
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    ):
+        if key in normalized:
+            value = normalized[key]
+            if key == "items" and isinstance(value, list):
+                normalized[key] = [_normalize_schema_node(item) for item in value]
+            else:
+                normalized[key] = _normalize_schema_node(value)
+
+    for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        value = normalized.get(key)
+        if isinstance(value, list):
+            normalized[key] = [_normalize_schema_node(item) for item in value]
+
+    for key in (
+        "$defs",
+        "definitions",
+        "dependencies",
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    ):
+        value = normalized.get(key)
+        if isinstance(value, dict):
+            normalized[key] = {
+                name: _normalize_schema_node(subschema) for name, subschema in value.items()
+            }
+
+    schema_type = normalized.get("type")
+    if schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    ):
+        properties = normalized.get("properties")
+        normalized["properties"] = properties if isinstance(properties, dict) else {}
+    return normalized
+
+
 def normalize_function_schema(schema: Any) -> dict[str, Any]:
-    """Ensure every object schema has properties, including nested objects."""
+    """Ensure every object schema has properties, including nested combinators."""
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
-    normalized = dict(schema)
-    if "items" in normalized:
-        normalized["items"] = normalize_function_schema(normalized["items"])
-    if normalized.get("type") == "object":
-        properties = normalized.get("properties")
-        normalized["properties"] = (
-            {key: normalize_function_schema(value) for key, value in properties.items()}
-            if isinstance(properties, dict)
-            else {}
-        )
-    return normalized
+    return _normalize_schema_node(schema)
 
 
 def responses_function_call(call_id: str, name: str, arguments: str) -> dict[str, Any]:

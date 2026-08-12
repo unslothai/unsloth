@@ -23,6 +23,7 @@ from core.inference.openai_codex_auth import (
     OPENAI_CODEX_ORIGINATOR,
     OPENAI_CODEX_RESPONSES_URL,
     OPENAI_CODEX_USER_AGENT,
+    CodexReauthorizationRequired,
 )
 from core.inference.openai_responses_shared import (
     normalize_function_schema,
@@ -351,11 +352,16 @@ async def _validated_stream_response(
                 if response.status_code == 401 and refresh_access is not None and not refreshed:
                     try:
                         token, account_id = await refresh_access()
-                    except Exception as exc:
+                    except CodexReauthorizationRequired as exc:
                         raise CodexReauthorizationError(
                             "ChatGPT authorization expired. Reconnect this connection.",
                             status = 401,
                             metadata = {"access_token": token},
+                        ) from exc
+                    except Exception as exc:
+                        raise CodexTransportError(
+                            "Could not refresh ChatGPT authorization. Please retry.",
+                            status = 502,
                         ) from exc
                     headers["Authorization"] = f"Bearer {token}"
                     headers["chatgpt-account-id"] = account_id

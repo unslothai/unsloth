@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from core.inference.openai_codex_client import OpenAICodexClient
-from core.inference.tools import execute_tool, is_high_risk_tool_call
+from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -115,6 +115,18 @@ async def stream_codex_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
+
+
+    skip_autoinject = (
+        confirm_tool_calls
+        and not bypass_permissions
+        and permission_mode not in ("auto", "off")
+    )
+    autoinject = None if skip_autoinject else build_rag_autoinject(conversation, rag_scope)
+    if autoinject:
+        for event in autoinject["events"]:
+            yield _sse(event)
+        conversation.extend(autoinject["messages"])
 
     round_id = 0
 

@@ -34,6 +34,7 @@ from core.inference.openai_codex_auth import (
     safe_flow,
 )
 from core.inference.openai_codex_client import (
+    CodexReauthorizationError,
     CodexTransportError,
     OpenAICodexClient,
     _responses_input,
@@ -153,6 +154,26 @@ def test_responses_conversion_replays_only_opaque_reasoning_and_normalizes_tools
         {"type": "object", "properties": {"nested": {"type": "object"}}}
     )
     assert schema["properties"]["nested"]["properties"] == {}
+
+    combinators = normalize_function_schema(
+        {
+            "type": "object",
+            "$defs": {"row": {"type": "object"}},
+            "properties": {
+                "choice": {
+                    "anyOf": [
+                        {"type": "object"},
+                        {"type": "array", "items": {"type": "object"}},
+                    ]
+                }
+            },
+        }
+    )
+    assert combinators["$defs"]["row"]["properties"] == {}
+    assert combinators["properties"]["choice"]["anyOf"][0]["properties"] == {}
+    assert (
+        combinators["properties"]["choice"]["anyOf"][1]["items"]["properties"] == {}
+    )
 
 
 def test_responses_conversion_stably_shortens_oversized_tool_call_ids():
@@ -418,6 +439,78 @@ def test_device_poll_shape_structured_pending_slow_down_and_exchange(monkeypatch
     assert exchange_data["redirect_uri"] == OPENAI_CODEX_DEVICE_REDIRECT_URI
     assert flow.status == "connected"
     assert len(persisted) == 1
+
+
+
+def test_device_poll_persists_terminal_error_for_other_workers(monkeypatch):
+    record = {
+        "marker": "marker",
+        "flow_id": "device-error",
+        "method": "device",
+        "created_at": time.time(),
+        "expires_at": time.time() + 60,
+        "state": "secret-state",
+        "verifier": "secret-verifier",
+        "device_auth_id": "device-id",
+        "user_code": "USER-CODE",
+        "status": "pending",
+        "message": "",
+    }
+
+    class FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {"error": {"code": "access_denied"}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    async def fake_sleep(_delay):
+        return None
+
+    @asynccontextmanager
+    async def oauth_guard(_provider_id):
+        yield
+
+    def upsert(_kind, _provider_id, value):
+        record.clear()
+        record.update(json.loads(value))
+
+    flow = OAuthFlow(
+        id = "device-error",
+        provider_id = "provider",
+        method = "device",
+        created_at = record["created_at"],
+        expires_at = record["expires_at"],
+        device_auth_id = "device-id",
+        user_code = "USER-CODE",
+        interval = 1,
+        marker = "marker",
+    )
+    monkeypatch.setattr(codex_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(codex_auth.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
+    monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
+    monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)
+
+    asyncio.run(codex_auth._device_poll(flow))
+
+    assert flow.status == "error"
+    assert record["status"] == "error"
+    assert record["message"] == flow.message
+    assert all(not record[key] for key in ("state", "verifier", "device_auth_id", "user_code"))
+    persisted = codex_auth._load_persisted_oauth_flow("provider", flow.id)
+    assert persisted is not None
+    assert persisted.status == "error"
+    assert persisted.message == flow.message
 
 
 def test_expired_refreshable_bundle_stays_connected_and_reconnect_marker_is_sanitized(monkeypatch):
@@ -832,6 +925,127 @@ async def _collect_codex_lines(client, cancel_event):
             cancel_event = cancel_event,
         )
     ]
+
+
+def test_transient_refresh_failure_does_not_require_reauthorization(monkeypatch):
+    class FakeResponse:
+        status_code = 401
+        headers = {}
+
+        async def aread(self):
+            return b""
+
+        def json(self):
+            return {"error": {"message": "expired"}}
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs):
+            return FakeStream()
+
+        async def aclose(self):
+            return None
+
+    async def transient_refresh():
+        raise codex_auth.CodexAuthError("Could not reach ChatGPT authentication.")
+
+    async def run():
+        client = OpenAICodexClient("secret", "account", refresh_access = transient_refresh)
+        await client._client.aclose()
+        client._client = FakeClient()
+        try:
+            await _collect_codex_lines(client, threading.Event())
+        finally:
+            await client.close()
+
+    with pytest.raises(CodexTransportError) as error:
+        asyncio.run(run())
+    assert not isinstance(error.value, CodexReauthorizationError)
+
+
+
+def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
+    from core.inference import openai_codex_tool_loop as tool_loop
+
+    class FakeCodexClient:
+        def __init__(self):
+            self.messages = []
+
+        async def stream(self, **kwargs):
+            self.messages.append(kwargs["messages"])
+            yield 'data: {"choices":[{"delta":{"content":"from docs"},"finish_reason":"stop"}]}'
+
+    injected_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "rag_auto_1",
+                    "type": "function",
+                    "function": {
+                        "name": "search_knowledge_base",
+                        "arguments": '{"query":"docs"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "search_knowledge_base",
+            "tool_call_id": "rag_auto_1",
+            "content": "retrieved context",
+        },
+    ]
+    monkeypatch.setattr(
+        tool_loop,
+        "build_rag_autoinject",
+        lambda *_args: {
+            "events": [{"type": "status", "text": "Searching documents"}],
+            "messages": injected_messages,
+        },
+        raising = False,
+    )
+    client = FakeCodexClient()
+
+    async def run():
+        return [
+            line
+            async for line in tool_loop.stream_codex_with_studio_tools(
+                client,
+                run = tool_loop.CodexRunContext(
+                    provider_id = "provider",
+                    thread_id = "thread",
+                    session_id = "session",
+                    messages = [{"role": "user", "content": "docs"}],
+                    model = "gpt-5.6-sol",
+                    reasoning_effort = "medium",
+                ),
+                policy = tool_loop.CodexToolPolicy(
+                    tools = [
+                        {"type": "function", "function": {"name": "search_knowledge_base"}}
+                    ],
+                    max_calls = 2,
+                    timeout = 30,
+                    permission_mode = "auto",
+                    confirm_calls = True,
+                    bypass_permissions = False,
+                    rag_scope = {"thread_id": "thread"},
+                ),
+                cancel_event = threading.Event(),
+            )
+        ]
+
+    lines = asyncio.run(run())
+    assert lines[0] == 'data: {"type":"status","text":"Searching documents"}'
+    assert client.messages[0][-2:] == injected_messages
+
 
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):

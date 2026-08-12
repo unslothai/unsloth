@@ -145,6 +145,8 @@ async def _expire_and_remove_flow(flow: OAuthFlow) -> None:
     if flow.status == "pending":
         flow.status = "error"
         flow.message = "Authorization expired. Start a new connection."
+
+        await _persist_terminal_flow(flow)
         if flow.task:
             flow.task.cancel()
         if flow.server:
@@ -473,14 +475,20 @@ async def _device_poll(flow: OAuthFlow) -> None:
         except CodexAuthError as exc:
             flow.status = "error"
             flow.message = str(exc)
+
+            await _persist_terminal_flow(flow)
             return
         except Exception:
             flow.status = "error"
             flow.message = "Device authorization failed. Please retry."
+
+            await _persist_terminal_flow(flow)
             return
     if flow.status == "pending":
         flow.status = "error"
         flow.message = "Device authorization expired. Start a new connection."
+
+        await _persist_terminal_flow(flow)
 
 
 async def _start_device_flow(
@@ -694,7 +702,9 @@ def save_oauth_flow_marker(
     )
 
 
-def set_oauth_flow_marker_status(provider_id: str, marker: str, status: str) -> None:
+def set_oauth_flow_marker_status(
+    provider_id: str, marker: str, status: str, message: str = ""
+) -> None:
     record = _oauth_flow_record(provider_id)
     if not record or record.get("marker") != marker:
         return
@@ -702,6 +712,7 @@ def set_oauth_flow_marker_status(provider_id: str, marker: str, status: str) -> 
         delete_oauth_flow_marker(provider_id, marker)
         return
     record["status"] = status
+    record["message"] = message
 
     if status != "pending":
         record["terminal_at"] = time.time()
@@ -712,6 +723,21 @@ def set_oauth_flow_marker_status(provider_id: str, marker: str, status: str) -> 
         provider_id,
         json.dumps(record, separators = (",", ":")),
     )
+
+
+async def _persist_terminal_flow(flow: OAuthFlow) -> None:
+    """Publish a device-flow terminal state for status requests served by other workers."""
+    if flow.status == "pending" or not flow.marker:
+        return
+    try:
+        async with provider_oauth_write_guard(flow.provider_id):
+            set_oauth_flow_marker_status(
+                flow.provider_id, flow.marker, flow.status, flow.message
+            )
+    except CodexAuthError:
+        # Keep the originating worker's terminal state even if another credential
+        # write holds the cross-worker lock long enough for this best-effort update.
+        return
 
 
 def _load_persisted_oauth_flow(provider_id: str, flow_id: str) -> OAuthFlow | None:
