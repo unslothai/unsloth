@@ -73,9 +73,7 @@ async def start_oauth(
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
                 codex_auth.save_oauth_flow_marker(provider_id, marker)
-        flow = await codex_auth.start_flow(
-            provider_id, payload.method, guarded_persist, marker
-        )
+        flow = await codex_auth.start_flow(provider_id, payload.method, guarded_persist, marker)
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
                 if codex_auth.oauth_flow_marker_matches(provider_id, marker):
