@@ -63,7 +63,9 @@ import argparse
 import json
 import os
 import re
+import atexit
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -157,6 +159,88 @@ def _api():
     return api
 
 
+# A kernel this process pushed but has not yet deleted is recorded here, so a
+# LATER launch can reclaim it. This is the only cover for `kill -9`, where no
+# handler of ours ever runs. Deliberately keyed on pid: an entry whose owner
+# is still alive belongs to a run in progress and must not be touched, or one
+# launcher would delete a concurrent launcher's kernel and report its absence
+# as a failure of the code under test.
+INFLIGHT = Path(
+    os.environ.get("UNSLOTH_WORKSPACE") or Path(__file__).resolve().parents[3]
+) / "logs" / "kaggle_inflight.json"
+
+
+def _inflight_read() -> list[dict]:
+    try:
+        data = json.loads(INFLIGHT.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _inflight_write(entries: list[dict]) -> None:
+    try:
+        INFLIGHT.parent.mkdir(parents = True, exist_ok = True)
+        INFLIGHT.write_text(json.dumps(entries, indent = 1), encoding = "utf-8")
+    except OSError:
+        pass  # bookkeeping only; never fail a run over it
+
+
+def _inflight_add(slug: str) -> None:
+    entries = [e for e in _inflight_read() if e.get("slug") != slug]
+    entries.append({"slug": slug, "pid": os.getpid(), "at": time.time()})
+    _inflight_write(entries)
+
+
+def _inflight_drop(slug: str) -> None:
+    _inflight_write([e for e in _inflight_read() if e.get("slug") != slug])
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True      # exists, owned by someone else
+    except (OSError, TypeError):
+        return True      # unknown: assume alive, deleting is the costly error
+    return True
+
+
+def sweep_orphans() -> list[str]:
+    """Delete kernels left behind by a launcher that was killed outright.
+
+    Only entries whose owning process is gone are eligible, so a concurrent
+    run is never disturbed. Returns the slugs reclaimed.
+    """
+    entries = _inflight_read()
+    if not entries:
+        return []
+    keep: list[dict] = []
+    reclaimed: list[str] = []
+    for entry in entries:
+        slug, pid = entry.get("slug"), entry.get("pid")
+        if not slug:
+            continue
+        if isinstance(pid, int) and _pid_alive(pid) and pid != os.getpid():
+            keep.append(entry)
+            continue
+        if pid == os.getpid():
+            keep.append(entry)
+            continue
+        try:
+            subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True, text = True, timeout = 180,
+            )
+            reclaimed.append(slug)
+        except Exception:  # noqa: BLE001
+            keep.append(entry)   # try again next time rather than forget it
+    _inflight_write(keep)
+    return reclaimed
+
+
 def push(
     notebook: Path,
     user: str,
@@ -226,6 +310,10 @@ def push(
             if "successfully pushed" in lowered:
                 if "does not resolve to the specified id" in lowered:
                     return {"ok": False, "reason": "slug_mismatch", "detail": out.strip()[:400]}
+                # Recorded the instant it exists, before anything can go
+                # wrong downstream: a kernel that is billing but unknown to
+                # the registry is exactly the case the registry is for.
+                _inflight_add(f"{user}/{slug_name}")
                 return {"ok": True, "slug": f"{user}/{slug_name}"}
             if any(m in lowered for m in CAPACITY_MARKERS):
                 return {"ok": False, "reason": "at_capacity", "detail": out.strip()[:400]}
@@ -414,6 +502,71 @@ def extract_reports(outdir: Path) -> list[dict]:
     return reports
 
 
+def release_kernels(result: dict, args) -> None:
+    """Delete every kernel this process pushed. Idempotent, and reachable
+    from every path out of the process.
+
+    This is the budget control, not a tidy-up. A kernel left behind bills to
+    its own ceiling with nobody reading the result, and Kaggle's push-time
+    timeout has been observed not to stop one that wedged. The measurement
+    that settles it: deleting a two-hour-old stuck kernel took the account's
+    used-hours figure DOWN.
+    """
+    if getattr(args, "keep_kernel", False):
+        return
+    for entry in result.get("kernels") or []:
+        slug = entry.get("slug")
+        if not slug or entry.get("released"):
+            continue
+        try:
+            subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+            entry["released"] = True
+            _inflight_drop(slug)
+        except Exception:  # noqa: BLE001
+            _log(f"could not delete {slug}; it may keep billing")
+
+
+def _install_release_handlers(result: dict, args) -> None:
+    """Make release survive the ways this process actually dies.
+
+        normal return / handled error   finish() calls it directly
+        unhandled exception             atexit
+        Ctrl-C, kill, Actions cancel    the signal handlers here
+        kill -9                         nothing in-process can; the orphan
+                                        sweep at the next launch reclaims it
+
+    Before this, only the first row worked: `finish()` is reached only on
+    paths that RETURN, KeyboardInterrupt was re-raised past it, and the
+    default SIGTERM disposition exits without running atexit or finally. A
+    cancelled workflow therefore left its kernel running.
+    """
+    atexit.register(release_kernels, result, args)
+
+    def _release_and_die(signum, _frame):
+        _log(f"received signal {signum}; deleting kernels before exiting")
+        release_kernels(result, args)
+        # Die of the original signal rather than exiting 0, so the status
+        # still reads "killed by signal N". A CI system treats a 0 from a
+        # cancelled job as a completed one.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    for _sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
+        if _sig is None:
+            continue
+        try:
+            signal.signal(_sig, _release_and_die)
+        except (ValueError, OSError, AttributeError):
+            # No SIGHUP on Windows, and signal() only works on the main
+            # thread. One handler failing must not stop the others.
+            pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -458,31 +611,9 @@ def main() -> int:
     }
 
     def release() -> None:
-        """Delete every kernel this process pushed. Idempotent, and on every
-        path out of main().
+        release_kernels(result, args)
 
-        This is the budget control, not a tidy-up. A kernel left behind bills
-        to its own ceiling with nobody reading the result, and Kaggle's
-        push-time timeout has been observed not to stop one that wedged. The
-        measurement that settles it: deleting a two-hour-old stuck kernel
-        took the account's used-hours figure DOWN.
-        """
-        if args.keep_kernel:
-            return
-        for entry in result.get("kernels") or []:
-            slug = entry.get("slug")
-            if not slug or entry.get("released"):
-                continue
-            try:
-                subprocess.run(
-                    ["kaggle", "kernels", "delete", slug, "-y"],
-                    capture_output = True,
-                    text = True,
-                    timeout = 180,
-                )
-                entry["released"] = True
-            except Exception:  # noqa: BLE001
-                _log(f"could not delete {slug}; it may keep billing")
+    _install_release_handlers(result, args)
 
     def finish(code: int = 0) -> int:
         release()
@@ -500,6 +631,13 @@ def main() -> int:
             raise
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
+
+    # Reclaim anything a previous launcher was killed outright before it
+    # could delete. Done BEFORE pushing, so the freed session slots are
+    # available to this run -- Kaggle allows only two GPU sessions at once,
+    # and an orphan holds one until its ceiling.
+    for _slug in sweep_orphans():
+        _log(f"reclaimed orphaned kernel {_slug} from a killed launcher")
 
     # Push everything first. See this file's docstring: waiting between
     # pushes would serialise sessions Kaggle runs happily in parallel, and
