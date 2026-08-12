@@ -438,17 +438,24 @@ jobs:
           # The launch step below only proves the process stayed alive: on a fresh home
           # preflight reports not_installed and the app waits for a click on the install
           # screen (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so a bundle
-          # with a missing or broken install.sh passed both Linux rows. tauri.conf.json:56-59
+          # with a missing or broken install.sh passed both Linux rows. tauri.linux.conf.json
           # ships it as a bundle resource, so find it there and run it as install.rs does.
           if [ "${{ matrix.kind }}" = "deb" ]; then
-            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
+            PKG="$(dpkg-deb -f dl/*.deb Package)"
+            SH="$(dpkg -L "$PKG" | grep -E '/install\.sh$' | head -1)"
+            STRAY="$(dpkg -L "$PKG" | grep -E '/install\.ps1$' | head -1)"
           else
             # ls returns a bare filename here, and a command word with no slash resolves
             # through PATH, not the cwd, so this needs the ./ prefix.
             (cd dl && "./$(ls *.AppImage | head -1)" --appimage-extract >/dev/null)
             SH="$(find dl/squashfs-root -name install.sh -type f | head -1)"
+            STRAY="$(find dl/squashfs-root -name install.ps1 -type f | head -1)"
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
+          # resolve_install_script never reaches for install.ps1 on unix, so shipping it here is
+          # dead weight -- and it is the largest script body a generic classifier walking the
+          # AppImage reads, which is where the Trojan:Script/Wacatac.B!ml false positive landed.
+          [ -z "$STRAY" ] || { echo "::error::the Linux bundle ships install.ps1: $STRAY"; exit 1; }
           echo "bundled installer: $SH"
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
           # workspace-scoped override; close stdin as install.rs does.
