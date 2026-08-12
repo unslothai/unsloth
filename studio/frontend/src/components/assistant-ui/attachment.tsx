@@ -18,9 +18,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  isPastedTextAttachment,
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  isPastedTextContent,
   isPastedTextFile,
-  rememberPastedTextAttachment,
+  pastedTextPreview,
   unwrapAttachmentText,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
@@ -44,6 +45,7 @@ import {
   type PropsWithChildren,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -183,57 +185,57 @@ const AttachmentThumb: FC = () => {
 
 type PastedTextAttachment = {
   readonly file?: File;
-  readonly inlineText?: string;
-  readonly bytes: number;
+  readonly sentText?: string;
 };
 
 // Long pastes arrive as a synthetic .txt and render as a chip, not a tile.
+// The selector only passes references along: the text can be megabytes, so
+// nothing here may copy or scan it.
 const usePastedTextAttachment = (): PastedTextAttachment | null => {
   return useAuiState(
     useShallow(({ attachment }): PastedTextAttachment | null => {
       if (attachment.type !== "document") return null;
       const file = (attachment as { file?: File }).file;
-      const pasted = file
-        ? isPastedTextFile(file)
-        : isPastedTextAttachment(attachment.id);
-      if (!pasted) return null;
-      const inlineText = attachment.content?.flatMap((part) =>
+      const sentText = attachment.content?.flatMap((part) =>
         part.type === "text" ? [part.text] : [],
       )[0];
-      const unwrapped =
-        inlineText === undefined ? undefined : unwrapAttachmentText(inlineText);
-      return {
-        file,
-        inlineText: unwrapped,
-        bytes: file?.size ?? new Blob([unwrapped ?? ""]).size,
-      };
+      const pasted = file
+        ? isPastedTextFile(file)
+        : isPastedTextContent(sentText);
+      if (!pasted) return null;
+      return { file, sentText };
     }),
   );
 };
 
 const readPastedText = async ({
   file,
-  inlineText,
+  sentText,
 }: PastedTextAttachment): Promise<string> => {
   if (file) return await file.text();
-  return inlineText ?? "";
+  return unwrapAttachmentText(sentText ?? "");
 };
 
 const PastedTextPreviewDialog: FC<
   PropsWithChildren<{ name: string; attachment: PastedTextAttachment }>
 > = ({ attachment, children, name }) => {
   const [open, setOpen] = useState(false);
-  const [text, setText] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{
+    text: string;
+    remaining: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     readPastedText(attachment)
+      // Laying out megabytes in one text node locks the page, so show an
+      // opening. The attachment itself still holds everything.
       .then((value) => {
-        if (!cancelled) setText(value);
+        if (!cancelled) setPreview(pastedTextPreview(value));
       })
       .catch(() => {
-        if (!cancelled) setText("");
+        if (!cancelled) setPreview({ text: "", remaining: 0 });
       });
     return () => {
       cancelled = true;
@@ -246,8 +248,13 @@ const PastedTextPreviewDialog: FC<
       <DialogContent className="aui-pasted-text-dialog flex max-h-[80dvh] w-[min(46rem,92vw)] max-w-none flex-col gap-3 overflow-hidden">
         <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
         <pre className="aui-pasted-text-dialog-body max-h-[64dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
-          {text ?? "Loading…"}
+          {preview?.text ?? "Loading…"}
         </pre>
+        {preview && preview.remaining > 0 ? (
+          <p className="text-muted-foreground text-xs">
+            {`First ${PASTED_TEXT_PREVIEW_MAX_CHARS.toLocaleString()} characters shown. ${preview.remaining.toLocaleString()} more were sent with the message.`}
+          </p>
+        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -268,11 +275,13 @@ const PastedTextAttachmentUI: FC<{
       mountedRef.current = false;
     };
   }, []);
-  // The sent message keeps the id but not the File, so record it while the
-  // composer still holds both.
-  useEffect(() => {
-    if (isComposer) rememberPastedTextAttachment(attachmentId);
-  }, [attachmentId, isComposer]);
+  // Measured once per mount: sizing a sent paste walks the whole string.
+  const bytes = useMemo(
+    () =>
+      attachment.file?.size ??
+      new Blob([unwrapAttachmentText(attachment.sentText ?? "")]).size,
+    [attachment],
+  );
 
   // Clicking the chip pours the text back into the composer.
   const showInTextField = useCallback(() => {
@@ -329,7 +338,7 @@ const PastedTextAttachmentUI: FC<{
         <span className="truncate text-[11px] text-muted-foreground">
           {/* Hover swaps the size for the action. */}
           <span className={isComposer ? "group-hover:hidden" : undefined}>
-            {formatBytes(attachment.bytes)}
+            {formatBytes(bytes)}
           </span>
           {isComposer ? (
             <span className="hidden items-center gap-0.5 underline underline-offset-2 group-hover:inline-flex">

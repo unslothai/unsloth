@@ -7,12 +7,14 @@ import test from "node:test";
 import {
   PASTED_TEXT_MIN_CHARS,
   PASTED_TEXT_MIN_LINES,
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentText,
   createPastedTextFile,
-  isPastedTextAttachment,
+  isPastedTextContent,
   isPastedTextFile,
   pasteLongTextAsFile,
   pastedTextFileName,
-  rememberPastedTextAttachment,
+  pastedTextPreview,
   shouldAttachPastedText,
   unwrapAttachmentText,
 } from "../src/features/chat/utils/pasted-text.ts";
@@ -102,6 +104,15 @@ test("the file is named after the opening of the paste", () => {
   );
   assert.equal(pastedTextFileName("\n   \n"), "Pasted text.txt");
   assert.equal(pastedTextFileName("///"), "Pasted text.txt");
+  // A single line of megabytes is read through a window, not copied whole.
+  assert.equal(
+    pastedTextFileName("b".repeat(4 * 1024 * 1024)),
+    `${"b".repeat(32)}.txt`,
+  );
+  assert.equal(
+    pastedTextFileName(`${" ".repeat(300)}${"b".repeat(1000)}`),
+    "Pasted text.txt",
+  );
 });
 
 test("pasted text files are recognised by identity", () => {
@@ -121,17 +132,39 @@ test("pasted text files are recognised by identity", () => {
   assert.equal(isPastedTextFile(undefined), false);
 });
 
-test("the attachment id carries the chip through a send", () => {
-  assert.equal(isPastedTextAttachment("attachment-1"), false);
-  rememberPastedTextAttachment("attachment-1");
-  assert.equal(isPastedTextAttachment("attachment-1"), true);
-  // Re-registering the same id must not evict it.
-  rememberPastedTextAttachment("attachment-1");
-  for (let index = 0; index < 200; index += 1) {
-    rememberPastedTextAttachment(`filler-${index}`);
-  }
-  assert.equal(isPastedTextAttachment("attachment-1"), false);
-  assert.equal(isPastedTextAttachment("filler-199"), true);
+test("the sent wrapper is what marks a paste after the File is gone", () => {
+  const pasted = attachmentContentText("Deploy log.txt", "body", true);
+  const attached = attachmentContentText("notes.txt", "body", false);
+
+  assert.equal(
+    pasted,
+    "<pasted_text name=Deploy log.txt>\nbody\n</pasted_text>",
+  );
+  assert.equal(attached, "<attachment name=notes.txt>\nbody\n</attachment>");
+  // This is the marker a reloaded message still has, so it decides the chip.
+  assert.equal(isPastedTextContent(pasted), true);
+  assert.equal(isPastedTextContent(attached), false);
+  assert.equal(isPastedTextContent(undefined), false);
+  assert.equal(isPastedTextContent("pasted_text elsewhere in the body"), false);
+  // Both wrappers unwrap, and a mismatched pair is left alone.
+  assert.equal(unwrapAttachmentText(pasted), "body");
+  assert.equal(unwrapAttachmentText(attached), "body");
+  assert.equal(
+    unwrapAttachmentText("<attachment name=x.txt>\nbody\n</pasted_text>"),
+    "<attachment name=x.txt>\nbody\n</pasted_text>",
+  );
+});
+
+test("the preview is capped, and says how much it is holding back", () => {
+  const short = pastedTextPreview("all of it");
+  assert.equal(short.text, "all of it");
+  assert.equal(short.remaining, 0);
+
+  const long = pastedTextPreview(
+    "a".repeat(PASTED_TEXT_PREVIEW_MAX_CHARS + 25),
+  );
+  assert.equal(long.text.length, PASTED_TEXT_PREVIEW_MAX_CHARS);
+  assert.equal(long.remaining, 25);
 });
 
 test("a long text paste is swallowed and handed over as a file", async () => {
@@ -182,6 +215,34 @@ test("a paste too big to hold inline still attaches", () => {
   // one case the input cannot survive.
   const huge = "a".repeat(20 * 1024 * 1024 + 1);
   assert.equal(shouldAttachPastedText(huge), true);
+  // Whitespace is no exemption either: it used to skip both thresholds.
+  assert.equal(shouldAttachPastedText(" ".repeat(PASTED_TEXT_MIN_CHARS)), true);
+  assert.equal(
+    shouldAttachPastedText("\n".repeat(PASTED_TEXT_MIN_LINES)),
+    true,
+  );
+  assert.equal(shouldAttachPastedText("   "), false);
+});
+
+test("an attachment that throws on the spot reports instead of vanishing", () => {
+  let errors = 0;
+  const event = pasteEvent(clipboard("a".repeat(PASTED_TEXT_MIN_CHARS)));
+
+  const handled = pasteLongTextAsFile(
+    event,
+    () => {
+      throw new Error("no room for another attachment");
+    },
+    () => {
+      errors += 1;
+    },
+  );
+
+  // The paste is already swallowed at this point, so the toast is the only
+  // thing standing between the user and silently losing the clipboard.
+  assert.equal(handled, true);
+  assert.equal(event.defaultPrevented, true);
+  assert.equal(errors, 1);
 });
 
 test("a .txt named like a pasted one keeps the normal tile", () => {
@@ -223,13 +284,8 @@ test("native image and file payloads stay on the file paste path", () => {
   );
 });
 
-test("previews strip the wrapper the adapter sends to the model", () => {
+test("previews leave unwrapped text alone", () => {
   const text = "line one\nline two";
-  assert.equal(
-    unwrapAttachmentText(
-      `<attachment name=Pasted_Text_1.txt>\n${text}\n</attachment>`,
-    ),
-    text,
-  );
   assert.equal(unwrapAttachmentText(text), text);
+  assert.equal(unwrapAttachmentText(""), "");
 });

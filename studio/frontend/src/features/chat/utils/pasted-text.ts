@@ -8,7 +8,12 @@ const PASTED_TEXT_MIME = "text/plain";
 export const PASTED_TEXT_MIN_CHARS = 2000;
 export const PASTED_TEXT_MIN_LINES = 40;
 const PASTED_TEXT_NAME_MAX_CHARS = 32;
+// Enough for the name after whitespace collapses, without copying a line.
+const PASTED_TEXT_NAME_SCAN_CHARS = 256;
 const PASTED_TEXT_FALLBACK_NAME = "Pasted text";
+const PASTED_TEXT_TAG = "pasted_text";
+// A preview is for reading, so render an opening rather than megabytes.
+export const PASTED_TEXT_PREVIEW_MAX_CHARS = 100_000;
 // Illegal in filenames on at least one platform, plus control characters.
 const UNSAFE_NAME_CHARS = /[\\/:*?"<>|\p{Cc}]/gu;
 
@@ -19,10 +24,8 @@ type ClipboardTextPasteEvent = {
 };
 
 // Identity separates a pasted blob from a .txt the user attached. A sent
-// message keeps no File, so the attachment id carries it over instead.
+// message keeps no File, so the wrapper below carries it over instead.
 const pastedTextFiles = new WeakSet<File>();
-const pastedTextIds = new Set<string>();
-const PASTED_TEXT_ID_LIMIT = 200;
 
 function countLines(text: string): number {
   let lines = 1;
@@ -32,19 +35,38 @@ function countLines(text: string): number {
   return lines;
 }
 
-// No upper bound: the bigger the paste, the worse it is inline.
+// No upper bound, and whitespace is not exempt: the bigger the paste, the
+// worse it is inline.
 export function shouldAttachPastedText(text: string): boolean {
-  if (text.trim().length === 0) return false;
+  if (text.length === 0) return false;
   return (
     text.length >= PASTED_TEXT_MIN_CHARS ||
     countLines(text) >= PASTED_TEXT_MIN_LINES
   );
 }
 
+// Splitting a multi-megabyte paste to read one line allocates every other
+// line for nothing, so walk to the first non-blank line instead, and never
+// copy more of it than a name can hold.
+function firstTextLine(text: string): string {
+  let start = 0;
+  while (start < text.length) {
+    const end = text.indexOf("\n", start);
+    const stop = Math.min(
+      end === -1 ? text.length : end,
+      start + PASTED_TEXT_NAME_SCAN_CHARS,
+    );
+    const line = text.slice(start, stop);
+    if (line.trim().length > 0) return line;
+    if (end === -1) return "";
+    start = end + 1;
+  }
+  return "";
+}
+
 /** Names the file after the opening of the paste, so the chip is readable. */
 export function pastedTextFileName(text: string): string {
-  const firstLine = text.split("\n").find((line) => line.trim().length > 0);
-  const cleaned = (firstLine ?? "")
+  const cleaned = firstTextLine(text)
     .replace(UNSAFE_NAME_CHARS, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -75,18 +97,21 @@ export function isPastedTextFile(file: File | undefined): boolean {
   return file !== undefined && pastedTextFiles.has(file);
 }
 
-/** Sending keeps the attachment id, which is how the chip survives the send. */
-export function rememberPastedTextAttachment(id: string): void {
-  if (pastedTextIds.has(id)) return;
-  if (pastedTextIds.size >= PASTED_TEXT_ID_LIMIT) {
-    const oldest = pastedTextIds.values().next().value;
-    if (oldest !== undefined) pastedTextIds.delete(oldest);
-  }
-  pastedTextIds.add(id);
+/**
+ * Wraps an attachment for the model. A paste gets its own tag, which is also
+ * the only marker that survives a reload, since the File does not.
+ */
+export function attachmentContentText(
+  name: string,
+  text: string,
+  pasted: boolean,
+): string {
+  const tag = pasted ? PASTED_TEXT_TAG : "attachment";
+  return `<${tag} name=${name}>\n${text}\n</${tag}>`;
 }
 
-export function isPastedTextAttachment(id: string): boolean {
-  return pastedTextIds.has(id);
+export function isPastedTextContent(text: string | undefined): boolean {
+  return text?.startsWith(`<${PASTED_TEXT_TAG} name=`) === true;
 }
 
 function clipboardHasFiles(clipboardData: DataTransfer): boolean {
@@ -149,17 +174,40 @@ export function pasteLongTextAsFile(
   const text = clipboardText(clipboardData);
   if (!shouldAttachPastedText(text)) return false;
 
+  // Build the file first: if that throws, the browser can still paste.
+  let file: File;
+  try {
+    file = createPastedTextFile(text);
+  } catch {
+    return false;
+  }
+
   event.preventDefault();
-  void Promise.resolve(addFile(createPastedTextFile(text))).catch(() =>
-    onError?.(),
-  );
+  try {
+    void Promise.resolve(addFile(file)).catch(() => onError?.());
+  } catch {
+    // addFile can throw before it ever returns a promise to catch on.
+    onError?.();
+  }
   return true;
 }
 
 const ATTACHMENT_WRAPPER_RE =
-  /^<attachment name=[^\n>]*>\n([\s\S]*)\n<\/attachment>$/;
+  /^<(attachment|pasted_text) name=[^\n>]*>\n([\s\S]*)\n<\/\1>$/;
 
 /** Strips the wrapper TextAttachmentAdapter adds on send, for previews. */
 export function unwrapAttachmentText(text: string): string {
-  return ATTACHMENT_WRAPPER_RE.exec(text)?.[1] ?? text;
+  return ATTACHMENT_WRAPPER_RE.exec(text)?.[2] ?? text;
+}
+
+/** Renders an opening rather than the whole paste, which can be megabytes. */
+export function pastedTextPreview(text: string): {
+  text: string;
+  remaining: number;
+} {
+  const remaining = Math.max(text.length - PASTED_TEXT_PREVIEW_MAX_CHARS, 0);
+  return {
+    text: remaining > 0 ? text.slice(0, PASTED_TEXT_PREVIEW_MAX_CHARS) : text,
+    remaining,
+  };
 }

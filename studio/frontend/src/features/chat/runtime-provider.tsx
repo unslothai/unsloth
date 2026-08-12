@@ -81,6 +81,7 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
+import { attachmentContentText, isPastedTextFile } from "./utils/pasted-text";
 import {
   refreshContextUsage,
   setActiveBranchReader,
@@ -327,7 +328,13 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          text: `<attachment name=${attachment.name}>\n${text}\n</attachment>`,
+          // A pasted file gets its own tag, the one marker that outlives the
+          // File once the message is stored.
+          text: attachmentContentText(
+            attachment.name,
+            text,
+            isPastedTextFile(attachment.file),
+          ),
         },
       ],
       status: { type: "complete" },
