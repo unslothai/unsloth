@@ -855,6 +855,40 @@ def test_snapshot_copy_is_bounded_to_the_validated_size():
     assert target.getvalue() == b"validated"
 
 
+def test_snapshot_opens_the_source_in_binary_mode(rag_home, monkeypatch):
+    # Without O_BINARY the copy short-reads on Windows and the file is reported as unindexable.
+    source = rag_home / "binary-source"
+    source.mkdir()
+    document = source / "notes.md"
+    document.write_bytes(b"first line\r\nsecond line\x1athird line\r\n")
+    monkeypatch.setattr(folder_sync.os, "O_BINARY", 0x8000, raising = False)
+    seen = []
+    real_open = folder_sync.os.open
+
+    def spy(path, flags, *args, **kwargs):
+        if str(path) == str(document):
+            seen.append(flags)
+        return real_open(path, flags & ~0x8000, *args, **kwargs)
+
+    monkeypatch.setattr(folder_sync.os, "open", spy)
+    stats = os.stat(document)
+    metadata = {
+        "path": str(document),
+        "size_bytes": stats.st_size,
+        "mtime_ns": stats.st_mtime_ns,
+        "device": stats.st_dev,
+        "inode": stats.st_ino,
+    }
+
+    snapshot = folder_sync._snapshot(str(source), metadata)
+
+    try:
+        assert seen and all(flags & 0x8000 for flags in seen), seen
+        assert Path(snapshot).read_bytes() == document.read_bytes()
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
 @requires_sqlite_vec
 def test_linked_folders_cannot_overlap_within_a_scope(rag_home):
     parent = rag_home / "parent"

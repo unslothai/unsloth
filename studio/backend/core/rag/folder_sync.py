@@ -1001,7 +1001,8 @@ def _snapshot(root: str, metadata: dict) -> str:
     resolved = os.path.realpath(source)
     if not _is_within(root, resolved):
         raise RuntimeError("File escaped the linked folder")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # O_BINARY: Windows text mode collapses CRLF and stops at Ctrl-Z, short-copying the source.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(source, flags)
     target = None
     try:
