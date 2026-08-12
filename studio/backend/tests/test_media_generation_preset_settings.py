@@ -276,7 +276,11 @@ def test_a_store_holding_load_options_is_read_without_them_and_keeps_them(monkey
             "currentParams": {"steps": 24},
             "currentLoadConfig": {"speedMode": "max"},
             "customPresets": [
-                {"name": "Landscape", "params": {"steps": 24}, "loadConfig": {"memoryMode": "low_vram"}}
+                {
+                    "name": "Landscape",
+                    "params": {"steps": 24},
+                    "loadConfig": {"memoryMode": "low_vram"},
+                }
             ],
         }
     }

@@ -234,9 +234,7 @@ def _get_generation_preset_settings(kind, schema):
             except ValidationError:
                 continue
         state = {
-            key: value
-            for key, value in _readable(schema, stored).items()
-            if key != "customPresets"
+            key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
         }
         try:
             response = schema.model_validate({**state, "customPresets": readable})
@@ -258,8 +256,7 @@ def get_image_generation_preset_settings(
 
 @router.put("/generation-presets/image")
 def update_image_generation_preset_settings(
-    payload: ImageGenerationPresetState,
-    current_subject: str = Depends(get_current_subject),
+    payload: ImageGenerationPresetState, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
     set_media_generation_preset_settings("image", payload.model_dump())
     return {"saved": True}
@@ -277,16 +274,14 @@ def get_video_generation_preset_settings(
 
 @router.put("/generation-presets/video")
 def update_video_generation_preset_settings(
-    payload: VideoGenerationPresetState,
-    current_subject: str = Depends(get_current_subject),
+    payload: VideoGenerationPresetState, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
     set_media_generation_preset_settings("video", payload.model_dump())
     return {"saved": True}
 
 
 def _upsert_custom_generation_preset(
-    kind: Literal["image", "video"],
-    payload: ImageGenerationPreset | VideoGenerationPreset,
+    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
 ) -> dict[str, bool]:
     try:
         upsert_media_generation_preset(kind, payload.model_dump())
@@ -297,16 +292,14 @@ def _upsert_custom_generation_preset(
 
 @router.put("/generation-presets/image/custom")
 def upsert_custom_image_generation_preset(
-    payload: ImageGenerationPreset,
-    current_subject: str = Depends(get_current_subject),
+    payload: ImageGenerationPreset, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
     return _upsert_custom_generation_preset("image", payload)
 
 
 @router.put("/generation-presets/video/custom")
 def upsert_custom_video_generation_preset(
-    payload: VideoGenerationPreset,
-    current_subject: str = Depends(get_current_subject),
+    payload: VideoGenerationPreset, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
     return _upsert_custom_generation_preset("video", payload)
 

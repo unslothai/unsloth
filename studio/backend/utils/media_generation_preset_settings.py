@@ -32,9 +32,7 @@ def _with_unknown_preserved(stored, updated):
         return updated
     merged = dict(updated)
     for key, value in stored.items():
-        merged[key] = (
-            value if key not in merged else _with_unknown_preserved(value, merged[key])
-        )
+        merged[key] = value if key not in merged else _with_unknown_preserved(value, merged[key])
     return merged
 
 
