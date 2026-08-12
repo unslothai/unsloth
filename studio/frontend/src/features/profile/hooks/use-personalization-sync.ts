@@ -230,6 +230,7 @@ export function usePersonalizationSync(enabled: boolean): void {
       return;
     }
     let cancelled = false;
+    const localeHydrationController = new AbortController();
     void (async () => {
       try {
         const remote = await loadPersonalization();
@@ -295,13 +296,16 @@ export function usePersonalizationSync(enabled: boolean): void {
           ) {
             useAppearanceCustomStore.getState().replaceAll(nextCustomization);
           }
-          if (
-            nextLanguage !== latestLanguageRef.current &&
-            !(await setLocale(nextLanguage))
-          ) {
-            // Keep outbound saves paused. Otherwise the unchanged local
-            // preference would look like an edit and overwrite the remote one.
-            return;
+          if (nextLanguage !== latestLanguageRef.current) {
+            const localeResult = await setLocale(nextLanguage, {
+              signal: localeHydrationController.signal,
+            });
+            if (cancelled) return;
+            if (localeResult === "failed" || localeResult === "cancelled") {
+              // Keep outbound saves paused after a catalog failure. Otherwise
+              // the unchanged local preference would overwrite the remote one.
+              return;
+            }
           }
           // lastSaved records what the server actually has (server-side defaults
           // for legacy fields) so the debounced push re-uploads preserved local
@@ -366,6 +370,7 @@ export function usePersonalizationSync(enabled: boolean): void {
     })();
     return () => {
       cancelled = true;
+      localeHydrationController.abort();
     };
   }, [enabled]);
 

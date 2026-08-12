@@ -16,6 +16,17 @@ export const LOCALE_INITIALIZATION_TIMEOUT_MS = 2_000;
 
 export type LocalePreference = Locale | typeof AUTO_LOCALE;
 
+export type LocaleChangeResult =
+  | "applied"
+  | "superseded"
+  | "failed"
+  | "cancelled";
+
+export type SetLocaleOptions = {
+  loadMessages?: (locale: Locale) => Promise<void> | undefined;
+  signal?: AbortSignal;
+};
+
 export const DEFAULT_LOCALE_PREFERENCE: LocalePreference = AUTO_LOCALE;
 
 const subscribers = new Set<() => void>();
@@ -122,8 +133,8 @@ function commitPreference(
   locale: Locale,
   revision: number,
   persist: boolean,
-): boolean {
-  if (revision !== preferenceRevision) return false;
+): LocaleChangeResult {
+  if (revision !== preferenceRevision) return "superseded";
   if (persist) writeStoredPreference(preference);
   const didChange =
     preference !== currentPreference ||
@@ -135,7 +146,7 @@ function commitPreference(
   pendingPreferenceShouldPersist = false;
   syncDocumentLang(locale);
   if (didChange) notifySubscribers();
-  return true;
+  return "applied";
 }
 
 function commitFallbackLocale(
@@ -164,11 +175,22 @@ function failPreference(revision: number): void {
   notifySubscribers();
 }
 
+function cancelPreference(revision: number): void {
+  if (revision !== preferenceRevision) return;
+  preferenceRevision += 1;
+  if (pendingPreference === null) return;
+  pendingPreference = null;
+  pendingPreferenceShouldPersist = false;
+  notifySubscribers();
+}
+
 function applyPreference(
   preference: LocalePreference,
   persist = false,
   loadMessages: LocaleCatalogLoader = loadLocaleMessages,
-): boolean | Promise<boolean> {
+  signal?: AbortSignal,
+): LocaleChangeResult | Promise<LocaleChangeResult> {
+  if (signal?.aborted) return "cancelled";
   const revision = ++preferenceRevision;
   const locale = resolvePreference(preference);
   let pending: Promise<void> | undefined;
@@ -176,7 +198,7 @@ function applyPreference(
     pending = loadMessages(locale);
   } catch {
     failPreference(revision);
-    return false;
+    return "failed";
   }
   if (!pending) {
     return commitPreference(preference, locale, revision, persist);
@@ -184,13 +206,23 @@ function applyPreference(
   pendingPreference = preference;
   pendingPreferenceShouldPersist = persist;
   notifySubscribers();
-  return pending.then(
-    () => commitPreference(preference, locale, revision, persist),
-    () => {
-      failPreference(revision);
-      return false;
-    },
-  );
+  const cancel = () => cancelPreference(revision);
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  return pending
+    .then<LocaleChangeResult, LocaleChangeResult>(
+      () => {
+        if (signal?.aborted) return "cancelled";
+        return commitPreference(preference, locale, revision, persist);
+      },
+      () => {
+        if (signal?.aborted) return "cancelled";
+        if (revision !== preferenceRevision) return "superseded";
+        failPreference(revision);
+        return "failed";
+      },
+    )
+    .finally(() => signal?.removeEventListener("abort", cancel));
 }
 
 function isLocaleStorageEvent(event: StorageEvent): boolean {
@@ -342,10 +374,13 @@ export function getPendingLocalePreference(): LocalePreference | null {
 
 export function setLocale(
   preference: LocalePreference,
-  loadMessages: LocaleCatalogLoader = loadLocaleMessages,
-): boolean | Promise<boolean> {
+  {
+    loadMessages = loadLocaleMessages,
+    signal,
+  }: SetLocaleOptions = {},
+): LocaleChangeResult | Promise<LocaleChangeResult> {
   const requestedPreference = normalizePreference(preference);
-  return applyPreference(requestedPreference, true, loadMessages);
+  return applyPreference(requestedPreference, true, loadMessages, signal);
 }
 
 export function useLocale(): Locale {

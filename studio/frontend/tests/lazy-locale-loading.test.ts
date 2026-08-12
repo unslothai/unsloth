@@ -70,22 +70,25 @@ test("initialization waits for the saved locale catalog before committing it", a
 });
 
 test("concurrent requests share one catalog load", async () => {
-  const first = messagesModule.loadLocaleMessages("fr");
-  const second = messagesModule.loadLocaleMessages("fr");
+  const first = messagesModule.loadLocaleMessages("ko");
+  const second = messagesModule.loadLocaleMessages("ko");
 
   assert.ok(first);
   assert.equal(second, first);
   await first;
-  assert.equal(messagesModule.loadLocaleMessages("fr"), undefined);
+  assert.equal(messagesModule.loadLocaleMessages("ko"), undefined);
 });
 
 test("concurrent language loads keep the latest selection", async () => {
-  localeStore.setLocale("fr");
-  localeStore.setLocale("it");
+  const first = localeStore.setLocale("fr");
+  const second = localeStore.setLocale("it");
   await Promise.all([
     messagesModule.loadLocaleMessages("fr"),
     messagesModule.loadLocaleMessages("it"),
   ]);
+
+  assert.equal(await first, "superseded");
+  assert.equal(await second, "applied");
 
   assert.equal(localeStore.getLocale(), "it");
   assert.equal(localeStore.getLocalePreference(), "it");
@@ -99,7 +102,9 @@ test("a selection is shown as pending and persisted only after loading", async (
     finishLoading = resolve;
   });
 
-  const selected = localeStore.setLocale("ja", () => loading);
+  const selected = localeStore.setLocale("ja", {
+    loadMessages: () => loading,
+  });
 
   assert.equal(localeStore.getPendingLocalePreference(), "ja");
   assert.equal(localeStore.getLocale(), "it");
@@ -107,7 +112,7 @@ test("a selection is shown as pending and persisted only after loading", async (
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "it");
 
   finishLoading();
-  assert.equal(await selected, true);
+  assert.equal(await selected, "applied");
 
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(localeStore.getLocale(), "ja");
@@ -116,14 +121,14 @@ test("a selection is shown as pending and persisted only after loading", async (
 });
 
 test("a failed selection keeps the active and persisted language", async () => {
-  const selected = localeStore.setLocale("ko", () =>
-    Promise.reject(new Error("catalog unavailable")),
-  );
+  const selected = localeStore.setLocale("ko", {
+    loadMessages: () => Promise.reject(new Error("catalog unavailable")),
+  });
 
   assert.equal(localeStore.getPendingLocalePreference(), "ko");
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
 
-  assert.equal(await selected, false);
+  assert.equal(await selected, "failed");
 
   assert.equal(localeStore.getPendingLocalePreference(), null);
   assert.equal(localeStore.getLocale(), "ja");
@@ -131,22 +136,53 @@ test("a failed selection keeps the active and persisted language", async () => {
   assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
 });
 
+test("cancelling a pending selection prevents a late commit", async () => {
+  const controller = new AbortController();
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  const selected = localeStore.setLocale("de", {
+    loadMessages: () => loading,
+    signal: controller.signal,
+  });
+  assert.equal(localeStore.getPendingLocalePreference(), "de");
+
+  controller.abort();
+  assert.equal(localeStore.getPendingLocalePreference(), null);
+  assert.equal(localeStore.getLocale(), "ja");
+  assert.equal(localeStore.getLocalePreference(), "ja");
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
+
+  finishLoading();
+  assert.equal(await selected, "cancelled");
+  assert.equal(localeStore.getLocale(), "ja");
+  assert.equal(localeStore.getLocalePreference(), "ja");
+  assert.equal(store.get(localeStore.LOCALE_STORAGE_KEY), "ja");
+});
+
 test("a browser language change cannot supersede a pending explicit choice", async () => {
-  assert.equal(localeStore.setLocale("auto", () => undefined), true);
+  assert.equal(
+    localeStore.setLocale("auto", { loadMessages: () => undefined }),
+    "applied",
+  );
   const unsubscribe = localeStore.subscribeLocale(() => undefined);
   let finishLoading!: () => void;
   const loading = new Promise<void>((resolve) => {
     finishLoading = resolve;
   });
 
-  const selected = localeStore.setLocale("de", () => loading);
+  const selected = localeStore.setLocale("de", {
+    loadMessages: () => loading,
+  });
   navigatorState.language = "fr-FR";
   navigatorState.languages = ["fr-FR"];
   fireWindowEvent("languagechange");
 
   assert.equal(localeStore.getPendingLocalePreference(), "de");
   finishLoading();
-  assert.equal(await selected, true);
+  assert.equal(await selected, "applied");
   unsubscribe();
 
   assert.equal(localeStore.getLocale(), "de");
@@ -155,7 +191,10 @@ test("a browser language change cannot supersede a pending explicit choice", asy
 });
 
 test("a browser language change refreshes a pending auto choice", async () => {
-  assert.equal(localeStore.setLocale("it", () => undefined), true);
+  assert.equal(
+    localeStore.setLocale("it", { loadMessages: () => undefined }),
+    "applied",
+  );
   navigatorState.language = "de-DE";
   navigatorState.languages = ["de-DE"];
   const unsubscribe = localeStore.subscribeLocale(() => undefined);
@@ -164,7 +203,9 @@ test("a browser language change refreshes a pending auto choice", async () => {
     finishLoading = resolve;
   });
 
-  const selected = localeStore.setLocale("auto", () => loading);
+  const selected = localeStore.setLocale("auto", {
+    loadMessages: () => loading,
+  });
   navigatorState.language = "en-US";
   navigatorState.languages = ["en-US"];
   fireWindowEvent("languagechange");
@@ -173,7 +214,7 @@ test("a browser language change refreshes a pending auto choice", async () => {
   assert.equal(localeStore.getLocale(), "en");
   assert.equal(localeStore.getLocalePreference(), "auto");
   finishLoading();
-  assert.equal(await selected, false);
+  assert.equal(await selected, "superseded");
   unsubscribe();
 
   assert.equal(localeStore.getLocale(), "en");
@@ -225,7 +266,7 @@ test("a late initial catalog cannot replace a newer language selection", async (
   assert.notEqual(typeof initialized, "string");
   await initialized;
 
-  await localeStore.setLocale("it", () => undefined);
+  await localeStore.setLocale("it", { loadMessages: () => undefined });
   finishLoading();
   await loading;
   await Promise.resolve();

@@ -24,7 +24,11 @@ export {
   useLocalePreference,
   usePendingLocalePreference,
 } from "./locale-store";
-export type { LocalePreference } from "./locale-store";
+export type {
+  LocaleChangeResult,
+  LocalePreference,
+  SetLocaleOptions,
+} from "./locale-store";
 export {
   LOCALES,
   isSupportedLocale,
