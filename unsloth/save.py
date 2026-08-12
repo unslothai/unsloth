@@ -3527,22 +3527,24 @@ def _gguf_output_size_ratio(quant_method, first_conversion):
     return target / base
 
 
-# The names `save_pretrained` gives a set of weights, and only those. Unsharded
-# it is transformers' own `SAFE_WEIGHTS_NAME` / `WEIGHTS_NAME`, plus the
-# consolidated single file unsloth_zoo renames to `model.safetensors`. Sharded
-# it is the same stem plus `-NNNNN-of-NNNNN`.
+# The names a disposable merge is written under, and only those. Both writers of
+# one produce safetensors: the PEFT branch goes through unsloth_zoo's
+# `merge_and_overwrite_lora`, which rewrites the base safetensors shards (and the
+# `consolidated.safetensors` some repos ship), and the non-PEFT fallback calls
+# `save_pretrained` with no arguments, so transformers' `SAFE_WEIGHTS_NAME`.
+# Sharded it is the same stem plus `-NNNNN-of-NNNNN`.
 #
-# The stem is part of the rule, not decoration. transformers clears stale shards
-# from a save directory under exactly this pair of conditions
+# Neither the stem nor the extension is decoration. transformers clears stale
+# shards from a save directory under exactly this pair of conditions
 # (`modeling_utils`: `filename.startswith(weights_no_suffix)` and
 # `re.fullmatch(r"(.*?)-\d{5}-of-\d{5}", ...)`), so a shard set under some other
-# stem is a file `save_pretrained` neither writes nor removes -- and this helper
-# deletes permanently. A merge that does use another stem still gets reclaimed,
-# because a sharded `save_pretrained` always writes the index and the index
-# names its own shards.
-_MERGE_WEIGHT_NAME = re.compile(
-    r"^(model|pytorch_model|consolidated)(-\d{5}-of-\d{5})?\.(safetensors|bin)$"
-)
+# stem is a file `save_pretrained` neither writes nor removes -- and a
+# `pytorch_model.bin` from an earlier save in the other serialization survives
+# the sweep for the same reason, since it does not start with `model`. This
+# helper deletes permanently, so it leaves both alone. A merge under a name this
+# misses is still reclaimed whenever it wrote an index, because the index names
+# its own shards.
+_MERGE_WEIGHT_NAME = re.compile(r"^(model|consolidated)(-\d{5}-of-\d{5})?\.safetensors$")
 # `save_pretrained` names the shard set here when it writes more than one.
 _WEIGHT_INDEX_NAMES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
 

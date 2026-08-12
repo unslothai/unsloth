@@ -497,6 +497,36 @@ def test_a_shard_set_under_another_stem_is_not_the_merge(tmp_path, monkeypatch, 
     assert not [f for f in os.listdir(merge) if f.startswith("model-")]
 
 
+def test_a_checkpoint_in_the_other_serialization_is_not_the_merge(tmp_path, monkeypatch, save_mod):
+    """A disposable merge is always safetensors: the PEFT branch goes through
+    unsloth_zoo's safetensors rewrite, and the non-PEFT fallback calls
+    `save_pretrained` with no arguments. So a `pytorch_model.bin` next to it came
+    from an earlier save in the other serialization, and transformers' own stale
+    sweep leaves it too, since the name does not start with `model`."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
+    theirs = Path(merge) / "pytorch_model.bin"
+    theirs.write_bytes(b"an earlier save the export cannot put back")
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 60 * GB
+    assert theirs.exists(), "a checkpoint in the other serialization was deleted with the merge"
+    assert not [f for f in os.listdir(merge) if f.startswith("model-")]
+
+
+def test_a_bin_merge_that_wrote_an_index_is_still_reclaimed(tmp_path, monkeypatch, save_mod):
+    """Narrowing the name match must not cost a reclamation: an index names its
+    own shards whatever they are called, and it still decides."""
+    merge, gguf, bases = _layout(tmp_path, merge_gb = 30, base_gb = 60)
+    shard = Path(merge) / "pytorch_model-00001-of-00001.bin"
+    with open(shard, "wb") as fh:
+        fh.truncate(int(20 * GB))
+    (Path(merge) / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"a.weight": "pytorch_model-00001-of-00001.bin"}})
+    )
+    _with_free(monkeypatch, save_mod, 1)
+    assert _reclaim(save_mod, merge, gguf, bases) > 20 * GB
+    assert not shard.exists(), "the index named this shard and it was left behind"
+
+
 def test_a_malformed_index_falls_back_to_the_naming_convention(tmp_path, monkeypatch, save_mod):
     """A half-written index must not stop the reclamation, nor make it raise."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
