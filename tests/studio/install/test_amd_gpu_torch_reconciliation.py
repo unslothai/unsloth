@@ -73,10 +73,7 @@ MARKETING_IDS = ["install.sh", "setup.sh"]
 @pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
 def test_discrete_host_reports_the_gpu_not_the_cpu(tmp_path, script, fn):
     """#7307: the GPU line must name the card, not the processor in front of it."""
-    assert (
-        _run_marketing_name(tmp_path, script, fn, ROCMINFO_DISCRETE)
-        == "AMD Radeon AI PRO R9700"
-    )
+    assert _run_marketing_name(tmp_path, script, fn, ROCMINFO_DISCRETE) == "AMD Radeon AI PRO R9700"
 
 
 @pytest.mark.parametrize("script, fn", MARKETING_HELPERS, ids = MARKETING_IDS)
@@ -101,9 +98,7 @@ def _extract_amd_escape() -> str:
     src = SETUP_SH.read_text(encoding = "utf-8")
     start = src.find("        _setup_rocm_family_leaf() {")
     assert start >= 0, "setup.sh lost the AMD escape's ROCm-family predicate"
-    arm = src.find(
-        'substep "AMD GPU detected but installed PyTorch is not a ROCm build', start
-    )
+    arm = src.find('substep "AMD GPU detected but installed PyTorch is not a ROCm build', start)
     assert arm > start, "setup.sh lost the AMD dependency-pass escape"
     end = src.find("\n        fi\n", arm)
     assert end > arm, "the AMD escape is not fi-terminated at its own indent"
@@ -217,12 +212,12 @@ def test_summary_probes_torch_and_has_a_warning_arm():
     start = src.find("    _setup_rocm_torch_ok=unknown")
     assert start >= 0, "setup.sh lost the AMD torch runtime probe"
     block = src[start : start + 2500]
-    assert "torch.cuda.is_available()" in block, (
-        "the AMD summary must ask torch whether it can use the GPU it just announced"
-    )
-    assert "signal.alarm(60)" in block and "timeout 60" in block, (
-        "the probe must be bounded: a faulted HIP runtime hangs inside `import torch`"
-    )
-    assert 'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block, (
-        "a GPU torch cannot use must not be reported as a healthy ROCm install"
-    )
+    assert (
+        "torch.cuda.is_available()" in block
+    ), "the AMD summary must ask torch whether it can use the GPU it just announced"
+    assert (
+        "signal.alarm(60)" in block and "timeout 60" in block
+    ), "the probe must be bounded: a faulted HIP runtime hangs inside `import torch`"
+    assert (
+        'step "gpu" "AMD ROCm ($_setup_gfx, PyTorch cannot use it)" "$C_WARN"' in block
+    ), "a GPU torch cannot use must not be reported as a healthy ROCm install"
