@@ -198,6 +198,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
@@ -238,6 +239,8 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+# Apple Silicon M4+ only: psutil <= 7.2.2 reads the CPU clock ~1000x too small.
+patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
@@ -274,6 +277,7 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_psutil_cpu_freq
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del patch_openspiel_env_async

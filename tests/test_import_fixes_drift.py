@@ -758,3 +758,43 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
                 "decline to patch it and Windows ROCm import-time noise / "
                 "wrong ROCM_GPU_ARCH may return."
             )
+
+
+# ===========================================================================
+# psutil -- cpu_freq shape the Apple Silicon M4+ unit fix relies on
+# ===========================================================================
+
+
+def test_psutil_cpu_freq_shape_and_wiring():
+    """``patch_psutil_cpu_freq``: the wrapper rebuilds psutil's scpufreq
+    namedtuple, so fail if that surface moves or the patch is never called."""
+    psutil = pytest.importorskip("psutil")
+
+    assert callable(getattr(psutil, "cpu_freq", None)), (
+        "DRIFT DETECTED: psutil.cpu_freq is gone -- patch_psutil_cpu_freq "
+        "would silently stop correcting Apple Silicon M4+ readings."
+    )
+    namedtuple_type = None
+    for module_name in ("_ntuples", "_common"):
+        namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+        if namedtuple_type is not None:
+            break
+    if namedtuple_type is None:
+        pytest.fail(
+            "DRIFT DETECTED: psutil no longer exposes scpufreq in _ntuples or "
+            "_common, so the M5 fallback cannot build a return value."
+        )
+    assert hasattr(namedtuple_type, "_replace") and namedtuple_type._fields[:3] == (
+        "current",
+        "min",
+        "max",
+    ), (
+        "DRIFT DETECTED: psutil.scpufreq changed shape; the Apple Silicon "
+        "rescale in patch_psutil_cpu_freq assumes (current, min, max)."
+    )
+
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    assert "patch_psutil_cpu_freq()" in source.read_text(encoding = "utf-8"), (
+        "DRIFT DETECTED: patch_psutil_cpu_freq is defined but never called in "
+        "_gpu_init.py, so real imports never install it."
+    )

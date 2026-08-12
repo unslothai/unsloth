@@ -804,6 +804,201 @@ def patch_datasets():
         )
 
 
+# psutil reads the pmgr "voltage-statesN-sram" IORegistry tables and divides
+# every entry by 1e6 to reach MHz. Apple switched those tables from Hz to kHz on
+# M4, so psutil <= 7.2.2 returns ~1000x too small on M4 and newer -- a 4.5 GHz M4
+# Pro reads back as 4 MHz (unslothai/unsloth#8519). Upstream fix is
+# giampaolo/psutil#2824: merged, unreleased at 7.2.2. Mirror its heuristics here
+# (read the tables ourselves through ioreg, else rescale psutil's value) so any
+# caller of psutil.cpu_freq() in an Unsloth run sees a real number.
+#
+# Unsloth Studio's backend carries the same correction in
+# studio/backend/utils/hardware/hardware.py (cpu_frequency_mhz): the API server
+# deliberately never imports unsloth, so it cannot reach this patch. Keep both
+# in sync, and delete both once a fixed psutil is the floor in our requirements.
+#
+# Apple Silicon clocks are 0.6-4.6 GHz, so a raw Hz entry sits well above 1e8 and
+# a raw kHz entry well below it.
+_APPLE_CPU_FREQ_UNIT_THRESHOLD = 100_000_000
+_APPLE_MIN_PLAUSIBLE_CPU_MHZ = 500
+_APPLE_MAX_PLAUSIBLE_CPU_MHZ = 20000
+# A table peaking below this is a GPU/NPU rail, not a CPU cluster: it clears
+# every Apple GPU peak so far yet stays under the slowest CPU cluster shipped
+# (M1 E-core, 2064 MHz).
+_APPLE_CPU_CLUSTER_MIN_PEAK_MHZ = 2000
+_APPLE_VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
+# Peak/idle clocks are fixed for the life of the host, so probe ioreg once.
+# The sentinel separates "not probed yet" from "probed, unavailable".
+_apple_cpu_freq_range = "unprobed"
+_apple_cpu_freq_lock = None  # created on first use; see _apple_cpu_freq_range_mhz
+
+
+def _apple_voltage_state_freqs_mhz(blob):
+    """Decode one voltage-statesN-sram blob into plausible MHz values.
+
+    Entries are 8 bytes: little-endian uint32 frequency, then uint32 voltage.
+    """
+    freqs = []
+    for offset in range(0, len(blob) - 7, 8):
+        raw = int.from_bytes(blob[offset : offset + 4], "little")
+        if raw == 0:
+            continue
+        mhz = raw / 1e6 if raw > _APPLE_CPU_FREQ_UNIT_THRESHOLD else raw / 1e3
+        if _APPLE_MIN_PLAUSIBLE_CPU_MHZ <= mhz <= _APPLE_MAX_PLAUSIBLE_CPU_MHZ:
+            freqs.append(mhz)
+    return freqs
+
+
+def _apple_cpu_freq_range_from_ioreg_entries(entries):
+    """(min_mhz, max_mhz) across the CPU-cluster tables, or None."""
+    lows, peaks = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if not isinstance(value, (bytes, bytearray)):
+                continue
+            if not _APPLE_VOLTAGE_STATES_KEY.match(str(key)):
+                continue
+            freqs = _apple_voltage_state_freqs_mhz(bytes(value))
+            # Table indexes were renumbered on M5, so classify each table by its
+            # own peak rather than trusting a hardcoded index.
+            if freqs and max(freqs) >= _APPLE_CPU_CLUSTER_MIN_PEAK_MHZ:
+                lows.append(min(freqs))
+                peaks.append(max(freqs))
+    if not peaks:
+        return None
+    return (min(lows), max(peaks))
+
+
+def _apple_cpu_freq_range_mhz():
+    """Read (min, max) CPU MHz from the pmgr IORegistry node, cached."""
+    global _apple_cpu_freq_range, _apple_cpu_freq_lock
+    if _apple_cpu_freq_range != "unprobed":
+        return _apple_cpu_freq_range
+
+    import threading
+
+    if _apple_cpu_freq_lock is None:
+        # Racing here at worst makes two locks on the first call, and the
+        # double-check below still keeps the result consistent. Created lazily
+        # so importing this module allocates nothing on other platforms.
+        _apple_cpu_freq_lock = threading.Lock()
+
+    # Without the lock a threaded caller spawns one ioreg per thread, and a slow
+    # failing probe landing last would overwrite a good reading with None.
+    with _apple_cpu_freq_lock:
+        if _apple_cpu_freq_range != "unprobed":
+            return _apple_cpu_freq_range
+
+        freq_range = None
+        try:
+            import plistlib
+            import subprocess
+
+            result = subprocess.run(
+                ["ioreg", "-a", "-r", "-c", "AppleARMIODevice", "-d", "1"],
+                capture_output = True,
+                timeout = 5,
+            )
+            entries = plistlib.loads(result.stdout) if result.stdout else []
+            if isinstance(entries, dict):
+                entries = [entries]
+            freq_range = _apple_cpu_freq_range_from_ioreg_entries(entries)
+        except Exception as exception:
+            logger.info("Unsloth: could not read Apple CPU frequencies from ioreg (%s)", exception)
+
+        _apple_cpu_freq_range = freq_range
+        return freq_range
+
+
+def _corrected_apple_cpu_freq(sample):
+    """Rescale one psutil scpufreq sample that was read in the wrong unit."""
+    current = getattr(sample, "current", None)
+    if not isinstance(current, (int, float)) or current != current or current <= 0:
+        return sample
+    if current >= _APPLE_MIN_PLAUSIBLE_CPU_MHZ:
+        return sample  # already plausible: a fixed psutil, or not an affected chip
+
+    freq_range = _apple_cpu_freq_range_mhz()
+    if freq_range is not None:
+        low, peak = freq_range
+        # psutil reports the peak as `current` on macOS -- it has no per-instant
+        # clock there -- so keep that shape rather than inventing a live value.
+        return sample._replace(current = peak, min = low, max = peak)
+    # ioreg unavailable: recover the order of magnitude from what psutil read.
+    # psutil truncates in integer arithmetic, so this lands on the GHz step
+    # (4 -> 4000 MHz) rather than on the exact peak.
+    return sample._replace(
+        current = current * 1000,
+        min = getattr(sample, "min", 0.0) * 1000,
+        max = getattr(sample, "max", 0.0) * 1000,
+    )
+
+
+def patch_psutil_cpu_freq():
+    """Fix psutil.cpu_freq() reporting kHz-derived MHz on Apple Silicon M4+."""
+    if sys.platform != "darwin":
+        return
+    import platform as _platform
+
+    if _platform.machine() != "arm64":
+        return  # Rosetta / Intel Macs read a different, unaffected code path
+    if importlib.util.find_spec("psutil") is None:
+        return
+    try:
+        import psutil
+    except Exception:
+        return
+
+    original_cpu_freq = getattr(psutil, "cpu_freq", None)
+    if original_cpu_freq is None or getattr(original_cpu_freq, "__unsloth_patched__", False):
+        return
+
+    def _percpu_requested(args, kwargs):
+        return bool(args[0]) if args else bool(kwargs.get("percpu", False))
+
+    def _scpufreq_type():
+        # psutil 7.x keeps the namedtuple in _ntuples, older releases in _common.
+        for module_name in ("_ntuples", "_common"):
+            namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+            if namedtuple_type is not None:
+                return namedtuple_type
+        return None
+
+    @functools.wraps(original_cpu_freq)
+    def cpu_freq(*args, **kwargs):
+        try:
+            result = original_cpu_freq(*args, **kwargs)
+        except Exception:
+            # psutil raises on M5, whose renumbered tables it cannot find at the
+            # indexes it hardcodes. Stand in with the IORegistry reading rather
+            # than propagating, but only for the plain call: percpu asks for a
+            # per-core breakdown the tables cannot supply.
+            namedtuple_type = _scpufreq_type()
+            freq_range = (
+                None
+                if _percpu_requested(args, kwargs) or namedtuple_type is None
+                else _apple_cpu_freq_range_mhz()
+            )
+            if freq_range is None:
+                raise
+            low, peak = freq_range
+            return namedtuple_type(peak, low, peak)
+        try:
+            # percpu = True returns a list of samples, otherwise a single one.
+            if isinstance(result, list):
+                return [_corrected_apple_cpu_freq(sample) for sample in result]
+            if result is None:
+                return result
+            return _corrected_apple_cpu_freq(result)
+        except Exception:
+            return result  # never let a cosmetic fix break a caller
+
+    cpu_freq.__unsloth_patched__ = True
+    psutil.cpu_freq = cpu_freq
+
+
 def check_fbgemm_gpu_version():
     if importlib.util.find_spec("fbgemm_gpu") is None:
         return
