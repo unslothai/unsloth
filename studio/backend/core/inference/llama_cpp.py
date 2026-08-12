@@ -78,7 +78,7 @@ from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
-    strip_segment as _parser_strip_segment,
+    StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
@@ -87,8 +87,6 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The strip arms moved into the parser's ``strip_segment``; only think splitting is here.
-from core.tool_healing import strip_outside_think
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -16150,20 +16148,19 @@ class LlamaCppBackend:
                 text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
+        # Wraps the parser's ``strip_segment`` so the accumulated response is not rescanned
+        # end to end on every content token (that was quadratic in the response length).
+        # Think blocks stay verbatim inside it: a rehearsed call in one must not be deleted.
+        _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
+
+        # The final-answer loop has its own buffer and strips with ``final = False``, so it
+        # needs its own instance rather than sharing the one above.
+        _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-
-            def _seg(segment: str, is_last: bool) -> str:
-                # Scan order lives in the parser's ``strip_segment`` so this path, the
-                # safetensors loop and ``strip_tool_markup`` cannot drift. No separate
-                # final pass here, so the last segment takes the end-of-turn arms.
-                return _parser_strip_segment(
-                    segment, seg_final = is_last, enabled_tool_names = _enabled_names_gate
-                )
-
-            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
-            return strip_outside_think(text, _seg)
+            return _streaming_stripper.strip(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its
@@ -16374,6 +16371,8 @@ class LlamaCppBackend:
                 _reasoning_summary_emitted = False
                 _deferred_reasoning_summary = None
                 cumulative_display = ""  # Cumulative yielded text (with <think>)
+                # A new buffer, not a continuation of the previous iteration's.
+                _streaming_stripper.reset()
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
@@ -17589,7 +17588,11 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         in_thinking = False
                                     cumulative += token
-                                    cleaned = _strip_tool_markup(cumulative)
+                                    cleaned = (
+                                        _final_answer_stripper.strip(cumulative)
+                                        if auto_heal_tool_calls
+                                        else cumulative
+                                    )
                                     # Emit only when cleaned text grows (monotonic).
                                     if len(cleaned) > len(_last_emitted):
                                         _last_emitted = cleaned
