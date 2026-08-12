@@ -601,9 +601,9 @@ def test_every_file_the_builder_requires_is_actually_in_the_payload_dir():
 
 def test_the_result_prefix_matches_the_shared_launcher():
     """The launcher is reused unchanged; it scrapes this exact prefix."""
-    launcher = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "launch.py").read_text()
+    launcher = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "launch.py").read_text(encoding = "utf-8")
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in launcher
-    payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text()
+    payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in payload
 
 
@@ -718,7 +718,7 @@ def test_chunks_are_reassembled_in_order_regardless_of_the_order_seen():
 
 def _workflow() -> dict:
     yaml = pytest.importorskip("yaml")
-    return yaml.safe_load(WORKFLOW.read_text())
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
 
 
 def _triggers(wf: dict) -> dict:
@@ -747,7 +747,7 @@ def test_the_two_kaggle_legs_queue_behind_each_other():
     by the other's kernel."""
     yaml = pytest.importorskip("yaml")
     notebook = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
+        (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
     )
     assert (
         _workflow()["jobs"]["studio-gpu"]["concurrency"]["group"]
@@ -757,7 +757,7 @@ def test_the_two_kaggle_legs_queue_behind_each_other():
 
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
     """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
-    preempt = json.loads((REPO_ROOT / ".github" / "ci-preempt.json").read_text())
+    preempt = json.loads((REPO_ROOT / ".github" / "ci-preempt.json").read_text(encoding = "utf-8"))
     assert WORKFLOW.name in preempt["never"]
     for machines in preempt["heavy"].values():
         assert WORKFLOW.name not in machines
@@ -787,7 +787,7 @@ def test_the_paths_filter_is_not_the_whole_of_studio():
 def test_the_sampling_rate_matches_the_arithmetic_in_the_header():
     """The header states 5%, ~38 launches and ~28 GPU-h a week. If the flag
     and the prose disagree, one of them is a lie to whoever reads it next."""
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--percent 5" in source
     assert "x sampling rate            0.05" in source
     assert "= launches                 ~38 / week" in source
@@ -805,8 +805,8 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
     the notebook leg or blow the account. If that edit is ever the right one,
     this test is where the reasoning has to be argued with.
     """
-    studio = WORKFLOW.read_text()
-    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
+    studio = WORKFLOW.read_text(encoding = "utf-8")
+    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
 
     assert "--percent 5" in studio and "--percent 15" in notebook
     assert "= EXPECTED SPEND           ~28 GPU-h / week" in studio
@@ -832,8 +832,8 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     """Re-derived from the two headers rather than trusting either total."""
     import re
 
-    studio = WORKFLOW.read_text()
-    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
+    studio = WORKFLOW.read_text(encoding = "utf-8")
+    notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
 
     def rate(text):
         # The invoked flag, not the prose that quotes it.
@@ -851,7 +851,7 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
 
 
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--reserve-hours 10" in source
     assert "--budget-hours 2" in source
 
@@ -859,20 +859,20 @@ def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
 def test_the_budget_hours_flag_covers_the_kernel_ceiling():
     """budget-hours is the worst case one invocation can cost, and the
     kernel ceiling is what enforces that worst case."""
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
     assert ceiling_hours <= 2.0
 
 
 def test_the_opt_in_label_the_summary_names_is_the_one_the_gate_reads():
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--label-name kaggle-studio-gpu-ci" in source
-    assert "kaggle-studio-gpu-ci" in (CI_DIR / "report.py").read_text()
+    assert "kaggle-studio-gpu-ci" in (CI_DIR / "report.py").read_text(encoding = "utf-8")
 
 
 def test_skipping_the_ui_driver_is_explicit_and_warns():
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "::warning title=UI driver disabled" in source
     assert source.count("--skip-ui") == 1
 
@@ -880,7 +880,7 @@ def test_skipping_the_ui_driver_is_explicit_and_warns():
 def test_the_gate_and_launcher_are_the_shared_ones():
     """Reused, not forked. A second copy of the quota and concurrency policy
     is a second copy that can drift out of agreement with the account."""
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert ".github/scripts/kaggle_t4_ci/gate.py" in source
     assert ".github/scripts/kaggle_t4_ci/launch.py" in source
     assert not (CI_DIR / "gate.py").exists()
@@ -2116,3 +2116,14 @@ def test_load_model_does_not_inherit_the_previous_loads_offload_line(tmp_path, m
     detail = session.load_model("exported.gguf", variant = None, label = "exported")
     assert detail["positives"] == []
     assert detail["failures"], "silence must be a failure, not the previous load's evidence"
+
+
+def test_a_box_without_nvidia_smi_reports_no_gpu_rather_than_crashing(tmp_path, monkeypatch):
+    """environment() runs inside finish(), on every path including the
+    preflight one, so a FileNotFoundError there ended the run with a traceback
+    and no report at all."""
+    module = _load_payload()
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert module.gpu_inventory() == []
+    assert module.nvidia_used_mib() is None
+    assert module.nvidia_compute_apps() is None

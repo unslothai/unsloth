@@ -35,7 +35,7 @@ def test_canary_dataset_targets_the_canary_and_nothing_else():
     """A row whose answer drifted would make the exact-match check vacuous."""
     rows = [
         json.loads(line)
-        for line in (SMOKE_DIR / "canary_dataset.jsonl").read_text().splitlines()
+        for line in (SMOKE_DIR / "canary_dataset.jsonl").read_text(encoding = "utf-8").splitlines()
         if line.strip()
     ]
     assert rows, "canary dataset must not be empty"
@@ -664,7 +664,7 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
 
     from run_t4_smoke import main  # noqa: F401  (import proves it loads)
 
-    workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(encoding = "utf-8")
 
     def one(pattern, text, what):
         found = re.findall(pattern, text)
@@ -685,7 +685,7 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
     )
     payload = one(
         r'"--max-steps",\s*type\s*=\s*int,\s*default\s*=\s*(\d+)',
-        (SMOKE_DIR / "run_t4_smoke.py").read_text(),
+        (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8"),
         "payload argparse default",
     )
     assert dispatch_default == fallback == payload, (dispatch_default, fallback, payload)
@@ -703,7 +703,7 @@ COMMITTED_REFERENCE = SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json"
 def _committed_reference() -> dict:
     if not COMMITTED_REFERENCE.exists():
         pytest.skip("no committed T4 reference to perturb yet")
-    return json.loads(COMMITTED_REFERENCE.read_text())
+    return json.loads(COMMITTED_REFERENCE.read_text(encoding = "utf-8"))
 
 
 def _perturb(
@@ -1034,7 +1034,7 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
     """
     import ast
 
-    tree = ast.parse((SMOKE_DIR / "run_t4_smoke.py").read_text())
+    tree = ast.parse((SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8"))
     functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
     read = {
@@ -1615,7 +1615,7 @@ WORKFLOW = (
 
 def _workflow() -> dict:
     yaml = pytest.importorskip("yaml")
-    return yaml.safe_load(WORKFLOW.read_text())
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
 
 
 def test_the_workflow_parses_and_gates_the_expensive_job_on_the_cheap_one():
@@ -1644,7 +1644,7 @@ def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
     workflow, so what this asserts is the OFF switch: that there is exactly
     one, that it is a dispatch input, and that it announces itself.
     """
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert 'if [ "$SKIP_BAND" = "true" ]' in source
     assert "::warning title=Reference band check disabled" in source
     assert source.count("SKIP='--skip-reference'") == 1
@@ -1659,7 +1659,7 @@ def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():
     this file being touched. A hardcoded --expect would silently report
     "partial" forever after the next leg lands.
     """
-    source = WORKFLOW.read_text()
+    source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--all-kernels" in source
     assert "${{ steps.build.outputs.notebooks }}" in source
     assert "steps.build.outputs.payloads" in source
@@ -1668,7 +1668,7 @@ def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
     """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
     preempt = json.loads(
-        (Path(__file__).resolve().parents[2] / ".github" / "ci-preempt.json").read_text()
+        (Path(__file__).resolve().parents[2] / ".github" / "ci-preempt.json").read_text(encoding = "utf-8")
     )
     assert WORKFLOW.name in preempt["never"]
     for machines in preempt["heavy"].values():
@@ -2154,8 +2154,8 @@ def test_probe_mode_reports_rather_than_judges():
     """
     import ast
     for name in ("run_gptoss_t4.py", "run_grpo_t4.py"):
-        tree = ast.parse((SMOKE_DIR / name).read_text())
-        source = (SMOKE_DIR / name).read_text()
+        tree = ast.parse((SMOKE_DIR / name).read_text(encoding = "utf-8"))
+        source = (SMOKE_DIR / name).read_text(encoding = "utf-8")
         assert 'report["observed_failures"] = failures' in source, name
         assert "--probe" in source, name
         assert any(
@@ -2352,7 +2352,7 @@ def test_the_shim_reports_rather_than_raises_when_there_is_no_driver(monkeypatch
 def test_the_payload_applies_the_shim_before_it_touches_vllm():
     """Ordering is the whole point: flashinfer JITs on first use, and the
     first use is inside the engine build."""
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     applied = source.index("make_libcuda_linkable()")
     built = source.index('report["vllm"] = vllm_facts()')
     assert applied < built
@@ -2361,14 +2361,14 @@ def test_the_payload_applies_the_shim_before_it_touches_vllm():
 def test_what_the_shim_did_reaches_the_report():
     """Otherwise a future green run cannot be told from one that never needed
     it, and the next person re-derives all of this."""
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert 'report["libcuda_shim"] = libcuda' in source
 
 
 def test_the_traceback_keeps_its_head_as_well_as_its_tail():
     """The last probe's 6000-char tail was entirely ninja's own output, so the
     Python frames naming the caller were exactly what got dropped."""
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert "middle elided" in source
 
 
@@ -2414,7 +2414,7 @@ def test_a_libcuda_the_linker_will_not_search_for_does_not_count(monkeypatch, tm
 def test_the_searched_directories_are_the_ones_flashinfer_passes():
     """Pinned, because widening this list is exactly how the check went wrong.
     These two are what appear as -L on the failing ninja line."""
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert '"/usr/local/cuda/lib64", "/usr/local/cuda/lib64/stubs"' in source
 
 
@@ -2431,7 +2431,7 @@ def test_the_grpo_payload_gives_a_base_model_a_chat_template():
     The base model is the right choice and is not what to change; GRPO on an
     instruct model measures the instruct tuning as much as the run.
     """
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     assert "tokenizer.chat_template = (" in source
     assert 'if not getattr(tokenizer, "chat_template", None):' in source
     # And the report has to say which of the two worlds the run was in.
@@ -2444,7 +2444,7 @@ def test_the_chat_template_the_payload_installs_actually_renders():
     import re
 
     jinja2 = pytest.importorskip("jinja2")
-    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text(encoding = "utf-8")
     block = source[source.index("tokenizer.chat_template = (") :]
     block = block[: block.index("\n        )")]
     literal = "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', block))

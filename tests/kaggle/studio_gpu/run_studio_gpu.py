@@ -157,7 +157,18 @@ def log(msg: str) -> None:
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output = True, text = True, **kw)
+    """Run a command, answering an absent binary the way a failure answers.
+
+    Every caller here judges on ``returncode``, and a box with no nvidia-smi
+    at all -- a session Kaggle handed no driver -- otherwise raised
+    FileNotFoundError out of ``environment()`` inside ``finish()``, so the run
+    ended with a traceback and no report instead of a preflight that says
+    there is no GPU.
+    """
+    try:
+        return subprocess.run(cmd, capture_output = True, text = True, **kw)
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", f"{type(exc).__name__}: {exc}")
 
 
 def nvidia_used_mib() -> float | None:
