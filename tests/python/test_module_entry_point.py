@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """`python -m unsloth_cli` must be the console script, byte for byte.
 
 Windows materialises the `unsloth` entry point as a generated, unsigned
