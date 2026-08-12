@@ -4111,6 +4111,119 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     return "text-generation"
 
 
+# A media checkpoint outranks a text one in the same GGUF folder (see _gguf_folder_task), and is
+# ranked within the media answers too: _UNSUPPORTED_DIFFUSION_TASK hides the row from the chat
+# picker AND from the Images and Video ones, so a folder holding both a buildable denoiser and an
+# arch this backend cannot assemble has exactly one loadable answer, and returning the other on the
+# strength of where it sorts hides a model that works.
+_LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
+# Enough to reach the denoiser past a bundle's encoders, VAE and LoRAs. The guarantee is "the first
+# 64 in order decide", the same 64 on every host. A folder deep enough to hit this is a dump.
+_MAX_TASK_CLASSIFY_GGUFS = 64
+# Ordering costs first-wins' early exit, so bound the walk as _dir_has_downloaded_model and
+# _read_native_context_length already do. A scan folder is arbitrary (a network mount, or weights
+# beside a huge unrelated subtree rglob counts every entry of) and this runs once per listed row.
+# Past the budget the answer comes from what was reached, still at least what first-wins saw.
+_TASK_CLASSIFY_WALK_SECONDS = 0.75
+# The header reads get their own budget, started after the walk, so a slow walk cannot cut them
+# short at the encoder and hand back the answer this function exists to avoid.
+_TASK_CLASSIFY_READ_SECONDS = 1.5
+
+
+def _is_trailing_split_shard(name: str) -> bool:
+    """True for shard 2..N of a split GGUF.
+
+    ``gguf-split`` writes the whole KV block into shard 1 only, so a trailing shard carries no
+    ``general.architecture`` at all: reading one can only fail, and a 51-shard repo would cost 51
+    header reads to answer one question.
+
+    False if the shared pattern cannot be imported, so a rename there costs the optimisation and
+    nothing else: this runs inside the caller's blanket except, where an ImportError would come
+    back as no classification for any folder."""
+    try:
+        from utils.models.model_config import _GGUF_SPLIT_FILE_RE
+    except ImportError:
+        return False
+
+    match = _GGUF_SPLIT_FILE_RE.match(name)
+    return match is not None and match.group("index") != "00001"
+
+
+def _task_classify_sort_key(root: Path, path: Path) -> tuple[str, str]:
+    """Order a candidate by its path RELATIVE to the folder, in posix form.
+
+    Ordering exists so the answer stops depending on the filesystem, so the key carries neither the
+    mount point (what moving a Models folder changes) nor the separator: ``\\`` sorts against ``-``
+    and ``.`` differently than ``/``, so an absolute-path key can order the same two files one way
+    on Windows and the other on Linux. Lowercased so a case-insensitive filesystem agrees, exact
+    form as tie-break to keep the order total."""
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = path.name
+    return (rel.lower(), rel)
+
+
+def _gguf_folder_task(
+    root: Path,
+    id_hints: tuple[Optional[str], ...],
+    deadline: Optional[float] = None,
+) -> Optional[str]:
+    """The task a folder of GGUFs classifies as, ordered and decided by the media file.
+
+    Two bugs, one fix (#8406, #8407). The walk is ``rglob``, i.e. raw directory order, and the
+    answer used to be whichever file it yielded first, so a folder classified differently on two
+    machines and differently before and after a copy, which is what moving the Models folder makes.
+    Sorting makes the answer a property of the contents, not of the filesystem.
+
+    Decisive rather than first-wins because a media checkpoint does not ship alone: community
+    bundles put the text encoder (t5 / clip / a qwen3 conditioner) beside the denoiser. Answering
+    with the encoder tags a real image or video repo ``text-generation``, dropping it out of the
+    Images picker and offering a DiT in the chat one. A text repo has no diffusion GGUF in it, so
+    nothing gains a media task that did not already have one.
+
+    Bounded on both halves so neither scales with the folder: ``deadline`` (time.monotonic,
+    defaulted here) stops the walk, and candidates are trimmed to the cap as they are found."""
+    if deadline is None:
+        deadline = time.monotonic() + _TASK_CLASSIFY_WALK_SECONDS
+    fallback: Optional[str] = None
+    try:
+        # Trimmed back to the cap as it fills: a folder holding thousands of GGUFs should not cost
+        # a list of thousands of paths to read 64 of them.
+        scored: list[tuple[tuple[str, str], Path]] = []
+        for path in _iter_gguf_paths(root, deadline):
+            name = path.name
+            if _is_mmproj_filename(name) or _is_trailing_split_shard(name):
+                continue
+            scored.append((_task_classify_sort_key(root, path), path))
+            if len(scored) > _MAX_TASK_CLASSIFY_GGUFS * 2:
+                scored.sort(key = lambda item: item[0])
+                del scored[_MAX_TASK_CLASSIFY_GGUFS:]
+        scored.sort(key = lambda item: item[0])
+        paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
+    except Exception:
+        return None
+    unsupported: Optional[str] = None
+    read_deadline = time.monotonic() + _TASK_CLASSIFY_READ_SECONDS
+    for index, path in enumerate(paths):
+        # The first read always happens, so a folder still classifies from its first ordered file
+        # even where the budget was gone before this loop started.
+        if index and time.monotonic() >= read_deadline:
+            break
+        try:
+            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = id_hints + (path.name,))
+        except Exception:
+            continue
+        if task in _LOADABLE_MEDIA_GGUF_TASKS:
+            return task
+        if task == _UNSUPPORTED_DIFFUSION_TASK:
+            if unsupported is None:
+                unsupported = task
+        elif task is not None and fallback is None:
+            fallback = task
+    return unsupported or fallback
+
+
 def _repo_gguf_task(repo_info) -> Optional[str]:
     """HF pipeline task of a cached GGUF repo, from its architecture:
     'text-to-image' for a loadable diffusion arch, the non-loadable diffusion tag
@@ -4118,14 +4231,26 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
     unreadable)."""
     repo_id = getattr(repo_info, "repo_id", None)
     try:
-        for path in _iter_gguf_paths(Path(repo_info.repo_path)):
-            if _is_mmproj_filename(path.name):
-                continue
-            task = _arch_to_task(_gguf_architecture(str(path)), name_hints = (repo_id, path.name))
-            if task is not None:
-                return task
+        return _gguf_folder_task(Path(repo_info.repo_path), (repo_id,))
     except Exception:
-        pass
+        return None
+
+
+def _hf_cache_snapshot_repo_id(path: Optional[str]) -> Optional[str]:
+    """``org/name`` when *path* IS a ``models--org--name/snapshots/<sha>`` root, else None.
+
+    ``hf_cache_repo_id`` also answers for anything UNDER that directory, which is right for its own
+    job and wrong for a needle: a pipeline's ``transformer``, ``vae`` and ``text_encoder`` dirs
+    carry a ``config.json`` and weights, so a scan folder registers each as a row, and handing them
+    the parent's repo id makes every one detect the family, satisfy ``_local_is_diffusers`` and
+    enter the Images picker as a checkpoint that cannot load. Hence the shape must end at the
+    snapshot; the decode itself is still the strict shared one."""
+    if not path:
+        return None
+    parts = str(path).replace("\\", "/").rstrip("/").split("/")
+    if len(parts) >= 3 and parts[-2] == "snapshots" and parts[-3].startswith("models--"):
+        from core.inference.model_ids import hf_cache_repo_id
+        return hf_cache_repo_id(path)
     return None
 
 
@@ -4134,8 +4259,23 @@ def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
     name, and -- for a bare single-file dir -- the sole checkpoint's filename (a generic folder
     holding one ``qwen-image-*.safetensors`` identifies its family only there, and the load route
     resolves it via ``resolve_local_single_file``). Only basenames, so a parent-dir token can't
-    match."""
+    match -- with one exception, the encoded repo id below.
+
+    A checkpoint still in HF cache layout carries its repo id in the ``models--org--name``
+    directory, while every other needle degrades to the snapshot basename, a commit hash. That is
+    a moved Models folder registered as a scan folder (#8407): a GGUF still classifies from its
+    architecture, but a diffusers pipeline, proven to be one by its ``model_index.json``, had no
+    name left and dropped out of the Images picker as task=null. The decode answers only for a real
+    ``models--*/snapshots/*`` path AND only for the row that IS the snapshot, so it recovers the id
+    that row lost without letting arbitrary parent-dir tokens match or component dirs inherit it.
+    Last of the name needles, so the basenames still win."""
     needles = [model.model_id, model.display_name, Path(model.id).name]
+    try:
+        needles.append(
+            _hf_cache_snapshot_repo_id(model.path) or _hf_cache_snapshot_repo_id(model.id)
+        )
+    except Exception:
+        pass
     try:
         from core.inference.diffusion import resolve_local_single_file
         single = resolve_local_single_file(model.path)
@@ -4161,12 +4301,7 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
             p = Path(path)
             if p.suffix.lower() == ".gguf" and p.is_file():
                 return _arch_to_task(_gguf_architecture(str(p)), name_hints = _id_hints + (p.name,))
-            for f in _iter_gguf_paths(p):
-                if _is_mmproj_filename(f.name):
-                    continue
-                task = _arch_to_task(_gguf_architecture(str(f)), name_hints = _id_hints + (f.name,))
-                if task is not None:
-                    return task
+            return _gguf_folder_task(p, _id_hints)
         except Exception:
             pass
         return None
@@ -4185,10 +4320,19 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
         # The Images load path 400s AFTER eviction when no image family is supported, so tag only when detection succeeds.
         try:
             from core.inference.diffusion_engine_router import family_buildable_here
-            from core.inference.diffusion_families import detect_family
+            from core.inference.diffusion_families import (
+                detect_family,
+                detect_family_by_pipeline_index,
+            )
 
-            for needle in _local_family_needles(model):
-                fam = detect_family(needle)
+            # The saved pipeline class first: evidence out of the checkpoint, where every needle
+            # below is a name, and a moved model's name is what does not survive (#8407). The
+            # loader reads the index through the same helper, so anything shown on this evidence is
+            # something validate_load_request accepts on it.
+            for fam in (
+                detect_family_by_pipeline_index(path),
+                *(detect_family(needle) for needle in _local_family_needles(model)),
+            ):
                 if fam is not None:
                     # A local non-GGUF checkpoint always loads through diffusers, so the pipeline class has to exist here.
                     return (
