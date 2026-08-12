@@ -77,8 +77,7 @@ def _host_workflow(filter_key: str | None) -> str:
     return (
         "name: host\n"
         "on:\n"
-        "  pull_request:\n" + flt +
-        "jobs:\n"
+        "  pull_request:\n" + flt + "jobs:\n"
         "  lint:\n"
         "    runs-on: ubuntu-latest\n"
         "    steps:\n"
@@ -155,9 +154,9 @@ def test_comment_mention_is_not_a_host(tmp_path):
 def test_workflow_trigger_lint_host_exists_and_is_unfiltered():
     """End to end on the live tree, with the host requirement forced on."""
     proc = _run(REPO_ROOT / ".github" / "workflows", require_host = True)
-    assert proc.returncode == 0, (
-        f"live tree failed lint:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-    )
+    assert (
+        proc.returncode == 0
+    ), f"live tree failed lint:\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
 
 
 def test_workflow_changes_require_code_owner_review():

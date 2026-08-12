@@ -121,8 +121,8 @@ def main() -> int:
         action = "store_true",
         default = None,
         help = "Require a workflow that runs this script on unfiltered "
-               "`pull_request`. Defaults on for the live tree, off for a "
-               "fixture directory.",
+        "`pull_request`. Defaults on for the live tree, off for a "
+        "fixture directory.",
     )
     parser.add_argument(
         "--no-require-host",
