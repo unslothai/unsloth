@@ -843,6 +843,43 @@ def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypa
     assert events == [("lock", False), ("unlock", True)]
 
 
+def test_a_zombie_backend_is_not_a_live_sibling(tmp_path, monkeypatch):
+    # A backend that exited under a non-reaping parent stays a zombie: it
+    # answers kill(0) and keeps its start time, so liveness alone reads it as
+    # serving and its record would pin the compiled cache forever.
+    (tmp_path / "studio-8888-4242.pid").write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
+    assert run.live_sibling_backend() == 4242, "the check under test must start from live"
+
+    import utils.process_lifetime as process_lifetime
+
+    monkeypatch.setattr(process_lifetime, "_pid_is_zombie", lambda pid: pid == 4242)
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
+    # The same thing without a patch: a killed but unwaited child.
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        child.kill()
+        (tmp_path / f"studio-8889-{child.pid}.pid").write_text(
+            f"{child.pid}\n", encoding = "utf-8"
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if run.live_sibling_backend() is None:
+                break
+            time.sleep(0.05)
+
+        assert run.live_sibling_backend() is None, "a zombie was taken for a serving backend"
+    finally:
+        child.wait()
+
 def test_every_record_call_can_be_repeated(tmp_path):
     # Startup and shutdown both run more than once in a long-lived embedded
     # host, and a crash can leave either half done. Each of these has to be

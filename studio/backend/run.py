@@ -1158,13 +1158,32 @@ def _legacy_record() -> "tuple[tuple[int, float | None, str | None], float] | No
     return None if record is None else (record, _record_written_at(_PID_FILE))
 
 
+def _sibling_is_running(pid: int) -> bool:
+    """Alive, and not an exited process nobody waited on.
+
+    A zombie answers kill(0) and keeps its start time, so on its own liveness
+    reads it as a serving backend. Under a non-reaping parent (PID 1 in some
+    containers) it can stay that way indefinitely, and a record pointing at one
+    would pin the compiled cache on every later startup.
+    """
+    if not _pid_alive(pid):
+        return False
+    try:
+        from utils.process_lifetime import _pid_is_zombie
+    except Exception:  # noqa: BLE001
+        # The check is an exclusion, so without it this behaves as it did
+        # before: alive is alive.
+        return True
+    return not _pid_is_zombie(pid)
+
+
 def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
     for entry in records:
         if entry is None:
             continue
         record, written_at = entry
         pid, created, _address = record
-        if pid == me or not _pid_alive(pid):
+        if pid == me or not _sibling_is_running(pid):
             continue
         # Corroborate against other records for this PID, the way
         # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
