@@ -6501,7 +6501,10 @@ class TestRocmWslSupplyChainPins:
         assert fwd_sha.group(1) == own_sha.group(1)
         # A user-set ref must reach the helper untouched, so the operator override still works.
         assert '_rw_dxg_ref="${UNSLOTH_LIBROCDXG_REF:-}"' in install_sh
-        assert 'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"' in install_sh
+        assert (
+            'UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha"'
+            in install_sh
+        )
 
 
 if __name__ == "__main__":
