@@ -586,6 +586,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
+  minimax: {
+    temperature: true,
+    topP: true,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
   qwen: OPENAI_COMPAT_BASE,
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops params the target model does not support, so we
@@ -917,6 +925,24 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
   return withEnableThinkingStyle();
 }
 
+function resolveMiniMaxReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
+  if (modelId === "minimax-m3") {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+    });
+  }
+  if (modelId === "minimax-m2.7") {
+    return withEnableThinkingStyle({
+      supportsReasoning: true,
+      reasoningAlwaysOn: true,
+    });
+  }
+  return withEnableThinkingStyle();
+}
+
 export interface ExternalReasoningResolveOptions {
   /** vLLM connection flagged as a reasoning model in provider config. */
   isReasoningProvider?: boolean;
@@ -981,6 +1007,7 @@ export function getExternalReasoningCapabilities(
   const isAnthropicProvider = normalizedProvider === "anthropic";
   const isKimiProvider = normalizedProvider === "kimi";
   const isMistralProvider = normalizedProvider === "mistral";
+  const isMiniMaxProvider = normalizedProvider === "minimax";
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
     // OpenRouter's unified `reasoning` param is accepted on every request; the
@@ -996,6 +1023,7 @@ export function getExternalReasoningCapabilities(
   }
   if (isKimiProvider) return resolveKimiReasoningCapabilities(modelForMatching);
   if (isMistralProvider) return resolveMistralReasoningCapabilities(modelForMatching);
+  if (isMiniMaxProvider) return resolveMiniMaxReasoningCapabilities(modelForMatching);
   if (normalizedProvider === "gemini") {
     // Custom Gemini OAI-compat gateways route through /chat/completions, which
     // drops the native thinkingConfig payload. Hide the native thinking ladder

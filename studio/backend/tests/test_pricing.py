@@ -12,6 +12,7 @@ from core.inference.pricing import (
     ANTHROPIC_CACHE_READ_MULT,
     ANTHROPIC_FAST_MODE_MULT,
     ANTHROPIC_PRICING,
+    MINIMAX_PRICING,
     OPENAI_CACHE_READ_MULT,
     OPENAI_CONTAINER_USD_PER_HOUR,
     OPENAI_PRICING,
@@ -308,6 +309,57 @@ def test_openai_unlisted_model_priced_false_not_zero_default():
         assert out["billable_output_tokens"] == 1_000_000, model
 
 
+# ── MiniMax model and cache pricing ─────────────────────────────────
+
+
+def test_minimax_m3_uses_documented_flat_rates():
+    for input_tokens in (100_000, 1_000_000):
+        out = calculate_cost(
+            "minimax",
+            "MiniMax-M3",
+            {"input_tokens": input_tokens, "output_tokens": 1_000_000},
+        )
+
+        assert _isclose(out["input_usd"], input_tokens / 1_000_000.0 * 0.6)
+        assert _isclose(out["output_usd"], 2.4)
+        assert "long-context" not in out["model_priced"]
+
+
+def test_minimax_m27_anthropic_cache_prices_are_absolute():
+    out = calculate_cost(
+        "minimax",
+        "MiniMax-M2.7",
+        {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000,
+        },
+    )
+
+    assert out["billable_input_tokens"] == 2_000_000
+    assert _isclose(out["cache_write_usd"], 0.375)
+    assert _isclose(out["cache_read_usd"], 0.06)
+    assert _isclose(out["total_usd"], 0.435)
+
+
+def test_minimax_m3_openai_cache_read_is_not_double_billed():
+    out = calculate_cost(
+        "minimax",
+        "MiniMax-M3",
+        {
+            "input_tokens": 100_000,
+            "output_tokens": 0,
+            "input_tokens_details": {"cached_tokens": 80_000},
+        },
+    )
+
+    assert out["billable_input_tokens"] == 100_000
+    assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * 0.6)
+    assert _isclose(out["cache_read_usd"], 80_000 / 1_000_000.0 * 0.12)
+    assert out["cache_write_usd"] == 0.0
+
+
 # ── canonical Anthropic 4.5 ids now resolve to a price ─────────────
 
 
@@ -439,8 +491,9 @@ def test_openai_tool_surcharges_added_to_total():
 
 def test_snapshot_contains_provider_buckets_and_multipliers():
     snap = pricing_snapshot()
-    assert set(snap.keys()) == {"anthropic", "openai"}
+    assert set(snap.keys()) == {"anthropic", "openai", "minimax"}
     a = snap["anthropic"]
+    m = snap["minimax"]
     o = snap["openai"]
     assert "models" in a and "claude-opus-4-7" in a["models"]
     assert a["cache_5m_write_mult"] == ANTHROPIC_CACHE_5M_WRITE_MULT
@@ -459,6 +512,12 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert gpt55["long_context_threshold"] == 272_000
     assert gpt55["long_context_input_per_mtok"] == 10.0
     assert gpt55["long_context_output_per_mtok"] == 45.0
+    assert m["models"] == MINIMAX_PRICING
+    m3 = m["models"]["MiniMax-M3"]
+    assert m3["input_per_mtok"] == 0.6
+    assert m3["output_per_mtok"] == 2.4
+    assert m3["cache_read_per_mtok"] == 0.12
+    assert "cache_write_per_mtok" not in m3
 
 
 # ── longest-prefix match: dated mini variant must not collide with the

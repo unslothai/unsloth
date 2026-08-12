@@ -5152,7 +5152,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: externalReasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }
