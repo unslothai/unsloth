@@ -874,12 +874,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearingGallery, setClearingGallery] = useState(false);
-  // Leaving the route HIDES the confirm (the dialog is gated on `active` below) but does
-  // not close it: this page stays mounted so an in-flight generation survives the tab
-  // switch, and Radix never calls onOpenChange when the parent forces `open` false, so
-  // clearConfirmOpen would still be true on return and the confirm would reappear on its
-  // own. Dropped during render rather than from an effect (React's documented way to
-  // adjust state when a prop changes), so the confirm is already gone in the same pass.
+  // The `active` gate below only HIDES the confirm, and Radix does not call onOpenChange for
+  // a parent-forced close, so on this persistently mounted page the state would outlive the
+  // route change and the confirm would be back on return. Reset it during render.
   if (!active && clearConfirmOpen) setClearConfirmOpen(false);
   // Autoplay replays per selected clip (3 total plays, then pause). Reset on every selection change.
   const playCountRef = useRef(0);

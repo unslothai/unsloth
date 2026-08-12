@@ -6,9 +6,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Newlines normalized because the assertions below span lines: .gitattributes keeps this
-// tree at LF, but a source archive or a stray core.autocrlf hands the same file back with
-// CRLF and every multi-line marker would miss.
+// Normalized: the assertions below span lines, and while .gitattributes keeps this tree at
+// LF, a source archive or a stray core.autocrlf would make every multi-line marker miss.
 const source = readFileSync(
   fileURLToPath(
     new URL("../src/features/video/video-page.tsx", import.meta.url),
@@ -16,11 +15,8 @@ const source = readFileSync(
   "utf8",
 ).replace(/\r\n/g, "\n");
 
-/** The source between two markers, asserting both are actually there.
- *
- *  Without the assertion a marker that moves yields an empty (or wildly wrong) slice, and
- *  the negative assertion below -- "the clear button no longer calls handleClearAll" --
- *  passes over it vacuously. A guard that silently stops guarding is worse than none. */
+/** The source between two markers. Throws if either moved: a silent empty slice would let
+ *  the negative assertion below ("no longer calls handleClearAll") pass over nothing. */
 function between(start: string, end: string): string {
   const from = source.indexOf(start);
   const to = source.indexOf(end);
@@ -87,9 +83,8 @@ test("video gallery confirmation stays controlled while clearing and off-route",
 });
 
 test("leaving the video route closes the confirmation rather than hiding it", () => {
-  // The page is mounted persistently, so `active` going false only hides the dialog;
-  // Radix does not call onOpenChange for a parent-forced close, so without this reset the
-  // same confirm is back on screen the moment the route becomes active again.
+  // `active` going false only hides the dialog, and Radix does not call onOpenChange for a
+  // parent-forced close, so without this reset the confirm returns with the route.
   const reset = between(
     "const [clearingGallery, setClearingGallery] = useState(false);",
     "const playCountRef = useRef(0);",
