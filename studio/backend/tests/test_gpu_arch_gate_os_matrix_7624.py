@@ -797,6 +797,7 @@ def _run_auto_load(
     model_bytes = 1024,
     capture = None,
     intent_kwargs = None,
+    apu_ram_stub = None,
 ):
     """Drive a real automatic (no explicit GPU pick) llama-server load with the
     real ``_get_gpu_memory`` behind it, and return the spawned (cmd, env) list.
@@ -830,7 +831,9 @@ def _run_auto_load(
     backend._get_gguf_size_bytes = lambda _path: model_bytes
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **_kwargs: None
-    backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
+    # Off by default: the APU RAM preflight is not what most of these cells are
+    # about. A test that IS about it passes its own recording stub.
+    backend._apu_ram_shortfall_message = apu_ram_stub or (lambda *_args, **_kwargs: None)
     backend._find_llama_server_binary = lambda include_denied = False: binary
     backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
     backend.probe_server_capabilities = lambda _binary: {"found": True}
@@ -884,10 +887,12 @@ def _run_auto_load(
                 **(intent_kwargs or {}),
             )
         )
-    except Exception:
+    except Exception as exc:
         # A crashing child is one of the cases under test; the launches are the
-        # evidence either way.
-        pass
+        # evidence either way. A refusal that PREVENTS a spawn has no launch to
+        # point at, so hand it back through ``capture`` for those tests.
+        if capture is not None:
+            capture["error"] = exc
     return launches
 
 
@@ -1470,3 +1475,91 @@ class TestArchCrashRetryDropsDeadTensorMode:
                 if tok in ("--split-mode", "-sm") and i + 1 < len(cmd)
             ]
             assert "tensor" not in _modes, f"the narrowed respawn kept tensor mode: {cmd}"
+
+
+class TestArchCrashRetryRechecksTheApuRamGuard:
+    """The APU RAM preflight runs once, against the selection the FIRST spawn
+    used. On the mirror shape -- crash on the dGPU, retry on the unified-memory
+    sibling -- the respawn is the first launch onto system RAM and skipped the
+    guard entirely, so an oversized GGUF was OOM-killed mid-load instead of
+    returning the refusal the same host gives when the APU is picked first
+    (#7624). Mock-based, no ROCm here.
+    """
+
+    def _dgpu_then_apu(self, monkeypatch):
+        # Device 1 is the APU, so the free-VRAM rank pins the dGPU first and the
+        # retry's prefer-never-selected branch hands back exactly the APU.
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 8000)
+        )
+        return _fake_torch(
+            [
+                _device("gfx1030", free_mib = 40000),
+                _device("gfx1151", free_mib = 12000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+
+    def test_an_oversized_model_is_refused_instead_of_respawned(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        torch = self._dgpu_then_apu(monkeypatch)
+        # Counted, not raised: this runs inside the launch path's own
+        # except-Exception arms, which would swallow an AssertionError and leave
+        # the test green on a guard that never ran.
+        calls: list = []
+
+        def _shortfall(model_size_bytes, avail_mib, *_a, **_kw):
+            calls.append((model_size_bytes, avail_mib))
+            return "This model needs about 20 GB but only about 8 GB is available."
+
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,  # no marker: the proactive gate fails open, so the crash path runs
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 20 * 1024**3,
+            capture = capture,
+            apu_ram_stub = _shortfall,
+        )
+        # The dGPU is pinned first, so the pre-launch guard never asks (it is
+        # gated on the selection wanting unified memory) and the crash happens.
+        assert launches, "the first spawn never ran"
+        assert all(
+            env.get("ROCR_VISIBLE_DEVICES") != "1" for _c, env in launches
+        ), "the retry respawned onto the APU without the RAM preflight"
+        assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
+        assert calls[0][0] == 20 * 1024**3
+        assert "only about 8 GB" in str(capture.get("error"))
+
+    def test_a_model_that_fits_still_retries_onto_the_apu(self, tmp_path, monkeypatch, probe_env):
+        """The guard refuses a shortfall, it does not block the fallback. With
+        room to spare the retry runs exactly as before."""
+        torch = self._dgpu_then_apu(monkeypatch)
+        calls: list = []
+
+        def _no_shortfall(model_size_bytes, avail_mib, *_a, **_kw):
+            calls.append((model_size_bytes, avail_mib))
+            return None
+
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            torch,
+            None,
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            model_bytes = 1024,
+            apu_ram_stub = _no_shortfall,
+        )
+        assert len(calls) == 1, f"the RAM guard ran {len(calls)} times, expected once"
+        _retry = [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert _retry, "the arch-crash retry did not fire"
+        assert all(env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for env in _retry)

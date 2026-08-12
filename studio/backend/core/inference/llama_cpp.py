@@ -13468,6 +13468,26 @@ class LlamaCppBackend:
                         gpu_indices, [i for i, _free in _detected_gpus]
                     )
                     if _remaining:
+                        _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
+                        # The APU RAM preflight upstream ran against the CRASHED
+                        # selection, which is discrete on this arm by
+                        # construction, so it never fired. The mirror shape --
+                        # crash on the dGPU, retry on the unified-memory sibling
+                        # -- then makes the respawn the first load into system
+                        # RAM, and the branch below deliberately switches
+                        # GGML_CUDA_ENABLE_UNIFIED_MEMORY on for it. Unchecked,
+                        # an oversized GGUF is OOM-killed mid-load instead of
+                        # getting the actionable refusal the same host gives
+                        # when the APU is picked first. Same guard, re-asked for
+                        # the set we are about to spawn on, and before the
+                        # respawn announces itself.
+                        if model_size is not None and _retry_wants_unified:
+                            _retry_ram_msg = self._apu_ram_shortfall_message(
+                                model_size, self._available_system_memory_mib()
+                            )
+                            if _retry_ram_msg:
+                                self._kill_process()
+                                raise RuntimeError(_retry_ram_msg)
                         logger.warning(
                             f"llama-server crashed with 'device kernel image is "
                             f"invalid' on GPU(s) {_crashed} -- the llama.cpp build "
@@ -13485,7 +13505,6 @@ class LlamaCppBackend:
                         # Both directions: a markerless mixed host can just as easily
                         # crash on the dGPU and land on the APU, which needs the
                         # setting the first launch correctly left unset.
-                        _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
                         if _unified_env_applied and not _retry_wants_unified:
                             env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
                             _unified_env_applied = False
