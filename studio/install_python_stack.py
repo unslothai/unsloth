@@ -3564,15 +3564,10 @@ def _repair_duplicate_core_metadata(package_names: "tuple[str, ...]") -> bool:
         )
 
     importlib.invalidate_caches()
-    remaining = [
-        name for name in duplicates if len(install_manifest.installed_versions(name)) > 1
-    ]
+    remaining = [name for name in duplicates if len(install_manifest.installed_versions(name)) > 1]
     if remaining:
         _safe_print(
-            _red(
-                "   duplicate package metadata remains after reinstall: "
-                + ", ".join(remaining)
-            ),
+            _red("   duplicate package metadata remains after reinstall: " + ", ".join(remaining)),
             file = sys.stderr,
         )
         return False

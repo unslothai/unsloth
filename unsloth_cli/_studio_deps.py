@@ -332,9 +332,7 @@ def installed_metadata_conflicts(
             except Exception:
                 version = "unknown version"
             metadata_path = getattr(dist, "_path", None)
-            location = (
-                Path(str(metadata_path)).name if metadata_path else "unknown metadata path"
-            )
+            location = Path(str(metadata_path)).name if metadata_path else "unknown metadata path"
             details.append(f"{version} at {location}")
         detail = ", ".join(sorted(details))
         found.append(f"{canonical}: multiple metadata records ({detail})")
@@ -387,6 +385,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     """
     import csv
     import io
+
     entries: List[tuple] = []
     owners: Dict[str, int] = {}
     for records in _installed_distribution_groups().values():

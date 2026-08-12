@@ -567,12 +567,7 @@ class TestDuplicateCoreMetadataRepair:
 
         assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
         assert len(installs) == 1
-        assert installs[0][1] == (
-            "--no-cache-dir",
-            "--no-deps",
-            "--force-reinstall",
-            "unsloth",
-        )
+        assert installs[0][1] == ("--no-cache-dir", "--no-deps", "--force-reinstall", "unsloth")
         assert invalidations == [True]
 
     def test_repair_fails_when_duplicate_metadata_survives(self, monkeypatch, capsys):

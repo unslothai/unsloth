@@ -55,9 +55,7 @@ def _make_dist(
     """
     info = site / f"{name}-{version}.dist-info"
     info.mkdir(parents = True, exist_ok = True)
-    (info / "METADATA").write_text(
-        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-    )
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
     (info / "WHEEL").write_text("Wheel-Version: 1.0\n")
     rows = [
         f"{name}-{version}.dist-info/METADATA,,",
@@ -367,13 +365,15 @@ def test_duplicate_metadata_gets_its_own_actionable_failure(monkeypatch, capsys)
 
 
 @pytest.mark.parametrize("package", ["typer", "torch"])
-def test_other_duplicate_metadata_warns_without_an_unsafe_command(
-    monkeypatch, capsys, package
-):
+def test_other_duplicate_metadata_warns_without_an_unsafe_command(monkeypatch, capsys, package):
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
 
-    def conflicts(*_args, names = None, exclude_names = ()):
+    def conflicts(
+        *_args,
+        names = None,
+        exclude_names = (),
+    ):
         if names is not None:
             return []
         assert "unsloth" in exclude_names and "unsloth-zoo" in exclude_names
@@ -503,7 +503,9 @@ def _run_update(monkeypatch, argv, verified):
     monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_run_setup_script", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda package: verified.append(package))
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda package: verified.append(package)
+    )
     return CliRunner().invoke(studio.studio_app, ["update", *argv])
 
 

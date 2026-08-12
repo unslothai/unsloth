@@ -3407,9 +3407,13 @@ def _fail_if_install_damaged(package_name: str = "unsloth") -> None:
         typer.echo("", err = True)
         typer.echo("The file check cannot safely choose between these records.", err = True)
         typer.echo("The installer could not repair its managed package metadata.", err = True)
-        typer.echo("Recreate the managed environment before running the Studio installer again.", err = True)
+        typer.echo(
+            "Recreate the managed environment before running the Studio installer again.", err = True
+        )
         typer.echo("", err = True)
-        typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
+        typer.echo(
+            "To update anyway without this check: unsloth studio update --no-verify", err = True
+        )
         raise typer.Exit(code = 1)
     other_conflicts = _studio_deps.installed_metadata_conflicts(exclude_names = managed_names)
     if other_conflicts:
