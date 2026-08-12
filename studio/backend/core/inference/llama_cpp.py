@@ -3625,6 +3625,8 @@ class LlamaCppBackend:
         # Whole header walked? Separates "declares no architecture" from "unreadable".
         self._gguf_header_parsed: bool = False
         self._gguf_split_index: Optional[int] = None
+        self._is_embedding: bool = False
+        self._embedding_pooling: str = "mean"
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
         self._load_rss_hwm = (None, 0)  # (pid, peak VmRSS) for load_progress
@@ -3865,6 +3867,11 @@ class LlamaCppBackend:
     def is_diffusion(self) -> bool:
         """True when the loaded GGUF is a block-diffusion model (DiffusionGemma)."""
         return self._is_diffusion
+
+    @property
+    def is_embedding(self) -> bool:
+        """True when the loaded GGUF is served in llama-server embedding mode."""
+        return self._is_embedding
 
     @property
     def swa_full(self) -> bool:
@@ -8526,6 +8533,8 @@ class LlamaCppBackend:
         self._is_diffusion = False
         self._gguf_header_parsed = False
         self._gguf_split_index = None
+        self._is_embedding = False
+        self._embedding_pooling = "mean"
 
         try:
             canvas_seen = False
@@ -8702,6 +8711,28 @@ class LlamaCppBackend:
                 logger.info(
                     f"GGUF metadata: diffusion model detected (architecture={arch}); "
                     "will serve via the diffusion runner"
+                )
+
+            from utils.models.gguf_metadata import (
+                is_gguf_embedding_model,
+                resolve_gguf_embedding_pooling,
+            )
+
+            self._is_embedding = is_gguf_embedding_model(
+                gguf_path,
+                self._model_identifier,
+                arch,
+            )
+            if self._is_embedding:
+                self._embedding_pooling = resolve_gguf_embedding_pooling(
+                    gguf_path,
+                    arch,
+                    self._model_identifier,
+                )
+                logger.info(
+                    "GGUF metadata: embedding model detected (architecture=%s, pooling=%s)",
+                    arch,
+                    self._embedding_pooling,
                 )
 
             # Expand a scalar period straight from the GGUF first.
@@ -13084,12 +13115,20 @@ class LlamaCppBackend:
                 logger.info("Load cancelled after download phase")
                 return False
 
-            # Backstop for everything the pre-teardown probes fail open on: refuse from the
-            # header rather than watching llama-server die as "failed to start".
-            non_chat = self._non_chat_gguf_refusal(model_path)
-            if non_chat:
-                logger.error("Refusing non-chat GGUF: %s (%s)", non_chat, model_path)
-                raise ValueError(non_chat)
+            if self._is_embedding:
+                # Embedding GGUFs have no chat/spec path; skip drafter discovery so a
+                # sibling sidecar cannot pull this load back into chat mode (#8535).
+                _spec_canon = None
+                mtp_draft_path = None
+                dspark_draft_path = None
+                dflash_draft_path = None
+            else:
+                # Backstop for everything the pre-teardown probes fail open on: refuse from the
+                # header rather than watching llama-server die as "failed to start".
+                non_chat = self._non_chat_gguf_refusal(model_path)
+                if non_chat:
+                    logger.error("Refusing non-chat GGUF: %s (%s)", non_chat, model_path)
+                    raise ValueError(non_chat)
 
             # Block-diffusion GGUFs (DiffusionGemma) cannot run on llama-server;
             # serve them with the diffusion runner (same OpenAI-compat interface).
@@ -15022,6 +15061,8 @@ class LlamaCppBackend:
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
                     cmd.append("--metrics")
+                if self._is_embedding:
+                    cmd.extend(["--embeddings", "--pooling", self._embedding_pooling])
                 self._slot_save_dir = None
                 self._slot_save_binary = None
                 self._prompt_cache_disabled = False
@@ -15227,24 +15268,27 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                spec_flags = self._build_speculative_flags(
-                    speculative_type = speculative_type,
-                    spec_draft_n_max = spec_draft_n_max,
-                    extra_args = extra_args,
-                    model_identifier = model_identifier,
-                    model_path = model_path,
-                    gpus = bool(_detected_gpus),
-                    binary = binary,
-                    mtp_draft_path = (
-                        None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
-                    ),
-                    dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_sized = not use_fit,
-                    dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
-                    dflash_fit_sized = not use_fit,
-                    drafter_no_vram = _spec_dropped_no_vram,
-                    draft_device = _draft_device,
-                )
+                if self._is_embedding:
+                    spec_flags = []
+                else:
+                    spec_flags = self._build_speculative_flags(
+                        speculative_type = speculative_type,
+                        spec_draft_n_max = spec_draft_n_max,
+                        extra_args = extra_args,
+                        model_identifier = model_identifier,
+                        model_path = model_path,
+                        gpus = bool(_detected_gpus),
+                        binary = binary,
+                        mtp_draft_path = (
+                            None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
+                        ),
+                        dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
+                        dspark_fit_sized = not use_fit,
+                        dflash_draft_path = (launch_mtp_draft_path if _spec_canon == "dflash" else None),
+                        dflash_fit_sized = not use_fit,
+                        drafter_no_vram = _spec_dropped_no_vram,
+                        draft_device = _draft_device,
+                    )
                 # _build_speculative_flags judged the stripped list, so a user
                 # --spec-type the drop removed left the requested mode reading "auto"
                 # while the caller's extras still mean "the user owns it" (None).

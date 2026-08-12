@@ -561,3 +561,116 @@ def pairing_score(
         return 60 if w_base.lower() == p_base.lower() else -1
 
     return 0
+
+
+# GGUF ``general.architecture`` values that only serve embeddings in llama.cpp.
+# Matches gguf-py MODEL_ARCH names for encoder / embedding checkpoints.
+GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
+    {
+        "bert",
+        "modern-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "neo-bert",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "eurobert",
+        "gemma-embedding",
+        "pangu-embedded",
+        "llama-embed",
+    }
+)
+
+_POOLING_TYPE_BY_CODE: dict[int, str] = {
+    0: "none",
+    1: "mean",
+    2: "cls",
+    3: "last",
+    4: "rank",
+}
+
+# Name hints for bare .gguf files whose architecture is not yet in the set above.
+_EMBEDDING_NAME_HINTS: tuple[str, ...] = (
+    "nomic-embed",
+    "embed-text",
+    "embedding",
+    "bge-",
+    "gte-",
+    "e5-",
+    "minilm",
+)
+
+
+def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
+    """True when ``architecture`` is a dedicated llama.cpp embedding arch."""
+    return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
+
+
+def read_gguf_pooling_type(path: str) -> Optional[str]:
+    """Return the GGUF ``{arch}.pooling_type`` as a llama-server ``--pooling`` value."""
+    found = _parse_gguf_arch_uints(path, frozenset({"pooling_type"}))
+    if not found or "pooling_type" not in found:
+        return None
+    return _POOLING_TYPE_BY_CODE.get(int(found["pooling_type"]))
+
+
+def is_gguf_embedding_model(
+    gguf_path: str,
+    model_identifier: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF should be launched with ``--embeddings`` for /v1/embeddings."""
+    arch = (architecture or "").strip().lower()
+    if not arch:
+        meta = read_gguf_general_metadata(gguf_path)
+        arch = ((meta or {}).get("general.architecture") or "").strip().lower()
+    if is_gguf_embedding_architecture(arch):
+        return True
+
+    if model_identifier:
+        ident = model_identifier.strip()
+        if ident:
+            try:
+                from utils.models.model_config import is_embedding_model
+
+                if is_embedding_model(ident):
+                    return True
+            except Exception:
+                pass
+            low = ident.lower()
+            if any(needle in low for needle in _EMBEDDING_NAME_HINTS):
+                return True
+
+    try:
+        low_path = Path(gguf_path).name.lower()
+        if any(needle in low_path for needle in _EMBEDDING_NAME_HINTS):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_gguf_embedding_pooling(
+    gguf_path: str,
+    architecture: Optional[str] = None,
+    model_identifier: Optional[str] = None,
+) -> str:
+    """Pick a ``--pooling`` value for an embedding GGUF load."""
+    pooling = read_gguf_pooling_type(gguf_path)
+    if pooling and pooling != "none":
+        return pooling
+
+    hints = " ".join(
+        x
+        for x in (
+            (architecture or ""),
+            model_identifier or "",
+            gguf_path,
+        )
+        if x
+    ).lower()
+    if "bge" in hints or ("bert" in hints and "nomic" not in hints):
+        return "cls"
+    if "nomic" in hints:
+        return "mean"
+    return "mean"
