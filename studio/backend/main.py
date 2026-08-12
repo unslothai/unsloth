@@ -341,7 +341,9 @@ from utils.torch_warmup import (
     start_background_warm,
     warm_status,
 )
-from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.cache_cleanup import (
+    clear_compiled_cache_unless_shared as _clear_compiled_cache_unless_shared,
+)
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
@@ -629,6 +631,16 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     _warm_rag_embedder()
 
 
+def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
+    """Clear the compiled cache unless a sibling backend of this install is live.
+
+    The decision lives in cache_cleanup, next to the paths it clears and the lock
+    that serializes it against a sibling's startup; run_server puts the probe on
+    app.state because main.py must not import run.py back.
+    """
+    _clear_compiled_cache_unless_shared(getattr(app.state, "live_sibling_backend", None))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -639,7 +651,7 @@ async def lifespan(app: FastAPI):
     import structlog as _structlog
 
     _lifespan_log = _structlog.get_logger(__name__)
-    clear_unsloth_compiled_cache()
+    clear_compiled_cache_unless_shared(app)
 
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
@@ -783,7 +795,7 @@ async def lifespan(app: FastAPI):
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
-        clear_unsloth_compiled_cache,
+        lambda: clear_compiled_cache_unless_shared(app),
         _hw_module,
     )
     # Shutdown cleared the state this warm produced, so release the one-per-process latch.
