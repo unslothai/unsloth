@@ -138,9 +138,7 @@ def test_a_lone_surrogate_cannot_break_the_log_write():
     import io
 
     surrogate = json.loads('"\\ud800"')
-    out = _render(
-        {"event": "request_failed", "exception": f"ValueError: bad prompt: {surrogate}"}
-    )
+    out = _render({"event": "request_failed", "exception": f"ValueError: bad prompt: {surrogate}"})
     assert surrogate not in out
     assert "\\ud800" in out
     # The real test: it survives an actual strict UTF-8 stream, which is what PrintLogger
