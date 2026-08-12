@@ -168,16 +168,16 @@ def test_unavailable_named_backend_never_falls_through_to_source():
     assert "Exit-SetupFailure" in guarded
 
 
-def test_explicit_vulkan_source_build_fails_closed():
+def test_explicit_backend_source_build_fails_closed():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     local_branch = sh.index('if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then')
     prebuilt_branch = sh.index('elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then', local_branch)
     guarded = sh[local_branch:prebuilt_branch]
     assert (
-        'elif [ "$_explicit_vulkan_source_build" = true ] && '
+        'elif [ -n "$_explicit_llama_source_backend" ] && '
         '[ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then'
     ) in guarded
-    assert "Vulkan source builds are not supported" in guarded
+    assert "Explicit backend selection requires a matching prebuilt bundle" in guarded
     assert "setup_fail 1" in guarded
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
@@ -186,30 +186,28 @@ def test_explicit_vulkan_source_build_fails_closed():
         '} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {', local_branch
     )
     guarded = ps1[local_branch:prebuilt_branch]
-    assert "} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {" in guarded
-    assert "Vulkan source builds are not supported" in guarded
+    assert "} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {" in guarded
+    assert "Explicit backend selection requires a matching prebuilt bundle" in guarded
     assert "Exit-SetupFailure" in guarded
 
 
-def test_force_compile_sets_need_source_build_before_vulkan_guard():
-    # UNSLOTH_LLAMA_FORCE_COMPILE=1 combined with an explicit Vulkan backend must
-    # hit the "Vulkan source builds are not supported" rejection, not silently
-    # fall through to a CUDA/ROCm/CPU source build. That only holds if
-    # _NEED_LLAMA_SOURCE_BUILD/$NeedLlamaSourceBuild is already true by the time
-    # the explicit-Vulkan elif guard runs, i.e. set earlier in the script.
+def test_force_compile_sets_need_source_build_before_backend_guard():
+    # A forced source build combined with any concrete backend must reach the
+    # explicit-backend rejection. The source-build state must therefore be set
+    # before the guard runs.
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     force_compile_set = sh.index(
         'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then\n    _NEED_LLAMA_SOURCE_BUILD=true'
     )
-    vulkan_guard = sh.index('elif [ "$_explicit_vulkan_source_build" = true ] && ')
-    assert force_compile_set < vulkan_guard
+    backend_guard = sh.index('elif [ -n "$_explicit_llama_source_backend" ] && ')
+    assert force_compile_set < backend_guard
 
     ps1 = _SETUP_PS1.read_text(encoding = "utf-8")
     force_compile_set = ps1.index(
         'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {\n    $NeedLlamaSourceBuild = $true'
     )
-    vulkan_guard = ps1.index("} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {")
-    assert force_compile_set < vulkan_guard
+    backend_guard = ps1.index("} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {")
+    assert force_compile_set < backend_guard
 
 
 def test_legacy_force_vulkan_gets_the_same_strict_fallback():
@@ -226,7 +224,7 @@ def test_legacy_force_vulkan_gets_the_same_strict_fallback():
 def _source_backend_choice_block() -> str:
     text = _SETUP_SH.read_text(encoding = "utf-8")
     m = re.search(
-        r'_source_backend_choice="\$\(printf.*?\n.*?_explicit_vulkan_source_build=false\n'
+        r'_source_backend_choice="\$\(printf.*?\n.*?_explicit_llama_source_backend=""\n'
         r".*?\nfi\n",
         text,
         re.DOTALL,
@@ -239,14 +237,14 @@ def _source_backend_choice_block() -> str:
 @pytest.mark.parametrize(
     "backend, force_vulkan, expected_backend, expected_explicit",
     [
-        (None, None, "auto", "false"),
-        ("vulkan", None, "vulkan", "true"),
-        ("auto", "on", "auto", "true"),
-        ("banana", "1", "banana", "true"),
-        ("cpu", "1", "cpu", "false"),
-        ("cuda", "1", "cuda", "false"),
-        ("hip", "1", "hip", "false"),
-        ("rocm", "1", "rocm", "false"),
+        (None, None, "auto", ""),
+        ("vulkan", None, "vulkan", "vulkan"),
+        ("auto", "on", "auto", "vulkan"),
+        ("banana", "1", "banana", "vulkan"),
+        ("cpu", "1", "cpu", "cpu"),
+        ("cuda", "1", "cuda", "cuda"),
+        ("hip", "1", "hip", "rocm"),
+        ("rocm", "1", "rocm", "rocm"),
     ],
 )
 def test_llama_backend_source_choice_in_setup_sh(
@@ -264,7 +262,7 @@ def test_llama_backend_source_choice_in_setup_sh(
     harness = (
         "set -u\n_HOST_SYSTEM=Linux\n"
         f"{_source_backend_choice_block()}\n"
-        'printf "%s:%s" "$_source_backend_choice" "$_explicit_vulkan_source_build"'
+        'printf "%s:%s" "$_source_backend_choice" "$_explicit_llama_source_backend"'
     )
     out = subprocess.run(
         ["bash", "-c", harness], capture_output = True, text = True, env = env, check = True
@@ -282,19 +280,19 @@ def _ps1_search(pattern: str, flags = 0) -> str:
 @pytest.mark.parametrize(
     "backend, force_vulkan, expected_explicit",
     [
-        (None, None, "False"),
-        ("vulkan", None, "True"),
-        ("auto", "on", "True"),
-        ("cpu", "1", "False"),
-        ("cuda", "1", "False"),
-        ("hip", "1", "False"),
-        ("rocm", "1", "False"),
+        (None, None, ""),
+        ("vulkan", None, "vulkan"),
+        ("auto", "on", "vulkan"),
+        ("cpu", "1", "cpu"),
+        ("cuda", "1", "cuda"),
+        ("hip", "1", "rocm"),
+        ("rocm", "1", "rocm"),
     ],
 )
 def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expected_explicit):
     normalize = _ps1_search(
         r'\$sourceLlamaBackend = "\$\(\$env:UNSLOTH_LLAMA_CPP_BACKEND\)".*?'
-        r"\$explicitVulkanSourceBuild = \(.*?\n\)\n",
+        r"\$explicitLlamaSourceBackend = \$null.*?\n\}",
         re.DOTALL,
     )
     env = {
@@ -313,7 +311,7 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
             "-Command",
             # Brace the name: PowerShell reads "$var:" as a scope qualifier and
             # fails to parse, so the probe never ran on a host that has pwsh.
-            f'{normalize}\n"RESULT:${{sourceLlamaBackend}}:$explicitVulkanSourceBuild"',
+            f'{normalize}\n"RESULT:${{sourceLlamaBackend}}:$explicitLlamaSourceBackend"',
         ],
         capture_output = True,
         text = True,

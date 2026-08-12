@@ -51,9 +51,12 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  const current = status?.backendRequest ?? "auto";
-  const value = selected ?? current;
-  const options = visibleLlamaBackendOptions(status, value);
+  const unknownRecorded = status?.backendRequest === null;
+  const current = status ? status.backendRequest : "auto";
+  const value = selected ?? current ?? "unknown";
+  const options = current
+    ? visibleLlamaBackendOptions(status, selected ?? current)
+    : (status?.options.filter((option) => option.available) ?? []);
   const pending = options.find((option) => option.backend === value);
   const dirty = !running && llamaBackendSelectionNeedsApply(status, selected);
   const unsupportedKey =
@@ -78,7 +81,9 @@ export function LlamaBackendSection() {
         <div className="flex items-center gap-2">
           <Select
             value={value}
-            disabled={!status?.supported || envLocked || running}
+            disabled={
+              !status?.supported || envLocked || unknownRecorded || running
+            }
             onValueChange={(next) => {
               if (isLlamaBackend(next)) {
                 setSelected(next);
@@ -94,6 +99,11 @@ export function LlamaBackendSection() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
+              {unknownRecorded ? (
+                <SelectItem value="unknown">
+                  {t("settings.resources.environment.unknown")}
+                </SelectItem>
+              ) : null}
               {options.map((option) => (
                 <SelectItem key={option.backend} value={option.backend}>
                   {optionLabel(option)}

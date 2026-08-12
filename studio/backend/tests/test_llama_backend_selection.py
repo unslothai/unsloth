@@ -343,6 +343,53 @@ def test_backend_resolver_does_not_turn_a_switch_into_a_version_update(monkeypat
     assert not any(entry["available"] for entry in payload["backends"])
 
 
+def test_backend_resolver_rejects_cross_repository_switches(monkeypatch):
+    host = SimpleNamespace(is_macos = False, system = "Linux", machine = "aarch64")
+    monkeypatch.setattr(ilp, "detect_host", lambda: host)
+    monkeypatch.setattr(
+        ilp,
+        "describe_installed_backend",
+        lambda install_dir: {"release_tag": "b9900-mix-old", "repo": FORK},
+    )
+
+    def _upstream_selection(**kwargs):
+        choice = ilp.AssetChoice(
+            repo = ilp.UPSTREAM_REPO,
+            tag = "b9999",
+            name = "llama-b9999-bin-ubuntu-vulkan-arm64.tar.gz",
+            url = "https://example/upstream-vulkan",
+            source_label = "upstream",
+            install_kind = "linux-vulkan",
+        )
+        plan = ilp.InstallReleasePlan(
+            "latest", "b9999", "b9999", [choice], SimpleNamespace()
+        )
+        return ilp.BackendSelection(
+            backend = kwargs["backend"],
+            host = host,
+            published_repo = ilp.UPSTREAM_REPO,
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [plan],
+            persist_llama_backend = "vulkan",
+            persist_rocm_gfx = None,
+            force_cpu = False,
+        )
+
+    monkeypatch.setattr(ilp, "select_backend_install", _upstream_selection)
+    args = SimpleNamespace(
+        published_repo = FORK,
+        published_release_tag = "",
+        has_rocm = False,
+        rocm_gfx = None,
+    )
+
+    payload = ilp.resolve_backends_payload("latest", args = args, install_dir = Path("unused"))
+
+    assert not any(entry["available"] for entry in payload["backends"])
+    assert all(entry["reason"] == "no_prebuilt" for entry in payload["backends"])
+
+
 def test_backend_resolver_fails_when_every_option_hits_an_unexpected_error(monkeypatch):
     monkeypatch.setattr(
         ilp,

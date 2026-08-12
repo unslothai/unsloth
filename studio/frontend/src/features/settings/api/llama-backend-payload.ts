@@ -53,8 +53,8 @@ export interface LlamaBackendStatus {
   envBackend: LlamaBackend | null;
   /** What the install runs on now. */
   backend: LlamaEffectiveBackend | null;
-  /** The recorded choice; "auto" when the backend is detected. */
-  backendRequest: LlamaBackend;
+  /** The recorded choice; null when this client does not recognize it. */
+  backendRequest: LlamaBackend | null;
   /** Whether that choice currently resolves to the installed backend. */
   selectionApplied: boolean;
   installedTag: string | null;
@@ -134,7 +134,7 @@ export function parseLlamaBackendStatus(value: unknown): LlamaBackendStatus {
       (asString(payload.backend) as LlamaEffectiveBackend | null) ?? null,
     backendRequest: isLlamaBackend(payload.backend_request)
       ? payload.backend_request
-      : "auto",
+      : null,
     selectionApplied: payload.selection_applied !== false,
     installedTag: asString(payload.installed_tag),
     options: options
@@ -148,7 +148,7 @@ export function llamaBackendSelectionNeedsApply(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
 ): boolean {
-  if (!status) {
+  if (!status || status.backendRequest === null) {
     return false;
   }
   const requested = selected ?? status.backendRequest;

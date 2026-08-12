@@ -54,21 +54,22 @@ test("a backend this build does not know about is dropped, not offered", () => {
   );
 });
 
-test("a backend older than this client's list still reads as automatic", () => {
+test("a backend older than this client's list stays unknown", () => {
   // An unknown recorded choice must not become automatic.
   const status = parseLlamaBackendStatus({
     ...FULL_PAYLOAD,
     backend_request: "sycl",
   });
 
-  assert.equal(status.backendRequest, "auto");
+  assert.equal(status.backendRequest, null);
+  assert.equal(llamaBackendSelectionNeedsApply(status, null), false);
 });
 
 test("a missing or malformed payload degrades instead of throwing", () => {
   const status = parseLlamaBackendStatus(null);
 
   assert.equal(status.supported, false);
-  assert.equal(status.backendRequest, "auto");
+  assert.equal(status.backendRequest, null);
   assert.deepEqual(status.options, []);
   assert.equal(status.job.state, "idle");
 });
@@ -127,7 +128,9 @@ test("automatic can be applied again when it now resolves differently", () => {
 });
 
 test("older status payloads do not become dirty without server evidence", () => {
-  const { selection_applied: _selectionApplied, ...olderPayload } = FULL_PAYLOAD;
+  const { selection_applied: _selectionApplied, ...olderPayload } =
+    FULL_PAYLOAD;
+  assert.equal(_selectionApplied, true);
   const status = parseLlamaBackendStatus(olderPayload);
 
   assert.equal(status.selectionApplied, true);

@@ -1917,14 +1917,14 @@ _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 _source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
 _source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
-_explicit_vulkan_source_build=false
+_explicit_llama_source_backend=""
 if [ "$_HOST_SYSTEM" != "Darwin" ]; then
     case "$_source_backend_choice" in
-        vulkan) _explicit_vulkan_source_build=true ;;
-        cpu|cuda|hip|rocm) ;;
+        hip) _explicit_llama_source_backend="rocm" ;;
+        cpu|cuda|rocm|vulkan) _explicit_llama_source_backend="$_source_backend_choice" ;;
         *)
             case "$_source_legacy_force_vulkan" in
-                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+                1|true|yes|on) _explicit_llama_source_backend="vulkan" ;;
             esac
             ;;
     esac
@@ -2098,10 +2098,10 @@ fi
 
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
-elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
-    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+elif [ -n "$_explicit_llama_source_backend" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND"
+    setup_fail 1 "$_explicit_llama_source_backend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true

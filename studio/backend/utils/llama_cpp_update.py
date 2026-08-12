@@ -634,14 +634,15 @@ def _run_llama_phase(
         new_backend = marker_backend(new_marker)
         new_backend_request = marker_backend_request(new_marker)
 
-        # Pinned install must land on that exact release; a same-repo mismatch
-        # means the pin was ignored (Vulkan/Intel reroute to another repo is fine).
-        if (
-            pin_release_tag
-            and new_tag
-            and (new_marker or {}).get("published_repo") == repo
-            and new_tag != pin_release_tag
-        ):
+        new_repo = (new_marker or {}).get("published_repo")
+        if pin_release_tag and backend_request is not None:
+            if new_repo != repo or new_tag != pin_release_tag:
+                raise RuntimeError(
+                    "backend switch must preserve "
+                    f"{repo}@{pin_release_tag}, but installer produced "
+                    f"{new_repo or 'an unknown repository'}@{new_tag or 'an unknown release'}"
+                )
+        elif pin_release_tag and new_tag and new_repo == repo and new_tag != pin_release_tag:
             raise RuntimeError(f"pinned release {pin_release_tag} but installer produced {new_tag}")
 
         if backend_request is not None:
@@ -907,6 +908,20 @@ def start_backend_switch(backend: str) -> dict:
                 "message": _ALREADY_RUNNING_MESSAGE,
                 "job": dict(_job),
             }
+
+    env_backend = _env_backend_override()
+    if env_backend is not None:
+        with _job_lock:
+            job = dict(_job)
+        return {
+            "started": False,
+            "reason": "environment_override",
+            "message": (
+                f"llama.cpp is controlled by the {env_backend} environment override. "
+                "Unset it and restart Studio before switching backends here."
+            ),
+            "job": job,
+        }
 
     llama_plan = _plan_llama_phase(normalized)
     llama_spec = llama_plan.get("spec")

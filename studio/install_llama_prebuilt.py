@@ -7983,17 +7983,39 @@ def resolve_backends_payload(
                 entry.update(available = False, reason = "error", detail = str(exc))
             else:
                 payload = _selection_payload(selection)
-                entry.update(available = bool(payload.get("prebuilt_available")))
-                entry.update(
-                    {
-                        key: payload.get(key)
-                        for key in ("repo", "release_tag", "llama_tag", "asset", "install_kind")
-                    }
+                installed_repo = (installed or {}).get("repo")
+                installed_release = (installed or {}).get("release_tag")
+                preserves_install = (
+                    (not installed_repo or selection.published_repo == installed_repo)
+                    and (
+                        not installed_release
+                        or payload.get("release_tag") == installed_release
+                    )
                 )
-                # What "auto" resolves to today, so the picker can label it.
-                entry["resolved_backend"] = payload.get("backend")
-                if not entry["available"]:
-                    entry["reason"] = "no_prebuilt"
+                if not preserves_install:
+                    entry.update(
+                        available = False,
+                        reason = "no_prebuilt",
+                        detail = "switching this backend would leave the installed release",
+                    )
+                else:
+                    entry.update(available = bool(payload.get("prebuilt_available")))
+                    entry.update(
+                        {
+                            key: payload.get(key)
+                            for key in (
+                                "repo",
+                                "release_tag",
+                                "llama_tag",
+                                "asset",
+                                "install_kind",
+                            )
+                        }
+                    )
+                    # What "auto" resolves to today, so the picker can label it.
+                    entry["resolved_backend"] = payload.get("backend")
+                    if not entry["available"]:
+                        entry["reason"] = "no_prebuilt"
             entries.append(entry)
         if entries and all(entry.get("reason") == "error" for entry in entries):
             raise RuntimeError("could not resolve any llama.cpp backend")

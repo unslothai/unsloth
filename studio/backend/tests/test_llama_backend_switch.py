@@ -172,30 +172,23 @@ def test_a_switch_names_the_backend_and_keeps_the_installed_release(monkeypatch,
     assert job["message"] == "llama.cpp is now running on vulkan."
 
 
-def test_a_switch_clears_an_inherited_vulkan_pin(monkeypatch, tmp_path):
-    # A legacy environment override must not defeat the switch.
-    monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
-    install_dir = _install(monkeypatch, tmp_path, backend = "vulkan", backend_request = "vulkan")
-    seen: dict = {}
-    _patch_installer(
-        monkeypatch,
-        on_start = lambda cmd, kwargs: (
-            seen.update(env = kwargs.get("env") or {}),
-            _write_install(
-                install_dir,
-                asset = "app-b9596-mix-abc-linux-x64-cpu.tar.gz",
-                install_kind = "linux-cpu",
-                backend = "cpu",
-                backend_request = "cpu",
-            ),
-        ),
-    )
+@pytest.mark.parametrize(
+    "name,value,expected",
+    [
+        ("UNSLOTH_LLAMA_CPP_BACKEND", "cpu", "cpu"),
+        ("UNSLOTH_LLAMA_CPP_BACKEND", "auto", "auto"),
+        ("UNSLOTH_FORCE_VULKAN", "1", "vulkan"),
+    ],
+)
+def test_environment_override_refuses_a_switch(monkeypatch, tmp_path, name, value, expected):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setenv(name, value)
 
-    assert upd.start_backend_switch("cpu")["started"] is True
-    _await_job()
+    action = upd.start_backend_switch("vulkan")
 
-    assert "UNSLOTH_FORCE_VULKAN" not in seen["env"]
-    assert seen["env"]["UNSLOTH_LLAMA_CPP_BACKEND"] == "cpu"
+    assert action["started"] is False
+    assert action["reason"] == "environment_override"
+    assert expected in action["message"]
 
 
 def test_a_backend_with_no_build_here_is_reported_by_name(monkeypatch, tmp_path):
@@ -208,6 +201,29 @@ def test_a_backend_with_no_build_here_is_reported_by_name(monkeypatch, tmp_path)
 
     assert job["state"] == "error"
     assert "No rocm llama.cpp build is published for this machine" in job["error"]
+
+
+def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):
+    install_dir = _install(monkeypatch, tmp_path)
+
+    def _on_start(cmd, kwargs):
+        _write_install(
+            install_dir,
+            release_tag = "b9596",
+            published_repo = "ggml-org/llama.cpp",
+            asset = "llama-b9596-bin-ubuntu-vulkan-arm64.tar.gz",
+            install_kind = "linux-vulkan",
+            backend = "vulkan",
+            backend_request = "vulkan",
+        )
+
+    _patch_installer(monkeypatch, on_start = _on_start)
+
+    assert upd.start_backend_switch("vulkan")["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "error"
+    assert "backend switch must preserve" in job["error"]
 
 
 # ── Refusing ──

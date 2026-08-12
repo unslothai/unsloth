@@ -5272,16 +5272,14 @@ $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 $sourceLlamaBackend = "$($env:UNSLOTH_LLAMA_CPP_BACKEND)".Trim().ToLowerInvariant()
 $sourceLegacyForceVulkan = "$($env:UNSLOTH_FORCE_VULKAN)".Trim().ToLowerInvariant()
-$explicitVulkanSourceBuild = (
-    -not $IsMacOS -and
-    (
-        $sourceLlamaBackend -eq "vulkan" -or
-        (
-            $sourceLlamaBackend -notin @("cpu", "cuda", "vulkan", "hip", "rocm") -and
-            $sourceLegacyForceVulkan -in @("1", "true", "yes", "on")
-        )
-    )
-)
+$explicitLlamaSourceBackend = $null
+if (-not $IsMacOS) {
+    if ($sourceLlamaBackend -in @("cpu", "cuda", "vulkan", "hip", "rocm")) {
+        $explicitLlamaSourceBackend = if ($sourceLlamaBackend -eq "hip") { "rocm" } else { $sourceLlamaBackend }
+    } elseif ($sourceLegacyForceVulkan -in @("1", "true", "yes", "on")) {
+        $explicitLlamaSourceBackend = "vulkan"
+    }
+}
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
@@ -5470,11 +5468,11 @@ if ($LocalLlamaCppSrc) {
 
 if ($LocalLlamaCppLinked) {
     # local directory linked above; skip prebuilt install
-} elseif ($explicitVulkanSourceBuild -and $NeedLlamaSourceBuild) {
+} elseif ($explicitLlamaSourceBackend -and $NeedLlamaSourceBuild) {
     Write-StudioLine ""
-    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "Red"
-    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override" "Yellow"
-    Exit-SetupFailure "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
+    step "llama.cpp" "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build" "Red"
+    substep "Explicit backend selection requires a matching prebuilt bundle; allow prebuilts or unset UNSLOTH_LLAMA_CPP_BACKEND" "Yellow"
+    Exit-SetupFailure "$explicitLlamaSourceBackend was explicitly requested, but this installation requires a source build. Explicit backend selection requires a matching prebuilt bundle."
 } elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-StudioLine ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
