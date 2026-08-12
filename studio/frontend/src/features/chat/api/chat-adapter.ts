@@ -98,6 +98,7 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
+  providerSupportsLocalToolRuntime,
 } from "../provider-capabilities";
 import {
   type PendingImageEditReference,
@@ -4102,6 +4103,20 @@ export function createOpenAIStreamAdapter(
             externalProvider.baseUrl,
           ),
       );
+      // OAI-compat Connections drive Unsloth's local tool runtime against the remote model (#7282).
+      const localToolRuntimeForThisTurn = Boolean(
+        externalProvider &&
+          providerSupportsLocalToolRuntime(externalProvider.providerType),
+      );
+      const localWebSearchEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && toolsEnabled,
+      );
+      const localCodeToolsEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && codeToolsEnabled,
+      );
+      const localMcpEnabledForThisTurn = Boolean(
+        localToolRuntimeForThisTurn && supportsTools && mcpEnabledForChat,
+      );
       // Fetch pill is independent of Search (Anthropic bills web_fetch
       // separately). Sourced from `webFetchToolsEnabled`; on providers
       // without web_fetch the toggle is forced off in chat-page setState.
@@ -4808,14 +4823,18 @@ export function createOpenAIStreamAdapter(
           tools: {
             search:
               webSearchEnabledForThisTurn ||
+              localWebSearchEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && toolsEnabled),
             fetch: webFetchEnabledForThisTurn,
             code:
               codeExecEnabledForThisTurn ||
+              localCodeToolsEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
             mcp:
-              supportsStudioToolsForThisTurn && mcpEnabledForChat,
+              (supportsStudioToolsForThisTurn && mcpEnabledForChat) ||
+              localMcpEnabledForThisTurn ||
+              (!isExternalRequest && supportsTools && mcpEnabledForChat),
             docs:
               supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
@@ -4995,6 +5014,9 @@ export function createOpenAIStreamAdapter(
               // Never forwarded upstream (the proxy sends an explicit field list);
               // the trailing assistant turn is what asks a provider to continue.
               ...(continuation ? { continue_final_message: true } : {}),
+              cancel_id: cancelId,
+              ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+              ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject
               // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
@@ -5024,8 +5046,9 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // ChatGPT/Codex function calls are executed by Studio. Other
-              // external providers keep their provider-hosted tool envelope.
+              // ChatGPT/Codex function calls are executed by Studio. Hosted providers
+              // use server-side builtins. OAI-compat Connections use the local tool
+              // runtime (web_search / python / terminal / MCP) (#7282).
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
                 codeToolsEnabled ||
@@ -5102,10 +5125,34 @@ export function createOpenAIStreamAdapter(
                           : []),
                       ],
                     }
-                  : // Explicit false: an omitted field falls back to the
-                    // server's tools-on default, which would bill provider
-                    // server tools.
-                    { enable_tools: false }),
+                  : localToolRuntimeForThisTurn &&
+                      (localWebSearchEnabledForThisTurn ||
+                        localCodeToolsEnabledForThisTurn ||
+                        localMcpEnabledForThisTurn)
+                    ? {
+                        enable_tools: true,
+                        enabled_tools: [
+                          ...(localWebSearchEnabledForThisTurn
+                            ? ["web_search"]
+                            : []),
+                          ...(localCodeToolsEnabledForThisTurn
+                            ? ["python", "terminal"]
+                            : []),
+                        ],
+                        mcp_enabled: localMcpEnabledForThisTurn,
+                        permission_mode: permissionMode,
+                        confirm_tool_calls:
+                          permissionMode === "ask" || permissionMode === "auto",
+                        bypass_permissions: bypassPermissions,
+                        max_tool_calls_per_message:
+                          useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                        tool_call_timeout: (() => {
+                          const mins =
+                            useChatRuntimeStore.getState().toolCallTimeout;
+                          return mins >= 9999 ? 9999 : mins * 60;
+                        })(),
+                      }
+                    : { enable_tools: false }),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
