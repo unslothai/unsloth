@@ -146,10 +146,10 @@ def test_tool_call_is_executed_and_never_forwarded_raw():
     client = _FakeClient(
         [
             [
-                _chunk(role="assistant"),
-                _chunk(content="Looking that up. "),
+                _chunk(role = "assistant"),
+                _chunk(content = "Looking that up. "),
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -157,12 +157,12 @@ def test_tool_call_is_executed_and_never_forwarded_raw():
                         }
                     ]
                 ),
-                _chunk(tool_calls=[{"index": 0, "function": {"arguments": '"unsloth"}'}}]),
+                _chunk(tool_calls = [{"index": 0, "function": {"arguments": '"unsloth"}'}}]),
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
             [
-                _chunk(content="Unsloth is a fine-tuning library."),
+                _chunk(content = "Unsloth is a fine-tuning library."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -178,12 +178,12 @@ def test_tool_call_is_executed_and_never_forwarded_raw():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "what is unsloth"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                session_id="sess-1",
-                thread_id="thread-1",
-                execute_tool=_execute,
+                messages = [{"role": "user", "content": "what is unsloth"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                session_id = "sess-1",
+                thread_id = "thread-1",
+                execute_tool = _execute,
             )
         )
     )
@@ -235,17 +235,15 @@ def test_tool_call_is_executed_and_never_forwarded_raw():
 
 
 def test_answer_without_tool_calls_passes_straight_through():
-    client = _FakeClient(
-        [[_chunk(content="hello"), _finish("stop"), "data: [DONE]"]]
-    )
+    client = _FakeClient([[_chunk(content = "hello"), _finish("stop"), "data: [DONE]"]])
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "hi"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                execute_tool=lambda *a, **k: pytest.fail("no tool should run"),
+                messages = [{"role": "user", "content": "hi"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                execute_tool = lambda *a, **k: pytest.fail("no tool should run"),
             )
         )
     )
@@ -258,7 +256,7 @@ def test_answer_without_tool_calls_passes_straight_through():
 def test_iteration_budget_drops_the_catalog_for_the_final_pass():
     tool_turn = [
         _chunk(
-            tool_calls=[
+            tool_calls = [
                 {
                     "index": 0,
                     "id": "call_0",
@@ -269,17 +267,17 @@ def test_iteration_budget_drops_the_catalog_for_the_final_pass():
         _finish("tool_calls"),
         "data: [DONE]",
     ]
-    client = _FakeClient([tool_turn, [_chunk(content="done"), _finish("stop"), "data: [DONE]"]])
+    client = _FakeClient([tool_turn, [_chunk(content = "done"), _finish("stop"), "data: [DONE]"]])
 
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "run it"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                max_tool_iterations=1,
-                execute_tool=lambda *a, **k: "1",
+                messages = [{"role": "user", "content": "run it"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                max_tool_iterations = 1,
+                execute_tool = lambda *a, **k: "1",
             )
         )
     )
@@ -295,7 +293,7 @@ def test_usage_is_summed_into_one_trailing_chunk():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -307,17 +305,17 @@ def test_usage_is_summed_into_one_trailing_chunk():
                 _usage(10, 5),
                 "data: [DONE]",
             ],
-            [_chunk(content="ok"), _finish("stop"), _usage(20, 7), "data: [DONE]"],
+            [_chunk(content = "ok"), _finish("stop"), _usage(20, 7), "data: [DONE]"],
         ]
     )
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "go"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                execute_tool=lambda *a, **k: "ok",
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: "ok",
             )
         )
     )
@@ -347,10 +345,10 @@ def test_provider_error_ends_the_loop_without_re_prompting():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "go"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                execute_tool=lambda *a, **k: pytest.fail("no tool should run"),
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: pytest.fail("no tool should run"),
             )
         )
     )
@@ -363,7 +361,7 @@ def test_bypass_permissions_disables_the_sandbox():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -374,7 +372,7 @@ def test_bypass_permissions_disables_the_sandbox():
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
-            [_chunk(content="1"), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "1"), _finish("stop"), "data: [DONE]"],
         ]
     )
     seen = {}
@@ -387,12 +385,12 @@ def test_bypass_permissions_disables_the_sandbox():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "go"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                bypass_permissions=True,
-                confirm_tool_calls=True,
-                execute_tool=_execute,
+                messages = [{"role": "user", "content": "go"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                bypass_permissions = True,
+                confirm_tool_calls = True,
+                execute_tool = _execute,
             )
         )
     )
@@ -406,7 +404,7 @@ def test_disabled_tool_call_is_suppressed_and_nudged():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -417,17 +415,17 @@ def test_disabled_tool_call_is_suppressed_and_nudged():
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
-            [_chunk(content="cannot"), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "cannot"), _finish("stop"), "data: [DONE]"],
         ]
     )
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "list files"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                execute_tool=lambda *a, **k: pytest.fail("terminal is not enabled"),
+                messages = [{"role": "user", "content": "list files"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: pytest.fail("terminal is not enabled"),
             )
         )
     )
@@ -448,8 +446,8 @@ def test_ollama_reasoning_is_renamed_for_the_frontend():
     client = _FakeClient(
         [
             [
-                _chunk(reasoning="Thinking about it."),
-                _chunk(content="Done."),
+                _chunk(reasoning = "Thinking about it."),
+                _chunk(content = "Done."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -459,9 +457,9 @@ def test_ollama_reasoning_is_renamed_for_the_frontend():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "hi"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "hi"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -480,8 +478,8 @@ def test_reasoning_only_answer_is_promoted_to_content():
     client = _FakeClient(
         [
             [
-                _chunk(reasoning="The user asked a simple question. "),
-                _chunk(reasoning="Unsloth is a fine-tuning library."),
+                _chunk(reasoning = "The user asked a simple question. "),
+                _chunk(reasoning = "Unsloth is a fine-tuning library."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -491,9 +489,9 @@ def test_reasoning_only_answer_is_promoted_to_content():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "what is unsloth"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "what is unsloth"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -505,7 +503,7 @@ def test_truncated_reasoning_is_not_promoted():
     client = _FakeClient(
         [
             [
-                _chunk(reasoning="Unsloth is a fine-tuning library that supports"),
+                _chunk(reasoning = "Unsloth is a fine-tuning library that supports"),
                 _finish("length"),
                 "data: [DONE]",
             ],
@@ -515,9 +513,9 @@ def test_truncated_reasoning_is_not_promoted():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "explain"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "explain"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -529,12 +527,12 @@ def test_plan_without_action_is_re_prompted_once():
     client = _FakeClient(
         [
             [
-                _chunk(reasoning="I will search the web for the 2026 box office totals."),
+                _chunk(reasoning = "I will search the web for the 2026 box office totals."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
             [
-                _chunk(content="The Odyssey led 2026."),
+                _chunk(content = "The Odyssey led 2026."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -544,9 +542,9 @@ def test_plan_without_action_is_re_prompted_once():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "highest grossing movie of 2026"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "highest grossing movie of 2026"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -568,7 +566,7 @@ def test_visible_text_is_never_re_prompted():
     client = _FakeClient(
         [
             [
-                _chunk(content="I will search the web for that."),
+                _chunk(content = "I will search the web for that."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -578,9 +576,9 @@ def test_visible_text_is_never_re_prompted():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "highest grossing movie of 2026"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "highest grossing movie of 2026"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -594,7 +592,7 @@ def test_tool_stdout_streams_to_the_card():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_1",
@@ -606,14 +604,19 @@ def test_tool_stdout_streams_to_the_card():
                 "data: [DONE]",
             ],
             [
-                _chunk(content="It printed 1."),
+                _chunk(content = "It printed 1."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
         ]
     )
 
-    def _execute(name, arguments, output_callback=None, **kwargs):
+    def _execute(
+        name,
+        arguments,
+        output_callback = None,
+        **kwargs,
+    ):
         output_callback("1\n")
         return "1"
 
@@ -621,10 +624,10 @@ def test_tool_stdout_streams_to_the_card():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "print 1"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                execute_tool=_execute,
+                messages = [{"role": "user", "content": "print 1"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = _execute,
             )
         )
     )
@@ -640,7 +643,7 @@ def test_large_payload_opens_a_provisional_card_and_streams_args():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_1",
@@ -648,12 +651,12 @@ def test_large_payload_opens_a_provisional_card_and_streams_args():
                         }
                     ]
                 ),
-                _chunk(tool_calls=[{"index": 0, "function": {"arguments": '"}'}}]),
+                _chunk(tool_calls = [{"index": 0, "function": {"arguments": '"}'}}]),
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
             [
-                _chunk(content="Done."),
+                _chunk(content = "Done."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -663,10 +666,10 @@ def test_large_payload_opens_a_provisional_card_and_streams_args():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "run it"}],
-                model="qwen3-14b",
-                tools=[PYTHON_TOOL],
-                execute_tool=lambda *a, **k: "ok",
+                messages = [{"role": "user", "content": "run it"}],
+                model = "qwen3-14b",
+                tools = [PYTHON_TOOL],
+                execute_tool = lambda *a, **k: "ok",
             )
         )
     )
@@ -689,14 +692,14 @@ def test_text_form_tool_call_runs_and_never_leaks():
     client = _FakeClient(
         [
             [
-                _chunk(content="Let me check that. "),
-                _chunk(content='<tool_call>\n{"name": "web_search", '),
-                _chunk(content='"arguments": {"query": "unsloth"}}\n</tool_call>'),
+                _chunk(content = "Let me check that. "),
+                _chunk(content = '<tool_call>\n{"name": "web_search", '),
+                _chunk(content = '"arguments": {"query": "unsloth"}}\n</tool_call>'),
                 _finish("stop"),
                 "data: [DONE]",
             ],
             [
-                _chunk(content="Unsloth is a fine-tuning library."),
+                _chunk(content = "Unsloth is a fine-tuning library."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -707,10 +710,10 @@ def test_text_form_tool_call_runs_and_never_leaks():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "what is unsloth"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                execute_tool=lambda name, args, **kw: executed.append((name, args)) or "result",
+                messages = [{"role": "user", "content": "what is unsloth"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                execute_tool = lambda name, args, **kw: executed.append((name, args)) or "result",
             )
         )
     )
@@ -728,7 +731,7 @@ def test_unparsed_markup_is_released_as_prose():
     client = _FakeClient(
         [
             [
-                _chunk(content="Write it as <tool_call> and the server parses it."),
+                _chunk(content = "Write it as <tool_call> and the server parses it."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -738,9 +741,9 @@ def test_unparsed_markup_is_released_as_prose():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "how do tool calls look"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "how do tool calls look"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -753,8 +756,8 @@ def test_partial_marker_at_a_delta_boundary_is_not_split():
     client = _FakeClient(
         [
             [
-                _chunk(content="Prefix <tool"),
-                _chunk(content="s are handy."),
+                _chunk(content = "Prefix <tool"),
+                _chunk(content = "s are handy."),
                 _finish("stop"),
                 "data: [DONE]",
             ],
@@ -764,9 +767,9 @@ def test_partial_marker_at_a_delta_boundary_is_not_split():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "hi"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
+                messages = [{"role": "user", "content": "hi"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
             )
         )
     )
@@ -776,7 +779,7 @@ def test_partial_marker_at_a_delta_boundary_is_not_split():
 def test_budget_exhausted_turn_is_told_to_answer():
     """The last pass gets the local loops' nudge, not a silently empty catalog."""
     call_chunk = _chunk(
-        tool_calls=[
+        tool_calls = [
             {
                 "index": 0,
                 "id": "call_0",
@@ -787,18 +790,18 @@ def test_budget_exhausted_turn_is_told_to_answer():
     client = _FakeClient(
         [
             [call_chunk, _finish("tool_calls"), "data: [DONE]"],
-            [_chunk(content="Final answer."), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "Final answer."), _finish("stop"), "data: [DONE]"],
         ]
     )
     asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "search"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                max_tool_iterations=1,
-                execute_tool=lambda *a, **k: "ok",
+                messages = [{"role": "user", "content": "search"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                max_tool_iterations = 1,
+                execute_tool = lambda *a, **k: "ok",
             )
         )
     )
@@ -811,7 +814,7 @@ def test_parallel_tool_calls_disabled_runs_only_the_first():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -827,7 +830,7 @@ def test_parallel_tool_calls_disabled_runs_only_the_first():
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
-            [_chunk(content="Done."), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "Done."), _finish("stop"), "data: [DONE]"],
         ]
     )
     executed = []
@@ -835,11 +838,11 @@ def test_parallel_tool_calls_disabled_runs_only_the_first():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "search twice"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                disable_parallel_tool_use=True,
-                execute_tool=lambda name, args, **kw: executed.append(args) or "ok",
+                messages = [{"role": "user", "content": "search twice"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                disable_parallel_tool_use = True,
+                execute_tool = lambda name, args, **kw: executed.append(args) or "ok",
             )
         )
     )
@@ -852,7 +855,7 @@ def test_text_markup_never_leaks_when_the_call_cannot_run():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -864,9 +867,9 @@ def test_text_markup_never_leaks_when_the_call_cannot_run():
                 "data: [DONE]",
             ],
             [
-                _chunk(content="Here is what I found. "),
+                _chunk(content = "Here is what I found. "),
                 _chunk(
-                    content=(
+                    content = (
                         "<tool_call> <function=web_search> <parameter=url> "
                         "https://example.com/ </tool_call>"
                     )
@@ -880,11 +883,11 @@ def test_text_markup_never_leaks_when_the_call_cannot_run():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "search"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                max_tool_iterations=1,
-                execute_tool=lambda *a, **k: "ok",
+                messages = [{"role": "user", "content": "search"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                max_tool_iterations = 1,
+                execute_tool = lambda *a, **k: "ok",
             )
         )
     )
@@ -896,10 +899,10 @@ def test_text_markup_alongside_a_structured_call_never_leaks():
     client = _FakeClient(
         [
             [
-                _chunk(content="Checking. <tool_call> <function=web_search> "),
-                _chunk(content="<parameter=url> https://example.com/ </tool_call>"),
+                _chunk(content = "Checking. <tool_call> <function=web_search> "),
+                _chunk(content = "<parameter=url> https://example.com/ </tool_call>"),
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -910,17 +913,17 @@ def test_text_markup_alongside_a_structured_call_never_leaks():
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
-            [_chunk(content="Found it."), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "Found it."), _finish("stop"), "data: [DONE]"],
         ]
     )
     lines = asyncio.run(
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "search"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                execute_tool=lambda *a, **k: "ok",
+                messages = [{"role": "user", "content": "search"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                execute_tool = lambda *a, **k: "ok",
             )
         )
     )
@@ -933,7 +936,7 @@ def test_unhealed_text_call_is_hidden_even_when_it_cannot_run():
         [
             [
                 _chunk(
-                    content=(
+                    content = (
                         "<tool_call> <function=web_search> <parameter=url> "
                         "https://example.com/ </tool_call>"
                     )
@@ -947,11 +950,11 @@ def test_unhealed_text_call_is_hidden_even_when_it_cannot_run():
         _collect(
             stream_chat_completion_with_local_tools(
                 client,
-                messages=[{"role": "user", "content": "search"}],
-                model="qwen3-14b",
-                tools=[WEB_SEARCH_TOOL],
-                auto_heal_tool_calls=False,
-                execute_tool=lambda *a, **k: pytest.fail("an unhealed call must not run"),
+                messages = [{"role": "user", "content": "search"}],
+                model = "qwen3-14b",
+                tools = [WEB_SEARCH_TOOL],
+                auto_heal_tool_calls = False,
+                execute_tool = lambda *a, **k: pytest.fail("an unhealed call must not run"),
             )
         )
     )
@@ -966,7 +969,7 @@ def test_approval_wait_flushes_card_on_a_separate_event_loop_turn():
         [
             [
                 _chunk(
-                    tool_calls=[
+                    tool_calls = [
                         {
                             "index": 0,
                             "id": "call_0",
@@ -977,12 +980,17 @@ def test_approval_wait_flushes_card_on_a_separate_event_loop_turn():
                 _finish("tool_calls"),
                 "data: [DONE]",
             ],
-            [_chunk(content="1"), _finish("stop"), "data: [DONE]"],
+            [_chunk(content = "1"), _finish("stop"), "data: [DONE]"],
         ]
     )
     decided = []
 
-    def _slow_decision(slot, approval_id, cancel_event=None, timeout=None):
+    def _slow_decision(
+        slot,
+        approval_id,
+        cancel_event = None,
+        timeout = None,
+    ):
         decided.append(approval_id)
         time.sleep(0.25)
         return "allow"
@@ -1011,13 +1019,13 @@ def test_approval_wait_flushes_card_on_a_separate_event_loop_turn():
             _collect_with_turn_probe(
                 stream_chat_completion_with_local_tools(
                     client,
-                    messages=[{"role": "user", "content": "print 1"}],
-                    model="qwen3-14b",
-                    tools=[PYTHON_TOOL],
-                    session_id="sess-1",
-                    confirm_tool_calls=True,
-                    permission_mode="ask",
-                    execute_tool=lambda *a, **k: "1",
+                    messages = [{"role": "user", "content": "print 1"}],
+                    model = "qwen3-14b",
+                    tools = [PYTHON_TOOL],
+                    session_id = "sess-1",
+                    confirm_tool_calls = True,
+                    permission_mode = "ask",
+                    execute_tool = lambda *a, **k: "1",
                 )
             )
         )

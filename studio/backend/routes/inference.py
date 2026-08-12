@@ -11703,10 +11703,7 @@ async def _proxy_to_external_provider(
     local_tools: list[dict] = []
     if local_tool_names:
         from core.inference.tools import ALL_TOOLS
-
-        local_tools = [
-            tool for tool in ALL_TOOLS if tool["function"]["name"] in local_tool_names
-        ]
+        local_tools = [tool for tool in ALL_TOOLS if tool["function"]["name"] in local_tool_names]
         chat_messages = _append_external_tool_nudge(
             chat_messages,
             _build_tool_action_nudge(tools = local_tools, model_name = model),
@@ -11757,7 +11754,6 @@ async def _proxy_to_external_provider(
                 DEFAULT_MAX_TOOL_ITERATIONS,
                 stream_chat_completion_with_local_tools,
             )
-
             gen = stream_chat_completion_with_local_tools(
                 client,
                 messages = chat_messages,

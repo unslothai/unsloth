@@ -178,11 +178,7 @@ class _TurnAccumulator:
     parses it into a real call, or releases it when it turns out to be prose.
     """
 
-    def __init__(
-        self,
-        *,
-        provisional_tool_names: frozenset[str] = frozenset(),
-    ) -> None:
+    def __init__(self, *, provisional_tool_names: frozenset[str] = frozenset()) -> None:
         self.text: str = ""
         self.shown: str = ""
         self.pending: str = ""
@@ -527,7 +523,6 @@ async def stream_chat_completion_with_local_tools(
     """
     if execute_tool is None:
         from core.inference.tools import execute_tool as _default_execute_tool
-
         execute_tool = _default_execute_tool
 
     permission_mode, bypass_permissions = _resolve_permission_mode(
@@ -622,9 +617,7 @@ async def stream_chat_completion_with_local_tools(
                 # marker that formed no call at all is restored whole, since stripping
                 # an unclosed run to end-of-turn would eat the sentence with it.
                 tail = turn.release_suppressed()
-                visible = strip_tool_markup(
-                    tail, final = True, enabled_tool_names = all_tool_names
-                )
+                visible = strip_tool_markup(tail, final = True, enabled_tool_names = all_tool_names)
                 if not visible.strip() and not healed_calls:
                     visible = tail
                 if visible:
@@ -720,13 +713,10 @@ async def stream_chat_completion_with_local_tools(
                 assistant_tool_calls.append(decision.as_assistant_tool_call())
 
                 needs_confirm = (
-                    bool(confirm_tool_calls)
-                    and not bypass_permissions
-                    and permission_mode != "off"
+                    bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
                 )
                 if needs_confirm and permission_mode == "auto":
                     from core.inference.tools import is_high_risk_tool_call
-
                     needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
                 approval_id = new_approval_id() if needs_confirm else ""
                 decision_slot = (
@@ -819,9 +809,7 @@ async def stream_chat_completion_with_local_tools(
                 outcome: dict[str, Any] = {}
                 try:
                     while True:
-                        event = await asyncio.to_thread(
-                            _advance_tool_stream, tool_stream, outcome
-                        )
+                        event = await asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
                         if event is _STEP_DONE:
                             break
                         if event.get("type") == "heartbeat":
