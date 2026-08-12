@@ -68,7 +68,7 @@ async def start_oauth(
     marker = secrets.token_urlsafe(32)
 
     guarded_persist = _bundle_persister(credential, marker)
-
+    flow = None
     try:
         async with codex_auth.provider_oauth_write_guard(provider_id):
             with current_credential_write(credential):
@@ -80,6 +80,8 @@ async def start_oauth(
                     codex_auth.save_oauth_flow_marker(provider_id, marker, flow)
         return codex_auth.safe_flow(flow)
     except Exception as exc:
+        if flow is not None:
+            await codex_auth.cancel_flow(flow.id)
         try:
             async with codex_auth.provider_oauth_write_guard(provider_id):
                 with current_credential_write(credential):

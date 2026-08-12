@@ -11082,12 +11082,16 @@ async def _proxy_to_external_provider(
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
         async def _codex_stream():
+            current_access_token = access_token
+
             async def _refresh_codex_access() -> tuple[str, str]:
-                return await resolve_access(
+                nonlocal current_access_token
+                current_access_token, refreshed_account_id = await resolve_access(
                     payload.provider_id,
                     force_refresh = True,
-                    expected_access_token = access_token,
+                    expected_access_token = current_access_token,
                 )
+                return current_access_token, refreshed_account_id
 
             from core.inference.openai_codex_tool_loop import (
                 CodexRunContext,

@@ -314,6 +314,7 @@ async def _exchange_code(
     except Exception:
         flow.status = "error"
         flow.message = "ChatGPT authorization failed. Please reconnect."
+        await _persist_terminal_flow(flow)
         raise
     flow.status = "connected"
     if flow.server:

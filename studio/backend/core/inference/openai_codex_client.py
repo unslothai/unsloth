@@ -75,6 +75,15 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
         if role == "system":
             if isinstance(content, str) and content:
                 instructions.append(content)
+            elif isinstance(content, list):
+                instructions.extend(
+                    part["text"]
+                    for part in content
+                    if isinstance(part, dict)
+                    and part.get("type") in ("text", "input_text")
+                    and isinstance(part.get("text"), str)
+                    and part["text"]
+                )
             continue
         if role == "tool":
             call_id = _codex_call_id(message.get("tool_call_id"))
@@ -98,6 +107,7 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                     if isinstance(item.get("id"), str):
                         replay["id"] = item["id"]
                     items.append(replay)
+            function_calls: list[dict[str, Any]] = []
             for call in message.get("tool_calls") or []:
                 function = call.get("function") if isinstance(call, dict) else None
                 if isinstance(function, dict) and function.get("name"):
@@ -106,7 +116,9 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                         arguments = json.dumps(arguments)
                     call_id = _codex_call_id(call.get("id"))
                     if call_id:
-                        items.append(responses_function_call(call_id, function["name"], arguments))
+                        function_calls.append(
+                            responses_function_call(call_id, function["name"], arguments)
+                        )
             output_parts: list[dict[str, Any]] = []
             if isinstance(content, str) and content:
                 output_parts.append({"type": "output_text", "text": content, "annotations": []})
@@ -127,6 +139,8 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                     }
                 )
                 assistant_index += 1
+
+            items.extend(function_calls)
             continue
         if role != "user":
             continue
@@ -514,7 +528,7 @@ class OpenAICodexClient:
             "Accept": "text/event-stream",
             "Content-Type": "application/json",
             "session-id": affinity,
-            "x-client-request-id": affinity,
+            "x-client-request-id": request_id,
         }
         completion_id = f"chatcmpl-codex-{request_id}"
         emitted_terminal, saw_tool_call = False, False
