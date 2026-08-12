@@ -170,17 +170,20 @@ def test_from_pretrained_accepts_processor_kwargs():
     assert params["processor_kwargs"].default is None
 
 
-def _synthetic_image(seed):
-    """A deterministic, network-free RGB image with enough structure that two different
-    seeds cannot collapse to the same embedding."""
+def _synthetic_images():
+    """Two deterministic, network-free RGB images that are as visually unalike as a pair of
+    112x112 rectangles can be: a dark frame with a bright top-left block, and its inverse
+    with a bright frame and a dark bottom-right block. Near-identical inputs would make the
+    collapse check below flaky, which is the whole reason they are this far apart."""
     from PIL import Image
 
-    img = Image.new("RGB", (112, 112), color=(16 * seed % 256, 96, 200 - 16 * seed % 256))
-    for x in range(0, 112, 16):
-        for y in range(0, 112, 16):
-            if (x // 16 + y // 16 + seed) % 2:
-                img.paste((240, 240, 30), (x, y, x + 16, y + 16))
-    return img
+    dark = Image.new("RGB", (112, 112), color=(8, 8, 24))
+    dark.paste((250, 240, 30), (0, 0, 56, 56))
+
+    light = Image.new("RGB", (112, 112), color=(245, 245, 235))
+    light.paste((10, 40, 160), (56, 56, 112, 112))
+
+    return dark, light
 
 
 def test_vlm_embedding_matches_stock_st():
@@ -210,18 +213,26 @@ def test_vlm_embedding_matches_stock_st():
     device = "cuda"
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     texts = ["a photo of a cat", "the capital of France is Paris"]
-    image_inputs = [
-        {"image": _synthetic_image(1), "text": "a yellow checkerboard"},
-        {"image": _synthetic_image(5)},
+    img_a, img_b = _synthetic_images()
+    # Each encode() call must be modality-homogeneous: sentence-transformers collapses a
+    # mixed-modality batch to the "message" (chat-template) route, which would silently test
+    # a different code path than the one this feature adds.
+    image_text_inputs = [
+        {"image": img_a, "text": "a bright block in the corner"},
+        {"image": img_b, "text": "a bright block in the corner"},
     ]
+    image_only_inputs = [{"image": img_a}, {"image": img_b}]
 
     # Control FIRST, before importing unsloth, so its global patches never touch the ref.
     ctrl = SentenceTransformer(model_id, device=device, model_kwargs={"torch_dtype": dtype})
     ctrl_emb = np.asarray(
         ctrl.encode(texts, normalize_embeddings=True, batch_size=2), dtype=np.float32
     )
+    ctrl_img_text_emb = np.asarray(
+        ctrl.encode(image_text_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+    )
     ctrl_img_emb = np.asarray(
-        ctrl.encode(image_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        ctrl.encode(image_only_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
     )
 
     import unsloth  # noqa: F401
@@ -257,24 +268,31 @@ def test_vlm_embedding_matches_stock_st():
         f"VLM embedding text parity regressed: min cosine {float(cos.min()):.5f} <= 0.99"
     )
 
-    fast_img_emb = np.asarray(
-        fast.encode(image_inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
-    )
+    def _cosines(reference, candidate):
+        return (reference * candidate).sum(1) / (
+            np.linalg.norm(reference, axis=1) * np.linalg.norm(candidate, axis=1)
+        )
 
-    img_cos = (ctrl_img_emb * fast_img_emb).sum(1) / (
-        np.linalg.norm(ctrl_img_emb, axis=1) * np.linalg.norm(fast_img_emb, axis=1)
-    )
-    assert float(img_cos.min()) > 0.99, (
-        f"VLM image parity regressed: min cosine {float(img_cos.min()):.5f} <= 0.99"
-    )
+    for label, inputs, reference in (
+        ("image+text", image_text_inputs, ctrl_img_text_emb),
+        ("image", image_only_inputs, ctrl_img_emb),
+    ):
+        fast_img_emb = np.asarray(
+            fast.encode(inputs, normalize_embeddings=True, batch_size=2), dtype=np.float32
+        )
+        img_cos = _cosines(reference, fast_img_emb)
+        assert float(img_cos.min()) > 0.99, (
+            f"VLM {label} parity regressed: min cosine {float(img_cos.min()):.5f} <= 0.99"
+        )
 
-    # Two structurally different images must not collapse to the same vector -- that would
-    # mean the image is being dropped and only the prompt/text is reaching the model.
-    pair_cos = float(
-        (fast_img_emb[0] * fast_img_emb[1]).sum()
-        / (np.linalg.norm(fast_img_emb[0]) * np.linalg.norm(fast_img_emb[1]))
-    )
-    assert pair_cos < 0.999, (
-        f"Distinct images produced near-identical embeddings (cos {pair_cos:.5f}); the image "
-        f"input is not reaching the vision tower."
-    )
+        # Two deliberately dissimilar images must not collapse to the same vector. With the
+        # same text on both rows of the image+text batch, a collapse means only the text is
+        # reaching the model, i.e. the image was dropped somewhere in preprocessing.
+        pair_cos = float(
+            (fast_img_emb[0] * fast_img_emb[1]).sum()
+            / (np.linalg.norm(fast_img_emb[0]) * np.linalg.norm(fast_img_emb[1]))
+        )
+        assert pair_cos < 0.999, (
+            f"Distinct images produced near-identical {label} embeddings (cos {pair_cos:.5f}); "
+            f"the image input is not reaching the vision tower."
+        )
