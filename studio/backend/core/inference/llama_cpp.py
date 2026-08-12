@@ -7286,9 +7286,7 @@ class LlamaCppBackend:
             # skipped there, a repo that renamed the file for a quant) lets the probe judge
             # one GGUF and the load open another. verify_sizes fails open on unreachable
             # metadata, so the probe still answers offline.
-            local = cached_gguf_for_load(
-                hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token
-            )
+            local = cached_gguf_for_load(hf_repo, hf_variant, verify_sizes = True, hf_token = hf_token)
             if local is None and not hf_variant:
                 # No variant means cached_gguf_for_load declines outright, so mirror the
                 # other half of _download_gguf: the complete candidate for this filename,

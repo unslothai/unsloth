@@ -385,12 +385,13 @@ def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
     # either: routes.models drops an MoE the loader cannot assemble, so the Video page would
     # not list Wan 2.2 A14B however its GGUF is packaged.
     from routes.models import _arch_to_task
-
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
         ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = None, name = name, identifier = identifier)
         assert message is not None
-        assert (_arch_to_task("wan", name_hints = (identifier, name)) == "text-to-video") is page_named
+        assert (
+            _arch_to_task("wan", name_hints = (identifier, name)) == "text-to-video"
+        ) is page_named
         assert ("Open it from the Video page" in message) is page_named, message
