@@ -17,16 +17,15 @@ def normalize_function_schema(schema: Any) -> dict[str, Any]:
         normalized["items"] = normalize_function_schema(normalized["items"])
     if normalized.get("type") == "object":
         properties = normalized.get("properties")
-        normalized["properties"] = {
-            key: normalize_function_schema(value)
-            for key, value in properties.items()
-        } if isinstance(properties, dict) else {}
+        normalized["properties"] = (
+            {key: normalize_function_schema(value) for key, value in properties.items()}
+            if isinstance(properties, dict)
+            else {}
+        )
     return normalized
 
 
-def responses_function_call(
-    call_id: str, name: str, arguments: str
-) -> dict[str, Any]:
+def responses_function_call(call_id: str, name: str, arguments: str) -> dict[str, Any]:
     return {
         "type": "function_call",
         "call_id": call_id,
@@ -41,7 +40,6 @@ def responses_function_output(call_id: str, output: str) -> dict[str, Any]:
         "call_id": call_id,
         "output": output,
     }
-
 
 
 def response_event_type(event: Any, event_name: str = "") -> str:

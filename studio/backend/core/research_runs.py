@@ -1143,7 +1143,6 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
-
             # Keep every model hop in this durable run on one isolated Codex
             # prompt-cache session rather than sharing the transport fallback.
             "thread_id": f"research:{run['id']}",

@@ -70,9 +70,7 @@ def _provider_response(row: dict) -> ProviderResponse:
             credential_secrets.PROVIDER_API_KEY_KIND,
             row["id"],
         ),
-        auth_kind = (
-            "chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"
-        ),
+        auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
         auth_status = (
             openai_codex_auth.auth_status(row["id"])
             if row["provider_type"] == "openai_codex"
@@ -89,6 +87,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
 
 def _validate_provider_auth_contract(
     info: dict,
@@ -107,8 +106,6 @@ def _validate_provider_auth_contract(
         raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
     if models is not None and (not models or not set(models).issubset(set(info["default_models"]))):
         raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
-
-
 
 
 # ── Public key for API key encryption ─────────────────────────────

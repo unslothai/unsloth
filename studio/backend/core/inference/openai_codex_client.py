@@ -26,7 +26,6 @@ from core.inference.openai_codex_auth import (
 )
 from core.inference.openai_responses_shared import (
     normalize_function_schema,
-
     responses_function_call,
     responses_function_output,
     response_event_type,
@@ -35,7 +34,13 @@ from core.inference.openai_responses_shared import (
 
 
 class CodexTransportError(RuntimeError):
-    def __init__(self, message: str, *, status: int = 502, metadata: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 502,
+        metadata: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.metadata = metadata or {}
@@ -49,8 +54,6 @@ class CodexQuotaError(CodexTransportError):
     pass
 
 
-
-
 def _codex_call_id(value: Any) -> str | None:
     """Return a stable Responses-compatible call ID (the API caps IDs at 64 chars)."""
     if not isinstance(value, str) or not value:
@@ -59,7 +62,6 @@ def _codex_call_id(value: Any) -> str | None:
         return value
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
     return f"{value[:31]}_{digest}"
-
 
 
 def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -82,8 +84,16 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
         if role == "assistant":
             extra = message.get("extra_content")
             for item in extra.get("openai_codex_reasoning", []) if isinstance(extra, dict) else []:
-                if isinstance(item, dict) and item.get("type") == "reasoning" and isinstance(item.get("encrypted_content"), str):
-                    replay = {"type": "reasoning", "encrypted_content": item["encrypted_content"], "summary": item.get("summary", [])}
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "reasoning"
+                    and isinstance(item.get("encrypted_content"), str)
+                ):
+                    replay = {
+                        "type": "reasoning",
+                        "encrypted_content": item["encrypted_content"],
+                        "summary": item.get("summary", []),
+                    }
                     if isinstance(item.get("id"), str):
                         replay["id"] = item["id"]
                     items.append(replay)
@@ -95,26 +105,26 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
                         arguments = json.dumps(arguments)
                     call_id = _codex_call_id(call.get("id"))
                     if call_id:
-                        items.append(
-                            responses_function_call(
-                                call_id, function["name"], arguments
-                            )
-                        )
+                        items.append(responses_function_call(call_id, function["name"], arguments))
             output_parts: list[dict[str, Any]] = []
             if isinstance(content, str) and content:
                 output_parts.append({"type": "output_text", "text": content, "annotations": []})
             elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        output_parts.append({"type": "output_text", "text": part.get("text", ""), "annotations": []})
+                        output_parts.append(
+                            {"type": "output_text", "text": part.get("text", ""), "annotations": []}
+                        )
             if output_parts:
-                items.append({
-                    "type": "message",
-                    "id": f"msg_unsloth_{assistant_index}",
-                    "role": "assistant",
-                    "content": output_parts,
-                    "status": "completed",
-                })
+                items.append(
+                    {
+                        "type": "message",
+                        "id": f"msg_unsloth_{assistant_index}",
+                        "role": "assistant",
+                        "content": output_parts,
+                        "status": "completed",
+                    }
+                )
                 assistant_index += 1
             continue
         if role != "user":
@@ -138,26 +148,47 @@ def _responses_input(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str
     return "\n\n".join(instructions), items
 
 
-def _chunk(completion_id: str, model: str, delta: dict[str, Any], finish_reason: str | None = None, usage: Any = None) -> str:
-    body: dict[str, Any] = {"id": completion_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]}
+def _chunk(
+    completion_id: str,
+    model: str,
+    delta: dict[str, Any],
+    finish_reason: str | None = None,
+    usage: Any = None,
+) -> str:
+    body: dict[str, Any] = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
     if usage is not None:
         body["usage"] = usage
-    return "data: " + json.dumps(body, separators=(",", ":"))
+    return "data: " + json.dumps(body, separators = (",", ":"))
 
 
 def _create_http_client() -> httpx.AsyncClient:
-    kwargs = {"timeout": httpx.Timeout(120.0, connect=20.0), "follow_redirects": False}
+    kwargs = {"timeout": httpx.Timeout(120.0, connect = 20.0), "follow_redirects": False}
     try:
         return httpx.AsyncClient(**kwargs)
     except (ImportError, ValueError) as exc:
         if "Unknown scheme for proxy URL" not in str(exc) and "socksio" not in str(exc):
             raise
-        return httpx.AsyncClient(**kwargs, trust_env=False)
+        return httpx.AsyncClient(**kwargs, trust_env = False)
 
 
 def _validated_responses_url() -> str:
     parsed = urlparse(OPENAI_CODEX_RESPONSES_URL)
-    if parsed.scheme != "https" or parsed.hostname != "chatgpt.com" or parsed.port is not None or parsed.path != "/backend-api/codex/responses" or parsed.query or parsed.fragment or parsed.username or parsed.password:
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "chatgpt.com"
+        or parsed.port is not None
+        or parsed.path != "/backend-api/codex/responses"
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
         raise RuntimeError("ChatGPT Codex endpoint configuration is invalid.")
     return OPENAI_CODEX_RESPONSES_URL
 
@@ -205,7 +236,7 @@ async def _stream_response(
     cancel_event: threading.Event | None,
 ):
     """Open a streaming response while allowing pre-header cancellation."""
-    context = client.stream("POST", url, headers=headers, json=body)
+    context = client.stream("POST", url, headers = headers, json = body)
     if cancel_event is None:
         async with context as response:
             yield response
@@ -217,16 +248,16 @@ async def _stream_response(
     enter_task = asyncio.create_task(context.__aenter__())
     cancel_task = asyncio.create_task(_wait_for_cancel(cancel_event))
     done, _pending = await asyncio.wait(
-        {enter_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+        {enter_task, cancel_task}, return_when = asyncio.FIRST_COMPLETED
     )
     if cancel_task in done and cancel_event.is_set():
         enter_task.cancel()
-        await asyncio.gather(enter_task, return_exceptions=True)
+        await asyncio.gather(enter_task, return_exceptions = True)
         yield None
         return
 
     cancel_task.cancel()
-    await asyncio.gather(cancel_task, return_exceptions=True)
+    await asyncio.gather(cancel_task, return_exceptions = True)
     response = await enter_task
     try:
         yield response
@@ -268,7 +299,7 @@ def _retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
             return min(60.0, max(0.0, float(raw)))
         except ValueError:
             pass
-    return float(2 ** attempt)
+    return float(2**attempt)
 
 
 async def _retry_pause(delay: float, cancel_event: threading.Event | None) -> None:
@@ -300,10 +331,10 @@ async def _validated_stream_response(
         try:
             async with _stream_response(
                 client,
-                url=url,
-                headers=headers,
-                body=body,
-                cancel_event=cancel_event,
+                url = url,
+                headers = headers,
+                body = body,
+                cancel_event = cancel_event,
             ) as response:
                 if response is None:
                     yield None
@@ -323,8 +354,8 @@ async def _validated_stream_response(
                     except Exception as exc:
                         raise CodexReauthorizationError(
                             "ChatGPT authorization expired. Reconnect this connection.",
-                            status=401,
-                            metadata={"access_token": token},
+                            status = 401,
+                            metadata = {"access_token": token},
                         ) from exc
                     headers["Authorization"] = f"Bearer {token}"
                     headers["chatgpt-account-id"] = account_id
@@ -333,12 +364,11 @@ async def _validated_stream_response(
                 if response.status_code == 401:
                     raise CodexReauthorizationError(
                         "ChatGPT authorization expired. Reconnect this connection.",
-                        status=401,
-                        metadata={"access_token": token},
+                        status = 401,
+                        metadata = {"access_token": token},
                     )
-                retryable = (
-                    response.status_code in _RETRYABLE_STATUSES
-                    and not _is_terminal_quota(detail)
+                retryable = response.status_code in _RETRYABLE_STATUSES and not _is_terminal_quota(
+                    detail
                 )
                 if retryable and attempt < _MAX_TRANSIENT_RETRIES:
                     await _retry_pause(_retry_delay_seconds(response, attempt), cancel_event)
@@ -349,20 +379,20 @@ async def _validated_stream_response(
                 if response.status_code == 429:
                     raise CodexQuotaError(
                         "ChatGPT subscription quota is temporarily unavailable.",
-                        status=429,
-                        metadata=_quota_metadata(response),
+                        status = 429,
+                        metadata = _quota_metadata(response),
                     )
                 suffix = f" {detail}" if detail else ""
                 raise CodexTransportError(
                     f"ChatGPT Codex request failed ({response.status_code}).{suffix}",
-                    status=response.status_code,
+                    status = response.status_code,
                 )
         except httpx.HTTPError as exc:
             if yielded:
                 raise
             if attempt >= _MAX_TRANSIENT_RETRIES:
                 raise CodexTransportError("Could not reach ChatGPT Codex.") from exc
-            await _retry_pause(float(2 ** attempt), cancel_event)
+            await _retry_pause(float(2**attempt), cancel_event)
             if cancel_event is not None and cancel_event.is_set():
                 yield None
                 return
@@ -381,12 +411,11 @@ class OpenAICodexClient:
         self._refresh_access = refresh_access
         self._client = _create_http_client()
 
-
     async def _refresh_credentials(self) -> tuple[str, str]:
         if self._refresh_access is None:
             raise CodexReauthorizationError(
                 "ChatGPT authorization expired. Reconnect this connection.",
-                status=401,
+                status = 401,
             )
         token, account_id = await self._refresh_access()
         self._token, self._account_id = token, account_id
@@ -396,13 +425,36 @@ class OpenAICodexClient:
         self._token = ""
         await self._client.aclose()
 
-    async def stream(self, *, provider_id: str, thread_id: str | None, messages: list[dict[str, Any]], model: str, max_tokens: int | None, reasoning_effort: str | None, tools: list[dict[str, Any]] | None, tool_choice: Any, cancel_event: threading.Event | None = None) -> AsyncGenerator[str, None]:
+    async def stream(
+        self,
+        *,
+        provider_id: str,
+        thread_id: str | None,
+        messages: list[dict[str, Any]],
+        model: str,
+        max_tokens: int | None,
+        reasoning_effort: str | None,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: Any,
+        cancel_event: threading.Event | None = None,
+    ) -> AsyncGenerator[str, None]:
         instructions, input_items = _responses_input(messages)
         conversation_id = thread_id or secrets.token_urlsafe(24)
         affinity = hashlib.sha256(
             f"{provider_id}\0{self._account_id}\0{conversation_id}".encode()
         ).hexdigest()[:48]
-        body: dict[str, Any] = {"model": model, "instructions": instructions, "input": input_items, "store": False, "stream": True, "text": {"verbosity": "low"}, "include": ["reasoning.encrypted_content"], "prompt_cache_key": affinity, "tool_choice": "auto", "parallel_tool_calls": True}
+        body: dict[str, Any] = {
+            "model": model,
+            "instructions": instructions,
+            "input": input_items,
+            "store": False,
+            "stream": True,
+            "text": {"verbosity": "low"},
+            "include": ["reasoning.encrypted_content"],
+            "prompt_cache_key": affinity,
+            "tool_choice": "auto",
+            "parallel_tool_calls": True,
+        }
         # Pi intentionally does not forward a token cap here. ChatGPT's Codex
         # Responses endpoint rejects max_output_tokens even though the public
         # Responses API accepts it; the subscription service applies its own cap.
@@ -411,9 +463,20 @@ class OpenAICodexClient:
         if tools:
             converted = []
             for tool in tools:
-                function = tool.get("function") if isinstance(tool, dict) and tool.get("type") == "function" else None
+                function = (
+                    tool.get("function")
+                    if isinstance(tool, dict) and tool.get("type") == "function"
+                    else None
+                )
                 if isinstance(function, dict) and function.get("name"):
-                    converted.append({"type": "function", "name": function["name"], "description": function.get("description", ""), "parameters": normalize_function_schema(function.get("parameters"))})
+                    converted.append(
+                        {
+                            "type": "function",
+                            "name": function["name"],
+                            "description": function.get("description", ""),
+                            "parameters": normalize_function_schema(function.get("parameters")),
+                        }
+                    )
             if converted:
                 body["tools"] = converted
         if isinstance(tool_choice, str) and tool_choice in ("auto", "none", "required"):
@@ -423,7 +486,17 @@ class OpenAICodexClient:
             if fn.get("name"):
                 body["tool_choice"] = {"type": "function", "name": fn["name"]}
         request_id = hashlib.sha256(f"{affinity}\0{time.time_ns()}".encode()).hexdigest()[:32]
-        headers = {"Authorization": f"Bearer {self._token}", "chatgpt-account-id": self._account_id, "originator": OPENAI_CODEX_ORIGINATOR, "User-Agent": OPENAI_CODEX_USER_AGENT, "OpenAI-Beta": "responses=experimental", "Accept": "text/event-stream", "Content-Type": "application/json", "session-id": affinity, "x-client-request-id": affinity}
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "chatgpt-account-id": self._account_id,
+            "originator": OPENAI_CODEX_ORIGINATOR,
+            "User-Agent": OPENAI_CODEX_USER_AGENT,
+            "OpenAI-Beta": "responses=experimental",
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            "session-id": affinity,
+            "x-client-request-id": affinity,
+        }
         completion_id = f"chatcmpl-codex-{request_id}"
         emitted_terminal, saw_tool_call = False, False
         reasoning_items: list[dict[str, Any]] = []
@@ -431,17 +504,18 @@ class OpenAICodexClient:
         try:
             async with _validated_stream_response(
                 self._client,
-                url=_validated_responses_url(),
-                headers=headers,
-                body=body,
-                cancel_event=cancel_event,
-                refresh_access=(
+                url = _validated_responses_url(),
+                headers = headers,
+                body = body,
+                cancel_event = cancel_event,
+                refresh_access = (
                     self._refresh_credentials if self._refresh_access is not None else None
                 ),
             ) as response:
                 if response is None:
                     return
                 if cancel_event is not None:
+
                     async def _close_on_cancel() -> None:
                         await _wait_for_cancel(cancel_event)
                         await response.aclose()
@@ -467,7 +541,9 @@ class OpenAICodexClient:
                             event = json.loads(raw)
                             kind = response_event_type(event, event_name)
                         except (ValueError, json.JSONDecodeError) as exc:
-                            raise CodexTransportError("ChatGPT returned a malformed stream.") from exc
+                            raise CodexTransportError(
+                                "ChatGPT returned a malformed stream."
+                            ) from exc
                         if kind in ("response.created", "response.in_progress"):
                             continue
                         if kind in ("response.output_text.delta", "response.refusal.delta"):
@@ -475,51 +551,132 @@ class OpenAICodexClient:
                             if not isinstance(delta, str):
                                 raise CodexTransportError("ChatGPT returned a malformed stream.")
                             yield _chunk(completion_id, model, {"content": delta})
-                        elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                        elif kind in (
+                            "response.reasoning_summary_text.delta",
+                            "response.reasoning_text.delta",
+                        ):
                             delta = event.get("delta")
                             if isinstance(delta, str):
                                 yield _chunk(completion_id, model, {"reasoning_content": delta})
                         elif kind == "response.output_item.added":
                             item = event.get("item")
                             if isinstance(item, dict) and item.get("type") == "function_call":
-                                call_id, name = item.get("call_id") or item.get("id"), item.get("name")
+                                call_id, name = (
+                                    item.get("call_id") or item.get("id"),
+                                    item.get("name"),
+                                )
                                 if isinstance(call_id, str) and isinstance(name, str):
                                     saw_tool_call = True
                                     index = len(set(tool_indexes.values()))
                                     tool_indexes[call_id] = index
                                     if isinstance(item.get("id"), str):
                                         tool_indexes[item["id"]] = index
-                                    yield _chunk(completion_id, model, {"tool_calls": [{"index": index, "id": call_id, "type": "function", "function": {"name": name, "arguments": ""}}]})
+                                    yield _chunk(
+                                        completion_id,
+                                        model,
+                                        {
+                                            "tool_calls": [
+                                                {
+                                                    "index": index,
+                                                    "id": call_id,
+                                                    "type": "function",
+                                                    "function": {"name": name, "arguments": ""},
+                                                }
+                                            ]
+                                        },
+                                    )
                         elif kind == "response.function_call_arguments.delta":
-                            call_id, delta = event.get("call_id") or event.get("item_id"), event.get("delta")
+                            call_id, delta = (
+                                event.get("call_id") or event.get("item_id"),
+                                event.get("delta"),
+                            )
                             if not isinstance(call_id, str) or not isinstance(delta, str):
                                 raise CodexTransportError("ChatGPT returned a malformed stream.")
                             saw_tool_call = True
-                            index = tool_indexes.setdefault(call_id, len(set(tool_indexes.values())))
-                            yield _chunk(completion_id, model, {"tool_calls": [{"index": index, "function": {"arguments": delta}}]})
+                            index = tool_indexes.setdefault(
+                                call_id, len(set(tool_indexes.values()))
+                            )
+                            yield _chunk(
+                                completion_id,
+                                model,
+                                {
+                                    "tool_calls": [
+                                        {"index": index, "function": {"arguments": delta}}
+                                    ]
+                                },
+                            )
                         elif kind == "response.output_item.done":
                             item = event.get("item") or {}
                             if isinstance(item, dict) and item.get("type") == "function_call":
                                 call_id = item.get("call_id") or item.get("id")
-                                if isinstance(call_id, str) and call_id not in tool_indexes and isinstance(item.get("name"), str):
+                                if (
+                                    isinstance(call_id, str)
+                                    and call_id not in tool_indexes
+                                    and isinstance(item.get("name"), str)
+                                ):
                                     saw_tool_call = True
-                                    index = tool_indexes.setdefault(call_id, len(set(tool_indexes.values())))
-                                    yield _chunk(completion_id, model, {"tool_calls": [{"index": index, "id": call_id, "type": "function", "function": {"name": item["name"], "arguments": item.get("arguments", "")}}]})
-                            elif isinstance(item, dict) and item.get("type") == "reasoning" and isinstance(item.get("encrypted_content"), str):
-                                reasoning_items.append({"type": "reasoning", "id": item.get("id"), "encrypted_content": item["encrypted_content"], "summary": item.get("summary", [])})
+                                    index = tool_indexes.setdefault(
+                                        call_id, len(set(tool_indexes.values()))
+                                    )
+                                    yield _chunk(
+                                        completion_id,
+                                        model,
+                                        {
+                                            "tool_calls": [
+                                                {
+                                                    "index": index,
+                                                    "id": call_id,
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": item["name"],
+                                                        "arguments": item.get("arguments", ""),
+                                                    },
+                                                }
+                                            ]
+                                        },
+                                    )
+                            elif (
+                                isinstance(item, dict)
+                                and item.get("type") == "reasoning"
+                                and isinstance(item.get("encrypted_content"), str)
+                            ):
+                                reasoning_items.append(
+                                    {
+                                        "type": "reasoning",
+                                        "id": item.get("id"),
+                                        "encrypted_content": item["encrypted_content"],
+                                        "summary": item.get("summary", []),
+                                    }
+                                )
                         elif kind in ("response.completed", "response.incomplete"):
                             response_body = event.get("response") or {}
                             delta: dict[str, Any] = {}
                             if reasoning_items:
                                 delta["extra_content"] = {"openai_codex_reasoning": reasoning_items}
-                            finish = "length" if kind == "response.incomplete" else ("tool_calls" if saw_tool_call else "stop")
-                            yield _chunk(completion_id, model, delta, finish, responses_usage_to_chat(response_body.get("usage")))
+                            finish = (
+                                "length"
+                                if kind == "response.incomplete"
+                                else ("tool_calls" if saw_tool_call else "stop")
+                            )
+                            yield _chunk(
+                                completion_id,
+                                model,
+                                delta,
+                                finish,
+                                responses_usage_to_chat(response_body.get("usage")),
+                            )
                             emitted_terminal = True
                             break
                         elif kind in ("response.failed", "error"):
-                            error = event.get("error") or (event.get("response") or {}).get("error") or {}
+                            error = (
+                                event.get("error")
+                                or (event.get("response") or {}).get("error")
+                                or {}
+                            )
                             code = error.get("code") if isinstance(error, dict) else None
-                            raise CodexTransportError(f"ChatGPT Codex generation failed{f' ({code})' if code else ''}.")
+                            raise CodexTransportError(
+                                f"ChatGPT Codex generation failed{f' ({code})' if code else ''}."
+                            )
                 except httpx.HTTPError:
                     if cancel_event is not None and cancel_event.is_set():
                         return
