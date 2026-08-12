@@ -3,22 +3,13 @@
 
 export { MediaGenerationPresetControl } from "./media-generation-preset-control";
 export { useMediaGenerationPresets } from "./use-media-generation-presets";
-export { useResidentPresetLoadConfig } from "./use-resident-preset-load-config";
 export {
   chainDynamicDefaultRollback,
   closestDurationIndex,
   closestResolutionIndex,
-  imageLoadConfigFromStatus,
-  reapplyTargetFromStatus,
-  videoLoadConfigFromStatus,
 } from "./preset-policy";
+export type { DynamicDefaultRollback } from "./preset-policy";
 export type {
-  DynamicDefaultRollback,
-  ResidentMediaLoadTarget,
-} from "./preset-policy";
-export type {
-  ImageGenerationPresetLoadConfig,
   ImageGenerationPresetParams,
-  VideoGenerationPresetLoadConfig,
   VideoGenerationPresetParams,
 } from "./types";

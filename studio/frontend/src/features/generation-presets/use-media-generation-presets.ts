@@ -76,9 +76,9 @@ function claimForm(claim: { current: number }) {
   return claim.current;
 }
 
-function saveState<Params, LoadConfig>(
+function saveState<Params>(
   kind: MediaGenerationKind,
-  settings: MediaGenerationPresetState<Params, LoadConfig>,
+  settings: MediaGenerationPresetState<Params>,
   keepalive = false,
 ) {
   return saveMediaGenerationPresetSettings(kind, settings, {
@@ -98,37 +98,28 @@ function enqueuePresetMutation<Result>(
   return next;
 }
 
-export interface MediaGenerationPresetsOptions<
-  Params extends object,
-  LoadConfig,
-> {
+export interface MediaGenerationPresetsOptions<Params extends object> {
   kind: MediaGenerationKind;
   defaultParams: Params;
   currentParams: Params;
-  currentLoadConfig?: LoadConfig;
   applyParams: (params: Params) => Params;
-  applyLoadConfig: (config?: LoadConfig) => void;
-  modelLoaded: boolean;
   normalizeParams?: (params: Params) => unknown;
 }
 
-export function useMediaGenerationPresets<Params extends object, LoadConfig>({
+export function useMediaGenerationPresets<Params extends object>({
   kind,
   defaultParams,
   currentParams,
-  currentLoadConfig,
   applyParams,
-  applyLoadConfig,
-  modelLoaded,
   normalizeParams,
-}: MediaGenerationPresetsOptions<Params, LoadConfig>) {
+}: MediaGenerationPresetsOptions<Params>) {
   const paramsKey = useCallback(
     (params: Params) =>
       configKey(normalizeParams ? normalizeParams(params) : params),
     [normalizeParams],
   );
   const [customPresets, setCustomPresets] = useState<
-    MediaGenerationPreset<Params, LoadConfig>[]
+    MediaGenerationPreset<Params>[]
   >([]);
   const [effectiveDefaultParams, setEffectiveDefaultParams] =
     useState(defaultParams);
@@ -142,15 +133,11 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
   const presetsReady =
     hydrationSource === "fresh" || hydrationSource === "saved";
   const initialParamsKey = useRef(configKey(currentParams));
-  const initialLoadConfigKey = useRef(configKey(currentLoadConfig));
   const currentParamsRef = useRef(currentParams);
-  const currentLoadConfigRef = useRef(currentLoadConfig);
-  const latestSettingsRef = useRef<MediaGenerationPresetState<
-    Params,
-    LoadConfig
-  > | null>(null);
+  const latestSettingsRef = useRef<MediaGenerationPresetState<Params> | null>(
+    null,
+  );
   const baselineParamsRef = useRef(defaultParams);
-  const baselineLoadConfigRef = useRef<LoadConfig | undefined>(undefined);
   const activePresetRef = useRef(activePreset);
   // Bumped by every action that takes over the form, so a write that resolves late can still
   // update the list without moving a selection the user made while it was in flight.
@@ -159,31 +146,18 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
   const hydratedRef = useRef(hydrated);
   const defaultParamsRef = useRef(defaultParams);
   const applyParamsRef = useRef(applyParams);
-  const applyLoadConfigRef = useRef(applyLoadConfig);
   const paramsKeyRef = useRef(paramsKey);
   useLayoutEffect(() => {
     currentParamsRef.current = currentParams;
-    currentLoadConfigRef.current = currentLoadConfig;
     hydratedRef.current = hydrated;
     activePresetRef.current = activePreset;
     isDefaultUnmodifiedRef.current =
       activePreset === DEFAULT_PRESET_NAME &&
       (!hydrated ||
-        (paramsKey(currentParams) === paramsKey(baselineParamsRef.current) &&
-          configKey(currentLoadConfig) ===
-            configKey(baselineLoadConfigRef.current)));
+        paramsKey(currentParams) === paramsKey(baselineParamsRef.current));
     applyParamsRef.current = applyParams;
-    applyLoadConfigRef.current = applyLoadConfig;
     paramsKeyRef.current = paramsKey;
-  }, [
-    activePreset,
-    applyLoadConfig,
-    applyParams,
-    currentLoadConfig,
-    currentParams,
-    hydrated,
-    paramsKey,
-  ]);
+  }, [activePreset, applyParams, currentParams, hydrated, paramsKey]);
 
   const presets = useMemo(
     () => [
@@ -199,14 +173,13 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     baselineParamsRef.current = paramsUntouched
       ? currentParamsRef.current
       : defaultParamsRef.current;
-    baselineLoadConfigRef.current = undefined;
     setCustomPresets([]);
     setActivePreset(DEFAULT_PRESET_NAME);
     setHydrationSource(source);
   }, []);
 
   const hydrateSavedSettings = useCallback(
-    (settings: MediaGenerationPresetSettings<Params, LoadConfig>) => {
+    (settings: MediaGenerationPresetSettings<Params>) => {
       const custom = settings.customPresets ?? [];
       setCustomPresets(custom);
       const available = new Set([
@@ -223,18 +196,9 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         params: currentDefaultParams,
       };
       baselineParamsRef.current = definition.params;
-      baselineLoadConfigRef.current = definition.loadConfig;
       setActivePreset(definition.name);
-      const paramsUntouched =
-        configKey(currentParamsRef.current) === initialParamsKey.current;
-      const loadConfigUntouched =
-        configKey(currentLoadConfigRef.current) ===
-        initialLoadConfigKey.current;
-      if (paramsUntouched) {
+      if (configKey(currentParamsRef.current) === initialParamsKey.current) {
         applyParamsRef.current(settings.currentParams);
-      }
-      if (loadConfigUntouched) {
-        applyLoadConfigRef.current(settings.currentLoadConfig ?? undefined);
       }
       setHydrationSource("saved");
     },
@@ -243,7 +207,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
 
   useEffect(() => {
     let cancelled = false;
-    getMediaGenerationPresetSettings<Params, LoadConfig>(kind)
+    getMediaGenerationPresetSettings<Params>(kind)
       .then((settings) => {
         if (cancelled) {
           return;
@@ -269,13 +233,12 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     };
   }, [hydrateLocalSettings, hydrateSavedSettings, kind]);
 
-  const settings = useMemo<MediaGenerationPresetState<Params, LoadConfig>>(
+  const settings = useMemo<MediaGenerationPresetState<Params>>(
     () => ({
       currentParams,
-      currentLoadConfig: currentLoadConfig ?? null,
       activePreset,
     }),
-    [activePreset, currentLoadConfig, currentParams],
+    [activePreset, currentParams],
   );
   useLayoutEffect(() => {
     latestSettingsRef.current = settings;
@@ -323,20 +286,10 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         return;
       }
       claimForm(formClaim);
-      const applied = applyParamsRef.current(preset.params);
-      const loadConfigChanged =
-        configKey(currentLoadConfig) !== configKey(preset.loadConfig);
-      applyLoadConfigRef.current(preset.loadConfig);
-      baselineParamsRef.current = applied;
-      baselineLoadConfigRef.current = preset.loadConfig;
+      baselineParamsRef.current = applyParamsRef.current(preset.params);
       setActivePreset(preset.name);
-      if (loadConfigChanged && modelLoaded) {
-        toast.info(
-          "Reapply the loaded model to use the selected load settings.",
-        );
-      }
     },
-    [currentLoadConfig, customPresets, modelLoaded, presetsReady],
+    [customPresets, presetsReady],
   );
 
   const savePreset = useCallback(
@@ -362,10 +315,9 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         toast.error("Delete a preset before saving another one");
         return null;
       }
-      const preset: MediaGenerationPreset<Params, LoadConfig> = {
+      const preset: MediaGenerationPreset<Params> = {
         name,
         params: currentParamsRef.current,
-        ...(currentLoadConfig ? { loadConfig: currentLoadConfig } : {}),
       };
       const claim = claimForm(formClaim);
       try {
@@ -384,42 +336,25 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
         return name;
       }
       baselineParamsRef.current = preset.params;
-      baselineLoadConfigRef.current = preset.loadConfig;
       setActivePreset(name);
       return name;
     },
-    [currentLoadConfig, customPresets, kind, presetsReady],
+    [customPresets, kind, presetsReady],
   );
 
   // A delete leaves Default selected. The form itself only follows when the user did not edit it
   // while the request was in flight; their newer input owns it in that case.
   const restoreDefaultAfterDelete = useCallback(
-    (paramsBeforeDelete: Params, loadConfigBeforeDelete?: LoadConfig) => {
+    (paramsBeforeDelete: Params) => {
       const formUnchanged =
         paramsKeyRef.current(currentParamsRef.current) ===
-          paramsKeyRef.current(paramsBeforeDelete) &&
-        configKey(currentLoadConfigRef.current) ===
-          configKey(loadConfigBeforeDelete);
-      const applied = formUnchanged
+        paramsKeyRef.current(paramsBeforeDelete);
+      baselineParamsRef.current = formUnchanged
         ? applyParamsRef.current(defaultParamsRef.current)
         : defaultParamsRef.current;
-      if (formUnchanged) {
-        applyLoadConfigRef.current(undefined);
-      }
-      baselineParamsRef.current = applied;
-      baselineLoadConfigRef.current = undefined;
       setActivePreset(DEFAULT_PRESET_NAME);
-      if (
-        formUnchanged &&
-        loadConfigBeforeDelete !== undefined &&
-        modelLoaded
-      ) {
-        toast.info(
-          "Reapply the loaded model to use the automatic load settings.",
-        );
-      }
     },
-    [modelLoaded],
+    [],
   );
 
   const deletePreset = useCallback(async (): Promise<boolean> => {
@@ -431,7 +366,6 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
     }
     const deletedName = activePreset;
     const paramsBeforeDelete = currentParamsRef.current;
-    const loadConfigBeforeDelete = currentLoadConfigRef.current;
     const claim = claimForm(formClaim);
     try {
       await enqueuePresetMutation(kind, (write) =>
@@ -445,7 +379,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
       current.filter((preset) => preset.name !== deletedName),
     );
     if (formClaim.current === claim) {
-      restoreDefaultAfterDelete(paramsBeforeDelete, loadConfigBeforeDelete);
+      restoreDefaultAfterDelete(paramsBeforeDelete);
     }
     return true;
   }, [
@@ -516,8 +450,7 @@ export function useMediaGenerationPresets<Params extends object, LoadConfig>({
       ? { name: DEFAULT_PRESET_NAME, params: effectiveDefaultParams }
       : customPresets.find((preset) => preset.name === activePreset);
   const hasUnsavedChanges = activeDefinition
-    ? paramsKey(currentParams) !== paramsKey(activeDefinition.params) ||
-      configKey(currentLoadConfig) !== configKey(activeDefinition.loadConfig)
+    ? paramsKey(currentParams) !== paramsKey(activeDefinition.params)
     : false;
 
   return {

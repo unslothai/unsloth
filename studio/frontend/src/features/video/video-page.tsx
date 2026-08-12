@@ -86,15 +86,17 @@ import {
   MediaGenerationPresetControl,
   chainDynamicDefaultRollback,
   type DynamicDefaultRollback,
-  type VideoGenerationPresetLoadConfig,
   type VideoGenerationPresetParams,
   closestDurationIndex,
   closestResolutionIndex,
-  reapplyTargetFromStatus,
   useMediaGenerationPresets,
-  useResidentPresetLoadConfig,
-  videoLoadConfigFromStatus,
 } from "@/features/generation-presets";
+import {
+  type VideoLoadConfig,
+  reapplyTargetFromStatus,
+  useResidentLoadConfig,
+  videoLoadConfigFromStatus,
+} from "@/features/resident-load";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -1118,22 +1120,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       audioFlowShift,
     };
   }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, resolutionIdx, resolutionIntent, steps]);
-  const videoPresetLoadConfig = useMemo<VideoGenerationPresetLoadConfig | undefined>(() => {
-    if (
-      memoryMode === "auto" &&
-      speedMode === "auto" &&
-      attentionBackend === "auto" &&
-      transformerCache === "auto" &&
-      transformerQuant === "auto"
-    ) return undefined;
-    return {
-      memoryMode,
-      speedMode,
-      attentionBackend,
-      transformerCache,
-      transformerQuant,
-    };
-  }, [attentionBackend, memoryMode, speedMode, transformerCache, transformerQuant]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -1187,12 +1173,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     },
     [durationOptions, numFrames, resolutionPresets],
   );
-  const applyVideoPresetLoadConfig = useCallback((config?: VideoGenerationPresetLoadConfig) => {
-    setMemoryMode(config?.memoryMode ?? "auto");
-    setSpeedMode(config?.speedMode ?? "auto");
-    setAttentionBackend(config?.attentionBackend ?? "auto");
-    setTransformerCache(config?.transformerCache ?? "auto");
-    setTransformerQuant(config?.transformerQuant ?? "auto");
+  const applyVideoLoadConfig = useCallback((config: VideoLoadConfig) => {
+    setMemoryMode(config.memoryMode);
+    setSpeedMode(config.speedMode);
+    setAttentionBackend(config.attentionBackend);
+    setTransformerCache(config.transformerCache);
+    setTransformerQuant(config.transformerQuant);
   }, []);
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
@@ -1217,29 +1203,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     kind: "video",
     defaultParams: videoDefaultRecipe,
     currentParams: videoPresetParams,
-    currentLoadConfig: videoPresetLoadConfig,
     applyParams: applyVideoPresetParams,
-    applyLoadConfig: applyVideoPresetLoadConfig,
-    modelLoaded: Boolean(status?.loaded),
     normalizeParams: normalizeVideoPresetParams,
   });
-  const residentLoadConfig = useResidentPresetLoadConfig({
+  const residentLoadConfig = useResidentLoadConfig({
     residentKey: status?.loaded
       ? `${status.repo_id ?? ""}\0${status.model_kind ?? ""}\0${status.gguf_filename ?? ""}\0${status.h3_task ?? ""}`
       : null,
     resolved: status?.resolved,
     parse: videoLoadConfigFromStatus,
-    apply: applyVideoPresetLoadConfig,
-    hydrated: videoPresets.hydrated,
+    apply: applyVideoLoadConfig,
     busy,
   });
-  // Only when status fully describes the resident load configuration. Saved settings of our own
-  // are not evidence of what is loaded: the native engine publishes no resolved record at all, and
-  // another client's load is not ours either, so Reapply would replace it with local defaults.
+  // Only when status fully describes the resident load configuration: the native engine publishes
+  // no resolved record at all, and Reapply submits what the selects show, so offering it without
+  // knowing the resident configuration would replace it with local defaults.
   const residentReapplyReady =
-    residentReapplyTarget && videoPresets.hydrated && residentLoadConfig
-      ? residentReapplyTarget
-      : null;
+    residentReapplyTarget && residentLoadConfig ? residentReapplyTarget : null;
   const applyVideoDynamicDefault = videoPresets.applyDynamicDefault;
   const applyVideoModelDefaults = useCallback(
     (repoId: string) => {

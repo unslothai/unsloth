@@ -3,21 +3,22 @@
 
 export type MediaGenerationKind = "image" | "video";
 
-export interface MediaGenerationPreset<Params, LoadConfig> {
+// A preset is a generation recipe and nothing else. Model-load options are deliberately absent:
+// they take effect only on a reload, they follow the hardware and the checkpoint rather than the
+// recipe, and the resident build already owns them (see features/resident-load).
+export interface MediaGenerationPreset<Params> {
   name: string;
   params: Params;
-  loadConfig?: LoadConfig;
 }
 
-export interface MediaGenerationPresetState<Params, LoadConfig> {
+export interface MediaGenerationPresetState<Params> {
   currentParams: Params;
-  currentLoadConfig?: LoadConfig | null;
   activePreset: string;
 }
 
-export interface MediaGenerationPresetSettings<Params, LoadConfig>
-  extends MediaGenerationPresetState<Params, LoadConfig> {
-  customPresets: MediaGenerationPreset<Params, LoadConfig>[];
+export interface MediaGenerationPresetSettings<Params>
+  extends MediaGenerationPresetState<Params> {
+  customPresets: MediaGenerationPreset<Params>[];
   saved?: boolean;
 }
 
@@ -31,19 +32,6 @@ export interface ImageGenerationPresetParams {
   runs: number;
 }
 
-export interface MediaGenerationPresetLoadConfig {
-  speedMode: "auto" | "off" | "eager" | "default" | "max";
-  transformerQuant: "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
-  attentionBackend: "auto" | "native" | "cudnn" | "flash3" | "sage";
-  memoryMode: "auto" | "fast" | "balanced" | "low_vram";
-  transformerCache: "auto" | "off" | "fbcache";
-}
-
-export interface ImageGenerationPresetLoadConfig
-  extends MediaGenerationPresetLoadConfig {
-  cpuOffload: boolean;
-}
-
 export interface VideoGenerationPresetParams {
   negativePrompt: string;
   width: number;
@@ -54,5 +42,3 @@ export interface VideoGenerationPresetParams {
   flowShift: number | null;
   audioFlowShift: number | null;
 }
-
-export type VideoGenerationPresetLoadConfig = MediaGenerationPresetLoadConfig;

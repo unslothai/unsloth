@@ -89,16 +89,18 @@ import { WORKFLOW_TABS } from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
-  type ImageGenerationPresetLoadConfig,
   type ImageGenerationPresetParams,
   type DynamicDefaultRollback,
   MediaGenerationPresetControl,
   chainDynamicDefaultRollback,
+  useMediaGenerationPresets,
+} from "@/features/generation-presets";
+import {
+  type ImageLoadConfig,
   imageLoadConfigFromStatus,
   reapplyTargetFromStatus,
-  useMediaGenerationPresets,
-  useResidentPresetLoadConfig,
-} from "@/features/generation-presets";
+  useResidentLoadConfig,
+} from "@/features/resident-load";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
@@ -1351,24 +1353,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }),
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
-  const imagePresetLoadConfig = useMemo<ImageGenerationPresetLoadConfig | undefined>(() => {
-    if (
-      speedMode === "auto" &&
-      transformerQuant === "auto" &&
-      attentionBackend === "auto" &&
-      memoryMode === "auto" &&
-      transformerCache === "auto" &&
-      !cpuOffload
-    ) return undefined;
-    return {
-      speedMode,
-      transformerQuant,
-      attentionBackend,
-      memoryMode,
-      transformerCache,
-      cpuOffload,
-    };
-  }, [attentionBackend, cpuOffload, memoryMode, speedMode, transformerCache, transformerQuant]);
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
     const recommended = defaultsFor(status?.base_repo ?? status?.repo_id ?? "");
     return {
@@ -1394,40 +1378,34 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setCount(params.runs);
     return params;
   }, []);
-  const applyImagePresetLoadConfig = useCallback((config?: ImageGenerationPresetLoadConfig) => {
-    setSpeedMode(config?.speedMode ?? "auto");
-    setTransformerQuant(config?.transformerQuant ?? "auto");
-    setAttentionBackend(config?.attentionBackend ?? "auto");
-    setMemoryMode(config?.memoryMode ?? "auto");
-    setTransformerCache(config?.transformerCache ?? "auto");
-    setCpuOffload(config?.cpuOffload ?? false);
+  const applyImageLoadConfig = useCallback((config: ImageLoadConfig) => {
+    setSpeedMode(config.speedMode);
+    setTransformerQuant(config.transformerQuant);
+    setAttentionBackend(config.attentionBackend);
+    setMemoryMode(config.memoryMode);
+    setTransformerCache(config.transformerCache);
+    setCpuOffload(config.cpuOffload);
   }, []);
   const imagePresets = useMediaGenerationPresets({
     kind: "image",
     defaultParams: imageDefaultRecipe,
     currentParams: imagePresetParams,
-    currentLoadConfig: imagePresetLoadConfig,
     applyParams: applyImagePresetParams,
-    applyLoadConfig: applyImagePresetLoadConfig,
-    modelLoaded: Boolean(status?.loaded),
   });
-  const residentLoadConfig = useResidentPresetLoadConfig({
+  const residentLoadConfig = useResidentLoadConfig({
     residentKey: status?.loaded
       ? `${status.repo_id ?? ""}\0${status.model_kind ?? ""}\0${status.gguf_filename ?? ""}`
       : null,
     resolved: status?.resolved,
     parse: imageLoadConfigFromStatus,
-    apply: applyImagePresetLoadConfig,
-    hydrated: imagePresets.hydrated,
+    apply: applyImageLoadConfig,
     busy,
   });
-  // Only when status fully describes the resident load configuration. Saved settings of our own
-  // are not evidence of what is loaded: the native engine publishes no resolved record at all, and
-  // another client's load is not ours either, so Reapply would replace it with local defaults.
+  // Only when status fully describes the resident load configuration: the native engine publishes
+  // no resolved record at all, and Reapply submits what the selects show, so offering it without
+  // knowing the resident configuration would replace it with local defaults.
   const residentReapplyReady =
-    residentReapplyTarget && imagePresets.hydrated && residentLoadConfig
-      ? residentReapplyTarget
-      : null;
+    residentReapplyTarget && residentLoadConfig ? residentReapplyTarget : null;
   const applyImageDynamicDefault = imagePresets.applyDynamicDefault;
   const applyImageModelDefaults = useCallback(
     (repoId: string) => {

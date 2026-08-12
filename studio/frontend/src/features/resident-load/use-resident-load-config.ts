@@ -6,24 +6,23 @@ import {
   resolvedSeedKey,
 } from "@/lib/resolved-precision";
 import { useEffect, useMemo, useRef } from "react";
+import type { ResidentLoadStatus } from "./resident-load-config";
 
-type ResolvedStatus = {
-  resolved?: Record<string, ResolvedControl> | null;
-};
-
-export function useResidentPresetLoadConfig<Config>({
+/**
+ * Mirror the resident build's load options into the page's Advanced selects, so what the panel
+ * shows is what is loaded, and so a Reapply reloads that build rather than replacing it.
+ */
+export function useResidentLoadConfig<Config>({
   residentKey,
   resolved,
   parse,
   apply,
-  hydrated,
   busy,
 }: {
   residentKey: string | null;
   resolved?: Record<string, ResolvedControl> | null;
-  parse: (status: ResolvedStatus) => Config | null;
-  apply: (config?: Config) => void;
-  hydrated: boolean;
+  parse: (status: ResidentLoadStatus) => Config | null;
+  apply: (config: Config) => void;
   busy: string | null;
 }): Config | null {
   const config = useMemo(() => parse({ resolved }), [parse, resolved]);
@@ -37,13 +36,7 @@ export function useResidentPresetLoadConfig<Config>({
     }
     // A failed load leaves the previous resident status in place. Busy alone must not clear the
     // handled key and replay that old config over the options the user may want to retry.
-    if (
-      busy === "loading" ||
-      busy === "unloading" ||
-      !hydrated ||
-      !seedKey ||
-      !config
-    ) {
+    if (busy === "loading" || busy === "unloading" || !seedKey || !config) {
       return;
     }
     const key = `${residentKey}\0${seedKey}`;
@@ -51,12 +44,8 @@ export function useResidentPresetLoadConfig<Config>({
       return;
     }
     handledSeedKey.current = key;
-    // Always, including the first seed of a model this page did not load. Saved settings own the
-    // generation recipe, never the load options: those describe the build that is actually
-    // resident. Skipping this left the selects reading "auto" over a build running low_vram, and
-    // Reapply submits what the selects say, so it silently reloaded away the resident choice.
     apply(config);
-  }, [apply, busy, config, hydrated, residentKey, seedKey]);
+  }, [apply, busy, config, residentKey, seedKey]);
 
   return config;
 }

@@ -27,21 +27,14 @@ def test_image_and_video_presets_persist_independently(monkeypatch):
     client = _client(monkeypatch)
     image_state = {
         "currentParams": {"negativePrompt": "blurry", "width": 1280, "steps": 24},
-        "currentLoadConfig": {
-            "speedMode": "max",
-            "transformerQuant": "fp8",
-            "cpuOffload": True,
-        },
         "activePreset": "Landscape",
     }
     image_preset = {
         "name": "Landscape",
         "params": image_state["currentParams"],
-        "loadConfig": image_state["currentLoadConfig"],
     }
     video_state = {
         "currentParams": {"negativePrompt": "flicker", "steps": 40},
-        "currentLoadConfig": {"memoryMode": "low_vram", "speedMode": "off"},
         "activePreset": "Default",
     }
 
@@ -337,7 +330,6 @@ def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
     echoed = {
         "activePreset": body["activePreset"],
         "currentParams": body["currentParams"],
-        "currentLoadConfig": body["currentLoadConfig"],
     }
     assert client.put("/api/settings/generation-presets/image", json = echoed).status_code == 200
 
@@ -347,23 +339,38 @@ def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
     assert kept["currentParams"]["steps"] == 24
 
 
-def test_clearing_the_load_config_is_not_undone_by_field_preservation(monkeypatch):
+def test_a_store_holding_load_options_is_read_without_them_and_keeps_them(monkeypatch):
+    """Presets are a generation recipe; load options belong to the resident build.
+
+    A store written before that split still holds them, so the read must ignore them and the
+    write must not throw them away.
+    """
     stored = {
         "image_generation_presets": {
-            "activePreset": "Default",
+            "activePreset": "Landscape",
             "currentParams": {"steps": 24},
-            "currentLoadConfig": {"speedMode": "max", "aFieldFromLater": 1},
-            "customPresets": [],
+            "currentLoadConfig": {"speedMode": "max"},
+            "customPresets": [
+                {"name": "Landscape", "params": {"steps": 24}, "loadConfig": {"memoryMode": "low_vram"}}
+            ],
         }
     }
     client = _client(monkeypatch, stored)
 
+    body = client.get("/api/settings/generation-presets/image").json()
+    assert "currentLoadConfig" not in body
+    assert "loadConfig" not in body["customPresets"][0]
+    assert body["activePreset"] == "Landscape"
+    assert body["currentParams"]["steps"] == 24
+
     assert (
         client.put(
             "/api/settings/generation-presets/image",
-            json = {"activePreset": "Default", "currentParams": {"steps": 24}},
+            json = {"activePreset": "Landscape", "currentParams": body["currentParams"]},
         ).status_code
         == 200
     )
 
-    assert stored["image_generation_presets"]["currentLoadConfig"] is None
+    kept = stored["image_generation_presets"]
+    assert kept["currentLoadConfig"] == {"speedMode": "max"}
+    assert kept["customPresets"][0]["loadConfig"] == {"memoryMode": "low_vram"}

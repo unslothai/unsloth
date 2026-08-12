@@ -40,17 +40,17 @@ async function parseResponse<Result>(response: Response) {
   return body as Result;
 }
 
-export async function getMediaGenerationPresetSettings<Params, LoadConfig>(
+export async function getMediaGenerationPresetSettings<Params>(
   kind: MediaGenerationKind,
 ) {
-  return parseResponse<MediaGenerationPresetSettings<Params, LoadConfig>>(
+  return parseResponse<MediaGenerationPresetSettings<Params>>(
     await authFetch(`/api/settings/generation-presets/${kind}`),
   );
 }
 
-export async function saveMediaGenerationPresetSettings<Params, LoadConfig>(
+export async function saveMediaGenerationPresetSettings<Params>(
   kind: MediaGenerationKind,
-  settings: MediaGenerationPresetState<Params, LoadConfig>,
+  settings: MediaGenerationPresetState<Params>,
   options: OrderedWrite,
 ) {
   return parseResponse<{ saved: boolean }>(
@@ -66,9 +66,9 @@ export async function saveMediaGenerationPresetSettings<Params, LoadConfig>(
   );
 }
 
-export async function upsertMediaGenerationPreset<Params, LoadConfig>(
+export async function upsertMediaGenerationPreset<Params>(
   kind: MediaGenerationKind,
-  preset: MediaGenerationPreset<Params, LoadConfig>,
+  preset: MediaGenerationPreset<Params>,
   options: OrderedWrite,
 ) {
   return parseResponse<{ saved: boolean }>(

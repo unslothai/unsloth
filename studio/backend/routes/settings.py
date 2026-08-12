@@ -147,24 +147,6 @@ class VideoGenerationPresetParams(BaseModel):
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
 
 
-class MediaGenerationPresetLoadConfig(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    speedMode: Literal["auto", "off", "eager", "default", "max"] = "auto"
-    transformerQuant: Literal["auto", "none", "fp8", "int8", "nvfp4", "mxfp8"] = "auto"
-    attentionBackend: Literal["auto", "native", "cudnn", "flash3", "sage"] = "auto"
-    memoryMode: Literal["auto", "fast", "balanced", "low_vram"] = "auto"
-    transformerCache: Literal["auto", "off", "fbcache"] = "auto"
-
-
-class ImageGenerationPresetLoadConfig(MediaGenerationPresetLoadConfig):
-    cpuOffload: bool = False
-
-
-class VideoGenerationPresetLoadConfig(MediaGenerationPresetLoadConfig):
-    pass
-
-
 class MediaGenerationPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -181,15 +163,20 @@ class MediaGenerationPreset(BaseModel):
 
 class ImageGenerationPreset(MediaGenerationPreset):
     params: ImageGenerationPresetParams
-    loadConfig: Optional[ImageGenerationPresetLoadConfig] = None
 
 
 class VideoGenerationPreset(MediaGenerationPreset):
     params: VideoGenerationPresetParams
-    loadConfig: Optional[VideoGenerationPresetLoadConfig] = None
 
 
 class MediaGenerationPresetState(BaseModel):
+    """A saved generation recipe and the selection that owns it.
+
+    Model-load options are deliberately not here: they take effect only on a reload, they follow
+    the hardware and the checkpoint rather than the recipe, and the resident build already reports
+    them, so a second stored copy would only ever compete with it.
+    """
+
     model_config = ConfigDict(extra = "forbid")
 
     activePreset: str = Field(default = "Default", min_length = 1, max_length = 80)
@@ -197,12 +184,10 @@ class MediaGenerationPresetState(BaseModel):
 
 class ImageGenerationPresetState(MediaGenerationPresetState):
     currentParams: ImageGenerationPresetParams = Field(default_factory = ImageGenerationPresetParams)
-    currentLoadConfig: Optional[ImageGenerationPresetLoadConfig] = None
 
 
 class VideoGenerationPresetState(MediaGenerationPresetState):
     currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
-    currentLoadConfig: Optional[VideoGenerationPresetLoadConfig] = None
 
 
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
