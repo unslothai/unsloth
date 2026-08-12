@@ -391,11 +391,10 @@ def get_base_url(provider_type: str) -> str | None:
     return info["base_url"] if info else None
 
 
-# Cloud-metadata / link-local hosts. The backend fetches a provider base URL on
-# behalf of the caller, so a URL pointing at one of these would hand instance
-# credentials to whoever asked. No LLM endpoint ever lives here, so this is
-# refused on every deployment. Keep in sync with the tool-approval gate's list in
-# core/inference/tools.py (which is function-local, hence duplicated).
+# Cloud-metadata hosts. The backend fetches the base URL on the caller's behalf,
+# so one of these would hand instance credentials to whoever asked, and no LLM
+# endpoint lives here. Refused on every deployment. Keep in sync with the
+# tool-approval gate's list in core/inference/tools.py (function-local there).
 _METADATA_HOST_NAMES = frozenset(
     {
         "metadata",
@@ -431,10 +430,10 @@ _METADATA_NETWORK = ipaddress.ip_network("169.254.0.0/16")
 _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
 
-# A host made only of numeric parts is an IPv4 literal to the resolver, in
-# decimal, octal or hex. `ipaddress` accepts only the dotted-quad spelling, so
-# 2852039166, 0xA9FEA9FE and 0251.0376.0251.0376 would otherwise read as ordinary
-# names while getaddrinfo returns 169.254.169.254.
+# An all-numeric host is an IPv4 literal to the resolver, in decimal, octal or
+# hex. `ipaddress` parses only the dotted quad, so 2852039166, 0xA9FEA9FE and
+# 0251.0376.0251.0376 would read as names while getaddrinfo returns
+# 169.254.169.254.
 _NUMERIC_HOST_PART = re.compile(r"(?:0[xX][0-9a-fA-F]+|[0-9]+)")
 
 # IDNA label separators. httpx encodes a host through idna, which splits on all
@@ -504,10 +503,10 @@ def validate_provider_base_url(base_url: str) -> str:
     The backend issues outbound requests to this URL with the caller's decrypted
     API key attached, so it is caller-controlled server-side egress. Only shapes
     that can never be a real provider endpoint are refused: a non-http(s) scheme,
-    embedded credentials, control characters, and cloud metadata services. Plain
-    http, loopback, LAN hosts, odd ports and query strings all stay valid --
-    Ollama, llama.cpp, vLLM and custom gateways rely on them. No DNS lookup
-    happens unless the private-address opt-in is set.
+    control characters, a missing host, and cloud metadata services. Plain http,
+    loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
+    stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. No
+    DNS lookup happens unless the private-address opt-in is set.
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -529,10 +528,8 @@ def validate_provider_base_url(base_url: str) -> str:
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         raise ValueError("Provider base URL must use http or https.")
-    # Userinfo (`https://user:pass@gateway/v1`) is left alone: some self-hosted
-    # gateways sit behind basic auth, and the host checks below read the parsed
-    # hostname, so `http://api.openai.com@169.254.169.254/` is caught on its real
-    # host either way.
+    # Userinfo stays allowed for gateways behind basic auth; the checks below read
+    # the parsed hostname, so http://api.openai.com@169.254.169.254/ is caught.
     if not hostname:
         raise ValueError("Provider base URL must contain a hostname.")
 
