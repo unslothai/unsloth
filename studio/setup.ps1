@@ -4810,14 +4810,17 @@ if ($LatestVer) {
                     }
                 }
                 Set-Content -Path $_relPath -Value ($_relLines -join "`n") -Encoding UTF8
+                # the path rides in as base64: a profile name like O'Neil would otherwise
+                # end the generated Python string literal early
+                $_relPathB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_relPath))
                 $_bestCode = @"
-import sys
+import base64, sys
 try:
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version, InvalidVersion
     post = Version('$PostVer')
     latest = Version('$LatestVer')
-    with open(r'$_relPath', encoding='utf-8-sig') as fh:
+    with open(base64.b64decode('$_relPathB64').decode('utf-8'), encoding='utf-8-sig') as fh:
         lines = fh.read().splitlines()
 except Exception:
     sys.exit(1)
