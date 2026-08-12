@@ -12,8 +12,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
-import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
@@ -35,7 +33,6 @@ import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -74,12 +71,11 @@ import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
-// would log the user out or force re-onboarding (unsloth_auth_token, unsloth_auth_refresh_token,
-// unsloth_auth_must_change_password, unsloth_onboarding_done are excluded).
+// would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
+// unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -138,6 +134,9 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
+  // Retired keys. The onboarding wizard is gone, but installs that ran it still
+  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  "unsloth_onboarding_done",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
@@ -157,29 +156,14 @@ function resetAllPrefs() {
 
 export function GeneralTab() {
   const t = useT();
-  const navigate = useNavigate();
-  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
-  const { pathname, search } = useRouterState({
-    select: (s) => ({
-      pathname: s.location.pathname,
-      search:
-        "searchStr" in s.location
-          ? ((s.location as { searchStr?: string }).searchStr ?? "")
-          : typeof window !== "undefined"
-            ? window.location.search
-            : "",
-    }),
-  });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
 
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
-  const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
-  const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -841,26 +825,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {!chatOnly && (
-        <SettingsSection title={t("settings.general.gettingStarted")}>
-          <SettingsRow
-            label={t("settings.general.startOnboarding")}
-            description={t("settings.general.startOnboardingDescription")}
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                resetOnboardingDone();
-                closeDialog();
-                navigate({ to: "/onboarding", search: { redirectTo } });
-              }}
-            >
-              {t("settings.general.startOnboardingAction")}
-            </Button>
-          </SettingsRow>
-        </SettingsSection>
-      )}
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow

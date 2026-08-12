@@ -8,7 +8,6 @@ import type {
   GradientCheckpointing,
   ModelType,
   S3Config,
-  StepNumber,
   TrainingMethod,
 } from "@/types/training";
 import type { BackendModelConfig } from "../api/models-api";
@@ -57,7 +56,6 @@ export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {
   userEditRevision: number;
-  currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
   modelKnownCached: boolean;
@@ -165,10 +163,6 @@ export type AdvancedSettingsBaseline = Partial<
 >;
 
 export interface TrainingConfigActions {
-  setStep: (step: StepNumber) => void;
-  nextStep: () => void;
-  prevStep: () => void;
-  setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
   selectTrainingModel: (
     model: string | null,
@@ -198,7 +192,6 @@ export interface TrainingConfigActions {
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
-  setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (
     dataset: string | null,
     options?: DatasetCacheReferenceOptions,
@@ -222,7 +215,6 @@ export interface TrainingConfigActions {
   }) => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
-  setUploadedFile: (file: string | null) => void;
   setUploadedEvalFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
@@ -258,7 +250,6 @@ export interface TrainingConfigActions {
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
   setS3Config: (value: S3Config | null) => void;
-  canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

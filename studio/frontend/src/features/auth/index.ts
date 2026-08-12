@@ -14,10 +14,7 @@ export {
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
-  isOnboardingDone,
-  markOnboardingDone,
   mustChangePassword,
-  resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
 } from "./session";

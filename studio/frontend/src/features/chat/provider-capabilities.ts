@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { providerModelSupportsStudioTools } from "./external-providers";
+
 /**
  * Per-provider sampling parameter capability matrix.
  *
@@ -149,7 +151,11 @@ export function getExternalMaxOutputTokens(
   const effectiveProvider =
     providerType === "openrouter"
       ? _inferProviderFromOpenrouterId(normalized) ?? providerType
-      : providerType;
+      : providerType === "openai_codex"
+        ? "openai_codex"
+        : providerType;
+  if (effectiveProvider === "openai_codex") return 128000;
+
   for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
     if (entry.providerType !== effectiveProvider) continue;
     if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
@@ -218,6 +224,10 @@ export function providerSupportsBuiltinWebSearch(
     }
     return true;
   }
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
+
   return (
     providerType === "openai" ||
     providerType === "anthropic" ||
@@ -345,6 +355,10 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
+  if (providerType === "openai_codex") {
+    return providerModelSupportsStudioTools(providerType, modelId) === true;
+  }
+
   if (providerType === "openai") {
     if (!isOpenAICloudBaseUrl(baseUrl)) return false;
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
@@ -504,6 +518,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // models served via /v1/responses, which rejects temperature, top_p, and
   // presence/frequency penalty. See backend
   // external_provider._stream_openai_responses for the proxy.
+  openai_codex: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
+
   openai: {
     temperature: false,
     topP: false,
@@ -953,7 +976,8 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAIProvider = normalizedProvider === "openai";
+  const isOpenAIProvider =
+    normalizedProvider === "openai" || normalizedProvider === "openai_codex";
   const isAnthropicProvider = normalizedProvider === "anthropic";
   const isKimiProvider = normalizedProvider === "kimi";
   const isMistralProvider = normalizedProvider === "mistral";

@@ -220,14 +220,107 @@ fn is_zombie_impl(pid: u32) -> bool {
     after_comm.split_whitespace().next() == Some("Z")
 }
 
+/// Offsets into `struct kinfo_proc`, whose `kp_proc` is a `struct extern_proc`
+/// starting at 0: `p_stat` follows the two pointers, the `p_un` union and
+/// `p_flag`, and `p_pid` follows `p_stat`. libc does not declare `kinfo_proc`
+/// for Apple, so the record is read as bytes. Measured on macos-14 (arm64):
+/// `offsetof(kinfo_proc, kp_proc.p_stat) == 36` and the whole record is 648
+/// bytes. `p_pid` is read back as a check that the layout still holds.
+#[cfg(target_os = "macos")]
+const KINFO_PROC_P_STAT_OFFSET: usize = 36;
+#[cfg(target_os = "macos")]
+const KINFO_PROC_P_PID_OFFSET: usize = 40;
+
+/// The `p_stat` value for a process that has exited and not been reaped,
+/// from sys/proc.h, which libc does not re-export.
+#[cfg(target_os = "macos")]
+const SZOMB: u8 = 5;
+
 #[cfg(target_os = "macos")]
 fn is_zombie_impl(pid: u32) -> bool {
     if pid > i32::MAX as u32 {
         return false;
     }
-    // The short flavor, not PROC_PIDTBSDINFO: that one refuses a zombie and
-    // returns nothing, so asking it whether a process is a zombie can only ever
-    // answer no. Verified on macos-14, where the full flavor failed this.
+    // sysctl, not proc_pidinfo. Measured on macos-14: for a killed but unreaped
+    // child BOTH proc_pidinfo flavors fail with ESRCH, the short one included,
+    // so neither can ever answer yes. KERN_PROC_PID reported p_stat = SZOMB for
+    // that same pid, SRUN while it was running, and no record at all once it
+    // had been reaped.
+    match kern_proc_record(pid) {
+        Some(record) => record[KINFO_PROC_P_STAT_OFFSET] == SZOMB,
+        // The kernel answered in a shape this does not recognise. Rather than
+        // report every process alive, which is the bug this replaces, fall back
+        // to the behaviour the same measurement showed: a pid that still exists
+        // but that proc_pidinfo reports as ESRCH is a zombie.
+        None => pid_exists(pid) && !proc_pidinfo_sees(pid),
+    }
+}
+
+/// The KERN_PROC_PID record for `pid`, once it is long enough to read `p_stat`
+/// out of and its own `p_pid` field agrees with the pid asked for.
+#[cfg(target_os = "macos")]
+fn kern_proc_record(pid: u32) -> Option<Vec<u8>> {
+    let mut mib: [libc::c_int; 4] = [
+        libc::CTL_KERN,
+        libc::KERN_PROC,
+        libc::KERN_PROC_PID,
+        pid as libc::c_int,
+    ];
+    // The kernel's own size for the record, so nothing here has to hardcode it.
+    // A short buffer is not filled in part: it fails with ENOMEM.
+    let mut size: libc::size_t = 0;
+    let sized = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if sized != 0 || size <= KINFO_PROC_P_PID_OFFSET + 4 {
+        return None;
+    }
+    let mut record = vec![0u8; size];
+    let read = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            mib.len() as libc::c_uint,
+            record.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    // A reaped pid answers with no error and a zero-length record.
+    if read != 0 || size <= KINFO_PROC_P_PID_OFFSET + 4 {
+        return None;
+    }
+    record.truncate(size);
+    let recorded_pid = u32::from_ne_bytes(
+        record[KINFO_PROC_P_PID_OFFSET..KINFO_PROC_P_PID_OFFSET + 4]
+            .try_into()
+            .ok()?,
+    );
+    (recorded_pid == pid).then_some(record)
+}
+
+/// Whether the OS still has this pid, zombie or not. EPERM is somebody else's
+/// live process, which is an answer too.
+#[cfg(target_os = "macos")]
+fn pid_exists(pid: u32) -> bool {
+    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Whether proc_pidinfo will describe this pid. The short flavor is the one
+/// that does not require the same uid, so a no here is about the process being
+/// gone rather than about who owns it.
+#[cfg(target_os = "macos")]
+fn proc_pidinfo_sees(pid: u32) -> bool {
     let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
     let written = unsafe {
@@ -239,7 +332,7 @@ fn is_zombie_impl(pid: u32) -> bool {
             size,
         )
     };
-    written == size && info.pbsi_status == libc::SZOMB
+    written == size
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

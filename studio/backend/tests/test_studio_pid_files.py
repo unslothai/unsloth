@@ -8,7 +8,11 @@ Imports run.py directly, so run under the Unsloth venv.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import os
+import threading
+import time
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +24,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import run  # noqa: E402
+from utils import cache_cleanup  # noqa: E402
 
 # Captured before the autouse fixture stubs them, for the tests that exercise them.
 _REAL_IS_STUDIO_BACKEND = run._pid_is_studio_backend
@@ -33,6 +38,11 @@ def isolated_root(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_OWN_PID_FILE", None)
     monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
+    # The lock lives in the studio home. A session-scoped conftest fixture
+    # already keeps that out of the developer's real one, but this file
+    # redirects everything else it touches to tmp_path, so redirect this too.
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: tmp_path)
+    monkeypatch.setattr(run, "_OWN_STARTUP_MARKERS", [])
     yield
 
 
@@ -566,3 +576,604 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     run._write_pid_file(8902, "127.0.0.1")
 
     assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())
+
+
+def test_a_live_sibling_is_found_so_the_shared_cache_survives(tmp_path):
+    # The compiled cache is install-tree relative, so a second backend of this
+    # install must not wipe it out from under the first.
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_our_own_record_is_not_a_sibling(tmp_path):
+    # _write_pid_file has already run by shutdown, so our own record is there.
+    me = os.getpid()
+    (tmp_path / f"studio-8888-{me}.pid").write_text(f"{me}\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_dead_record_is_not_a_sibling(tmp_path, monkeypatch):
+    # A crashed server leaves its record behind; clearing the cache is right then.
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
+    # Alive, but not our server: the create_time no longer matches the record.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): False)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_sibling_that_is_still_binding_is_found(tmp_path):
+    # The window Codex flagged: lifespan startup runs, and would clear the
+    # cache, long before uvicorn reports a port for _write_pid_file to record.
+    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_a_legacy_only_sibling_is_found(tmp_path):
+    # A pre-upgrade server is recorded here and nowhere else, and so is one
+    # whose best-effort per-port write failed.
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_a_dead_legacy_record_is_not_a_sibling(tmp_path, monkeypatch):
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_the_startup_marker_is_written_and_removed(tmp_path):
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+
+    assert marker.is_file()
+    # Parsed by the same reader as a per-port record, with a real start time.
+    record = run._read_pid_record(marker)
+    assert record is not None and record[0] == os.getpid()
+
+    run._remove_startup_marker()
+
+    assert not marker.exists()
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_our_own_startup_marker_is_not_a_sibling(tmp_path):
+    run.write_startup_marker()
+
+    assert run.live_sibling_backend() is None
+
+    run._remove_startup_marker()
+
+
+def test_a_startup_marker_is_invisible_to_the_pid_file_glob(tmp_path):
+    # Everything reading PID_FILE_GLOB expects a port in the name; a process
+    # that has not bound yet has none, so `stop` and _legacy_heir must skip it.
+    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
+
+    assert list(tmp_path.glob(run.PID_FILE_GLOB)) == []
+
+
+def test_the_marker_outlives_the_early_record_drop(tmp_path):
+    # _graceful_shutdown drops the records before the server thread is joined,
+    # while an in-flight request or a background warm may still be importing
+    # from the cache. Going invisible there would let a replacement clear it
+    # underneath, so the marker waits for the thread to actually end.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    run._write_pid_file(8906, "127.0.0.1")
+
+    run._remove_pid_file()
+
+    assert marker.is_file(), "the backend is still serving until the thread ends"
+    assert _files(tmp_path) == []
+
+    run._remove_startup_marker()
+
+    assert not marker.exists()
+
+
+def test_a_bare_legacy_record_cannot_resurrect_a_reused_pid(tmp_path, monkeypatch):
+    # studio.pid holds a PID and no start time, and an untimed record is trusted
+    # unconditionally. A timestamped record for that same PID, written after it,
+    # is proof the server is gone, so the bare one must not override it.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    legacy = tmp_path / "studio.pid"
+    timed = tmp_path / "studio-8888-8550.pid"
+    legacy.write_text("8550", encoding = "utf-8")
+    timed.write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    os.utime(legacy, (100.0, 100.0))
+    os.utime(timed, (200.0, 200.0))
+
+    assert run.live_sibling_backend() is None
+
+
+def test_an_older_timed_record_does_not_veto_a_newer_legacy_one(tmp_path, monkeypatch):
+    # The other order is a pre-upgrade backend starting on a PID a crashed
+    # current-version backend left a record for: it writes studio.pid and
+    # nothing else. The older timestamp describes the process that is gone, so
+    # letting it veto would clear the compiled cache under a serving backend.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    legacy = tmp_path / "studio.pid"
+    timed = tmp_path / "studio-8888-8550.pid"
+    timed.write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    legacy.write_text("8550", encoding = "utf-8")
+    os.utime(timed, (100.0, 100.0))
+    os.utime(legacy, (200.0, 200.0))
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_a_timed_record_for_another_pid_leaves_the_legacy_one_alone(tmp_path, monkeypatch):
+    # Corroboration is per PID: a dead record for a different server says nothing
+    # about the pre-upgrade one, which is recorded in studio.pid and nowhere else.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    (tmp_path / "studio-8888-8551.pid").write_text("8551\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_the_cache_lock_is_exclusive(tmp_path):
+    # Two backends racing is the whole point, so the second one must be told the
+    # section is taken rather than be let into it.
+    with cache_cleanup.compiled_cache_lock() as first:
+        assert first == cache_cleanup.LOCK_HELD
+        with cache_cleanup.compiled_cache_lock(timeout = 0.05) as second:
+            assert second == cache_cleanup.LOCK_BUSY
+
+    with cache_cleanup.compiled_cache_lock() as again:
+        assert again == cache_cleanup.LOCK_HELD
+
+
+def test_the_probe_and_the_clear_happen_inside_one_lock(tmp_path, monkeypatch):
+    # The race Codex flagged: our probe finds nobody, a sibling publishes and
+    # starts compiling, and then our rmtree deletes what it just wrote.
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        events.append("lock")
+        try:
+            yield cache_cleanup.LOCK_HELD
+        finally:
+            events.append("unlock")
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: events.append("probe"))
+
+    assert events == ["lock", "probe", "clear", "unlock"]
+
+
+def test_a_busy_cache_lock_keeps_the_cache_without_probing(tmp_path, monkeypatch):
+    # Whoever holds it is a sibling by definition, so the answer is already known.
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        yield cache_cleanup.LOCK_BUSY
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: events.append("probe"))
+
+    assert events == []
+
+
+def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
+    # An unwritable temp dir or a filesystem without flock must not mean the
+    # cache is never cleared again on that machine; fall back to the plain probe.
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    with cache_cleanup.compiled_cache_lock() as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]
+
+
+def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
+
+    assert events == []
+
+
+def test_no_sibling_probe_clears_unconditionally(tmp_path, monkeypatch):
+    # An embedded app or a test never sets the probe, and the old behaviour stands.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(None)
+
+    assert events == ["clear"]
+
+
+def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypatch):
+    # Publication has to be inside the same section as a sibling's probe and
+    # clear, or the marker lands in the gap between them and is clear-and-lost.
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        events.append(("lock", marker.exists()))
+        try:
+            yield cache_cleanup.LOCK_HELD
+        finally:
+            events.append(("unlock", marker.exists()))
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert events == [("lock", False), ("unlock", True)]
+
+
+def test_a_zombie_backend_is_not_a_live_sibling(tmp_path, monkeypatch):
+    # A backend that exited under a non-reaping parent stays a zombie: it
+    # answers kill(0) and keeps its start time, so liveness alone reads it as
+    # serving and its record would pin the compiled cache forever.
+    (tmp_path / "studio-8888-4242.pid").write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
+    assert run.live_sibling_backend() == 4242, "the check under test must start from live"
+
+    import utils.process_lifetime as process_lifetime
+
+    monkeypatch.setattr(process_lifetime, "_pid_is_zombie", lambda pid: pid == 4242)
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
+    # The same thing without a patch: a killed but unwaited child.
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        child.kill()
+        (tmp_path / f"studio-8889-{child.pid}.pid").write_text(f"{child.pid}\n", encoding = "utf-8")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if run.live_sibling_backend() is None:
+                break
+            time.sleep(0.05)
+
+        assert run.live_sibling_backend() is None, "a zombie was taken for a serving backend"
+    finally:
+        child.wait()
+
+
+def test_every_record_call_can_be_repeated(tmp_path):
+    # Startup and shutdown both run more than once in a long-lived embedded
+    # host, and a crash can leave either half done. Each of these has to be
+    # safe to call again on the state the previous call left.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    published = sorted(p.name for p in tmp_path.iterdir())
+    body = marker.read_text(encoding = "utf-8")
+
+    run.write_startup_marker()
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == published, "a second publish added a file"
+    assert marker.read_text(encoding = "utf-8") == body
+    assert run._OWN_STARTUP_MARKERS == [marker], "tracked twice would be removed twice"
+
+    run._write_pid_file(8888, "127.0.0.1")
+    recorded = sorted(p.name for p in tmp_path.iterdir())
+    run._write_pid_file(8888, "127.0.0.1")
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == recorded
+
+    run._remove_startup_marker()
+    run._remove_startup_marker()
+    run._remove_pid_file()
+    run._remove_pid_file()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert _files(tmp_path) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_reading_the_siblings_changes_nothing_on_disk(tmp_path):
+    # The probe runs on every startup and is a read. If it pruned or rewrote
+    # anything, one install's startup would edit another's records.
+    (tmp_path / "studio-8888-4242.pid").write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("4243", encoding = "utf-8")
+    before = {p.name: p.read_text(encoding = "utf-8") for p in tmp_path.iterdir()}
+
+    for _ in range(3):
+        run.live_sibling_backend()
+
+    assert {p.name: p.read_text(encoding = "utf-8") for p in tmp_path.iterdir()} == before
+
+
+def test_a_busy_lock_publishes_then_waits_for_the_clear_to_finish(tmp_path, monkeypatch):
+    # Publishing unlocked keeps this backend visible to sibling probes, but
+    # returning straight away would let the caller import and compile into a
+    # cache the holder is still deleting. The marker goes out first, then the
+    # wait, so both halves hold.
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    timeouts = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        timeouts.append((timeout, marker.exists()))
+        # Busy the first time (the publish), free the second (the wait).
+        yield cache_cleanup.LOCK_BUSY if len(timeouts) == 1 else cache_cleanup.LOCK_HELD
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert timeouts == [
+        (30.0, False),
+        (run._CACHE_CLEAR_WAIT_SECONDS, True),
+    ], "the wait must come after the marker is on disk"
+
+
+def test_a_lock_taken_at_once_does_not_wait(tmp_path, monkeypatch):
+    # Nobody is clearing, so there is nothing to wait for.
+    calls = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        calls.append(timeout)
+        yield cache_cleanup.LOCK_HELD
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert calls == [30.0]
+
+
+def test_a_clear_that_never_finishes_still_lets_the_backend_start(tmp_path, monkeypatch):
+    # Refusing to start is worse for the user than starting on a cache that may
+    # lose files, so the wait is bounded and startup continues past it.
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        yield cache_cleanup.LOCK_BUSY
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(run, "_CACHE_CLEAR_WAIT_SECONDS", 0.0)
+
+    run.write_startup_marker()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+
+def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monkeypatch):
+    # ENOSYS is the lock being unsupported, not a sibling holding it. Retrying it
+    # to a timeout and answering busy would keep the cache forever, since busy is
+    # read as proof of a sibling.
+    def unsupported(fd):
+        raise OSError(errno.ENOSYS, "flock not supported")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", unsupported)
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    with cache_cleanup.compiled_cache_lock(timeout = 30.0) as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]
+
+
+def test_contention_is_still_retried_to_the_timeout(tmp_path, monkeypatch):
+    def busy(fd):
+        raise OSError(errno.EWOULDBLOCK, "held")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", busy)
+
+    started = time.monotonic()
+    with cache_cleanup.compiled_cache_lock(timeout = 0.2) as state:
+        assert state == cache_cleanup.LOCK_BUSY
+    assert time.monotonic() - started >= 0.2, "contention waits out the budget"
+
+
+def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
+    # colab.py catches SystemExit and Exception around run_server and keeps the
+    # process alive, so no exit hook runs. A marker left behind would answer
+    # every later probe as a live backend of this install.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(explode))
+
+    with pytest.raises(RuntimeError):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
+def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
+    # SystemExit is a BaseException, and it is the one colab.py catches.
+    run.write_startup_marker()
+
+    def bail(*args, **kwargs):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(bail))
+
+    with pytest.raises(SystemExit):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+
+
+def test_an_interrupt_leaves_the_marker_to_a_live_server_thread(tmp_path, monkeypatch):
+    # The KeyboardInterrupt path asks uvicorn to stop and re-raises without
+    # joining, so the thread may still be finishing lifespan startup or
+    # shutdown. Taking the marker back there makes a backend that is still up
+    # invisible to a sibling, which would clear the compiled cache under it.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    stop = threading.Event()
+    serving = threading.Thread(target = stop.wait, daemon = True)
+    serving.start()
+    monkeypatch.setattr(run, "_server_thread", serving)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(interrupt))
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run.run_server()
+
+        assert (
+            list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+        ), "the sibling can no longer see it"
+        assert run._OWN_STARTUP_MARKERS != []
+    finally:
+        stop.set()
+        serving.join(timeout = 5)
+
+    # Once that thread is gone, the same failure does take the marker back:
+    # nothing else is going to.
+    with pytest.raises(KeyboardInterrupt):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+
+
+def test_a_server_thread_that_dies_after_readiness_drops_its_records(tmp_path, monkeypatch):
+    # An embedded host stays alive after the uvicorn thread ends, and a failure
+    # in there never reaches run_server's caller. Records left behind would keep
+    # validating against the still-live host PID with no backend serving. Both
+    # calls are what the thread's finally block makes.
+    run.write_startup_marker()
+    run._write_pid_file(8905, "127.0.0.1")
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+    assert _files(tmp_path) != []
+
+    run._remove_startup_marker()
+    run._remove_pid_file()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert _files(tmp_path) == []
+
+
+def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, monkeypatch):
+    # The documented limitation of scoping this back: both keep a cache neither
+    # cleaned, which is the safe direction. The failure being replaced is the two
+    # of them deleting each other's modules mid-run.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551)
+
+    assert events == []
+
+    # ...and a launch that really is alone still clears.
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]
+
+
+def test_a_transient_unlink_failure_is_retried_on_the_spot(tmp_path, monkeypatch):
+    # A holder that lets go a moment later (an indexer on Windows) must not cost
+    # the marker its removal: waiting for the atexit hook leaves it on disk, and
+    # an embedded host that outlives the backend may not reach that for hours.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    assert run._OWN_STARTUP_MARKERS == [marker]
+
+    real_unlink = Path.unlink
+    refused = []
+
+    def refuse_once(self, missing_ok = False):
+        if not refused:
+            refused.append(self)
+            raise OSError("busy")
+        return real_unlink(self, missing_ok = missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", refuse_once)
+    monkeypatch.setattr(run, "_MARKER_REMOVAL_BACKOFF_SECONDS", 0.0)
+    run._remove_startup_marker()
+
+    assert refused, "the first attempt did not run"
+    assert run._OWN_STARTUP_MARKERS == []
+    assert not marker.exists()
+
+
+def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
+    # Once the retries run out, dropping the path loses the only reference to
+    # it. The marker would stay on disk, keep matching this live process, and
+    # pin the compiled cache with no later cleanup able to retry.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    assert run._OWN_STARTUP_MARKERS == [marker]
+
+    real_unlink = Path.unlink
+    attempts = []
+
+    def refuse_while_locked(self, missing_ok = False):
+        attempts.append(self)
+        if locked:
+            raise OSError("busy")
+        return real_unlink(self, missing_ok = missing_ok)
+
+    locked = True
+    monkeypatch.setattr(Path, "unlink", refuse_while_locked)
+    monkeypatch.setattr(run, "_MARKER_REMOVAL_BACKOFF_SECONDS", 0.0)
+    run._remove_startup_marker()
+
+    assert len(attempts) == run._MARKER_REMOVAL_ATTEMPTS, "the retries did not run"
+    assert run._OWN_STARTUP_MARKERS == [marker], "still tracked for a retry"
+    assert marker.exists()
+
+    locked = False
+    run._remove_startup_marker()
+
+    assert run._OWN_STARTUP_MARKERS == []
+    assert not marker.exists()
