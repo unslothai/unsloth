@@ -6490,7 +6490,7 @@ class TestRocmWslSupplyChainPins:
         assert ref is not None and ref.group(1) == sha.group(1)
         # The SHA check must run before anything from the clone is built or installed.
         # A failed checkout must not fall through to the default branch.
-        assert '_co_failed=1' in source
+        assert "_co_failed=1" in source
         assert "Refusing to build the repository's default branch instead" in source
         idx_check = source.find("git rev-parse HEAD")
         idx_cmake = source.find("cmake .. -DWIN_SDK")
