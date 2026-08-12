@@ -1658,14 +1658,20 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     # check would fail a correct update -- skip it when a custom index is active
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
     if [ -n "${LATEST_VER:-}" ] && [ -z "$_CUSTOM_INDEX" ]; then
+        # __MISSING__ only when the metadata positively reports no such package: a
+        # probe that merely crashed must not read as "not installed" and fail setup
         POST_VER=$("$VENV_DIR/bin/python" -c "
-import sys; from importlib.metadata import version
-print(version(sys.argv[1]))
+import sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    print(version(sys.argv[1]))
+except PackageNotFoundError:
+    print('__MISSING__')
 " "$_PKG_NAME" 2>/dev/null || echo "")
         _UPDATE_OK=false
         if [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
-        elif [ -n "$POST_VER" ] && "$VENV_DIR/bin/python" -c "
+        elif [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -c "
 import re, sys
 def nums(v):
     m = re.match(r'\d+(\.\d+)*', v)
@@ -1681,7 +1687,7 @@ sys.exit(0 if ok else 1)
             # newer than announced is fine (a release can land mid-update); PEP 440
             # ordering so an installed pre/post/dev build never passes as the release
             _UPDATE_OK=true
-        elif [ -n "$POST_VER" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
+        elif [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -1736,13 +1742,22 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
             substep "$_PKG_NAME $POST_VER kept: $LATEST_VER needs Python $LATEST_REQ_PY"
             _UPDATE_OK=true
         fi
-        if [ "$_UPDATE_OK" = false ]; then
-            _POST_STATE="still $POST_VER"
-            [ -n "$POST_VER" ] || _POST_STATE="not installed"
-            step "python" "update ran but $_PKG_NAME is $_POST_STATE (expected $LATEST_VER)" "$C_ERR"
-            setup_fail 1 "update ran but $_PKG_NAME is $_POST_STATE (expected $LATEST_VER)"
+        if [ "$_UPDATE_OK" = true ]; then
+            substep "$_PKG_NAME $POST_VER confirmed"
+        elif [ "$POST_VER" = "__MISSING__" ]; then
+            # the one unambiguous failure: a "successful" pass with no package left
+            # behind (no-op pass, stale dist-info) -- the case this check exists for
+            step "python" "update ran but $_PKG_NAME is not installed (expected $LATEST_VER)" "$C_ERR"
+            setup_fail 1 "update ran but $_PKG_NAME is not installed (expected $LATEST_VER)"
+        elif [ -z "$POST_VER" ]; then
+            step "python" "could not verify $_PKG_NAME version after update (expected $LATEST_VER)" "$C_WARN"
+        else
+            # older-but-successful is a resolver outcome (constraints, config-file
+            # mirrors, wheels for this platform), not an install failure: pypi.org's
+            # announced latest is not authoritative for what this environment can
+            # run -- surface it, don't brick the update
+            step "python" "update left $_PKG_NAME at $POST_VER ($LATEST_VER announced on PyPI)" "$C_WARN"
         fi
-        substep "$_PKG_NAME $POST_VER confirmed"
     fi
 else
     step "python" "dependencies up to date"

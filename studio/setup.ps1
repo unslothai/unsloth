@@ -4783,10 +4783,12 @@ if ($stackExit -ne 0) {
 # check would fail a correct update -- skip it when a custom index is active
 $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
 if ($LatestVer -and -not $_customIndex) {
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from importlib.metadata import version; print('POSTVER=' + version('$_PkgName'))"
+    # __MISSING__ only when the metadata positively reports no such package: a probe
+    # that merely crashed must not read as "not installed" and fail setup
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; _v = next((d.version for d in m.distributions() if (d.metadata['Name'] or '').lower() == '$_PkgName'.lower()), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = ($PostVer -eq $LatestVer)
-    if (-not $_updateOk -and $PostVer) {
+    if (-not $_updateOk -and $PostVer -and $PostVer -ne "__MISSING__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
         $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
@@ -4876,12 +4878,22 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
             }
         }
     }
-    if (-not $_updateOk) {
-        $_postState = if ($PostVer) { "still $PostVer" } else { "not installed" }
-        Write-StudioLine "[FAILED] update ran but $_PkgName is $_postState (expected $LatestVer)" -ForegroundColor Red
-        Exit-SetupFailure "update ran but $_PkgName is $_postState (expected $LatestVer)"
+    if ($_updateOk) {
+        substep "$_PkgName $PostVer confirmed"
+    } elseif ($PostVer -eq "__MISSING__") {
+        # the one unambiguous failure: a "successful" pass with no package left
+        # behind (no-op pass, stale dist-info) -- the case this check exists for
+        Write-StudioLine "[FAILED] update ran but $_PkgName is not installed (expected $LatestVer)" -ForegroundColor Red
+        Exit-SetupFailure "update ran but $_PkgName is not installed (expected $LatestVer)"
+    } elseif (-not $PostVer) {
+        substep "[WARN] could not verify $_PkgName version after update (expected $LatestVer)" "Yellow"
+    } else {
+        # older-but-successful is a resolver outcome (constraints, config-file
+        # mirrors, wheels for this platform), not an install failure: pypi.org's
+        # announced latest is not authoritative for what this environment can
+        # run -- surface it, don't brick the update
+        substep "[WARN] update left $_PkgName at $PostVer ($LatestVer announced on PyPI)" "Yellow"
     }
-    substep "$_PkgName $PostVer confirmed"
 }
 
 } else {
