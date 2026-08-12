@@ -5804,7 +5804,6 @@ def _cached_repo_gguf_bytes(repo: str, hint: str = "") -> int:
         # and falls back to a reserve that can undercount it.
         try:
             from utils.hf_cache_settings import active_hf_hub_cache
-
             _cache_dir: Optional[str] = active_hf_hub_cache()
         except Exception:
             _cache_dir = None
