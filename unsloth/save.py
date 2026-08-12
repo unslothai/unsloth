@@ -667,7 +667,11 @@ _UNRESOLVABLE_TOKENIZER_CLASSES = frozenset(
 )
 
 
-def _read_tokenizer_class_from_source(source, tokenizer = None, token = None):
+def _read_tokenizer_class_from_source(
+    source,
+    tokenizer = None,
+    token = None,
+):
     if not isinstance(source, str) or not source:
         return None
 
@@ -710,7 +714,6 @@ def _read_tokenizer_class_from_source(source, tokenizer = None, token = None):
 
     try:
         from huggingface_hub import hf_hub_download
-
         downloaded_path = hf_hub_download(
             repo_id = source,
             filename = "tokenizer_config.json",
@@ -745,7 +748,11 @@ def _normalize_export_tokenizer_class(class_name, tokenizer = None):
     return class_name
 
 
-def _resolve_export_tokenizer_class(tokenizer, save_directory, token = None):
+def _resolve_export_tokenizer_class(
+    tokenizer,
+    save_directory,
+    token = None,
+):
     source_tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
     if source_tokenizer is None:
         return None
