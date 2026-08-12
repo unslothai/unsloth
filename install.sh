@@ -431,6 +431,45 @@ case "$PACKAGE_NAME" in
         exit 1 ;;
 esac
 
+# --python / UNSLOTH_PYTHON was never range-checked, so an unsupported minor went
+# straight to `uv venv` and only surfaced minutes later as a bare dependency name.
+# On 3.9 that name is "pyarrow" (constraints.txt pins pyarrow==23.0.1, which has no
+# cp39 wheel on any platform), and matplotlib, pymupdf, pymupdf4llm and fastmcp are
+# 3.10+ too, so fixing one pin would only move the wall (issue #8495). install.ps1
+# has enforced 3.11-3.13 all along; this is the same window.
+# Only a plain X.Y / X.Y.Z is judged. A path or a uv download name is not a version
+# and passes through untouched, matching _python_request's own screening.
+if [ -n "$_USER_PYTHON" ]; then
+    case "$_USER_PYTHON" in
+        */*|*\\*) ;;
+        [0-9]*.[0-9]*)
+            _req_major=${_USER_PYTHON%%.*}
+            _req_rest=${_USER_PYTHON#*.}
+            _req_minor=${_req_rest%%.*}
+            # Anything non-numeric (a prerelease like 3.13rc1) is not ours to judge;
+            # the arithmetic below would abort dash with "Illegal number".
+            case "$_req_major$_req_minor" in
+                ''|*[!0-9]*) ;;
+                *)
+                    # Hard-fail only what provably cannot resolve. 3.10 still installs
+                    # the whole set today, so it is allowed even though it is below the
+                    # 3.11 floor install.ps1 enforces; above 3.13 is unproven rather than
+                    # known-broken, so it warns and continues as it always has.
+                    if [ "$_req_major" -ne 3 ] || [ "$_req_minor" -lt 10 ]; then
+                        echo "❌ ERROR: Python $_USER_PYTHON is not supported by Unsloth Studio (need 3.10 or newer)." >&2
+                        echo "   pyarrow (via datasets), matplotlib, pymupdf, pymupdf4llm and fastmcp" >&2
+                        echo "   publish no wheels for it, so the install would fail during resolution" >&2
+                        echo "   with a bare dependency name instead of this message." >&2
+                        echo "   Re-run without --python to use the default, or pass a supported version." >&2
+                        exit 1
+                    elif [ "$_req_minor" -gt 13 ]; then
+                        echo "⚠️  WARNING: Python $_USER_PYTHON is newer than the tested range (3.11-3.13)." >&2
+                        echo "   Some wheels may not exist yet for it; 3.13 is the safe choice." >&2
+                    fi ;;
+            esac ;;
+    esac
+fi
+
 # ── Tauri structured output ──
 tauri_log() {
     if [ "$TAURI_MODE" = true ]; then

@@ -75,6 +75,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from utils.datasets_availability import require_datasets_http
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -1141,7 +1142,15 @@ def _background_video_generation_active() -> bool:
         return False
 
 
-@router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
+# require_datasets_http, not a router-level dependency: /status, /progress and
+# /metrics stay reachable so a UI that is already polling keeps working, and only
+# the endpoints that would reach `from datasets import ...` are gated. Fires only in
+# the ARM64 inference-only tier, where the library is absent (issue #8495).
+@router.post(
+    "/start",
+    responses = _TRAINING_START_ERROR_RESPONSES,
+    dependencies = [Depends(require_datasets_http)],
+)
 async def start_training(
     request: TrainingStartRequest,
     current_subject: str = Depends(get_current_subject),
@@ -2686,7 +2695,11 @@ def _preflight_diffusion_resume(
         config["resume_from_checkpoint"] = path
 
 
-@router.post("/diffusion/start", response_model = DiffusionTrainingStartResponse)
+@router.post(
+    "/diffusion/start",
+    response_model = DiffusionTrainingStartResponse,
+    dependencies = [Depends(require_datasets_http)],
+)
 async def start_diffusion_training(
     body: DiffusionTrainingStartRequest,
     current_subject: str = Depends(get_current_subject),

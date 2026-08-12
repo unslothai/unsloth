@@ -40,6 +40,13 @@ NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 # the next update, which then tries to delete the venv it is running out of.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
+# Same contract as NO_TORCH_MARKER, for the ARM64 inference-only tier: Windows on
+# ARM has no win_arm64 wheel for pyarrow (via datasets), sqlite-vec or tiktoken, so
+# when no x64 interpreter can be obtained the install drops those and training with
+# it (issue #8495). Like no-torch this must outlive both the dropped manifest and a
+# killed pass, or the next `unsloth studio update` re-adds datasets and fails again.
+NO_DATASETS_MARKER = ".unsloth-no-datasets"
+
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
 # Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
@@ -127,6 +134,7 @@ def write_manifest(
     steps_total: int = 0,
     package_name: str = "unsloth",
     no_torch: Optional[bool] = None,
+    no_datasets: Optional[bool] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -149,6 +157,9 @@ def write_manifest(
     # exports nothing and would otherwise reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
+    # Same additive contract, for the ARM64 inference-only tier.
+    if no_datasets is not None:
+        payload["no_datasets"] = bool(no_datasets)
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")
@@ -216,6 +227,48 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
     # during it) or one predating the key: the marker is the durable answer.
     try:
         if no_torch_marker_path(root).exists():
+            return True
+    except OSError:
+        pass
+    return None
+
+
+def no_datasets_marker_path(root: Optional[Path] = None) -> Path:
+    return (root or venv_root()) / NO_DATASETS_MARKER
+
+
+def set_no_datasets_marker(no_datasets: bool, root: Optional[Path] = None) -> None:
+    """Record the ARM64 inference-only tier. Never raises.
+
+    Mirrors set_no_torch_marker exactly, including the removal arm: an ARM64 venv
+    later rebuilt on an x64 interpreter must not keep answering "no datasets".
+    """
+    path = no_datasets_marker_path(root)
+    try:
+        if no_datasets:
+            path.write_text("", encoding = "utf-8")
+        else:
+            path.unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
+def recorded_no_datasets(root: Optional[Path] = None) -> Optional[bool]:
+    """The tier this venv was installed with, or None when unknown.
+
+    None means nothing recorded it, and callers fall back to their own detection --
+    never to False, or an install made before this key existed would be silently
+    switched back to a tier its interpreter cannot resolve.
+    """
+    manifest = read_manifest(root)
+    if manifest is not None:
+        value = manifest.get("no_datasets")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in NO_TORCH_TRUTHY
+    try:
+        if no_datasets_marker_path(root).exists():
             return True
     except OSError:
         pass

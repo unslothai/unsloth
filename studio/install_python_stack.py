@@ -63,6 +63,16 @@ PLATFORM_LACKS_TORCHCODEC_WHEEL = (
     or IS_MAC_INTEL
 )
 
+# Windows on ARM: pyarrow (via datasets), sqlite-vec and tiktoken have never
+# published a win_arm64 wheel at any version, so the full stack cannot be installed
+# on a native ARM64 interpreter -- uv falls through to a source build and dies on
+# CMake (issue #8495). Linux aarch64 is unaffected: every pin resolves there.
+# sysconfig, not platform.machine(): this has to describe the wheels THIS
+# interpreter accepts, and an x64 CPython emulated on an ARM64 box (the supported
+# configuration, which install.ps1 goes out of its way to obtain) reports
+# win-amd64 here while the host is still arm64.
+IS_WINDOWS_ARM64_PYTHON = IS_WINDOWS and sysconfig.get_platform().lower() == "win-arm64"
+
 # ── ROCm / AMD GPU support ─────────────────────────────────────────────────────
 # Detected ROCm (major, minor) -> best PyTorch wheel tag on
 # download.pytorch.org. Checked newest-first (>=).
@@ -3331,6 +3341,33 @@ def _infer_no_torch() -> bool:
 
 NO_TORCH = _infer_no_torch()
 
+
+def _infer_no_datasets() -> bool:
+    """Whether to run the ARM64 inference-only tier (no datasets/pyarrow).
+
+    Same precedence and the same reasons as _infer_no_torch: UNSLOTH_NO_DATASETS
+    (install.ps1 exports it when it could not obtain an x64 interpreter) -> the tier
+    recorded in this venv's manifest/marker -> platform detection, so a plain
+    ``unsloth studio update`` on a native ARM64 interpreter stays in the tier instead
+    of re-adding datasets and failing on pyarrow again (issue #8495).
+
+    Platform detection deliberately reads the interpreter, not the host: on Windows
+    on ARM the supported configuration is an emulated x64 CPython, which resolves
+    everything and must NOT land in this tier.
+
+    Evaluated at import, before install_python_stack() drops the manifest.
+    """
+    env = os.environ.get("UNSLOTH_NO_DATASETS")
+    if env is not None and env.strip():
+        return env.strip().lower() in install_manifest.NO_TORCH_TRUTHY
+    recorded = install_manifest.recorded_no_datasets()
+    if recorded is not None:
+        return recorded
+    return IS_WINDOWS_ARM64_PYTHON
+
+
+NO_DATASETS = _infer_no_datasets()
+
 # UNSLOTH_TORCH_BACKEND is set by install.sh after get_torch_index_url() ("cuda", "rocm",
 # "cpu"; empty = standalone `studio update`, where we re-detect).
 _TORCH_BACKEND: str = os.environ.get("UNSLOTH_TORCH_BACKEND", "").lower()
@@ -3403,6 +3440,19 @@ LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-git
 _MLX_OVERRIDES = SINGLE_ENV / "overrides-darwin-arm64.txt"
 if IS_MAC_ARM and _MLX_OVERRIDES.is_file() and "UV_OVERRIDE" not in os.environ:
     os.environ["UV_OVERRIDE"] = _uv_safe_path(_MLX_OVERRIDES)
+# Windows on ARM: several pins predate their win_arm64 wheel (pandas 2.3.3, pymupdf
+# 1.27.x, av<16), so the tier lifts them to the first release that has one. An
+# override rather than a constraint, for the same reason as the MLX file: the pins
+# live in constraints.txt and studio.txt, and a -c constraint cannot raise a floor
+# those files set. Only the ARM64 tier reads it, so x64 Windows is untouched.
+_WIN_ARM64_OVERRIDES = SINGLE_ENV / "overrides-win-arm64.txt"
+if (
+    NO_DATASETS
+    and IS_WINDOWS_ARM64_PYTHON
+    and _WIN_ARM64_OVERRIDES.is_file()
+    and "UV_OVERRIDE" not in os.environ
+):
+    os.environ["UV_OVERRIDE"] = _uv_safe_path(_WIN_ARM64_OVERRIDES)
 
 # -- Unicode-safe printing ---------------------------------------------
 # On Windows the console encoding may be a legacy code page (e.g. CP1252)
@@ -3626,6 +3676,36 @@ NO_TORCH_SKIP_PACKAGES = {
     "torch-c-dlpack-ext",
     "openai-whisper",
     "librosa",
+}
+
+# Packages with no win_arm64 wheel at any version, dropped by the ARM64
+# inference-only tier. datasets is the one that matters -- it is pyarrow's only
+# route into the stack -- and trl follows it because trl requires datasets
+# unconditionally. sqlite-vec (RAG) and tiktoken have never shipped win_arm64
+# either; both already degrade cleanly at runtime (storage/rag_db.py sets
+# RAG_AVAILABLE = False), which is why they can be dropped rather than blocking
+# the whole install. Training is unavailable in this tier by construction.
+# Every one of these is a compiled package with no win_arm64 wheel at any version,
+# verified against PyPI, and every one of them already degrades at runtime:
+#   datasets   - pyarrow's only route into the stack; training needs it, chat does not
+#   trl        - requires datasets unconditionally, so it follows datasets out
+#   sqlite-vec - RAG; storage/rag_db.py already sets RAG_AVAILABLE = False without it
+#   tiktoken   - reached only through transformers/data-designer, never imported here
+#   hf-transfer- download accelerator; the hub paths already force it off (hub/services/
+#                download_lifecycle.py sets HF_HUB_ENABLE_HF_TRANSFER=0)
+#   ddgs       - web search; pulls brotli, which has no win_arm64 wheel either. The one
+#                import site (core/inference/tools.py) is function-local under except
+#   pandas     - only the 3.0 line has win_arm64 wheels and studio.txt pins 2.3.3 on
+#                purpose, so drop it rather than lift a pin across a major. Its callers
+#                are Data Recipes, which need datasets and are unavailable here anyway
+NO_DATASETS_SKIP_PACKAGES = {
+    "datasets",
+    "trl",
+    "sqlite-vec",
+    "tiktoken",
+    "hf-transfer",
+    "ddgs",
+    "pandas",
 }
 
 
@@ -3988,6 +4068,9 @@ def pip_install(
     if actual_req is not None and NO_TORCH and NO_TORCH_SKIP_PACKAGES:
         actual_req = _filter_requirements(actual_req, NO_TORCH_SKIP_PACKAGES)
         temp_reqs.append(actual_req)
+    if actual_req is not None and NO_DATASETS and NO_DATASETS_SKIP_PACKAGES:
+        actual_req = _filter_requirements(actual_req, NO_DATASETS_SKIP_PACKAGES)
+        temp_reqs.append(actual_req)
     if actual_req is not None and PLATFORM_LACKS_TORCHCODEC_WHEEL:
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
         # wheel. `unsloth studio update --local` does not pass
@@ -4166,6 +4249,28 @@ def install_python_stack() -> int:
     # shell-installer handoff skips that slot only while base.txt has no work.
     _TOTAL = base_total - int(skip_base and base_requirements is None)
 
+    # Nothing has been mutated yet, which is the point of doing this here: a native
+    # ARM64 interpreter outside the inference-only tier cannot install the stack at
+    # all (pyarrow via datasets, sqlite-vec, tiktoken and hf-transfer publish no
+    # win_arm64 wheel), and failing at the door beats failing several minutes later
+    # inside a pyarrow source build with nothing but the package name to go on --
+    # which is exactly what issue #8495 reported. install.ps1 normally prevents this
+    # by resolving an x64 interpreter; this catches the paths that reach here anyway
+    # (a hand-made venv, a bare `python install_python_stack.py`).
+    if IS_WINDOWS_ARM64_PYTHON and not NO_DATASETS:
+        _safe_print(
+            "error: this is a native ARM64 Python (win-arm64), which cannot install "
+            "the Unsloth Studio stack: pyarrow (via datasets), sqlite-vec, tiktoken "
+            "and hf-transfer publish no win_arm64 wheels at any version.\n"
+            "  Fix: install x64 Python from https://www.python.org/downloads/windows/ "
+            "('Windows installer (64-bit)', not ARM64) and re-run the installer -- x64 "
+            "runs emulated and supports the whole product, training included.\n"
+            "  Or: set UNSLOTH_NO_DATASETS=1 for an ARM64 inference-only install "
+            "(chat and model downloads work; training does not).",
+            file = sys.stderr,
+        )
+        return 1
+
     # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
@@ -4182,6 +4287,9 @@ def install_python_stack() -> int:
     # pass killed part-way. Otherwise the next update sees neither, reads the
     # absent torch as a stale venv, and tries to delete the running environment.
     install_manifest.set_no_torch_marker(NO_TORCH)
+    # Same reasoning for the ARM64 inference-only tier: without a marker that
+    # outlives a killed pass, the next update re-adds datasets and dies on pyarrow.
+    install_manifest.set_no_datasets_marker(NO_DATASETS)
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't
     #    include pip by default).
@@ -4250,12 +4358,21 @@ def install_python_stack() -> int:
     if skip_base:
         # install.sh / install.ps1 already installed both core distributions.
         pass
-    elif NO_TORCH:
+    elif NO_TORCH or NO_DATASETS:
         # No-torch update path: install unsloth + unsloth-zoo, then runtime deps,
         # both with --no-deps (PyPI metadata declares torch a hard dep; avoid it).
-        _progress("base packages (no torch)")
+        #
+        # The ARM64 inference-only tier takes the same route for the same shape of
+        # reason: unsloth's released metadata also declares datasets a hard dep, so a
+        # normal install re-pulls pyarrow however the requirement files are filtered.
+        # --no-deps plus no-torch-runtime.txt is exactly "unsloth's dependencies,
+        # named explicitly", and pip_install strips the win_arm64-less ones from that
+        # file through NO_DATASETS_SKIP_PACKAGES. Torch is not skipped in this tier --
+        # it has win_arm64 CPU wheels and install.ps1 installs it separately.
+        _progress("base packages (no torch)" if NO_TORCH else "base packages (inference-only)")
         pip_install(
-            f"Updating {package_name} + unsloth-zoo (no-torch mode)",
+            f"Updating {package_name} + unsloth-zoo "
+            f"({'no-torch mode' if NO_TORCH else 'ARM64 inference-only mode'})",
             "--no-cache-dir",
             "--no-deps",
             "--upgrade-package",
@@ -4274,7 +4391,7 @@ def install_python_stack() -> int:
             "pydantic",
         )
         pip_install(
-            "Installing no-torch runtime deps",
+            "Installing no-torch runtime deps" if NO_TORCH else "Installing runtime deps",
             "--no-cache-dir",
             "--no-deps",
             req = REQ_ROOT / "no-torch-runtime.txt",
@@ -4605,6 +4722,7 @@ def install_python_stack() -> int:
             steps_total = _TOTAL,
             package_name = package_name,
             no_torch = NO_TORCH,
+            no_datasets = NO_DATASETS,
         )
         is None
     ):

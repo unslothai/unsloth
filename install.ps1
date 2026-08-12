@@ -368,6 +368,11 @@ function Install-UnslothStudio {
     # than a version, so uv never picks one of these -- but the machine may
     # already have it, and $PythonFallbackFullVersion above is what replaces it.
     $PythonSkip = @("3.13.8")
+    # Windows on ARM, set only when no x64 interpreter could be obtained: the install
+    # then drops the packages with no win_arm64 wheel (datasets/pyarrow, sqlite-vec,
+    # tiktoken, hf-transfer, ddgs, pandas) and Studio runs inference-only. Declared
+    # here so every later read is defined under Set-StrictMode.
+    $script:ArmInferenceOnly = $false
     # The entry above is skipped for one reason: it cannot `import torch`. A
     # -NoTorch install never imports it, so refusing the interpreter would send a
     # locked-down GGUF-only machine into winget/python.org recovery it may not be
@@ -2195,8 +2200,18 @@ exit 0
     function Install-PythonFromPythonOrg {
         # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
         param([string]$Arch = "")
-        # python.org ships one installer per architecture.
-        $targetArch = if ($Arch) { $Arch } else { Get-TauriDiagArch }
+        # python.org ships one installer per architecture. An ARM64 host defaults to
+        # x64 rather than to its own arch: pyarrow (via datasets), hf-transfer,
+        # sqlite-vec and tiktoken publish no win_arm64 wheel, so a native ARM64 CPython
+        # bootstrapped here is one the caller has to turn round and replace. -Arch still
+        # forces either build, which is how the ARM64 inference-only tier asks for arm64.
+        $targetArch = if ($Arch) {
+            $Arch
+        } elseif ((Get-HostMachineArch) -eq "arm64") {
+            "x86_64"
+        } else {
+            Get-TauriDiagArch
+        }
         $archSuffix = switch ($targetArch) {
             "x86_64" { "-amd64" }
             "arm64"  { "-arm64" }
@@ -2403,11 +2418,20 @@ exit 0
             $DetectedPython = $X64Python
             step "python" "using x64 Python $($DetectedPython.Version) under emulation"
         } else {
+            # No x64 interpreter is obtainable, so the full stack cannot be installed
+            # here at all -- pyarrow (via datasets), sqlite-vec and tiktoken have never
+            # published a win_arm64 wheel at any version. Carrying on into
+            # `uv pip install unsloth` only buys a source build that fails on CMake
+            # minutes later (issue #8495), so switch to the ARM64 inference-only tier,
+            # which drops exactly those packages. Training needs datasets and so stays
+            # unavailable; UNSLOTH_NO_DATASETS carries the choice into setup.ps1.
+            $script:ArmInferenceOnly = $true
+            $env:UNSLOTH_NO_DATASETS = "1"
             Write-StudioLine "[WARN] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Yellow
-            Write-StudioLine "       Continuing with ARM64 Python $($DetectedPython.Version), but the install is likely to fail:" -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels and will be" -ForegroundColor Yellow
-            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-StudioLine "       Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
+            Write-StudioLine "       Installing in inference-only mode on ARM64 Python $($DetectedPython.Version):" -ForegroundColor Yellow
+            Write-StudioLine "       chat, model downloads and image/video generation work; training does not," -ForegroundColor Yellow
+            Write-StudioLine "       because pyarrow (via datasets) ships no win_arm64 wheel and cannot be built." -ForegroundColor Yellow
+            Write-StudioLine "       For the full product install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
             Write-StudioLine "       (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
         }
     }
@@ -3002,6 +3026,31 @@ exit 0
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
+    }
+
+    # ── Windows on ARM: a migrated environment never met the x64 swap ──
+    # The swap above only ever runs over a freshly *selected* interpreter, so a venv
+    # built by an older installer (legacy .venv, or the CWD-relative one) arrives here
+    # still ARM64 and cannot resolve pyarrow. Ask the venv interpreter itself rather
+    # than reading the host arch, which an emulated x64 process also reports as arm64.
+    # A mismatch is set aside through the existing rollback path, so the fresh-venv
+    # branch below rebuilds from $DetectedPython and a failed reinstall is restorable.
+    if ($_Migrated -and (Get-HostMachineArch) -eq "arm64" -and (Test-Path -LiteralPath $VenvPython)) {
+        $migratedTag = Get-PythonPlatformTag $VenvPython
+        $wantedTag = if ($script:ArmInferenceOnly) { "win-arm64" } else { "win-amd64" }
+        if ($migratedTag -ne $wantedTag) {
+            $migratedTagLabel = if ($migratedTag) { $migratedTag } else { "unreadable" }
+            substep "migrated environment is $migratedTagLabel, this install needs $wantedTag -- rebuilding" "Yellow"
+            try {
+                Start-StudioVenvRollback -ExistingDir $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] Could not set aside the migrated environment: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not set aside the migrated environment")
+            }
+            # The tree is gone, so this is a fresh install again: $_Migrated also selects
+            # the migrated-env upgrade path further down, which would skip base packages.
+            $_Migrated = $false
+        }
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
@@ -4350,6 +4399,19 @@ exit 0
                 if ($NoTorchReq) {
                     $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
+            }
+        } elseif ($script:ArmInferenceOnly) {
+            # ARM64 inference-only: unsloth's released metadata declares datasets a hard
+            # dependency, so a normal install pulls pyarrow in however the requirement
+            # files are filtered. --no-deps plus no-torch-runtime.txt (which
+            # install_python_stack.py installs, minus the packages with no win_arm64
+            # wheel) is the same route no-torch already takes. Torch is NOT skipped: it
+            # publishes win_arm64 CPU wheels and was installed above.
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (arm64 inference-only)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }
+            if ($baseInstallExit -eq 0) {
+                # Same pydantic-with-deps trick as the no-torch branch: under --no-deps
+                # pydantic and pydantic-core drift apart and fail pydantic's own check.
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
         } elseif ($StudioLocalInstall) {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.15" "unsloth-zoo>=2026.8.10" }

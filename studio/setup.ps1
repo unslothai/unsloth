@@ -3215,6 +3215,31 @@ function Test-IsConda {
     return $false
 }
 
+# The interpreter's own wheel platform: win-amd64|win-arm64|win32|"". -S so a
+# sitecustomize banner cannot be read as the tag (install.ps1 carries the same
+# helper; tests/python/test_cross_platform_parity.py holds the two together).
+function Get-PythonPlatformTag {
+    param([string]$Exe)
+    try {
+        return (& $Exe -S -c "import sysconfig; print(sysconfig.get_platform())" 2>$null | Out-String).Trim().ToLowerInvariant()
+    } catch { return "" }
+}
+
+# Windows on ARM: pyarrow (via datasets), sqlite-vec and tiktoken have never
+# published a win_arm64 wheel, so only an x64 interpreter -- emulated, which is
+# fine -- can carry the full stack. install.ps1 already prefers x64 when it picks
+# an interpreter; every path here instead *reuses* one, so it has to re-ask.
+# Ask the interpreter, never the host: an emulated x64 process on an ARM64 box
+# still reports arm64 for the host. The ARM64 inference-only tier deliberately
+# runs on win-arm64 and so is exempt.
+$NoDatasetsMode = ($env:UNSLOTH_NO_DATASETS -eq "1")
+function Test-CompatibleSetupPythonArch {
+    param([string]$Exe)
+    if ((Get-HostMachineArch) -ne "arm64") { return $true }
+    if ($script:NoDatasetsMode) { return $true }
+    return ((Get-PythonPlatformTag $Exe) -eq "win-amd64")
+}
+
 # 1g. Python (>= 3.11 and < 3.14). Prefer the interpreter install.ps1 already
 # resolved and built the venv with (UNSLOTH_SETUP_PYTHON), or the existing
 # venv python, before re-probing a system where a 3.14 or a WindowsApps stub
@@ -3276,6 +3301,19 @@ $ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
+        # An ARM64 environment cannot be repaired from here -- setup only updates
+        # packages inside the venv it is handed, and every update it would run ends
+        # in the same source build of pyarrow (issue #8495). Say so instead of
+        # spending several minutes arriving at "install unsloth failed: pyarrow".
+        if (-not (Test-CompatibleSetupPythonArch $ReusedSetupPython)) {
+            Write-StudioLine "[ERROR] This environment was built with ARM64 Python ($(Get-PythonPlatformTag $ReusedSetupPython))." -ForegroundColor Red
+            Write-StudioLine "        pyarrow (via datasets), sqlite-vec and tiktoken publish no win_arm64 wheels," -ForegroundColor Yellow
+            Write-StudioLine "        so the stack cannot be installed or updated here." -ForegroundColor Yellow
+            Write-StudioLine "        Fix: re-run the installer to rebuild it with x64 Python (it runs emulated):" -ForegroundColor Yellow
+            Write-StudioLine "             irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Write-StudioLine "        Or set UNSLOTH_NO_DATASETS=1 for an ARM64 inference-only install (no training)." -ForegroundColor Yellow
+            Exit-SetupFailure "Environment uses ARM64 Python, which cannot install the Studio stack"
+        }
         $DetectedPyVer = $_reusedVer
         Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
@@ -3295,16 +3333,22 @@ foreach ($PyLauncher in $PyLaunchers) {
         try {
             $out = & $PyLauncher.Source "-$minor" --version 2>&1 | Out-String
             if ($out -match 'Python (3\.\d+\.\d+)') {
-                $DetectedPyVer = $Matches[1]
+                $_candidateVer = $Matches[1]
                 # Make `python` resolvable for the rest of setup. Without this,
                 # py-launcher-only installs (no python.exe on PATH) pass the gate
                 # and then crash on the first bare `python` call below.
+                $resolvedExe = $null
                 try {
                     $resolvedExe = (& $PyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
-                    if ($resolvedExe -and (Test-Path $resolvedExe)) {
-                        Add-PythonDirToProcessPath $resolvedExe
-                    }
                 } catch { }
+                # Windows on ARM: skip a native ARM64 build and keep looking. The
+                # launcher hands out the native one first, and it cannot resolve the
+                # stack; a lower-priority x64 minor is worth more than the newest ARM64.
+                if ($resolvedExe -and -not (Test-CompatibleSetupPythonArch $resolvedExe)) { continue }
+                $DetectedPyVer = $_candidateVer
+                if ($resolvedExe -and (Test-Path $resolvedExe)) {
+                    Add-PythonDirToProcessPath $resolvedExe
+                }
                 $PythonOk = $true
                 break
             }
@@ -3318,8 +3362,13 @@ if (-not $PythonOk -and $HasPython) {
     if ($PyVer -match "(\d+)\.(\d+)") {
         $PyMajor = [int]$Matches[1]; $PyMinor = [int]$Matches[2]
         if ($PyMajor -eq 3 -and $PyMinor -ge 11 -and $PyMinor -lt 14) {
-            $DetectedPyVer = "$PyMajor.$PyMinor"
-            $PythonOk = $true
+            # Same ARM64 screen as the launcher loop above: a supported version is
+            # not enough on Windows on ARM, the build has to be x64.
+            $_barePython = (Get-Command python -ErrorAction SilentlyContinue).Source
+            if (-not $_barePython -or (Test-CompatibleSetupPythonArch $_barePython)) {
+                $DetectedPyVer = "$PyMajor.$PyMinor"
+                $PythonOk = $true
+            }
         }
     }
 }
@@ -3334,7 +3383,16 @@ if ($PythonOk) {
     Write-StudioLine "Python 3.11-3.13 not found -- installing Python 3.12 via winget..." -ForegroundColor Yellow
     $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
     if ($HasWinget) {
-        winget install -e --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
+        # On an ARM64 host winget defaults to the ARM64 package, which cannot resolve
+        # pyarrow/sqlite-vec/tiktoken. --architecture x64 pulls the emulated build that
+        # can, matching install.ps1's Install-X64Python. The inference-only tier wants
+        # the native build, so it takes winget's default.
+        $_wingetArchArgs = @()
+        if ((Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+            $_wingetArchArgs = @("--architecture", "x64")
+            substep "windows on arm: installing x64 Python (no win_arm64 wheels for the stack)"
+        }
+        winget install -e --id Python.Python.3.12 --source winget @_wingetArchArgs --accept-package-agreements --accept-source-agreements
         Refresh-Environment
     }
     $HasPython = $null -ne (Get-Command python -ErrorAction SilentlyContinue)
@@ -3653,7 +3711,11 @@ if ($ReusedSetupPython) {
         $out = & $ReusedSetupPython --version 2>&1 | Out-String
         if ($out -match 'Python 3\.(\d+)') {
             $pyMinor = [int]$Matches[1]
-            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython)) {
+            # Arch as well as version: the 1g gate above already exits on an ARM64
+            # environment, so this only catches a handoff that skipped it, but the two
+            # reuse sites must agree or the second silently re-admits what the first rejected.
+            if ($pyMinor -ge 11 -and $pyMinor -le 13 -and -not (Test-IsConda $ReusedSetupPython) `
+                -and (Test-CompatibleSetupPythonArch $ReusedSetupPython)) {
                 $PythonCmd = $ReusedSetupPython
             }
         }
@@ -3676,7 +3738,10 @@ foreach ($pyLauncher in $PyLaunchersResolve) {
                     # Resolve the actual executable path so venv creation
                     # does not re-resolve back to a conda interpreter.
                     $resolvedExe = (& $pyLauncher.Source "-$minor" -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe)) {
+                    # Test-CompatibleSetupPythonArch keeps the search going past a
+                    # native ARM64 build; on every other host it is always true.
+                    if ($resolvedExe -and (Test-Path $resolvedExe) -and -not (Test-IsConda $resolvedExe) `
+                        -and (Test-CompatibleSetupPythonArch $resolvedExe)) {
                         $PythonCmd = $resolvedExe
                         break
                     }
@@ -3702,7 +3767,7 @@ if (-not $PythonCmd) {
                 $ver = & $cmdInfo.Source --version 2>&1
                 if ($ver -match 'Python 3\.(\d+)') {
                     $minor = [int]$Matches[1]
-                    if ($minor -ge 11 -and $minor -le 13) {
+                    if ($minor -ge 11 -and $minor -le 13 -and (Test-CompatibleSetupPythonArch $cmdInfo.Source)) {
                         $PythonCmd = $cmdInfo.Source
                         break
                     }
@@ -3715,8 +3780,17 @@ if (-not $PythonCmd) {
 
 if (-not $PythonCmd) {
     Write-StudioLine "[ERROR] No standalone Python 3.11-3.13 found (conda Python is not supported)." -ForegroundColor Red
-    Write-StudioLine "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
-    Write-StudioLine "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
+    if ((Get-HostMachineArch) -eq "arm64" -and -not $NoDatasetsMode) {
+        # Naming the arch here matters: an ARM64 Python may well be installed and
+        # was skipped on purpose, so "not found" alone reads as a false negative.
+        Write-StudioLine "        On Windows on ARM an x64 build is required: pyarrow (via datasets)," -ForegroundColor Yellow
+        Write-StudioLine "        sqlite-vec and tiktoken publish no win_arm64 wheels. x64 runs emulated." -ForegroundColor Yellow
+        Write-StudioLine "        Install Python from https://python.org/downloads/windows/ (64-bit, not ARM64) or via:" -ForegroundColor Yellow
+        Write-StudioLine "        winget install -e --id Python.Python.3.12 --architecture x64" -ForegroundColor Yellow
+    } else {
+        Write-StudioLine "        Install Python from https://python.org/downloads/ or via:" -ForegroundColor Yellow
+        Write-StudioLine "        winget install -e --id Python.Python.3.12" -ForegroundColor Yellow
+    }
     Exit-SetupFailure "No standalone Python 3.11-3.13 was found"
 }
 

@@ -993,3 +993,75 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestWindowsArm64WheelGapParity:
+    """Windows on ARM has no win_arm64 wheel for pyarrow (via datasets), sqlite-vec,
+    tiktoken or hf-transfer, so the full stack needs an x64 interpreter -- emulated,
+    which resolves everything. install.ps1 has preferred x64 since #7549; the paths
+    that REUSE an interpreter did not, which is how issue #8495 still happened.
+
+    The four scripts have to agree on that rule or the gap reopens in whichever one
+    drifts, so each is pinned here rather than only in its own file's tests."""
+
+    def test_both_windows_scripts_probe_the_interpreter_not_the_host(self):
+        """sysconfig.get_platform(), not PROCESSOR_ARCHITECTURE: the supported
+        configuration is an x64 CPython on an ARM64 box, where the host arch is
+        arm64 and the answer that matters is win-amd64."""
+        for path in (INSTALL_PS1, SETUP_PS1):
+            source = path.read_text(encoding = "utf-8")
+            assert "function Get-PythonPlatformTag" in source, path.name
+            index = source.index("function Get-PythonPlatformTag")
+            body = source[index : index + 600]
+            assert "sysconfig.get_platform()" in body, path.name
+            # -S, or a sitecustomize banner is read as the platform tag.
+            assert '-S -c "import sysconfig' in body, path.name
+
+    def test_python_stack_preflights_before_mutating_the_venv(self):
+        """Defence in depth for the paths that reach the installer directly (a
+        hand-made venv, a bare `python install_python_stack.py`)."""
+        source = STACK_PY.read_text(encoding = "utf-8")
+        assert "IS_WINDOWS_ARM64_PYTHON" in source
+        preflight = source.index("if IS_WINDOWS_ARM64_PYTHON and not NO_DATASETS:")
+        drop_manifest = source.index("install_manifest.remove_manifest()")
+        assert preflight < drop_manifest, "preflight must run before the venv is touched"
+
+    def test_every_script_names_the_same_fix(self):
+        """A message that says only "failed" sends the reporter back to the issue
+        tracker; each of these has to name x64 Python."""
+        for path in (INSTALL_PS1, SETUP_PS1, STACK_PY):
+            source = path.read_text(encoding = "utf-8").lower()
+            assert "python.org/downloads/windows" in source, path.name
+            assert "x64" in source, path.name
+
+    def test_tier_flag_crosses_every_boundary(self):
+        """install.ps1 decides the tier, setup.ps1 and install_python_stack.py have
+        to honour it, and the marker keeps `unsloth studio update` inside it."""
+        assert 'UNSLOTH_NO_DATASETS = "1"' in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert 'UNSLOTH_NO_DATASETS' in SETUP_PS1.read_text(encoding = "utf-8")
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert 'os.environ.get("UNSLOTH_NO_DATASETS")' in stack
+        assert "install_manifest.recorded_no_datasets()" in stack
+        assert "set_no_datasets_marker" in stack
+
+    def test_install_sh_rejects_a_python_that_cannot_resolve_the_stack(self):
+        """The Linux half of #8495: --python was never range-checked, so an
+        unsupported minor surfaced as a bare "pyarrow" from the resolver."""
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_req_minor" in source
+        index = source.index("is not supported by Unsloth Studio")
+        message = source[index - 400 : index + 500]
+        assert "pyarrow" in message
+        # 3.10 still resolves the whole set today, so the floor is 10, not 11.
+        assert '"$_req_minor" -lt 10' in message
+
+    def test_linux_arm64_is_not_swept_up(self):
+        """aarch64 Linux has full wheel coverage and must keep installing natively;
+        only Windows may demand an x64 interpreter."""
+        for path in (INSTALL_PS1, SETUP_PS1):
+            source = path.read_text(encoding = "utf-8")
+            index = source.index("Test-CompatibleSetupPythonArch") if path is SETUP_PS1 else source.index("windows on arm: only a native ARM64")
+            assert 'Get-HostMachineArch' in source[max(0, index - 2000) : index + 2000]
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        gap = stack.index("IS_WINDOWS_ARM64_PYTHON = ")
+        assert "IS_WINDOWS and" in stack[gap : gap + 200]

@@ -181,6 +181,11 @@ if _backend_dir not in sys.path:
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
+# Cheap and import-safe without the library present: find_spec only, no datasets import.
+from utils.datasets_availability import (
+    datasets_available,
+    unavailable_detail as datasets_unavailable_detail,
+)
 
 activate_native_tls()
 
@@ -1476,6 +1481,14 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
+            # An install without the datasets library cannot train on ANY device, so
+            # this outranks whatever the hardware pass concluded -- on the ARM64
+            # inference-only tier a CPU/GPU verdict of "training available" would be
+            # a lie the UI acts on. Applied here rather than inside detect_hardware
+            # because every training-capable branch there returns early, and this is
+            # the one place the verdict is published (issue #8495).
+            if not datasets_available():
+                return True, "datasets_unavailable", datasets_unavailable_detail()
             return chat_only, reason, detail
     return None
 

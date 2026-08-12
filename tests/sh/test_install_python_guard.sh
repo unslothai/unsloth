@@ -257,6 +257,64 @@ assert_eq "a recreate that works still replaces the environment" \
 
 rm -f "$_HELPERS" "$_GUARD" "$_DRIVER"
 
+# ── The --python / UNSLOTH_PYTHON range gate (#8495) ──
+# The version was never range-checked, so an unsupported minor reached `uv venv`
+# and failed minutes later inside dependency resolution with a bare "pyarrow"
+# (constraints.txt pins pyarrow==23.0.1, which has no cp39 wheel on any platform;
+# matplotlib, pymupdf, pymupdf4llm and fastmcp are 3.10+ too).
+#
+# The check is inline argument parsing, not a function, so run the real prefix of
+# install.sh: everything up to the Tauri helpers, which is before any network or
+# filesystem work. A copy of the logic here could not catch it moving.
+# The real block, extracted like every other test here: it is inline argument
+# validation rather than a function, so it is pulled out by its own first and last
+# lines and driven with _USER_PYTHON pre-set. A reimplementation would keep passing
+# after install.sh changed, which is the failure mode this file exists to avoid.
+_GATE=$(mktemp)
+{
+    printf '_USER_PYTHON="$1"\n'
+    awk '/^if \[ -n "\$_USER_PYTHON" \]; then$/{f=1} f{print} f && /^fi$/{exit}' "$INSTALL_SH"
+} > "$_GATE"
+grep -q '_req_minor' "$_GATE" || { echo "  FAIL: could not extract the python range gate"; FAIL=$((FAIL + 1)); }
+
+run_python_gate() {  # version -> "rejected" | "accepted"
+    if sh "$_GATE" "$1" >/dev/null 2>&1; then echo "accepted"; else echo "rejected"; fi
+}
+
+assert_eq "3.9 is rejected before uv is asked for a venv" \
+    "rejected" "$(run_python_gate 3.9)"
+assert_eq "2.7 is rejected" \
+    "rejected" "$(run_python_gate 2.7)"
+# 3.10 resolves the whole studio set today, so it stays allowed even though the
+# Windows installer's own floor is 3.11.
+assert_eq "3.10 is still allowed" \
+    "accepted" "$(run_python_gate 3.10)"
+assert_eq "3.13 is allowed" \
+    "accepted" "$(run_python_gate 3.13)"
+# Newer than tested is a warning, not a failure: unproven is not known-broken.
+assert_eq "3.14 warns but continues" \
+    "accepted" "$(run_python_gate 3.14)"
+# Not versions at all, and not this gate's business.
+assert_eq "an explicit interpreter path passes through" \
+    "accepted" "$(run_python_gate /usr/bin/python3.12)"
+assert_eq "a uv download name passes through" \
+    "accepted" "$(run_python_gate cpython-3.12-linux-aarch64-none)"
+assert_eq "a prerelease string passes through instead of aborting dash" \
+    "accepted" "$(run_python_gate 3.13rc1)"
+assert_eq "an empty request is left to the default" \
+    "accepted" "$(run_python_gate "")"
+
+case "$(sh "$_GATE" 3.9 2>&1 || true)" in
+    *pyarrow*) assert_eq "the rejection message names pyarrow" "yes" "yes" ;;
+    *) assert_eq "the rejection message names pyarrow" "yes" "no" ;;
+esac
+case "$(sh "$_GATE" 3.14 2>&1 || true)" in
+    *WARNING*) assert_eq "3.14 says why it is unproven" "yes" "yes" ;;
+    *) assert_eq "3.14 says why it is unproven" "yes" "no" ;;
+esac
+
+rm -f "$_GATE"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

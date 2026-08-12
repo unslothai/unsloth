@@ -34,8 +34,15 @@ from hub.schemas.downloads import (
     TransportStatusResponse,
 )
 from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
+from utils.datasets_availability import require_datasets_http
 
-router = APIRouter()
+# Every endpoint here reads or writes a Hugging Face dataset, so the gate is on the
+# router rather than repeated per route. It only ever fires in the ARM64
+# inference-only tier, where the datasets library is not installed at all
+# (issue #8495); anywhere else datasets_available() is True and this costs a dict
+# lookup. Without it each of these answers 500 from a lazy `from datasets import`
+# several frames down.
+router = APIRouter(dependencies = [Depends(require_datasets_http)])
 
 
 @router.post("/upload", response_model = UploadDatasetResponse)

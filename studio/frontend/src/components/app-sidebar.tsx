@@ -638,11 +638,16 @@ export function AppSidebar() {
         chatOnlyDetail
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
-      : chatOnlyReason === "intel_mac"
-        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
-        : chatOnlyReason === "no_gpu"
-          ? "Training needs an NVIDIA or AMD GPU."
-          : undefined;
+      : chatOnlyReason === "datasets_unavailable"
+        ? // ARM64 Windows inference-only install: the datasets library (and pyarrow
+          // under it) has no wheel for this architecture, so training is missing its
+          // data layer whatever the GPU says. The fix is an x64 Python, not hardware.
+          "Training needs the datasets library, which has no native ARM64 Windows build. Reinstall with x64 Python (it runs emulated) to enable Train."
+        : chatOnlyReason === "intel_mac"
+          ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+          : chatOnlyReason === "no_gpu"
+            ? "Training needs an NVIDIA or AMD GPU."
+            : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
