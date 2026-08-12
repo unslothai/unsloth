@@ -24,6 +24,7 @@ from core.training.diffusion_train_extras import (
 from core.training.diffusion_train_common import (
     DiffusionLoraConfig,
     FAMILY_TRAIN_DEFAULTS,
+    _LR_SCHEDULERS,
     train_defaults,
 )
 
@@ -236,6 +237,42 @@ def test_flow_families_carry_warmup_presets():
         assert train_defaults(family)["lr_warmup_steps"] > 0
     # Families without a measured warmup preset keep their previous defaults untouched.
     assert "lr_warmup_steps" not in FAMILY_TRAIN_DEFAULTS["sdxl"]
+
+
+# diffusers' get_scheduler returns before it reads num_warmup_steps for these, so a warmup
+# preset paired with one of them is silently discarded.
+_SCHEDULERS_THAT_IGNORE_WARMUP = {"constant", "piecewise_constant"}
+
+
+def test_a_warmup_preset_names_a_scheduler_that_uses_it():
+    """A `lr_warmup_steps` preset only ramps if the scheduler consumes warmup. The config
+    default is `constant`, which does not, so a family that sets warmup has to carry the
+    scheduler too or the advertised ramp never happens."""
+    for family, defaults in FAMILY_TRAIN_DEFAULTS.items():
+        if not defaults.get("lr_warmup_steps"):
+            continue
+        scheduler = defaults.get("lr_scheduler", DiffusionLoraConfig.lr_scheduler)
+        assert scheduler not in _SCHEDULERS_THAT_IGNORE_WARMUP, (
+            f"{family} advertises lr_warmup_steps={defaults['lr_warmup_steps']} with "
+            f"lr_scheduler={scheduler!r}, which ignores it"
+        )
+        assert scheduler in _LR_SCHEDULERS, f"{family} names an unknown scheduler {scheduler!r}"
+
+
+def test_warmup_presets_survive_into_a_built_config():
+    """What /training/diffusion/info advertises has to be constructible as-is."""
+    for family, defaults in FAMILY_TRAIN_DEFAULTS.items():
+        if not defaults.get("lr_warmup_steps"):
+            continue
+        cfg = _cfg(**train_defaults(family))
+        assert cfg.lr_warmup_steps == defaults["lr_warmup_steps"]
+        assert cfg.lr_scheduler not in _SCHEDULERS_THAT_IGNORE_WARMUP
+
+
+def test_families_without_a_warmup_preset_keep_the_constant_scheduler():
+    for family in ("sdxl", "z-image", "krea-2"):
+        assert "lr_warmup_steps" not in FAMILY_TRAIN_DEFAULTS[family]
+        assert "lr_scheduler" not in FAMILY_TRAIN_DEFAULTS[family]
 
 
 def _cfg(**kw):

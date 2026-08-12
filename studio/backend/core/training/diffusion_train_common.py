@@ -499,12 +499,21 @@ def get_trainer(family: str) -> Callable[..., str]:
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
     # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big flow-matching DiTs.
-    "flux.1": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512, "lr_warmup_steps": 20},
+    # The scheduler travels with the ramp: diffusers' "constant" builds without ever reading num_warmup_steps, so a
+    # warmup preset alone is silently discarded.
+    "flux.1": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
+    },
     "qwen-image": {
         "lora_rank": 16,
         "learning_rate": 5e-5,
         "resolution": 512,
         "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
@@ -515,12 +524,14 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "learning_rate": 1e-4,
         "resolution": 512,
         "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
     },
     "flux.2-dev": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
         "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
     },
     # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
     # resolution must be a multiple of 32 (its VAE's spatial compression), and 512 keeps a
@@ -530,6 +541,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "learning_rate": 1e-4,
         "resolution": 512,
         "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
     },
     # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
     # checkpoint generates on, so a training clip's spatial statistics land exactly on the
@@ -541,6 +553,7 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "learning_rate": 1e-4,
         "resolution": 768,
         "lr_warmup_steps": 20,
+        "lr_scheduler": "constant_with_warmup",
         "train_batch_size": 1,
     },
 }
