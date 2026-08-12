@@ -87,6 +87,16 @@ def _configure_windows(
     monkeypatch.setattr(studio, "_windows_hidden_subprocess_kwargs", lambda: {})
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: None)
+    # The runtime gate's process scan is Windows-only, so off Windows it never runs and
+    # nothing here noticed it was unstubbed. On a real Windows host it shells out to
+    # powershell.exe through the same subprocess.run these tests replace, then reads
+    # .stdout off a fake that only carries a returncode, and every test in this file
+    # dies before reaching what it meant to assert.
+    monkeypatch.setattr(
+        studio._studio_runtime_gate,
+        "ensure_managed_environment_is_idle",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio_home")
     for name in (
         "SKIP_STUDIO_BASE",
