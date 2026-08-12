@@ -252,6 +252,7 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -354,6 +355,7 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -439,6 +441,7 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
     tp_mod = sys.modules.setdefault("state.tool_policy", types.ModuleType("state.tool_policy"))
     tp_mod.set_tool_policy = lambda *a, **k: None
+    tp_mod.set_tool_policy_default = lambda *a, **k: None
     state_mod.tool_policy = tp_mod
 
     # Force the health check to fail so startup aborts after run_server().
@@ -494,6 +497,7 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     state_mod = types.ModuleType("state")
     tp_mod = types.ModuleType("state.tool_policy")
     tp_mod.set_tool_policy = lambda value: calls.append(("policy", value))
+    tp_mod.set_tool_policy_default = lambda value: calls.append(("policy_default", value))
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
@@ -509,4 +513,9 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
     result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
 
     assert result.exit_code == 1, result.output
-    assert calls[:2] == [("policy", False), ("run_server", None)]
+    # Default first, then the explicit override, both before the server starts.
+    assert calls[:3] == [
+        ("policy_default", True),
+        ("policy", False),
+        ("run_server", None),
+    ]

@@ -1571,9 +1571,10 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
-        "/v1/messages takes the on direction per request (enable_tools) because it has no "
-        "confirmation channel; the off direction still applies everywhere.",
+        "every request. Default: on for every bind, with a request's own "
+        "enable_tools: false (what the per-chat UI toggle sends) honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has "
+        "no confirmation channel; the off direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -2093,9 +2094,10 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind. /v1/messages takes the on "
-            "direction per request (enable_tools) because it has no confirmation "
-            "channel; the off direction still applies everywhere."
+            "every request. Default: on for every bind, with a request's own "
+            "enable_tools: false (what the Studio UI sends) honored. /v1/messages "
+            "takes the on direction per request (enable_tools) because it has no "
+            "confirmation channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
@@ -2380,9 +2382,11 @@ def run(
             )
         host = "127.0.0.1"
 
-    # Tool policy no longer depends on the bind: tools default on everywhere
-    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
-    # so the re-exec'd child inherits a concrete decision.
+    # Tool policy does not depend on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). With no flag
+    # this stays None, so the default applies without becoming an override and a
+    # request's own enable_tools: false is honored. Resolve here so the re-exec'd
+    # child inherits the same decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -2500,10 +2504,11 @@ def run(
             args.append("--api-only")
         if silent:
             args.append("--silent")
-        # Forward the resolved tool policy so the child doesn't re-resolve.
-        if enable_tools:
+        # Forward the resolved tool policy so the child doesn't re-resolve. None
+        # forwards neither flag: the child then leaves the policy unset too.
+        if enable_tools is True:
             args.append("--enable-tools")
-        else:
+        elif enable_tools is False:
             args.append("--disable-tools")
         # Forward --yes only if the user passed it; resolution no longer prompts.
         if yes:
@@ -2554,8 +2559,10 @@ def run(
     # Match the route handlers' import path: run.py adds studio/backend/ to
     # sys.path, so they import as `state.tool_policy`. Set this before
     # run_server() starts uvicorn; once sockets are bound, routes can be hit.
-    from state.tool_policy import set_tool_policy
+    # run_server() applies the same pair; both calls are idempotent.
+    from state.tool_policy import set_tool_policy, set_tool_policy_default
 
+    set_tool_policy_default(True)
     set_tool_policy(enable_tools)
 
     run_kwargs = dict(
@@ -2643,7 +2650,7 @@ def run(
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
     _is_external = is_external_host(host)
-    if not enable_tools:
+    if enable_tools is False:
         _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
     elif secure:
         _tool_notice = (

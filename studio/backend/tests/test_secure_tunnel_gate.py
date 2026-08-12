@@ -148,15 +148,21 @@ def test_run_server_accepts_enable_tools_kwarg():
 
 
 def test_tool_policy_not_auto_disabled_by_bind():
-    # Tools default on for every bind; the backend only changes the policy from
-    # an explicit --enable-tools/--disable-tools, never from host/secure.
+    # Tools default on for every bind, and no flag installs no hard override, so a
+    # request's own enable_tools: false still turns them off. The backend never
+    # changes the policy from host/secure.
     import run
-    from state.tool_policy import get_tool_policy, reset_tool_policy
+    from state.tool_policy import (
+        get_tool_policy,
+        get_tool_policy_default,
+        reset_tool_policy,
+    )
 
     for host in ("127.0.0.1", "localhost", "0.0.0.0"):
         reset_tool_policy()
         run._apply_cli_tool_policy(None)  # no flag, on any bind
-        assert get_tool_policy() is None, host  # untouched: per-request honored
+        assert get_tool_policy() is None, host  # no override: request off honored
+        assert get_tool_policy_default() is True, host  # omitted enable_tools -> on
 
     reset_tool_policy()
     run._apply_cli_tool_policy(True)  # --enable-tools: forced on
@@ -168,18 +174,34 @@ def test_tool_policy_not_auto_disabled_by_bind():
     reset_tool_policy()
 
 
+def test_apply_cli_tool_policy_is_idempotent():
+    # Both the CLI and run_server() apply the pair; re-applying must not drift.
+    import run
+    from state.tool_policy import get_tool_policy, get_tool_policy_default, reset_tool_policy
+
+    for flag in (None, True, False):
+        reset_tool_policy()
+        run._apply_cli_tool_policy(flag)
+        first = (get_tool_policy(), get_tool_policy_default())
+        run._apply_cli_tool_policy(flag)
+        assert (get_tool_policy(), get_tool_policy_default()) == first, flag
+    reset_tool_policy()
+
+
 def test_tool_policy_notice_wording():
     # The plain-server startup banner states the resolved policy for every bind.
     import run
 
-    loopback = run._tool_policy_notice("127.0.0.1", False, None)
-    assert "ENABLED by default" in loopback and "loopback" in loopback
+    # No flag: tools are on by default on every bind, and the banner says the
+    # request can still opt out.
+    for host, secure_mode in (("127.0.0.1", False), ("0.0.0.0", False), ("127.0.0.1", True)):
+        notice = run._tool_policy_notice(host, secure_mode, None)
+        assert "ENABLED by default" in notice, notice
+        assert "enable_tools: false is honored" in notice, notice
 
-    network = run._tool_policy_notice("0.0.0.0", False, None)
-    assert "ENABLED by default" in network and "network-reachable" in network
-
-    secure = run._tool_policy_notice("127.0.0.1", True, None)
-    assert "Cloudflare HTTPS tunnel" in secure
+    assert "loopback" in run._tool_policy_notice("127.0.0.1", False, None)
+    assert "network-reachable" in run._tool_policy_notice("0.0.0.0", False, None)
+    assert "Cloudflare HTTPS tunnel" in run._tool_policy_notice("127.0.0.1", True, None)
 
     assert run._tool_policy_notice("0.0.0.0", False, False) == (
         "Server-side tools are DISABLED (--disable-tools)."
