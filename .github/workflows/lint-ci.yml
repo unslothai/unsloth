@@ -23,10 +23,9 @@
 # fast-fail duplicate here would only burn cache; the dedicated
 # workflows already block merges on Rust / TS regressions.
 # The one exception is the duplicate-import rule below: it needs no
-# npm, no node and no type information, and #8470 showed that when a
-# TS2300 does land, every job that builds the frontend goes red behind
-# it, so finding it in seconds instead of inside the slowest job in
-# the matrix is worth the one step.
+# npm, node or type information, and #8470 showed a TS2300 reds every
+# job that builds the frontend, so catching it in seconds rather than
+# inside the slowest job in the matrix is worth the one step.
 
 name: Lint CI
 
@@ -173,12 +172,11 @@ jobs:
           python scripts/lint_no_parallel_clamp.py
 
       - name: No duplicate TypeScript import bindings
-        # #8470 landed a second copy of one import line in model-selector.tsx.
-        # tsc rejects it with TS2300, the frontend build fails, and every job
-        # that builds the frontend goes red behind it -- eleven of them, on
-        # main and on every open PR. eslint is not run in CI, so nothing saw
-        # it until tsc did, inside the slowest job in the matrix. Self-test
-        # first, so a regression in the rule fails before we trust it.
+        # #8470 duplicated an import line in model-selector.tsx; tsc rejects it
+        # with TS2300 and every job that builds the frontend goes red behind
+        # it. eslint is not run in CI, so nothing saw it until tsc did, inside
+        # the slowest job in the matrix. Self-test first, so a regression in
+        # the rule fails before we trust it.
         run: |
           python scripts/lint_no_duplicate_ts_imports.py --self-test
           python scripts/lint_no_duplicate_ts_imports.py
