@@ -587,6 +587,115 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     assert not any('"name"' in t for t in content_before_tool)
 
 
+def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(monkeypatch):
+    """llama-server sends reasoning in delta.reasoning_content, so content
+    alone drops it, meaning history must carry it or iteration 2 can't see it."""
+    tool_stream = [
+        _sse({"reasoning_content": "I should search "}),
+        _sse({"reasoning_content": "for the weather."}),
+        _sse({"content": "Let me check that.\n\n"}),
+    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_r")
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m
+        for m in payloads[1]["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert first_assistant["content"] == "Let me check that.\n\n"
+    assert first_assistant["reasoning_content"] == "I should search for the weather."
+
+
+def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):
+    """A reasoning only tool turn has empty content, so without the field the
+    trace left the conversation entirely."""
+    tool_stream = [
+        _sse({"reasoning_content": "I must search before answering."}),
+        _sse(
+            {
+                "content": '<tool_call>{"name":"web_search","arguments":{"query":"weather"}}</tool_call>'
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m
+        for m in payloads[1]["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert first_assistant["content"] == ""
+    assert first_assistant["reasoning_content"] == "I must search before answering."
+
+
+def test_tool_call_turn_without_reasoning_adds_no_reasoning_content(monkeypatch):
+    """Non-reasoning models keep their history unchanged."""
+    tool_stream = _structured_tool_call("web_search", {"query": "weather"}, "call_plain")
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "weather?"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m
+        for m in payloads[1]["messages"]
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "reasoning_content" not in first_assistant
+
+
 def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
     tool_stream = [
         _sse({"reasoning_content": "Need a render."}),
