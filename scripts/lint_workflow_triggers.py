@@ -114,8 +114,7 @@ def _invocation_problems(run: str) -> list[str]:
     used = [f for f in NEUTERING_FLAGS if f in run]
     if used:
         problems.append(
-            f"its lint command passes {' + '.join(used)}, so it does not "
-            "gate the live workflows"
+            f"its lint command passes {' + '.join(used)}, so it does not gate the live workflows"
         )
     return problems
 
