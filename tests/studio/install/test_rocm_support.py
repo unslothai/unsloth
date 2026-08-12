@@ -2055,8 +2055,11 @@ class TestInstallShStructure:
         source = sh_path.read_text(encoding = "utf-8")
         note = source.find('substep "AMD GPU detected, but no usable ROCm/HIP install')
         assert note != -1
+        # The window is a proximity heuristic for "the pin arm comes first", not a
+        # budget on the arms between them. #8529 added an unsupported-arch arm to the
+        # same chain, which pushed the pin check past the old 400.
         assert (
-            '[ "$_torch_index_pinned" = true ]' in source[note - 400 : note]
+            '[ "$_torch_index_pinned" = true ]' in source[note - 1400 : note]
         ), "the */cpu note must check the explicit pin before diagnosing ROCm"
         assert (
             '[ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]' in source

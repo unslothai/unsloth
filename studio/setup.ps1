@@ -2401,6 +2401,20 @@ if (-not $HasNvidiaSmi) {
             }
         } catch {}
     }
+    # GPU name → gfx arch for AMD generations ROCm PyTorch does NOT cover
+    # (unslothai#8529). Kept apart from $nameArchTable on purpose: this one is read
+    # only to WORD a message, never to select a wheel index or a prebuilt, and an
+    # entry here must never make an arch installable.
+    #
+    # RDNA 1 only, with the product names taken from LLVM's AMDGPU GFX10.1 processor
+    # table rather than guessed. AMD publishes Windows torch indexes for gfx103X,
+    # gfx110X, gfx1150, gfx1151 and gfx120X; no gfx101X index exists.
+    $unsupportedNameArchTable = @(
+        @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
+        @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT";      A = "gfx1010" }  # RDNA 1
+        @{ P = "RX 5500";                                 A = "gfx1012" }  # RDNA 1
+    )
+    $script:ROCmUnsupportedGfxArch = $null
     # ── Arch resolution: env-var override → name inference ──────────────────
     # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
     # the Adrenalin driver alone runs the per-gfx ROCm llama.cpp prebuilt (bundles its
@@ -2471,6 +2485,13 @@ if (-not $HasNvidiaSmi) {
                 $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
+            } else {
+                # Nothing mapped. The card may be a generation ROCm PyTorch never
+                # covered rather than one we failed to recognise (unslothai#8529).
+                # $script:ROCmGfxArch stays null either way, so the CPU fallback is
+                # reached by exactly the same path as before -- only the wording of
+                # the report below changes.
+                $script:ROCmUnsupportedGfxArch = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $unsupportedNameArchTable
             }
         }
     }
@@ -2637,6 +2658,18 @@ if ($HasNvidiaSmi) {
     step "gpu" "AMD ROCm ($script:ROCmGfxArch)" "Cyan"
     substep "Detected: $ROCmGpuLabel" "Cyan"
     substep "GPU PyTorch uses AMD's bundled-runtime ROCm wheels -- HIP SDK not required (optional)." "Cyan"
+    Write-StudioLine ""
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Detected, identified, and out of scope for ROCm PyTorch. Ranks above the
+    # "arch unknown" arm below because the arch is NOT unknown here, and the advice
+    # that arm gives cannot succeed on this GPU (unslothai#8529).
+    Write-StudioLine ""
+    step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- not covered by ROCm PyTorch" "Yellow"
+    substep "Detected: $ROCmGpuLabel" "Yellow"
+    substep "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so PyTorch" "Yellow"
+    substep "(training and Transformers inference) runs on CPU on this GPU. Installing the" "Yellow"
+    substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that." "Yellow"
+    substep "GGUF chat through llama.cpp does not use ROCm PyTorch and is unaffected." "Yellow"
     Write-StudioLine ""
 } elseif ($ROCmGpuLabel) {
     Write-StudioLine ""
@@ -3087,6 +3120,10 @@ if ($HasROCm) {
     # GPU training/inference works via AMD's bundled-runtime ROCm PyTorch wheels;
     # the HIP SDK is optional (only the system ROCm toolchain).
     step "rocm" "GPU via bundled ROCm wheels ($script:ROCmGfxArch) -- HIP SDK optional" "Cyan"
+} elseif ($script:ROCmUnsupportedGfxArch) {
+    # Naming the HIP SDK here would read as "install it and this resolves"; on a
+    # generation with no ROCm PyTorch wheels it never does (unslothai#8529).
+    step "rocm" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels for this arch" "Yellow"
 } elseif ($ROCmGpuLabel) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }

@@ -2882,6 +2882,42 @@ _infer_amd_gfx_arch_from_gpu_name() {
     esac
 }
 
+# GPU marketing name -> gfx arch for AMD generations ROCm PyTorch does NOT cover
+# (unslothai#8529). Deliberately NOT part of _infer_amd_gfx_arch_from_gpu_name:
+# nothing here may route to a wheel index, and these cards must keep falling back
+# to CPU. It exists so the installer can name the arch it found and say ROCm does
+# not reach it, instead of advising a ROCm/HIP SDK install that cannot succeed.
+#
+# RDNA 1 only, with the product names taken from LLVM's AMDGPU GFX10.1 processor
+# table rather than guessed. PyTorch's ROCm wheels are built for gfx90X/gfx94X/
+# gfx103X/gfx110X/gfx120X; no build targets gfx101X.
+_infer_unsupported_amd_gfx_arch_from_gpu_name() {
+    case "$1" in
+        *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
+        *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*) echo gfx1010 ;;  # RDNA 1
+        *"RX 5500"*) echo gfx1012 ;;  # RDNA 1
+        *) return 1 ;;
+    esac
+}
+
+# Linux counterpart of the lookup above: the first AMD display-class lspci line
+# naming a generation ROCm does not cover. Messaging only -- no caller may feed
+# the result into index selection.
+_infer_linux_unsupported_amd_gfx_arch() {
+    command -v lspci >/dev/null 2>&1 || return 1
+    _unsup_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+    while IFS= read -r _unsup_ln; do
+        [ -n "$_unsup_ln" ] || continue
+        if _unsup_gfx=$(_infer_unsupported_amd_gfx_arch_from_gpu_name "$_unsup_ln"); then
+            echo "$_unsup_gfx"
+            return 0
+        fi
+    done <<EOF
+$_unsup_disp
+EOF
+    return 1
+}
+
 # Best-effort gfx inference when ROCm tools can't see the GPU (unslothai#7301).
 # Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
 _infer_linux_amd_gfx_arch() {
@@ -3329,6 +3365,14 @@ get_torch_index_url() {
                [ -n "$_amd_inferred_gfx" ] && \
                _amd_arch_index_family_for_gfx "$_amd_inferred_gfx" >/dev/null 2>&1; then
                 echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
+                echo "$_base/cpu"; return
+            fi
+            # Repairing rocminfo cannot help a generation ROCm PyTorch never covered:
+            # the arch would read fine and still have no wheels (unslothai#8529). Same
+            # CPU index either way; only the advice changes.
+            if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
+                echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." >&2
+                echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not enable ROCm PyTorch." >&2
                 echo "$_base/cpu"; return
             fi
             echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
@@ -4446,8 +4490,14 @@ case "$TORCH_INDEX_URL" in
                 # skip the SDK guidance (ROCm may be perfectly healthy here).
                 substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
             elif _has_amd_rocm_gpu; then
-                substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
-                substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
+                # A generation ROCm never covered is not a missing SDK (unslothai#8529).
+                if _unsup_disp_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
+                    substep "AMD GPU detected ($_unsup_disp_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." "$C_WARN"
+                    substep "Installing the ROCm/HIP SDK will not change this. GGUF chat via llama.cpp does not use ROCm PyTorch and is unaffected." "$C_WARN"
+                else
+                    substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
+                    substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
+                fi
             else
                 substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
             fi

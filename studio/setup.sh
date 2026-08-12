@@ -1869,8 +1869,25 @@ elif [ "$_setup_amd_detected" = true ]; then
         _setup_rocm_ver=$(amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
             'NF>1{gsub(/[[:space:]]/,"", $2); print $2; exit}' || true)
     fi
+    # GPU name -> gfx arch for AMD generations ROCm PyTorch does NOT cover
+    # (unslothai#8529). Kept apart from the inference table above on purpose: it is
+    # read only to WORD the report below, never to select a wheel index or a
+    # prebuilt, and an entry here must never make an arch installable. RDNA 1 only,
+    # product names from LLVM's AMDGPU GFX10.1 processor table.
+    _setup_unsupported_gfx_from_name() {
+        case "$1" in
+            *"Radeon Pro V520"*|*"Radeon Pro 5600M"*) echo gfx1011 ;;  # RDNA 1
+            *"RX 5700"*|*"RX 5600"*|*"Radeon Pro 5600 XT"*) echo gfx1010 ;;  # RDNA 1
+            *"RX 5500"*) echo gfx1012 ;;  # RDNA 1
+            *) return 1 ;;
+        esac
+    }
     if [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
+    elif _setup_unsup_gfx=$(_setup_unsupported_gfx_from_name "$_setup_mkt"); then
+        step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
+        substep "PyTorch (training and Transformers inference) runs on CPU on this GPU."
+        substep "No HIP SDK install and no UNSLOTH_ROCM_GFX_ARCH value changes that."
     else
         step "gpu" "AMD ROCm"
     fi

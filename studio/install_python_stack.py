@@ -964,11 +964,21 @@ def _detect_windows_gfx_arch() -> str | None:
                 return _pick
             if _names and not _pick:
                 # No arch means CPU-only torch; name the adapter instead of failing silently.
-                _safe_print(
-                    f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
-                    f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
-                    f"(e.g. gfx1200) to install AMD wheels."
-                )
+                # A generation ROCm never covered (RDNA 1) is not an unknown card: naming
+                # an override there sends the user after a fix that does not exist (#8529).
+                _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
+                if _unsupported:
+                    _safe_print(
+                        f"   [WARN] '{_names[_sel]}' is {_unsupported}, which ROCm PyTorch "
+                        f"does not cover, so torch will be CPU-only. No HIP SDK install and "
+                        f"no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
+                    )
+                else:
+                    _safe_print(
+                        f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
+                        f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
+                        f"(e.g. gfx1200) to install AMD wheels."
+                    )
     except Exception:
         pass
     return None
@@ -1004,6 +1014,36 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
     if not name:
         return None
     for _pat, _arch in _WIN_GPU_NAME_ARCH_TABLE:
+        if re.search(_pat, name, re.IGNORECASE):
+            return _arch
+    return None
+
+
+# GPU marketing-name → gfx arch for AMD generations ROCm PyTorch does NOT cover
+# (unslothai#8529). Deliberately a SEPARATE table from _WIN_GPU_NAME_ARCH_TABLE:
+# nothing here may ever route to a wheel index, and these cards must keep
+# falling back to CPU. It exists so the installer can say which arch it found
+# and that ROCm does not reach it, instead of advising a HIP SDK install or an
+# UNSLOTH_ROCM_GFX_ARCH override that cannot work.
+#
+# RDNA 1 only, and the product names are LLVM's AMDGPU GFX10.1 processor table
+# rather than guesswork. AMD publishes Windows torch indexes for gfx103X,
+# gfx110X, gfx1150, gfx1151 and gfx120X; there is no gfx101X index.
+_UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
+    (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
+    (r"RX 5700|RX 5600|Radeon Pro 5600 XT", "gfx1010"),  # RDNA 1
+    (r"RX 5500", "gfx1012"),  # RDNA 1
+]
+
+
+def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
+    """Name the gfx arch of a GPU whose generation has no ROCm PyTorch wheels.
+
+    Messaging only. Callers must not feed the result into index selection.
+    """
+    if not name:
+        return None
+    for _pat, _arch in _UNSUPPORTED_GPU_NAME_ARCH_TABLE:
         if re.search(_pat, name, re.IGNORECASE):
             return _arch
     return None
