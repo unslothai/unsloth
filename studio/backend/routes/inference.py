@@ -27,7 +27,17 @@ from fastapi import (
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, Collection, List, NamedTuple, Optional, TYPE_CHECKING, Union
+from typing import (
+    Any,
+    AsyncGenerator,
+    Callable,
+    Collection,
+    List,
+    NamedTuple,
+    Optional,
+    TYPE_CHECKING,
+    Union,
+)
 import json
 import httpx
 from loggers import get_logger
@@ -2316,6 +2326,7 @@ from core.inference.passthrough_healing import (
 from core.inference.providers import (
     get_base_url,
     get_provider_info,
+    provider_runs_local_tools,
     validate_provider_base_url,
 )
 from core.inference.external_provider import ExternalProviderClient
@@ -11277,10 +11288,18 @@ async def _proxy_to_external_provider(
     codex_studio_tool_loop = (
         provider_type == "openai_codex" and _explicit_studio_tool_loop_requested(payload)
     )
+    # Self-hosted connections advertising Studio's local tool runtime are
+    # confirm-capable too: the external loop pauses on the same approval gate as
+    # the local GGUF / safetensors loops, so an explicit tool request on them
+    # must not trip the "confirm is local-only" guard below.
+    _local_tool_runtime_requested = provider_runs_local_tools(provider_type) and (
+        payload.enable_tools is True or bool(payload.enabled_tools) or bool(payload.mcp_enabled)
+    )
     if (
         payload.confirm_tool_calls
         and not payload.bypass_permissions
         and not codex_studio_tool_loop
+        and not _local_tool_runtime_requested
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
@@ -11644,7 +11663,65 @@ async def _proxy_to_external_provider(
     # `model_fields_set` tracks explicit-vs-default per request.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
 
+    # Self-hosted OpenAI-compatible connections (llama.cpp / vLLM / Ollama /
+    # custom) have no server-side tools, so Unsloth runs its own local
+    # execute-and-continue loop against them when the client opts into tools.
+    # The loop is gated on the explicit request signal (``enable_tools: true``
+    # plus ``enabled_tools`` / ``mcp_enabled``), never on a CLI tool policy
+    # alone; a CLI ``--disable-tools`` vetoes it and ``tool_choice: "none"``
+    # hard-disables it. The provider set is the registry's provider-level
+    # ``studio_tools`` capability (see ``provider_runs_local_tools``).
+    _local_tools_requested = (
+        provider_runs_local_tools(provider_type)
+        and _effective_enable_tools(payload) is not False
+        and payload.tool_choice != "none"
+        and (bool(payload.enabled_tools) or bool(payload.mcp_enabled))
+        and not _wants_multiple_choices(payload)
+        # Client-supplied function schemas stay on the pure passthrough: the
+        # caller owns those tools, and the local loop would silently replace
+        # them with Unsloth's built-in schemas.
+        and not payload.tools
+        # A zero tool-call budget means tools are disabled for this turn.
+        and (payload.max_tool_calls_per_message is None or payload.max_tool_calls_per_message > 0)
+    )
+    if _local_tools_requested and not payload.stream:
+        # The loop streams each turn; without stream there is no live tool card
+        # or keepalive. A silent tool-less proxy would be worse than an error.
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Tool calls for self-hosted connections (llama.cpp / vLLM / Ollama / custom) require stream=true.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "enable_tools",
+            ),
+        )
+    _local_tools_enabled = _local_tools_requested
+    _loop_tools: list[dict] = []
+    if _local_tools_enabled:
+        _loop_tools = await _select_request_tools(
+            payload,
+            tools_on = _effective_enable_tools(payload),
+            mcp_allowed = bool(payload.mcp_enabled),
+        )
+        # Refuse to enter the loop when nothing survived the allow-list, so a
+        # model-emitted built-in call can't piggy-back on the empty list.
+        if not _loop_tools:
+            _local_tools_enabled = False
+
     async def _stream():
+        if _local_tools_enabled:
+            async for line in _stream_external_local_tool_loop(
+                payload = payload,
+                client = client,
+                messages = chat_messages,
+                model = model,
+                monitor_id = monitor_id,
+                tools = _loop_tools,
+                top_k_explicit = _top_k_explicit,
+            ):
+                yield line
+            return
         gen = client.stream_chat_completion(
             messages = chat_messages,
             model = model,
@@ -11731,6 +11808,139 @@ async def _proxy_to_external_provider(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+async def _stream_external_local_tool_loop(
+    *,
+    payload: ChatCompletionRequest,
+    client: ExternalProviderClient,
+    messages: list[dict],
+    model: str,
+    monitor_id,
+    tools: list[dict],
+    top_k_explicit: Optional[int],
+) -> AsyncGenerator[str, None]:
+    """Run Unsloth's local tool loop against an external OAI-compatible connection.
+
+    Converts the loop's flat events (``status`` / ``content`` / ``tool_start``
+    / ``tool_end`` / ``tool_output`` / ``heartbeat``) into OpenAI-compatible
+    SSE, mirroring ``sf_tool_stream``. Yields complete SSE lines (already
+    ``\\n\\n``-terminated). Owns the API-monitor lifecycle for the request.
+    """
+    from core.inference.external_agentic import run_external_provider_tool_loop
+    from core.inference.tools import execute_tool
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    model_name = model
+    _display_tool_names = _display_tool_name_gate(tools)
+    # Request-scoped cancellation: set on SSE disconnect so a running tool
+    # stops instead of executing to completion after the client has left.
+    cancel_event = threading.Event()
+    yield _chat_role_chunk(completion_id, created, model_name)
+
+    loop = run_external_provider_tool_loop(
+        client = client,
+        messages = messages,
+        model = model,
+        tools = tools,
+        execute_tool = execute_tool,
+        cancel_event = cancel_event,
+        auto_heal_tool_calls = (
+            payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+        ),
+        max_tool_iterations = (
+            payload.max_tool_calls_per_message
+            if payload.max_tool_calls_per_message is not None
+            else 25
+        ),
+        tool_call_timeout = (
+            payload.tool_call_timeout if payload.tool_call_timeout is not None else 300
+        ),
+        session_id = payload.session_id,
+        thread_id = payload.thread_id,
+        rag_scope = payload.rag_scope,
+        bypass_permissions = bool(payload.bypass_permissions),
+        permission_mode = payload.permission_mode,
+        confirm_tool_calls = bool(payload.confirm_tool_calls),
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        max_tokens = _effective_max_tokens(payload),
+        presence_penalty = payload.presence_penalty,
+        top_k = top_k_explicit,
+        enable_thinking = payload.enable_thinking,
+        reasoning_effort = payload.reasoning_effort,
+    )
+    prev_text = ""
+    abnormal_exit = True
+    try:
+        async for event in loop:
+            if event.get("type") == "heartbeat":
+                # Tool-execution wrapper heartbeat -> SSE keepalive.
+                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                continue
+            if event.get("type") in ("tool_output", "tool_args"):
+                # Live stdout/stderr (or live tool-call arguments).
+                yield f"data: {json.dumps(event)}\n\n"
+                continue
+            if event.get("type") == "status":
+                if not event.get("text"):
+                    # Turn boundary: reset the content-diff cursor.
+                    prev_text = ""
+                status_data = json.dumps({"type": "tool_status", "content": event.get("text", "")})
+                yield f"data: {status_data}\n\n"
+                continue
+            if event.get("type") in ("tool_start", "tool_end"):
+                if event.get("type") == "tool_start":
+                    # Visible output, but not decoded (matches the GGUF loop).
+                    api_monitor.mark_first_token(monitor_id, decoded = False)
+                    prev_text = ""
+                yield f"data: {json.dumps(event)}\n\n"
+                continue
+            if event.get("type") == "content":
+                # Diff cumulative cleaned text against the last snapshot.
+                raw_cumulative = event.get("text", "")
+                clean_cumulative = _strip_tool_xml_for_display(
+                    raw_cumulative,
+                    auto_heal_tool_calls = True,
+                    enabled_tool_names = _display_tool_names,
+                )
+                new_text = clean_cumulative[len(prev_text) :]
+                prev_text = clean_cumulative
+                if not new_text:
+                    continue
+                api_monitor.mark_first_token(monitor_id)
+                api_monitor.append_reply(monitor_id, new_text)
+                yield _chat_content_chunk(completion_id, created, model_name, new_text)
+                continue
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        logger.error("external_provider.local_tools.stream_error", error = str(exc))
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        yield (
+            "data: "
+            + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}})
+            + "\n\n"
+        )
+    else:
+        abnormal_exit = False
+    finally:
+        # On any abnormal exit (error, cancellation, or the generator being
+        # closed by an SSE disconnect) stop a running tool before closing the
+        # loop, so it doesn't keep executing on the user's machine. Clean
+        # completion leaves the loop exhausted and skips this.
+        if abnormal_exit:
+            cancel_event.set()
+        try:
+            await loop.aclose()
+        except (RuntimeError, asyncio.CancelledError):
+            pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+        await client.close()
+    api_monitor.finish(monitor_id)
+    yield _chat_final_chunk(completion_id, created, model_name, "stop")
+    yield "data: [DONE]\n\n"
 
 
 # ── OpenAI shell-tool container management ───────────────────────

@@ -195,7 +195,12 @@ def test_custom_provider_registry_is_hidden():
     info = get_provider_info("custom")
     assert info is not None
     assert info["hidden"] is True
-    assert "custom" not in {p["provider_type"] for p in list_available_providers()}
+    # Hidden entries ARE served by /registry so their capabilities reach the
+    # frontend (self-hosted presets advertise studio_tools via the "*"
+    # wildcard); the UI filters them out of the dropdown on `hidden`.
+    entry = next(p for p in list_available_providers() if p["provider_type"] == "custom")
+    assert entry["hidden"] is True
+    assert entry["model_capabilities"]["*"]["studio_tools"] is True
 
 
 def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):

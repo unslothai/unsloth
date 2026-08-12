@@ -22,6 +22,8 @@ export interface ProviderRegistryEntry {
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  /** Hidden entries exist for backend lookups / presets; the UI filters them from the dropdown. */
+  hidden?: boolean;
   /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
   model_list_mode?: "remote" | "curated";
 

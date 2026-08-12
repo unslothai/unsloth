@@ -31,6 +31,9 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+    hidden: bool = Field(
+        False, description = "Excluded from the UI dropdown; surfaced via CUSTOM_PROVIDER_PRESETS"
+    )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
     base_url_editable: bool = True

@@ -227,6 +227,13 @@ export function providerSupportsBuiltinWebSearch(
   if (providerType === "openai_codex") {
     return providerModelSupportsStudioTools(providerType, modelId) === true;
   }
+  // Any other provider the registry marks as Studio-executed runs Search
+  // through Unsloth's local tool loop. The self-hosted OAI-compat family
+  // (llama.cpp / vLLM / Ollama / custom) advertises the capability at the
+  // provider level ("*" wildcard), so this covers every model on them.
+  if (providerModelSupportsStudioTools(providerType, modelId) === true) {
+    return true;
+  }
 
   return (
     providerType === "openai" ||
@@ -378,6 +385,12 @@ export function providerSupportsBuiltinCodeExecution(
     if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
     if (isGeminiImageModel(normalized)) return false;
     return normalized.startsWith("gemini-");
+  }
+  // Any other provider the registry marks as Studio-executed runs Code
+  // through Unsloth's local tool loop (python/terminal). Self-hosted
+  // OAI-compat presets advertise the capability at the provider level.
+  if (providerModelSupportsStudioTools(providerType, modelId) === true) {
+    return true;
   }
   return false;
 }

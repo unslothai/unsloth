@@ -240,6 +240,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "DashScope API key. China mainland: override base URL to https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "hidden": True,
     },
     "huggingface": {
         "display_name": "Hugging Face",
@@ -284,6 +285,11 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        # Studio executes the local tool loop against every model on this
+        # self-hosted connection: model IDs are user-supplied, so the
+        # capability is declared at the provider level (wildcard) instead of
+        # per-model like the curated Codex catalog.
+        "model_capabilities": {"*": {"studio_tools": True}},
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         # Force /v1/chat/completions -- vLLM's /v1/responses rebuilds messages
@@ -301,6 +307,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "model_capabilities": {"*": {"studio_tools": True}},
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -317,6 +324,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "model_capabilities": {"*": {"studio_tools": True}},
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -333,6 +341,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
+        "model_capabilities": {"*": {"studio_tools": True}},
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": (
@@ -543,16 +552,31 @@ def validate_provider_base_url(base_url: str) -> str:
     return raw.rstrip("/")
 
 
+def provider_runs_local_tools(provider_type: str) -> bool:
+    """Whether Studio executes the local tool loop against this provider type.
+
+    True for the self-hosted OAI-compat family (llama.cpp / vLLM / Ollama /
+    custom): they expose no server-side tools, so Unsloth runs its own
+    execute-and-continue loop. The flag is the registry's ``studio_tools``
+    capability, declared at the provider level (the ``"*"`` wildcard in
+    ``model_capabilities``, since self-hosted model IDs are user-supplied), so
+    the backend gate and the frontend's ``providerModelSupportsStudioTools``
+    lookup cannot drift apart.
+    """
+    capabilities = PROVIDER_REGISTRY.get(provider_type, {}).get("model_capabilities") or {}
+    return bool((capabilities.get("*") or {}).get("studio_tools"))
+
+
 def list_available_providers() -> list[dict[str, Any]]:
     """Return all registered providers (for the /registry endpoint).
 
-    Hidden entries are filtered out: they exist only for backend lookups and
-    are surfaced via ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown.
+    Hidden entries are included so their capabilities reach the frontend (the
+    self-hosted presets advertise ``studio_tools`` via ``model_capabilities``);
+    the UI filters them out of the dropdown on ``hidden``. They are otherwise
+    surfaced via ``CUSTOM_PROVIDER_PRESETS`` instead of the dropdown.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden"):
-            continue
         result.append(
             {
                 "provider_type": provider_type,
@@ -563,6 +587,7 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "supports_streaming": info["supports_streaming"],
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
+                "hidden": info.get("hidden", False),
                 "model_list_mode": info.get("model_list_mode", "remote"),
                 "auth_kind": info.get("auth_kind", "api_key"),
                 "base_url_editable": info.get("base_url_editable", True),

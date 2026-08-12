@@ -190,8 +190,17 @@ export function providerModelSupportsStudioTools(
 ): boolean | null {
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
-  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
-  return typeof value === "boolean" ? value : null;
+  const caps = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  const modelCaps = caps?.[modelId];
+  if (typeof modelCaps?.studio_tools === "boolean") return modelCaps.studio_tools;
+  // Self-hosted presets (llama.cpp / vLLM / Ollama / custom) have
+  // user-supplied model IDs, so the backend registry declares Studio-executed
+  // tools at the provider level via a "*" wildcard entry. Fall back to it when
+  // the specific model isn't listed.
+  const providerDefault = caps?.["*"];
+  return typeof providerDefault?.studio_tools === "boolean"
+    ? providerDefault.studio_tools
+    : null;
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";

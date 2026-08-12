@@ -1662,6 +1662,12 @@ export async function buildLocalTokenCountExtras(
     autoHealToolCalls,
     bypassPermissions,
   } = useChatRuntimeStore.getState();
+  // External connections (including self-hosted ones that now run the local
+  // tool loop) never price tool schemas via this helper; the count endpoint
+  // has no external routing for the local tool-list extras.
+  if (isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
+    return {};
+  }
   if (!supportsTools) return {};
 
   const ragProjectId = await resolveProjectId(threadId);
