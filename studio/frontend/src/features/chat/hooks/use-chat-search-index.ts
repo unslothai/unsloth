@@ -219,8 +219,12 @@ let cachedIndex: ChatSearchItem[] | null = null;
 export function useChatSearchIndex(enabled: boolean): {
   items: ChatSearchItem[];
   loading: boolean;
+  ready: boolean;
 } {
   const [items, setItems] = useState<ChatSearchItem[]>(() => cachedIndex ?? []);
+  // Whether an index has been built, known from the first render so the dialog can
+  // reserve its height before the initial build resolves.
+  const [ready, setReady] = useState(() => cachedIndex !== null);
   const [loading, setLoading] = useState(false);
   const requestSeqRef = useRef(0);
 
@@ -234,12 +238,16 @@ export function useChatSearchIndex(enabled: boolean): {
         if (cachedIndex === null) return;
         cachedIndex = null;
         setItems([]);
+        setReady(false);
       };
       window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
       return () => window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, invalidate);
     }
     let cancelled = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Set by a history event and cleared once its rebuild lands, so a close in between
+    // can tell that the cached snapshot is known to be out of date.
+    let rebuildPending = false;
 
     const run = () => {
       const seq = ++requestSeqRef.current;
@@ -251,7 +259,9 @@ export function useChatSearchIndex(enabled: boolean): {
           // and never repopulate the cache a close or an invalidation already dropped.
           if (cancelled || seq !== requestSeqRef.current) return;
           cachedIndex = result;
+          rebuildPending = false;
           setItems(result);
+          setReady(true);
         })
         .catch(() => {
           if (cancelled || seq !== requestSeqRef.current) return;
@@ -264,6 +274,7 @@ export function useChatSearchIndex(enabled: boolean): {
     };
 
     const scheduleRebuild = () => {
+      rebuildPending = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
@@ -276,9 +287,16 @@ export function useChatSearchIndex(enabled: boolean): {
     return () => {
       cancelled = true;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
+      // Closing before a history change was rebuilt cancels that rebuild, so the snapshot
+      // left behind is known stale and must not survive into the next open.
+      if (rebuildPending) {
+        cachedIndex = null;
+        setItems([]);
+        setReady(false);
+      }
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, scheduleRebuild);
     };
   }, [enabled]);
 
-  return { items, loading };
+  return { items, loading, ready };
 }

@@ -13,13 +13,7 @@ import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import {
-  useDeferredValue,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
 
@@ -52,19 +46,6 @@ export function selectVisibleChats<
   return items.filter((it) => haystackMatches(it.searchText, tokens));
 }
 
-// The rendered list trails the input by a render while the deferred filter catches up, so a
-// row stays activatable only while it still matches what the user has typed.
-export function matchesChatQuery<
-  T extends { userSearchText: string; searchText: string },
->(item: T, search: string): boolean {
-  const tokens = queryTokens(search);
-  if (tokens.length === 0) return true;
-  return (
-    haystackMatches(item.userSearchText, tokens) ||
-    haystackMatches(item.searchText, tokens)
-  );
-}
-
 function formatRelative(createdAt: number): string {
   const diff = Date.now() - createdAt;
   const day = 86_400_000;
@@ -79,25 +60,32 @@ export function ChatSearchDialog() {
   const setOpen = useChatSearchStore((s) => s.setOpen);
   const close = useChatSearchStore((s) => s.close);
   const navigate = useNavigate();
-  const { items, loading } = useChatSearchIndex(isOpen);
+  const { items, loading, ready } = useChatSearchIndex(isOpen);
   const [query, setQuery] = useState("");
   // Filtering scans every conversation's text, so keep it off the keystroke path.
   const deferredQuery = useDeferredValue(query);
+  // An empty query needs no scan, so never let the deferred value hold a previous filter
+  // over a reopened dialog whose input is empty.
+  const activeQuery = query === "" ? "" : deferredQuery;
   const [rowLimit, setRowLimit] = useState(INITIAL_ROW_COUNT);
 
-  const visibleItems = useMemo(
-    () => selectVisibleChats(items, deferredQuery),
-    [items, deferredQuery],
-  );
+  // Reset during the opening render rather than in an effect: Radix mounts the portal as
+  // this render commits, and an effect would trim rows only after React had already built
+  // the previous result set into the DOM. Resetting on close instead would tear rows down
+  // inside the exit animation.
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) {
+      setQuery("");
+      setRowLimit(INITIAL_ROW_COUNT);
+    }
+  }
 
-  // Reset on open rather than on close: Radix keeps the surface mounted for its exit
-  // animation, and dropping rows there tears down the DOM mid-transition. Layout effect
-  // so the reset lands before the reopened dialog paints.
-  useLayoutEffect(() => {
-    if (!isOpen) return;
-    setQuery("");
-    setRowLimit(INITIAL_ROW_COUNT);
-  }, [isOpen]);
+  const visibleItems = useMemo(
+    () => selectVisibleChats(items, activeQuery),
+    [items, activeQuery],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -152,9 +140,11 @@ export function ChatSearchDialog() {
         <CommandList
           className={cn(
             "cmd-native-scrollbar hover-scrollbar p-1",
-            // Hold the height steady once any chat exists: the dialog is centered, so a
+            // Hold the height steady from the opening render: the dialog is centered, so a
             // list that grows as results arrive or filter re-lays it out mid-animation.
-            loading || items.length > 0
+            // `ready` is false until an index has been built, which keeps the first open of
+            // a session reserved rather than starting compact and expanding.
+            !ready || items.length > 0
               ? "h-[420px] max-h-[60dvh]"
               : "max-h-[420px]",
           )}
@@ -172,7 +162,17 @@ export function ChatSearchDialog() {
                 key={item.id}
                 value={item.id}
                 onSelect={() => {
-                  if (!matchesChatQuery(item, query)) return;
+                  // The rendered list can trail the input by a render, so a row is only
+                  // activatable if it is still in the result set for the live query. The
+                  // scan runs on activation alone, never per keystroke.
+                  if (
+                    query !== activeQuery &&
+                    !selectVisibleChats(items, query).some(
+                      (live) => live.id === item.id,
+                    )
+                  ) {
+                    return;
+                  }
                   navigate({
                     to: "/chat",
                     search:
