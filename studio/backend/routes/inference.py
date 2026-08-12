@@ -13032,9 +13032,7 @@ async def openai_chat_completions(
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
-                                approval_flush_pending = bool(
-                                    event.get("awaiting_confirmation")
-                                )
+                                approval_flush_pending = bool(event.get("awaiting_confirmation"))
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -14488,9 +14486,7 @@ async def openai_chat_completions(
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
-                            approval_flush_pending = bool(
-                                event.get("awaiting_confirmation")
-                            )
+                            approval_flush_pending = bool(event.get("awaiting_confirmation"))
                         yield f"data: {json.dumps(event)}\n\n"
                         continue
 
