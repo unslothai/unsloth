@@ -415,3 +415,44 @@ class TestTheCpuFallbackGateIsUnchangedForLinkedTrees:
     def test_but_it_is_still_an_install_tree_we_can_stage_from(self, monkeypatch, tmp_path):
         binary = self._linked_tree(tmp_path, monkeypatch)
         assert LlamaCppBackend._is_llama_install_tree(binary) is True
+
+
+class TestAWrapperChainIsFollowedToTheEnd:
+    """One hop was not enough.
+
+    A wrapper whose target is another wrapper resolved to the intermediate
+    script, so on macOS the launch still went through a shell (losing DYLD_* to
+    SIP) and _llama_lib_dir returned the wrapper's directory rather than the one
+    holding the dylibs.
+    """
+
+    @staticmethod
+    def _chain(tmp_path, depth):
+        real_dir = tmp_path / "build" / "bin"
+        real_dir.mkdir(parents = True)
+        real = real_dir / "llama-server"
+        real.write_bytes(b"\xcf\xfa\xed\xfe")
+        target = "build/bin/llama-server"
+        for i in range(depth):
+            name = f"hop{i}.sh" if i < depth - 1 else "llama-server"
+            p = tmp_path / name
+            p.write_text(f'#!/bin/sh\nexec "$(dirname "$0")/{target}" "$@"\n')
+            p.chmod(0o755)
+            target = name
+        return tmp_path / "llama-server", real
+
+    @pytest.mark.parametrize("depth", [1, 2, 3])
+    def test_the_real_binary_is_reached(self, tmp_path, depth):
+        entry, real = self._chain(tmp_path, depth)
+        assert llama_module._resolve_llama_binary(str(entry)) == real.resolve()
+        assert llama_module._llama_lib_dir(str(entry)) == real.parent.resolve()
+
+    def test_a_wrapper_loop_terminates(self, tmp_path):
+        a = tmp_path / "llama-server"
+        b = tmp_path / "other.sh"
+        a.write_text('#!/bin/sh\nexec "$(dirname "$0")/other.sh" "$@"\n')
+        b.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server" "$@"\n')
+        a.chmod(0o755)
+        b.chmod(0o755)
+        got = llama_module._resolve_llama_binary(str(a))
+        assert got in (a.resolve(), b.resolve())

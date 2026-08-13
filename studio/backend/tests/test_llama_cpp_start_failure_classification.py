@@ -1130,3 +1130,50 @@ class TestHttpCredentialsInTheTail:
     def test_a_bearer_token_is_redacted_including_its_base64_tail(self):
         msg = _classify("Authorization: Bearer QUFB+U0VDUkVUL1RBSUw=", "/m.gguf", "u/x", 1)
         assert "U0VDUkVU" not in msg
+
+
+class TestClassifyingItsOwnOutputIsAFixedPoint:
+    """The message fed back as the CHILD OUTPUT, not as the message.
+
+    _with_startup_diagnostics guards its `message` argument, which is not the
+    composition that grows: passing a classified result back in as `output`
+    nested the whole previous message inside a fresh tail (222 -> 413 -> 604
+    characters over three passes) and turned a specific dyld diagnosis back
+    into the generic fallback. No caller does this today.
+    """
+
+    _LOG = "/Users/me/.unsloth/studio/logs/llama-server/llama-1-port-8080.log"
+
+    def test_three_passes_do_not_grow_the_message(self):
+        cur = "some unrecognised startup noise"
+        seen = []
+        for _ in range(3):
+            cur = _classify(cur, "/m.gguf", "u/x", 1, None, log_path = self._LOG)
+            seen.append((len(cur), cur.count("llama-server output:"), cur.count("Full log: ")))
+        assert seen[0] == seen[1] == seen[2]
+        assert seen[0][1] == 1 and seen[0][2] == 1
+
+    def test_a_classified_message_stops_growing_after_one_pass(self):
+        # A classified message carries no marker of its own, so re-classifying
+        # one does fall to the fallback and wrap it once (192 -> 306). What must
+        # not happen is unbounded growth: from there the guard sees its own
+        # framing and every later pass is a no-op. Making the first pass a fixed
+        # point too would mean tagging the return type, which is a bigger change
+        # to a widely used error path than this unreachable property is worth.
+        out = (
+            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: tried: '/a/libllama.dylib' (no such file)\n"
+        )
+        binary = "/Users/me/.unsloth/llama.cpp/build/bin/llama-server"
+        cur = out
+        seen = []
+        for _ in range(5):
+            cur = _classify(cur, "/m.gguf", "u/x", 1, binary)
+            seen.append(len(cur))
+        assert seen[1:] == seen[1:2] * 4, seen
+        assert "libllama.dylib" in cur
+
+    def test_real_output_that_merely_says_the_words_is_still_classified(self):
+        out = "llama-server output: 3 t/s\nerror while loading shared libraries: libgomp.so.1: cannot open shared object file"
+        msg = _classify(out, "/m.gguf", "u/x", 1)
+        assert "libgomp.so.1" in msg

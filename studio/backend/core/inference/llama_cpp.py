@@ -3186,17 +3186,34 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
 
 
 def _resolve_llama_binary(binary: str) -> Path:
-    """Resolve a managed symlink or shell entrypoint to the real server."""
+    """Resolve a managed symlink or shell entrypoint to the real server.
+
+    Follows a chain rather than one hop. A wrapper whose target is another
+    wrapper used to resolve to the intermediate script, which on macOS is the
+    same defect this is here to avoid (SIP drops DYLD_* through the shell) and
+    also gives _llama_lib_dir the wrong directory, so the loader path would
+    point at the wrapper's folder instead of the one holding the dylibs.
+    Bounded, and stops on a repeat, so a wrapper pair pointing at each other
+    cannot spin.
+    """
     resolved = Path(binary).resolve()
-    try:
-        with open(resolved, "rb") as _f:
-            _head = _f.read(256)
-        if _head.startswith(b"#!"):
-            _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
-            if _m:
-                return (resolved.parent / _m.group(1)).resolve()
-    except OSError:
-        pass
+    seen = {resolved}
+    for _ in range(8):
+        try:
+            with open(resolved, "rb") as _f:
+                _head = _f.read(256)
+        except OSError:
+            break
+        if not _head.startswith(b"#!"):
+            break
+        _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
+        if not _m:
+            break
+        nxt = (resolved.parent / _m.group(1)).resolve()
+        if nxt in seen:
+            break
+        seen.add(nxt)
+        resolved = nxt
     return resolved
 
 
@@ -9811,7 +9828,17 @@ class LlamaCppBackend:
         loaded as a chat model -- valid file, plenty of memory, but llama.cpp
         has no such architecture, so the user is told to free memory that was
         never the problem (#5842). Pick the most specific message we can.
+
+        A message this function already produced, passed back in as ``output``,
+        is returned unchanged. The guard in _with_startup_diagnostics only
+        covers a decorated ``message``; feeding a decorated result back as the
+        child output instead put the whole previous message inside a fresh tail
+        (222 -> 413 -> 604 characters over three passes) and turned a specific
+        dyld diagnosis back into the generic fallback. No caller does this
+        today, so this is a property being kept true rather than a live bug.
         """
+        if output and LlamaCppBackend._has_startup_diagnostics(output):
+            return output
         lowered = (output or "").lower()
 
         # The dynamic loader kills llama-server before main(), so nothing below
@@ -10126,6 +10153,17 @@ class LlamaCppBackend:
         return cleaned
 
     @staticmethod
+    def _has_startup_diagnostics(text: str) -> bool:
+        """Is ``text`` something _with_startup_diagnostics already produced?
+
+        Matches our own framing, not the bare words: a server that printed
+        "llama-server output:" itself must still get its tail attached.
+        """
+        return text.startswith(LlamaCppBackend._DIAGNOSTICS_MARKERS) or any(
+            f"\n\n{marker}" in text for marker in LlamaCppBackend._DIAGNOSTICS_MARKERS
+        )
+
+    @staticmethod
     def _with_startup_diagnostics(
         message: str,
         output: Optional[str],
@@ -10142,9 +10180,7 @@ class LlamaCppBackend:
         yet; it is here so a second caller (a retry that re-classifies an
         already-decorated message, say) cannot silently double the tail.
         """
-        if message.startswith(LlamaCppBackend._DIAGNOSTICS_MARKERS) or any(
-            f"\n\n{marker}" in message for marker in LlamaCppBackend._DIAGNOSTICS_MARKERS
-        ):
+        if LlamaCppBackend._has_startup_diagnostics(message):
             return message
         parts = [message]
         # Slice before filtering: _drain_stdout keeps an unterminated line
