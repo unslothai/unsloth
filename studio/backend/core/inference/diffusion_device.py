@@ -222,7 +222,6 @@ def diffusion_device_scope(ordinal: Optional[int]):
         return
     try:
         import torch
-
         with torch.cuda.device(ordinal):
             yield
     except Exception:  # noqa: BLE001 -- an unusable index must not fail the probe it wraps
