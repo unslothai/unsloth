@@ -348,6 +348,10 @@ def main() -> int:
         failures.append("a click did not reach its handler after a modal path")
     if not results["report"]["rendered"]:
         failures.append("the report never rendered")
+    # The modal checks below compare click counts against a baseline, so they still pass if this
+    # one was swallowed. Responsiveness during the report parse is the reported symptom; assert it.
+    if results["report"]["clicks_registered"] < 1:
+        failures.append("the click during the report parse never reached its handler")
     detach = results["detach"]
     if not detach["overflowing"]:
         failures.append("the activity list never overflowed; the detach checks proved nothing")
