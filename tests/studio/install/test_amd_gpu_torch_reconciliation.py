@@ -826,8 +826,11 @@ def test_a_converged_host_forgets_the_last_attempt(monkeypatch):
     assert _run_ensure_rocm_torch(monkeypatch, None, True) == [True]
 
 
-def test_a_blocked_repair_keeps_the_ledger(monkeypatch):
-    """Clearing it here is what recreated the loop the ledger exists to stop."""
+@pytest.mark.parametrize("torch_ready", [False, True], ids = ["no-rocm-wheel", "wrong-family"])
+def test_a_blocked_repair_keeps_the_ledger(monkeypatch, torch_ready):
+    """Clearing it here is what recreated the loop the ledger exists to stop. A blocked
+    host may still hold an importable ROCm wheel (the wrong family), so the plan itself
+    has to be the signal, not the readiness flag."""
     blocked = stack._LinuxRocmTorchPlan(
         index_url = "https://download.pytorch.org/whl/rocm7.2",
         packages = ("torch", "torchvision", "torchaudio"),
@@ -838,7 +841,7 @@ def test_a_blocked_repair_keeps_the_ledger(monkeypatch):
         repair_key = "a" * 32,
         blocked = True,
     )
-    assert _run_ensure_rocm_torch(monkeypatch, blocked, False) == []
+    assert _run_ensure_rocm_torch(monkeypatch, blocked, torch_ready) == []
 
 
 def test_the_repair_ledger_survives_the_manifest_being_dropped(tmp_path):
