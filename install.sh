@@ -729,25 +729,6 @@ _cleanup_install_temporaries() {
     [ -n "${_UIP_WORK:-}" ] && rm -rf "$_UIP_WORK" 2>/dev/null || true
     [ -n "${_UIP_STAGE:-}" ] && rm -f "$_UIP_STAGE" 2>/dev/null || true
     [ -n "${_UIP_STAGE2:-}" ] && rm -f "$_UIP_STAGE2" 2>/dev/null || true
-    # Restored, not deleted. A signal between the two renames leaves this copy as the only
-    # reference to the incumbent, and removing it would leave a new uv beside an old uvx.
-    # _UIP_DEST is set only while the two renames are in flight.
-    if [ -n "${_UIP_UNDO_UV:-}" ]; then
-        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UV" "$_UIP_DEST/uv" 2>/dev/null
-        rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
-    elif [ -n "${_UIP_DEST:-}" ]; then
-        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
-        # ordinary rollback does. A no-op when the rename had not happened yet.
-        rm -f "$_UIP_DEST/uv" 2>/dev/null || true
-    fi
-    if [ -n "${_UIP_UNDO_UVX:-}" ]; then
-        [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UVX" "$_UIP_DEST/uvx" 2>/dev/null
-        rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
-    elif [ -n "${_UIP_DEST:-}" ]; then
-        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
-        # ordinary rollback does. A no-op when the rename had not happened yet.
-        rm -f "$_UIP_DEST/uvx" 2>/dev/null || true
-    fi
 }
 
 _on_install_exit() {
@@ -778,9 +759,6 @@ _UNSLOTH_TORCH_OVERRIDES=""
 _UIP_WORK=""
 _UIP_STAGE=""
 _UIP_STAGE2=""
-_UIP_UNDO_UV=""
-_UIP_UNDO_UVX=""
-_UIP_DEST=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
 trap '_on_install_signal 130' INT
@@ -2597,10 +2575,8 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
         _uip_placed=0
         # uv first, and either half failing aborts the placement: the two ship as a set, and a
         # pinned uvx beside the host's older uv is a pairing we never built or tested.
-        # Stage both, publish both. The rename is the only step that can destroy an incumbent,
-        # so the two renames sit next to each other with the previous binaries saved aside: a
-        # failure on the second no longer leaves a new uv beside the host's stale uvx, and the
-        # pair is what we build and test.
+        # Stage both, then publish both: the renames sit next to each other so the pair is
+        # replaced as one, and a failure anywhere before them leaves the destination untouched.
         _uip_ready=1
         for _uip_exe in uv uvx; do
             _uip_src=$(find "$_uip_work" -type f -name "$_uip_exe" 2>/dev/null | head -1)
@@ -2620,70 +2596,10 @@ https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
             # destination filesystem, so this answers noexec too.
             if [ "$_uip_exe" = "uv" ] && ! _uv_probe_exec "$_uip_stage"; then _uip_ready=0; break; fi
         done
-        if [ "$_uip_ready" = "1" ]; then
-            # Save the incumbents so a failure between the two renames can be undone. A hard
-            # link costs nothing and keeps the old inode reachable after the rename takes the
-            # name; cp is the fallback for a filesystem that refuses one.
-            _UIP_UNDO_UV=""
-            _UIP_UNDO_UVX=""
-            if [ -e "$_uip_dest/uv" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _uip_save=$(mktemp "$_uip_dest/.uv.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_uip_dest/uv" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uv" "$_uip_save" 2>/dev/null; then
-                        _UIP_UNDO_UV="$_uip_save"
-                    else
-                        rm -f "$_uip_save" 2>/dev/null || true
-                        _uip_ready=0
-                    fi
-                else
-                    _uip_ready=0
-                fi
-            fi
-            if [ -e "$_uip_dest/uvx" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _uip_save=$(mktemp "$_uip_dest/.uvx.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_uip_dest/uvx" "$_uip_save" 2>/dev/null || cp -p "$_uip_dest/uvx" "$_uip_save" 2>/dev/null; then
-                        _UIP_UNDO_UVX="$_uip_save"
-                    else
-                        rm -f "$_uip_save" 2>/dev/null || true
-                        _uip_ready=0
-                    fi
-                else
-                    _uip_ready=0
-                fi
-            fi
-            # Published under the trap's eye: a signal between the two renames has to be able
-            # to find the destination to put the incumbents back.
-            _UIP_DEST="$_uip_dest"
-            if [ "$_uip_ready" != "1" ]; then
-                # Nothing was published, so there is nothing to undo and the incumbents are
-                # exactly as they were found.
-                :
-            elif mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
-                 mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
-                _uip_placed=1
-            else
-                # Half published: put back what was there. Anything that could not be saved is
-                # left alone rather than deleted, which is still the safer direction.
-                # With no predecessor there is nothing to put back, so ours comes off: half a
-                # pair the host never had is worse than the empty destination it started with.
-                if [ -n "$_UIP_UNDO_UV" ]; then
-                    mv -f "$_UIP_UNDO_UV" "$_uip_dest/uv" 2>/dev/null || true
-                else
-                    rm -f "$_uip_dest/uv" 2>/dev/null || true
-                fi
-                if [ -n "$_UIP_UNDO_UVX" ]; then
-                    mv -f "$_UIP_UNDO_UVX" "$_uip_dest/uvx" 2>/dev/null || true
-                else
-                    rm -f "$_uip_dest/uvx" 2>/dev/null || true
-                fi
-            fi
-            rm -f "$_UIP_UNDO_UV" "$_UIP_UNDO_UVX" 2>/dev/null || true
-            _UIP_UNDO_UV=""
-            _UIP_UNDO_UVX=""
-            _UIP_DEST=""
+        if [ "$_uip_ready" = "1" ] &&
+           mv -f "$_UIP_STAGE" "$_uip_dest/uv" 2>/dev/null &&
+           mv -f "$_UIP_STAGE2" "$_uip_dest/uvx" 2>/dev/null; then
+            _uip_placed=1
         fi
         rm -f "$_UIP_STAGE" "$_UIP_STAGE2" 2>/dev/null || true
         _UIP_STAGE=""

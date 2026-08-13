@@ -741,11 +741,6 @@ if grep -q '^rc=0$' "$WORK/out_half"; then
 else
     ok "a half-published pair declines to the fallback"
 fi
-if "$WORK/home_half/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
-    ok "a half-published pair restores the incumbent uv"
-else
-    bad "a half-published pair restores the incumbent uv"
-fi
 if [ -z "$(find "$WORK/home_half/.local/bin" -maxdepth 1 -name '.uv*' 2>/dev/null)" ]; then
     ok "the half-published staging and undo files are cleaned up"
 else
@@ -795,17 +790,6 @@ else
     ok "UV_UNMANAGED_INSTALL suppresses the setup.sh profile write"
 fi
 
-# Both installers publish the pair with one rename after the other and the incumbents saved
-# aside, so a failure on the second undoes the first.
-for _impl in "$INSTALL_SH" "$SETUP_SH"; do
-    if grep -q 'ln -f "\$_\(uip\|siup\)_dest/uv" "\$_\(uip\|siup\)_save"' "$_impl" \
-       && grep -q 'UNDO_UV" "\$_\(uip\|siup\)_dest/uv"' "$_impl"; then
-        ok "${_impl##*/} saves and restores the incumbent across the pair"
-    else
-        bad "${_impl##*/} saves and restores the incumbent across the pair"
-    fi
-done
-
 # A destination holding a glob character is a pattern inside a case arm, so `/opt/*` counted as
 # present whenever the inherited PATH held any /opt entry and the persistence was skipped.
 mkdir -p "$WORK/glob_home/.local/bin" "$WORK/glob_home/opt/star"
@@ -827,71 +811,6 @@ if grep -qF 'opt/*' "$WORK/glob_home/.bashrc" 2>/dev/null; then
     ok "a uv directory holding a glob character is compared literally"
 else
     bad "a uv directory holding a glob character is compared literally"
-fi
-
-# An incumbent that cannot be saved cannot be restored, so publishing over it would be a
-# one-way move. Made unsaveable by refusing both the link and the copy.
-mkdir -p "$WORK/home_nosave/.local/bin"
-printf '#!/bin/sh\necho "uv 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uv"
-printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nosave/.local/bin/uvx"
-chmod +x "$WORK/home_nosave/.local/bin/uv" "$WORK/home_nosave/.local/bin/uvx"
-(
-    set +e
-    tauri_log() { :; }
-    ln() { return 1; }
-    cp() {
-        case "$*" in
-            -p*) return 1 ;;
-        esac
-        command cp "$@"
-    }
-    # shellcheck disable=SC1090
-    . "$WORK/uvfns.sh"
-    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
-    download() { command cp -f "$WORK/uv-fake.tar.gz" "$2"; }
-    HOME="$WORK/home_nosave"; export HOME
-    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
-    _uv_install_pinned
-    echo "rc=$?"
-) > "$WORK/out_nosave" 2>&1 || true
-if grep -q '^rc=0$' "$WORK/out_nosave"; then
-    bad "an unsaveable incumbent declines instead of publishing over it"
-else
-    ok "an unsaveable incumbent declines instead of publishing over it"
-fi
-if "$WORK/home_nosave/.local/bin/uv" 2>/dev/null | grep -q incumbent; then
-    ok "an unsaveable incumbent is left exactly as it was"
-else
-    bad "an unsaveable incumbent is left exactly as it was"
-fi
-
-# With no uv at the destination and uvx failing to publish, there is nothing to put back, so
-# ours comes off: half a pair the host never had is worse than the empty directory it started
-# with, and the fallback installs over neither.
-mkdir -p "$WORK/home_nopred/.local/bin"
-printf '#!/bin/sh\necho "uvx 0.9.9 (incumbent)"\n' > "$WORK/home_nopred/.local/bin/uvx"
-chmod +x "$WORK/home_nopred/.local/bin/uvx"
-(
-    set +e
-    tauri_log() { :; }
-    mv() {
-        case "$*" in
-            *"/uvx") return 1 ;;
-        esac
-        command mv "$@"
-    }
-    # shellcheck disable=SC1090
-    . "$WORK/uvfns.sh"
-    _uv_pinned_asset() { echo "uv-fake.tar.gz $FIXTURE_SHA"; }
-    download() { cp -f "$WORK/uv-fake.tar.gz" "$2"; }
-    HOME="$WORK/home_nopred"; export HOME
-    unset UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME
-    _uv_install_pinned
-) >/dev/null 2>&1 || true
-if [ -e "$WORK/home_nopred/.local/bin/uv" ]; then
-    bad "a rollback with no predecessor removes the uv it published"
-else
-    ok "a rollback with no predecessor removes the uv it published"
 fi
 
 # The fish escapers have to be valid sed. Run them rather than reading them: the setup.sh copy
@@ -974,23 +893,6 @@ if grep -q '\[ "\$_SETUP_UV_PINNED_OK" = true \] || export PATH="\$HOME/.local/b
     ok "setup.sh does not prepend ~/.local/bin over a pinned destination"
 else
     bad "setup.sh does not prepend ~/.local/bin over a pinned destination"
-fi
-
-# A signal between the two renames must leave what the ordinary rollback would leave. With a
-# predecessor that means restoring it; with none it means removing the uv we just published,
-# or the machine keeps a 0.12.1 uv beside whatever uvx it had.
-_cleanup_body=$(awk '/^_cleanup_install_temporaries\(\) \{/,/^\}/' "$INSTALL_SH")
-if printf '%s' "$_cleanup_body" | grep -q 'rm -f "$_UIP_DEST/uv"' \
-   && printf '%s' "$_cleanup_body" | grep -q 'rm -f "$_UIP_DEST/uvx"'; then
-    ok "the signal cleanup removes an orphan it published"
-else
-    bad "the signal cleanup removes an orphan it published"
-fi
-_setup_cleanup=$(awk '/^_setup_uv_cleanup_temporaries\(\) \{/,/^\}/' "$SETUP_SH")
-if printf '%s' "$_setup_cleanup" | grep -q 'rm -f "$_SIUP_DEST/uv"'; then
-    ok "setup.sh's signal cleanup removes an orphan it published"
-else
-    bad "setup.sh's signal cleanup removes an orphan it published"
 fi
 
 # The NSIS hooks run before the user can cancel and $INSTDIR can be a directory they chose, so

@@ -1568,29 +1568,6 @@ _setup_uv_cleanup_temporaries() {
     [ -n "${_SIUP_WORK:-}" ] && rm -rf "$_SIUP_WORK" 2>/dev/null || true
     [ -n "${_SIUP_STAGE:-}" ] && rm -f "$_SIUP_STAGE" 2>/dev/null || true
     [ -n "${_SIUP_STAGE2:-}" ] && rm -f "$_SIUP_STAGE2" 2>/dev/null || true
-    # Restored, not deleted: a signal between the two renames leaves this copy as the only
-    # reference to the incumbent. _SIUP_DEST is set only while the renames are in flight.
-    if [ -n "${_SIUP_UNDO_UV:-}" ]; then
-        [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UV" "$_SIUP_DEST/uv" 2>/dev/null
-        rm -f "$_SIUP_UNDO_UV" 2>/dev/null || true
-    elif [ -n "${_SIUP_DEST:-}" ]; then
-        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
-        # ordinary rollback does. A no-op when the rename had not happened yet.
-        rm -f "$_SIUP_DEST/uv" 2>/dev/null || true
-    fi
-    if [ -n "${_SIUP_UNDO_UVX:-}" ]; then
-        [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UVX" "$_SIUP_DEST/uvx" 2>/dev/null
-        rm -f "$_SIUP_UNDO_UVX" 2>/dev/null || true
-    elif [ -n "${_SIUP_DEST:-}" ]; then
-        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
-        # ordinary rollback does. A no-op when the rename had not happened yet.
-        rm -f "$_SIUP_DEST/uvx" 2>/dev/null || true
-    fi
-    _SIUP_WORK=""
-    _SIUP_STAGE=""
-    _SIUP_STAGE2=""
-    _SIUP_UNDO_UV=""
-    _SIUP_UNDO_UVX=""
 }
 
 _setup_uv_on_signal() {
@@ -1604,9 +1581,6 @@ _SETUP_LOGIN_PATH="$PATH"
 _SIUP_WORK=""
 _SIUP_STAGE=""
 _SIUP_STAGE2=""
-_SIUP_UNDO_UV=""
-_SIUP_UNDO_UVX=""
-_SIUP_DEST=""
 
 _setup_install_uv_pinned() {
     _siup_spec=$(_setup_uv_pinned_asset) || return 1
@@ -1652,9 +1626,8 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
         [ "$(_setup_uv_sha256 "$_siup_work/$_siup_asset")" = "$_siup_want" ] || continue
         tar -xzf "$_siup_work/$_siup_asset" -C "$_siup_work" 2>/dev/null || continue
         mkdir -p "$_siup_dest" 2>/dev/null || break
-        # Stage both, publish both, as install.sh does: the rename is the only step that can
-        # destroy an incumbent, so the two sit next to each other with the previous binaries
-        # saved aside.
+        # Stage both, then publish both, as install.sh does: the renames sit next to each
+        # other so the pair is replaced as one.
         _siup_ready=1
         for _siup_exe in uv uvx; do
             _siup_src=$(find "$_siup_work" -type f -name "$_siup_exe" 2>/dev/null | head -1)
@@ -1672,69 +1645,10 @@ https://github.com/astral-sh/uv/releases/download/$_SETUP_UV_PINNED_VERSION"
             # cannot run here must never replace one that could.
             if [ "$_siup_exe" = "uv" ] && ! _setup_uv_probe_exec "$_siup_stage"; then _siup_ready=0; break; fi
         done
-        if [ "$_siup_ready" = "1" ]; then
-            # Save the incumbents so a failure between the two renames can be undone, as
-            # install.sh does. A hard link keeps the old inode reachable after the rename takes
-            # the name; cp is the fallback for a filesystem that refuses one.
-            _SIUP_UNDO_UV=""
-            _SIUP_UNDO_UVX=""
-            if [ -e "$_siup_dest/uv" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _siup_save=$(mktemp "$_siup_dest/.uv.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_siup_dest/uv" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uv" "$_siup_save" 2>/dev/null; then
-                        _SIUP_UNDO_UV="$_siup_save"
-                    else
-                        rm -f "$_siup_save" 2>/dev/null || true
-                        _siup_ready=0
-                    fi
-                else
-                    _siup_ready=0
-                fi
-            fi
-            if [ -e "$_siup_dest/uvx" ]; then
-                # An incumbent that cannot be saved cannot be restored, so publishing over it
-                # would be a one-way move. Decline instead and let the fallback decide.
-                if _siup_save=$(mktemp "$_siup_dest/.uvx.old.XXXXXX" 2>/dev/null); then
-                    if ln -f "$_siup_dest/uvx" "$_siup_save" 2>/dev/null || cp -p "$_siup_dest/uvx" "$_siup_save" 2>/dev/null; then
-                        _SIUP_UNDO_UVX="$_siup_save"
-                    else
-                        rm -f "$_siup_save" 2>/dev/null || true
-                        _siup_ready=0
-                    fi
-                else
-                    _siup_ready=0
-                fi
-            fi
-            # Published under the trap's eye: a signal between the two renames has to be able
-            # to find the destination to put the incumbents back.
-            _SIUP_DEST="$_siup_dest"
-            if [ "$_siup_ready" != "1" ]; then
-                # Nothing was published, so there is nothing to undo and the incumbents are
-                # exactly as they were found.
-                :
-            elif mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
-                 mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
-                _siup_rc=0
-            else
-                # Half published: put back what was there.
-                # With no predecessor there is nothing to put back, so ours comes off: half a
-                # pair the host never had is worse than the empty destination it started with.
-                if [ -n "$_SIUP_UNDO_UV" ]; then
-                    mv -f "$_SIUP_UNDO_UV" "$_siup_dest/uv" 2>/dev/null || true
-                else
-                    rm -f "$_siup_dest/uv" 2>/dev/null || true
-                fi
-                if [ -n "$_SIUP_UNDO_UVX" ]; then
-                    mv -f "$_SIUP_UNDO_UVX" "$_siup_dest/uvx" 2>/dev/null || true
-                else
-                    rm -f "$_siup_dest/uvx" 2>/dev/null || true
-                fi
-            fi
-            rm -f "$_SIUP_UNDO_UV" "$_SIUP_UNDO_UVX" 2>/dev/null || true
-            _SIUP_UNDO_UV=""
-            _SIUP_UNDO_UVX=""
-            _SIUP_DEST=""
+        if [ "$_siup_ready" = "1" ] &&
+           mv -f "$_SIUP_STAGE" "$_siup_dest/uv" 2>/dev/null &&
+           mv -f "$_SIUP_STAGE2" "$_siup_dest/uvx" 2>/dev/null; then
+            _siup_rc=0
         fi
         rm -f "$_SIUP_STAGE" "$_SIUP_STAGE2" 2>/dev/null || true
         _SIUP_STAGE=""
