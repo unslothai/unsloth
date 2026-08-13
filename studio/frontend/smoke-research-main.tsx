@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Standalone harness for the deep research freeze reported in #8483, driven by
-// tests/studio/playwright_research_freeze.py. It mounts the real activity panel and the real
-// report renderer against the real store, so the measured work is the app's, not a mock's:
-// the whole question is how much main-thread time a streaming run costs.
-//
+// Harness for the #8483 deep research freeze, driven by tests/studio/playwright_research_freeze.py.
+// Real activity panel and report renderer against the real store, so the measured main-thread cost
+// of a streaming run is the app's, not a mock's.
 // Same shape as smoke-ansi.html/smoke-ansi-main.tsx: a vite entry, no backend, no auth.
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { ResearchActivityPanel } from "@/features/chat";
 /* eslint-disable no-restricted-imports -- a measurement entry point, not app code: it drives the
-   research store directly and the chat barrel does not export it. */
+   research store directly, which the chat barrel does not export. */
 import {
   ingestResearchUpdate,
   useResearchRunStore,
@@ -55,11 +53,9 @@ function push(
   runPatch?: Partial<ResearchRun>,
 ): void {
   seq += 1;
-  // Always a fresh run object, which is what research-api.ts did for delta events before the
-  // #8483 work. Held constant on purpose: this harness measures the activity panel and the
-  // report renderer, so it must not vary with the run-identity change it is not testing.
-  // Identity itself is covered by tests/research-run-identity.test.ts against the real
-  // followResearchRun.
+  // Always a fresh run object, as research-api.ts did for deltas before #8483. Held constant on
+  // purpose: this harness measures the panel and report renderer, not run identity, which
+  // tests/research-run-identity.test.ts covers against the real followResearchRun.
   const run: ResearchRun = {
     ...currentRun,
     ...runPatch,
@@ -78,10 +74,9 @@ function push(
 }
 
 function Harness(): ReactElement {
-  // Mounted by seed(), not at start: the panel's scroll hook is a useLayoutEffect keyed on
-  // runId, so if it first renders with no session in the store it takes the loading branch,
-  // finds no viewport to observe, and never re-runs. The app only ever opens the panel for a
-  // run it already holds; the harness has to do the same or it measures a panel doing nothing.
+  // Mounted by seed(), not at start: the panel's scroll hook is a useLayoutEffect keyed on runId,
+  // so rendering with no session takes the loading branch, observes no viewport, and never re-runs.
+  // The app only opens the panel for a run it already holds; the harness must do the same.
   const [panelMounted, setPanelMounted] = useState(false);
   const [report, setReport] = useState<string | null>(null);
   const [clicks, setClicks] = useState(0);
@@ -109,7 +104,7 @@ function Harness(): ReactElement {
       reportDelta(length: number): void {
         push("report.updated", { attempt: 0, length, delta: 32 });
       },
-      /** A search step plus its sources: this is what grows the activity list row by row. */
+      /** A search step plus its sources: what grows the activity list row by row. */
       step(position: number): void {
         push("step.started", {
           attempt: 0,
@@ -150,7 +145,7 @@ function Harness(): ReactElement {
           },
         );
       },
-      /** Approve it: the status change is what makes PlanReview unmount while open. */
+      /** Approve it: the status change unmounts PlanReview while it is open. */
       approve(): void {
         push("run.approved", {}, { status: "queued" });
       },

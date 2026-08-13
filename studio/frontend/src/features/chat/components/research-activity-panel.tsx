@@ -100,8 +100,7 @@ function useResearchActivityScroll(runId: string) {
     let animationFrame: number | null = null;
     let settleTimer: number | null = null;
     let settleCheckDue = false;
-    // Whether a layout signal arrived since the last frame. Starts true so the first frame after
-    // mount always runs a follow pass.
+    // Layout signal since the last frame. True so the first frame after mount follows.
     let layoutChanged = true;
 
     const distanceFromBottom = () =>
@@ -157,10 +156,10 @@ function useResearchActivityScroll(runId: string) {
     const detach = () => {
       detached = true;
       followUntil = 0;
-      // Every pending follow step has to go, not just the settle check. A frame queued before the
-      // detach still runs, and with `detached` set it falls through to the reconcile below and
-      // reads a flick shorter than the bottom threshold as still-at-bottom: "Latest" never
-      // appears, and nothing corrects it, because followLayout returns early from here on.
+      // Cancel every pending follow step, not just the settle check. A frame queued before the
+      // detach still runs, falls through to the reconcile below, and reads a flick shorter than
+      // the bottom threshold as still-at-bottom: "Latest" never appears and nothing corrects it,
+      // since followLayout returns early from here on.
       if (animationFrame !== null) {
         cancelAnimationFrame(animationFrame);
         animationFrame = null;

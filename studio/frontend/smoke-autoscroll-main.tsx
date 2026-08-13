@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Standalone harness for the main chat viewport's autoscroll, driven by
-// tests/studio/playwright_chat_autoscroll.py. It mounts the real useIntentAwareAutoScroll on a
-// real scroller and streams text into it, so the measured per-frame work is the hook's own.
-//
+// Harness for tests/studio/playwright_chat_autoscroll.py: the real useIntentAwareAutoScroll on a
+// real scroller with text streamed in, so measured per-frame work is the hook's own.
 // Same shape as smoke-ansi.html and smoke-research.html: a vite entry, no backend, no auth.
 
 import {
@@ -45,10 +43,9 @@ function Harness(): ReactElement {
         setTail("");
       },
       /**
-       * Grow the content with no mutation record and no border-box resize, which is what a
-       * decoding image, a `font-display: swap` webfont and a late KaTeX pass all do. The
-       * viewport's MutationObserver deliberately excludes `style`, so this reaches neither
-       * observer: only a frame that reads layout can notice it.
+       * Grow content with no mutation record and no border-box resize, like a decoding image, a
+       * `font-display: swap` webfont or a late KaTeX pass. The MutationObserver excludes `style`,
+       * so only a frame that reads layout notices.
        */
       growSilently(px: number): void {
         const spacer = spacerRef.current;
@@ -107,8 +104,7 @@ function Harness(): ReactElement {
         }}
         style={{
           height: "100vh",
-          // A chat column's width, so prose wraps the way it does in the app and the content
-          // overflows a seeded thread.
+          // A chat column's width, so prose wraps as in the app and a seeded thread overflows.
           width: "760px",
           overflowY: "auto",
           padding: "16px",

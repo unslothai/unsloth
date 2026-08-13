@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The shared modal-layer subscription behind every tooltip. Two observers: a cheap one on the
-// body's own style attribute that answers "is a modal up", and a document-wide subtree one that
-// answers "which layer owns this trigger", attached only while the first says yes.
+// body's style attribute answering "is a modal up", and a document-wide subtree one answering
+// "which layer owns this trigger", attached only while the first says yes.
 //
-// What these pin: the expensive observer must not exist outside a modal, must not outlive its
-// readers, and must come back when a reader does while a modal is still up.
+// These pin that the expensive observer never exists outside a modal, never outlives its readers,
+// and comes back when a reader does while a modal is still up.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,7 +25,7 @@ type FakeObserver = {
 };
 
 const observers: FakeObserver[] = [];
-/** getAttribute calls, so a test can assert the animation path never serialises a style. */
+/** getAttribute calls: the animation path must never serialise a style. */
 let attributeReads = 0;
 
 function fakeElement(pointerEvents = ""): HTMLElement {
@@ -68,7 +68,7 @@ const { getModalLayer, subscribeModalLayer } = await import(
   "../src/components/ui/tooltip-modal-layer.ts"
 );
 
-/** The observer watching the whole document for stacking changes, if one is attached. */
+/** The document-wide stacking observer, if one is attached. */
 function stackedObserver(): FakeObserver | undefined {
   return observers
     .filter((entry) => entry.init.subtree && entry.connected)
@@ -91,10 +91,9 @@ function closeModal(): void {
   bodyObserver()?.deliver([{ target: body, oldValue: "pointer-events: none" }]);
 }
 
-// Only the counters. The observers list is deliberately kept: module state is global and a
-// previously created observer that was never disconnected is exactly the thing under test, so
-// throwing the list away between tests would hide it. The helpers above read the last
-// *connected* entry, which is what the module is actually using.
+// Only the counters. The observers list is kept on purpose: module state is global and an
+// undisconnected leftover observer is the thing under test, so clearing the list would hide it.
+// The helpers above read the last *connected* entry, which is what the module is using.
 function reset(): void {
   attributeReads = 0;
 }
@@ -155,7 +154,7 @@ test("a listener arriving while a modal is up gets the observer back", () => {
   assert.equal(stackedObserver(), undefined);
 
   // Dropping the observers must not cost the next reader its answer: the modal is still up, so
-  // this subscriber has to be told, and stacking has to be watched again on its behalf.
+  // this subscriber has to be told and stacking watched again.
   let notified = 0;
   const second = subscribeModalLayer(() => {
     notified += 1;
@@ -177,7 +176,7 @@ test("an animated inline style notifies nobody and serialises nothing", () => {
   notified = 0;
   attributeReads = 0;
 
-  // What a motion/react frame, a popper reposition and a resize drag all look like here.
+  // What an animation frame, a popper reposition and a resize drag look like here.
   const animated = fakeElement();
   stackedObserver()?.deliver([
     { target: animated, oldValue: "transform: translate3d(0px, 0px, 0px)" },
@@ -247,9 +246,8 @@ test("two subscribers sharing a callback survive one of them leaving", () => {
   const first = subscribeModalLayer(listener);
   const second = subscribeModalLayer(listener);
   first();
-  // The Set stores identities, so without a per-subscription wrapper both entries are the same
-  // one: the first cleanup would drop it, see an empty set, and disconnect the observers under a
-  // subscriber that is still reading.
+  // The Set stores identities, so without a per-subscription wrapper both entries collapse into
+  // one and the first cleanup disconnects the observers under a subscriber still reading.
   notifications = 0;
   openModal();
   assert.equal(getModalLayer(), true);

@@ -4,17 +4,13 @@
 /**
  * Whether a tooltip trigger sits below the active modal rather than inside it.
  *
- * Radix's DismissableLayer writes `pointer-events` inline: `none` on the body
- * while a modal is up, `auto` on the active layer, `none` on the layers under
- * it. Walking the ancestors for the nearest of those answers which layer owns
- * the trigger.
+ * Radix's DismissableLayer writes `pointer-events` inline: `none` on the body while a modal is up,
+ * `auto` on the active layer, `none` on the layers under it. The nearest ancestor with one of
+ * those owns the trigger.
  *
- * The trigger's own style is deliberately skipped. A trigger can be authored
- * `pointer-events: none` and still belong to the modal, which is exactly what
- * the hint anchors inside the MCP dropdown rows do.
- *
- * Read the trigger, never the tooltip content: layers rank by mount order, so
- * content opened after the modal reads `auto` wherever its trigger sits.
+ * The trigger's own style is skipped on purpose: it can be authored `pointer-events: none` and
+ * still belong to the modal, as the hint anchors in the MCP dropdown rows do. Read the trigger,
+ * never the content: layers rank by mount order, so content opened after the modal reads `auto`.
  */
 export function isBlockedByActiveModal(element: HTMLElement): boolean {
   for (let node = element.parentElement; node; node = node.parentElement) {
@@ -26,12 +22,11 @@ export function isBlockedByActiveModal(element: HTMLElement): boolean {
 }
 
 // Whether a modal layer is up at all, shared by every tooltip. Radix sets body pointer-events to
-// none while one is, which is also when a hovered trigger stops receiving pointerleave, so a
-// tooltip already on screen hangs over the dialog with nothing able to close it.
+// none while one is, which is also when a hovered trigger stops receiving pointerleave, so an
+// open tooltip hangs over the dialog with nothing able to close it.
 //
-// Two observers, because the two questions cost very different amounts. Whether a modal is up is
-// one attribute on one node. Which layer owns a trigger needs the whole subtree, and only has an
-// answer worth asking for while a modal is up.
+// Two observers, because the questions cost differently: "is a modal up" is one attribute on one
+// node; "which layer owns a trigger" needs the whole subtree, and only matters while one is up.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
 let bodyLayerObserver: MutationObserver | null = null;
@@ -51,12 +46,11 @@ function readPointerEvents(style: string | null): string {
 function readStackedLayerMutations(records: MutationRecord[]): void {
   for (const record of records) {
     const previous = record.oldValue;
-    // The live property, not getAttribute: that serialises the whole declaration, and the
-    // records that land here while a modal is up are mostly inline styles being animated.
+    // The live property, not getAttribute: that serialises the whole declaration, and most
+    // records landing here while a modal is up are inline styles being animated.
     const current = (record.target as HTMLElement).style?.pointerEvents ?? "";
-    // A style that did not name pointer-events and still does not cannot have changed it. That
-    // is every frame of a motion/react animation, every popper reposition and every resize drag,
-    // and this test is the whole reason none of them reach the regex.
+    // A style that never named pointer-events cannot have changed it. That is every animation
+    // frame, popper reposition and resize drag, and this test is why none reach the regex.
     if (
       current === "" &&
       (previous === null || !previous.includes("pointer-events"))
@@ -96,12 +90,12 @@ function readModalLayer(): void {
 }
 
 export function subscribeModalLayer(listener: () => void): () => void {
-  // A fresh identity per subscription: the Set would otherwise collapse two subscribers that
-  // share a callback, and the first cleanup would tear the observers down under the second.
+  // A fresh identity per subscription: the Set would otherwise collapse two subscribers sharing a
+  // callback, and the first cleanup would tear the observers down under the second.
   const subscription = () => listener();
   modalLayerListeners.add(subscription);
-  // Both conditions: the set dedupes, so the same listener added twice would otherwise build a
-  // second body observer and orphan the first, which is the leak the teardown below exists for.
+  // Both conditions: without the size check a duplicate listener builds a second body observer
+  // and orphans the first, which is the leak the teardown below exists for.
   if (
     modalLayerListeners.size === 1 &&
     !bodyLayerObserver &&
@@ -112,18 +106,15 @@ export function subscribeModalLayer(listener: () => void): () => void {
       attributes: true,
       attributeFilter: ["style"],
     });
-    // Nothing watched the body while there were no listeners, so the flag is only as good as
-    // this read.
+    // Nothing watched the body while there were no listeners, so the flag needs this read.
     readModalLayer();
   }
   return () => {
     modalLayerListeners.delete(subscription);
     if (modalLayerListeners.size > 0) return;
-    // No reader left. A modal that is up when the last tooltip unmounts would otherwise leave
-    // the subtree observer running regexes with nobody to notify until the modal closed.
-    // Clearing the flag before the sync is what drops that observer, and it is also what keeps
-    // `readModalLayer`'s early return honest for the next subscriber: flag and observers are
-    // only ever out of step between these two lines.
+    // No reader left. A modal still up when the last tooltip unmounts would otherwise leave the
+    // subtree observer running with nobody to notify. Clearing the flag before the sync drops
+    // that observer and keeps `readModalLayer`'s early return honest for the next subscriber.
     bodyLayerObserver?.disconnect();
     bodyLayerObserver = null;
     modalLayerUp = false;

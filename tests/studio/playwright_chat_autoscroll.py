@@ -48,9 +48,9 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-chat-autoscroll"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# A token every 250ms for 8s: what the deep research synthesis phase flushes at, and the cadence
-# the loop is actually wasteful at. A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case
-# where a frame per token is justified, so measuring only there hides the whole effect.
+# A token every 250ms for 8s: the deep research synthesis cadence, and the one the loop is
+# wasteful at. A faster cadence (SMOKE_TOKEN_GAP_MS=40) is the one case where a frame per token is
+# justified, so measuring only there hides the effect.
 TOKEN_COUNT = int(os.environ.get("SMOKE_TOKEN_COUNT", "32"))
 TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
 # One frame per token at this cadence is 4/s; the old loop ran at the pump's ceiling, around 62/s.
@@ -58,8 +58,8 @@ TOKEN_GAP_MS = int(os.environ.get("SMOKE_TOKEN_GAP_MS", "250"))
 MAX_STREAM_RAF_PER_SECOND = float(os.environ.get("SMOKE_MAX_RAF_PER_S", "25"))
 # The follow window in the hook. Silent growth is measured against it.
 FOLLOW_SETTLE_MS = 600
-# What the settle check trades away: growth no observer can see is followed on a timer rather
-# than on the next frame. Generous against 115ms measured, tight enough to catch a regression.
+# What the settle check trades away: unobservable growth is followed on a timer, not the next
+# frame. Generous against 115ms measured, tight enough to catch a regression.
 SILENT_GROWTH_REPIN_BUDGET_MS = int(os.environ.get("SMOKE_REPIN_BUDGET_MS", "250"))
 
 PUMP_INIT = """
@@ -176,8 +176,8 @@ def run() -> dict:
         page.wait_for_timeout(2000)
         results["idle_raf_per_2s"] = page.evaluate("window.__rafCount")
 
-        # 3. Silent growth. A token first, to open a fresh follow window, then growth expressed
-        # as an inline style, which reaches neither observer.
+        # 3. Silent growth. A token first to open a fresh follow window, then growth as an inline
+        # style, which reaches neither observer.
         page.evaluate("window.__autoscroll.resetGrowth()")
         page.wait_for_timeout(900)
         settled = page.evaluate(
@@ -282,9 +282,8 @@ def main() -> int:
     repinned_after_ms = results["silent_growth"]["repinnedAfterMs"]
     if repinned_after_ms is None:
         failures.append("silent growth was never followed inside the window")
-    # The settle timer is 100ms plus the frame it schedules, measured at 115ms. Bounding it here
-    # is the point: "eventually" would stay green if the re-check slowed to half a second, which
-    # is the whole cost this trade accepted.
+    # The settle timer is 100ms plus the frame it schedules, measured at 115ms. Bounding it is the
+    # point: "eventually" would stay green if the re-check slowed to half a second.
     elif repinned_after_ms > SILENT_GROWTH_REPIN_BUDGET_MS:
         failures.append(
             f"silent growth took {repinned_after_ms:.0f}ms to follow, over the "

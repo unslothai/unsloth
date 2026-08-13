@@ -51,11 +51,10 @@ const UPWARD_DETACH_THRESHOLD_PX = 2;
 const FOLLOW_SETTLE_MS = 600;
 // How often a quiet pinned frame re-checks layout for the rest of the follow
 // window. Content can grow with no mutation record and no border-box resize
-// (an image decoding, a font-display: swap webfont, a late KaTeX pass), and
-// the MutationObserver below deliberately excludes style, so only a frame that
-// reads layout notices. 100ms rather than every frame: six times fewer forced
-// layouts, and the view is back on the bottom within about a tenth of a second
-// (the timer, plus the frame it schedules: measured at 115ms).
+// (image decode, font-display: swap, a late KaTeX pass), and the
+// MutationObserver below excludes style, so only a frame that reads layout
+// notices. 100ms not every frame: six times fewer forced layouts, and the view
+// is back on the bottom in ~115ms measured (timer plus the frame it schedules).
 const SETTLE_CHECK_MS = 100;
 // Max stabilizer compensation. Absorbs sub-frame transients (~5-15px shiki
 // re-renders, ~8px action-bar drift). Larger shrinks are intentional
@@ -168,8 +167,7 @@ export function useIntentAwareAutoScroll(): {
       let rafId: number | null = null;
       let settleTimer: number | null = null;
       let settleCheckDue = false;
-      // Whether a layout signal arrived since the last frame. Starts true so the first frame
-      // after attach always runs a follow pass.
+      // Layout signal since the last frame. True so the first frame after attach follows.
       let layoutChanged = true;
       let lastScrollTop = el.scrollTop;
       let lastClientWidth = el.clientWidth;
@@ -252,9 +250,8 @@ export function useIntentAwareAutoScroll(): {
       const detach = (): void => {
         userDetachedRef.current = true;
         followUntilRef.current = 0;
-        // Hygiene, not correctness: `following` is gated on userDetached before `settling` is
-        // consulted, so a queued check could not re-pin anyway. It can no longer do anything, so
-        // it should not sit on a timer for the rest of the window.
+        // Hygiene, not correctness: `following` checks userDetached before `settling`, so a
+        // queued check cannot re-pin anyway; it just should not sit on a timer.
         clearSettleCheck();
         // The stabilizer only matters while pinning. Once the user
         // scrolls up, drop residual padding so the bottom stays flush on
@@ -270,8 +267,8 @@ export function useIntentAwareAutoScroll(): {
         }
       };
 
-      // A quiet pinned frame stops chaining and hands what is left of the window to this timer,
-      // which re-arms itself while the window is open. See SETTLE_CHECK_MS for what it is for.
+      // A quiet pinned frame stops chaining and hands the rest of the window to this timer, which
+      // re-arms itself while the window is open. See SETTLE_CHECK_MS.
       const scheduleSettleCheck = (): void => {
         if (settleTimer !== null) {
           return;
@@ -283,8 +280,7 @@ export function useIntentAwareAutoScroll(): {
         settleTimer = window.setTimeout(
           () => {
             settleTimer = null;
-            // The window may have closed by the time the frame runs; this grants that frame one
-            // last follow pass rather than dropping it into the settle branch.
+            // The window may have closed by then; grant that frame one last follow pass.
             settleCheckDue = true;
             requestTick();
           },
@@ -294,9 +290,8 @@ export function useIntentAwareAutoScroll(): {
 
       // Single rAF loop. Within the follow window and not detached, pin to
       // bottom and report isAtBottom=true; otherwise settle on the DOM.
-      // Edge-triggered: scroll/resize/mutation call requestTick(). The loop re-arms itself only
-      // while layout is still moving, since chaining on the window alone read layout every
-      // frame for as long as a message streamed.
+      // Edge-triggered: scroll/resize/mutation call requestTick(). Re-arms only while layout is
+      // still moving; chaining on the window alone read layout every frame of a stream.
       const tick = (): void => {
         rafId = null;
         const settling = settleCheckDue;
