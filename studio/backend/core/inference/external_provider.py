@@ -5453,13 +5453,18 @@ class ExternalProviderClient:
                         }
                         return f"data: {_json.dumps(chunk)}"
 
+                    event_name = ""
                     try:
                         while True:
                             try:
                                 line = await lines_gen.__anext__()
                             except StopAsyncIteration:
                                 break
-                            if not line or line.startswith("event:"):
+                            if not line:
+                                event_name = ""
+                                continue
+                            if line.startswith("event:"):
+                                event_name = line[6:].strip()
                                 continue
                             if not line.startswith("data:"):
                                 continue
@@ -5498,7 +5503,7 @@ class ExternalProviderClient:
                             except _json.JSONDecodeError:
                                 continue
 
-                            event_type = response_event_type(event)
+                            event_type = response_event_type(event, event_name)
                             _record_openai_response_id(event)
 
                             if event_type == "response.output_text.delta":
