@@ -100,7 +100,7 @@ _MAX_FRUITLESS_TURNS = 2
 
 
 def _sse(payload: dict[str, Any]) -> str:
-    return "data: " + json.dumps(payload, separators = (",", ":"))
+    return "data: " + json.dumps(payload, separators=(",", ":"))
 
 
 def _is_done_sentinel(line: str) -> bool:
@@ -200,7 +200,7 @@ class ToolLoopTransport(Protocol):
     ) -> AsyncIterator[str]: ...
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopRun:
     """Everything about the request that the loop, not the transport, needs."""
 
@@ -212,7 +212,7 @@ class ToolLoopRun:
     continue_final_message: bool = False
 
 
-@dataclass(frozen = True)
+@dataclass(frozen=True)
 class ToolLoopPolicy:
     tools: list[dict[str, Any]]
     max_calls: int
@@ -229,12 +229,12 @@ class ToolLoopPolicy:
 class _Turn:
     """Accumulated state for one provider turn."""
 
-    by_index: dict[Any, dict[str, Any]] = field(default_factory = dict)
-    order: list[Any] = field(default_factory = list)
+    by_index: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    order: list[Any] = field(default_factory=list)
     last_index: int | None = None
     round: int = 0
-    healed: list[dict[str, Any]] = field(default_factory = list)
-    text: list[str] = field(default_factory = list)
+    healed: list[dict[str, Any]] = field(default_factory=list)
+    text: list[str] = field(default_factory=list)
     reasoning_extra: dict[str, Any] | None = None
     finish_reason: str | None = None
 
@@ -294,7 +294,7 @@ class _Turn:
         for position, call in enumerate(
             [self.by_index[key] for key in self.order] + list(self.healed)
         ):
-            normalized = _normalized_call(call, fallback_id = f"call_{self.round}_{position}")
+            normalized = _normalized_call(call, fallback_id=f"call_{self.round}_{position}")
             if normalized is None:
                 continue
             if normalized["id"] in seen:
@@ -451,9 +451,7 @@ async def stream_with_studio_tools(
     # The promotion allowlist is the selected catalog, never None: an
     # unrestricted parse re-opens markerless tool-call promotion.
     heal_names = (
-        heal_gate(policy.auto_heal, tools, tool_choice)
-        if transport.heals_text_tool_calls
-        else None
+        heal_gate(policy.auto_heal, tools, tool_choice) if transport.heals_text_tool_calls else None
     )
 
     skip_autoinject = run.continue_final_message or (
@@ -477,8 +475,8 @@ async def stream_with_studio_tools(
     # ledger the local loops keep, so an external model cannot spend the budget
     # repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
-        tools = tools,
-        auto_heal_tool_calls = policy.auto_heal is not False,
+        tools=tools,
+        auto_heal_tool_calls=policy.auto_heal is not False,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0
@@ -500,12 +498,8 @@ async def stream_with_studio_tools(
             # without bound when nothing ever executes.
             break
         provider_turns += 1
-        turn = _Turn(round = provider_turns)
-        healer = (
-            StreamToolCallHealer(heal_names, tools)
-            if heal_names
-            else None
-        )
+        turn = _Turn(round=provider_turns)
+        healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
 
         active_tools = controller.active_tools()
         tools_available = (
@@ -522,91 +516,91 @@ async def stream_with_studio_tools(
             turn_tool_choice = "auto"
 
         generator = transport.stream(
-            messages = conversation,
-            tools = active_tools if tools_available else None,
-            tool_choice = turn_tool_choice,
-            cancel_event = cancel_event,
+            messages=conversation,
+            tools=active_tools if tools_available else None,
+            tool_choice=turn_tool_choice,
+            cancel_event=cancel_event,
         )
         try:
-          async for line in generator:
-              if _is_done_sentinel(line):
-                  # Every turn ends with one. Relaying it mid-loop tells a
-                  # spec-compliant client the response is over, and it stops before
-                  # the tool cards and the real answer. The route emits the final one.
-                  continue
-              payload = _chunk_payload(line)
-              if payload is None:
-                  yield line
-                  continue
-              if "usage" in payload:
-                  _merge_usage(usage_totals, payload.get("usage"))
-                  if _is_usage_only(payload):
-                      # Withheld: one summed chunk is sent once the loop ends, so a
-                      # multi-turn answer does not report a burst of partial counts.
-                      continue
-              choices = payload.get("choices")
-              choice = choices[0] if isinstance(choices, list) and choices else {}
-              if not isinstance(choice, dict):
-                  yield line
-                  continue
+            async for line in generator:
+                if _is_done_sentinel(line):
+                    # Every turn ends with one. Relaying it mid-loop tells a
+                    # spec-compliant client the response is over, and it stops before
+                    # the tool cards and the real answer. The route emits the final one.
+                    continue
+                payload = _chunk_payload(line)
+                if payload is None:
+                    yield line
+                    continue
+                if "usage" in payload:
+                    _merge_usage(usage_totals, payload.get("usage"))
+                    if _is_usage_only(payload):
+                        # Withheld: one summed chunk is sent once the loop ends, so a
+                        # multi-turn answer does not report a burst of partial counts.
+                        continue
+                choices = payload.get("choices")
+                choice = choices[0] if isinstance(choices, list) and choices else {}
+                if not isinstance(choice, dict):
+                    yield line
+                    continue
 
-              delta = choice.get("delta")
-              delta = delta if isinstance(delta, dict) else {}
-              content = delta.get("content")
-              raw_calls = delta.get("tool_calls")
-              extra = delta.get("extra_content")
-              if isinstance(extra, dict):
-                  turn.reasoning_extra = extra
-              if isinstance(choice.get("finish_reason"), str):
-                  turn.finish_reason = choice["finish_reason"]
+                delta = choice.get("delta")
+                delta = delta if isinstance(delta, dict) else {}
+                content = delta.get("content")
+                raw_calls = delta.get("tool_calls")
+                extra = delta.get("extra_content")
+                if isinstance(extra, dict):
+                    turn.reasoning_extra = extra
+                if isinstance(choice.get("finish_reason"), str):
+                    turn.finish_reason = choice["finish_reason"]
 
-              if isinstance(raw_calls, list) and raw_calls:
-                  if healer is not None and not healer.dormant:
-                      # Grammar mode worked; stop second-guessing the text stream.
-                      # Whatever was being held was ordinary prose after all, so it
-                      # has to reach the client, not just the conversation replay.
-                      for kind, value in healer.structured_tool_call_seen():
-                          if kind == "text" and value:
-                              turn.text.append(value)
-                              yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
-                  turn.merge_structured(raw_calls)
+                if isinstance(raw_calls, list) and raw_calls:
+                    if healer is not None and not healer.dormant:
+                        # Grammar mode worked; stop second-guessing the text stream.
+                        # Whatever was being held was ordinary prose after all, so it
+                        # has to reach the client, not just the conversation replay.
+                        for kind, value in healer.structured_tool_call_seen():
+                            if kind == "text" and value:
+                                turn.text.append(value)
+                                yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
+                    turn.merge_structured(raw_calls)
 
-              if healer is None or healer.dormant or not isinstance(content, str) or not content:
-                  plain = _delta_text(content)
-                  if plain:
-                      turn.text.append(plain)
-                  yield line
-                  continue
+                if healer is None or healer.dormant or not isinstance(content, str) or not content:
+                    plain = _delta_text(content)
+                    if plain:
+                        turn.text.append(plain)
+                    yield line
+                    continue
 
-              released: list[str] = []
-              for kind, value in healer.feed(content):
-                  if kind == "text":
-                      if value:
-                          released.append(value)
-                  elif kind == "tool_call":
-                      turn.healed.append(value)
-              visible = "".join(released)
-              if visible:
-                  turn.text.append(visible)
-              if visible == content:
-                  # Nothing was held back, which is the case for almost every chunk
-                  # of ordinary prose. Relay the provider's own bytes rather than
-                  # paying a re-encode per chunk to reproduce them.
-                  yield line
-                  continue
-              # Withholding everything is normal mid-block. Only drop the chunk when
-              # it carries nothing else worth relaying.
-              if visible or turn.finish_reason is not None or len(delta) > 1:
-                  yield _rewrite_content(payload, choice, visible)
+                released: list[str] = []
+                for kind, value in healer.feed(content):
+                    if kind == "text":
+                        if value:
+                            released.append(value)
+                    elif kind == "tool_call":
+                        turn.healed.append(value)
+                visible = "".join(released)
+                if visible:
+                    turn.text.append(visible)
+                if visible == content:
+                    # Nothing was held back, which is the case for almost every chunk
+                    # of ordinary prose. Relay the provider's own bytes rather than
+                    # paying a re-encode per chunk to reproduce them.
+                    yield line
+                    continue
+                # Withholding everything is normal mid-block. Only drop the chunk when
+                # it carries nothing else worth relaying.
+                if visible or turn.finish_reason is not None or len(delta) > 1:
+                    yield _rewrite_content(payload, choice, visible)
 
-          if healer is not None:
-              for kind, value in healer.finalize():
-                  if kind == "text":
-                      if value:
-                          turn.text.append(value)
-                          yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
-                  elif kind == "tool_call":
-                      turn.healed.append(value)
+            if healer is not None:
+                for kind, value in healer.finalize():
+                    if kind == "text":
+                        if value:
+                            turn.text.append(value)
+                            yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
+                    elif kind == "tool_call":
+                        turn.healed.append(value)
 
         finally:
             # Release the upstream response now rather than leaving it to the
@@ -710,12 +704,12 @@ async def stream_with_studio_tools(
                         # on its own write and the Allow / Deny buttons paint before
                         # the stream blocks waiting for the answer.
                         done, _pending = await asyncio.wait(
-                            {waiter}, timeout = _TOOL_APPROVAL_FLUSH_DELAY_S
+                            {waiter}, timeout=_TOOL_APPROVAL_FLUSH_DELAY_S
                         )
                         while not done:
                             yield _SSE_KEEPALIVE
                             done, _pending = await asyncio.wait(
-                                {waiter}, timeout = TOOL_HEARTBEAT_INTERVAL_S
+                                {waiter}, timeout=TOOL_HEARTBEAT_INTERVAL_S
                             )
                     finally:
                         if not waiter.done():
@@ -754,7 +748,7 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            def _invoke(output_callback: Any, call=decision) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -771,9 +765,9 @@ async def stream_with_studio_tools(
             # the card, and a heartbeat so a long call cannot idle the stream out.
             tool_stream = stream_tool_execution(
                 _invoke,
-                tool_name = name,
-                tool_call_id = call_id,
-                cancel_event = cancel_event,
+                tool_name=name,
+                tool_call_id=call_id,
+                cancel_event=cancel_event,
             )
             outcome: dict[str, Any] = {}
             step_task: Any = None
@@ -823,7 +817,7 @@ async def stream_with_studio_tools(
             "role": "assistant",
             # Markup never replays: the call is carried structurally below.
             "content": strip_tool_markup(
-                "".join(turn.text), final = True, enabled_tool_names = allowed_tool_names
+                "".join(turn.text), final=True, enabled_tool_names=allowed_tool_names
             ),
         }
         if turn.reasoning_extra:
@@ -835,7 +829,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message = run.continue_final_message,
+                continue_final_message=run.continue_final_message,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them,
