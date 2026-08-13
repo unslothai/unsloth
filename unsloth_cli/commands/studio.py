@@ -3587,13 +3587,28 @@ def _run_fetched_installer_ps1(
 
     -File rather than `-Command -`: stdin is decoded with [Console]::InputEncoding
     (CP1252/OEM on most Windows boxes), which mangles install.ps1's box-drawing chars,
-    while -File honours the BOM written below and passes the args on to the script's own
-    `@args`. The prefix gives AV/EDR engines (and anyone grepping temp) a clear identity.
+    while -File honours the BOM written below. The args go after the path so the
+    installer's own `Install-UnslothStudio @args` at EOF receives them, which is why
+    this no longer rewrites that line. The prefix gives AV/EDR engines (and anyone
+    grepping temp) a clear identity.
+
+    Creating and writing that file is its own failure mode: a full disk, a read-only or
+    missing %TEMP%, or AV holding the handle. Those raise OSError, and the refresh runs
+    after the package update has already succeeded, so they are reported and skipped
+    rather than allowed to abort the command.
     """
-    ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
     try:
-        with os.fdopen(ps1_fd, "wb") as fh:
-            fh.write(b"\xef\xbb\xbf" + installer)
+        ps1_fd, ps1_path = tempfile.mkstemp(prefix = "unsloth-studio-refresh-", suffix = ".ps1")
+    except OSError as exc:
+        typer.echo(f"  refresh-launcher  skipped: could not create a temp script ({exc})")
+        return
+    try:
+        try:
+            with os.fdopen(ps1_fd, "wb") as fh:
+                fh.write(b"\xef\xbb\xbf" + installer)
+        except OSError as exc:
+            typer.echo(f"  refresh-launcher  skipped: could not write the temp script ({exc})")
+            return
         argv = list(ps_argv)
         argv.extend(["-ExecutionPolicy", "Bypass", "-File", ps1_path, *args])
         try:

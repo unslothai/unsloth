@@ -15,6 +15,7 @@ network so `update --local` tests its own installer.
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -256,3 +257,52 @@ def test_a_complete_body_survives_the_completeness_check(monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
     assert studio._fetch_installer("install.sh") == _SH
+
+
+def test_a_windows_tempfile_failure_skips_instead_of_aborting(monkeypatch, tmp_path):
+    """The refresh runs after the package update has already succeeded.
+
+    A full disk, a read-only %TEMP% or AV holding the handle raises OSError while
+    creating or writing the script. That must not surface as a traceback from a
+    command whose real work is done.
+    """
+    studio = _studio()
+    # Captured BEFORE any patching: studio.tempfile is the tempfile module itself, so
+    # patching through it replaces the global.
+    real_mkstemp = tempfile.mkstemp
+    calls = []
+
+    def _boom_mkstemp(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(studio.tempfile, "mkstemp", _boom_mkstemp)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
+    assert calls == []
+
+    # And a write that fails after the file exists still cleans up and skips.
+    made = {}
+
+    def _ok_mkstemp(*a, **k):
+        fd, path = real_mkstemp(dir = tmp_path)
+        made["path"] = path
+        return fd, path
+
+    class _BadHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, _data):
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(studio.tempfile, "mkstemp", _ok_mkstemp)
+    monkeypatch.setattr(studio.os, "fdopen", lambda *a, **k: _BadHandle())
+    studio._run_fetched_installer_ps1(b"x", ["--shortcuts-only"], ["powershell.exe"], {})
+    assert not Path(made["path"]).exists(), "the temp script must not be left behind"
