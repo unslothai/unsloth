@@ -2068,9 +2068,7 @@ class TestTheForcedCpuFlagIsNotSticky:
             capture = capture,
         )
 
-    def test_a_covered_load_after_a_gated_one_clears_it(
-        self, tmp_path, monkeypatch, probe_env
-    ):
+    def test_a_covered_load_after_a_gated_one_clears_it(self, tmp_path, monkeypatch, probe_env):
         """The llama.cpp-update shape: the SAME backend instance loads again on
         a build that now covers the dGPU, with no unload in between (load_model
         phase 1 only kills the process)."""
@@ -2266,9 +2264,7 @@ class TestTheApuRetryRecomputesThePageLock:
 
         # (keep_resident, no_ram_reserve): both should_mlock and
         # apply_model_memory_policy read this one snapshot.
-        monkeypatch.setattr(
-            _mem_settings, "get_model_memory_settings", lambda: (mlock, False)
-        )
+        monkeypatch.setattr(_mem_settings, "get_model_memory_settings", lambda: (mlock, False))
 
         capture: dict = {}
         launches = _run_auto_load(
@@ -2284,12 +2280,10 @@ class TestTheApuRetryRecomputesThePageLock:
 
     def test_the_respawn_onto_the_apu_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
         launches, capture = self._run(tmp_path, monkeypatch, mlock = True)
-        retry = [
-            (cmd, env)
-            for cmd, env in launches
-            if env.get("ROCR_VISIBLE_DEVICES") == "1"
-        ]
-        assert retry, f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
+        retry = [(cmd, env) for cmd, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"]
+        assert (
+            retry
+        ), f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
         cmd, _env = retry[0]
         assert "--mlock" in cmd or "mmap+mlock" in " ".join(cmd), cmd
         # And the record agrees with the child, or the reload that would apply

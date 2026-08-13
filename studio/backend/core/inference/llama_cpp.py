@@ -14677,16 +14677,12 @@ class LlamaCppBackend:
                             binary = binary,
                             env = env,
                             probe_vulkan = should_mlock(),
-                            fit_active = fit_is_effectively_on(
-                                [*cmd, *(_mem_extra_args or [])], env
-                            ),
+                            fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
                         if _retry_host_resident != _mem_host_resident:
                             _retry_managed, _ = apply_model_memory_policy(
                                 extra_args,
-                                supports_load_mode = bool(
-                                    server_caps.get("supports_load_mode")
-                                ),
+                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
                                 weights_in_host_memory = _retry_host_resident,
                             )
                             # Drop whatever the crashed launch's policy put on
