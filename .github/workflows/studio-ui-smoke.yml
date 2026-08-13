@@ -57,7 +57,9 @@ jobs:
   ui-smoke:
     name: Chat UI Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The job was landing at 22m30s of its 25, so the banner layout step below
+    # took it over and the three image-model steps after it never ran.
+    timeout-minutes: 30
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -266,6 +268,35 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      - name: Update banner layout regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+        run: |
+          mkdir -p logs/playwright_update_banner
+          python tests/studio/playwright_update_banner_layout.py
+
+      # Firefox and WebKit at the viewports that reproduce, and nothing else:
+      # the card's floor and the action row's wrap threshold are measurements,
+      # and the three engines do not agree on font metrics or on whether a
+      # scrollbar takes width out of the box it sits on. WebKit is the closest
+      # this runner gets to Safari. Cut down to `spot` because a third full
+      # pass would spend minutes re-answering the first pass's questions.
+      - name: Update banner layout, other engines (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+          STUDIO_UI_BANNER_SCOPE: spot
+        run: |
+          for engine in firefox webkit; do
+            STUDIO_PLAYWRIGHT_BROWSER="$engine" \
+              python tests/studio/playwright_update_banner_layout.py
+          done
+
       - name: Image model full-footprint selector regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
@@ -402,6 +433,7 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_fontscale
+            logs/playwright_update_banner
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold

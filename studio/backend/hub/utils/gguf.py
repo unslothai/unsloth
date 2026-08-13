@@ -124,8 +124,13 @@ def is_reclaimable_drafter_path(path: str) -> bool:
     """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
     variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
     left, and companion filtering hides them from the variant menu, so leaving one
-    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
-    name doubles as a family a user picks for real weights."""
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded even
+    though Auto now launches it: the name doubles as a family a user picks for
+    real weights, whole repos publish nothing but root-level ``dflash-*.gguf``
+    (Lucebox/Qwen3.6-27B-DFlash-GGUF), and the two outcomes are not symmetric.
+    Reclaiming wrongly destroys weights a user chose; not reclaiming leaves
+    ~1.5 GiB, an order of magnitude under the DSpark case this rule was written
+    for. Locked by test_deleting_the_last_variant_keeps_a_dflash_weight."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False

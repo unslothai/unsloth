@@ -343,6 +343,7 @@ async def download_model_response(
             allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
         label = label,
         log_prefix = "Download",
         logger = logger,

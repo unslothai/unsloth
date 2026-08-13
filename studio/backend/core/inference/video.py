@@ -666,8 +666,11 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
     if device != "cuda":
         return None
     try:
-        import torch
-        return int(torch.cuda.mem_get_info()[0])
+        from utils.hardware import trusted_mem_get_info
+
+        # Windows ROCm over-reports free (#8403); pinning the denoiser on that
+        # reading is how a card that is already full still looks roomy.
+        return int(trusted_mem_get_info()[0])
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None
 
@@ -723,21 +726,23 @@ def _h3_auto_denoiser_scheme(
 ) -> Optional[str]:
     """The hosted scheme an UNSET ``transformer_quant`` resolves to, or None to keep bfloat16.
 
-    None whenever the released denoiser can stay resident, so a card with room gets exactly what
-    it got before: the released weights, bit-identical output, and the pin plus regional compile
-    that make it fast.
+    int8 wherever the hosted checkpoint exists for this partition and fits, which is now the
+    DEFAULT rather than a fallback. Measured on an H200 (141 GB) and a B200 (183 GB), 960x544,
+    124 frames, 8 steps, every component resident in both rows:
 
-    The fallback exists because the alternative on a smaller card is not "a bit slower". A denoiser
-    that does not fit stays in the CPU-offload rotation, and a module that moves cannot be compiled
-    either, so the regional compile is dropped with it: 194 s against 23.7 s on the same 8-step job,
-    every step paying 66.3 GB across the bus. The hosted checkpoint is 20.3 GB resident, which pins,
-    which restores the compile.
+        released bf16   20.06 / 12.76 / 12.77 s    102.8 GB steady
+        hosted int8     23.08 / 11.74 / 11.84 s     57.8 GB steady
 
-    The cost is real and is why this is a fallback rather than the default everywhere: the hosted
-    denoisers RE-ROLL the sample (mean SSIM 0.49 against the released weights, where that config
-    against itself scores 0.99). Different is not worse -- no NaN, no black frames, no visible
-    degradation at the model's own 30-step schedule -- but it is not the same picture, so it is
-    taken only when the choice is against a configuration nobody would pick knowingly.
+    So int8 is faster per generation and needs 45 GB less, which is what makes it the better
+    default on a card of any size. On a card that cannot hold the released denoiser the margin is
+    not 8% but the difference between running and crawling: bf16 there rides the CPU-offload
+    rotation and a module that moves cannot be compiled either, 194 s against 23.7 s.
+
+    What it costs is the picture, and that is the whole of the trade: the hosted denoisers RE-ROLL
+    the sample (mean SSIM 0.49 against the released weights, where that config against itself
+    scores 0.99). No NaN, no black frames, no visible degradation at the model's own 30-step
+    schedule, but the same seed and prompt render a different video. ``transformer_quant='none'``
+    keeps the released weights, and speed_mode="off" declines this on its own below.
 
     ``free_reader`` is how the device is measured: live free memory by default, and CAPACITY for
     the pre-download decision, which runs while the previous pipeline is still resident.
@@ -768,13 +773,18 @@ def _h3_auto_denoiser_scheme(
         # No reading is not evidence of a shortfall, and guessing wrong here changes the picture a
         # user gets. Keep the released denoiser, which is what happens today.
         return None
-    if _h3_dense_denoiser_fits(sizes, free_bytes):
-        return None
     if not video_family_prequant_available(
         fam, H3_AUTO_FALLBACK_SCHEME, task = task, base_repo = base_repo
     ):
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and
         # serving the other partition's would generate the wrong thing.
+        return None
+    from .diffusion_prequant import restricted_prequant_load_supported
+
+    if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
+        # An install that cannot restrict the deserialization cannot open a checkpoint at all, and
+        # this runs BEFORE the download plan: choosing one would drop the dense denoiser shards
+        # for an artifact the loader is going to refuse.
         return None
     # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload
     # rotation at all (it does not survive the mid-block move), so taking it means pinning it, which
@@ -1860,6 +1870,18 @@ class VideoBackend:
         Same rule as ``_h3_te_quant_scheme_verified`` next door, and the same fail-closed
         direction: unanswerable keeps the dense shards."""
         if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task):
+            return False
+        from .diffusion_prequant import restricted_prequant_load_supported
+
+        if not restricted_prequant_load_supported(transformer_quant):
+            # An install that cannot open a checkpoint keeps the dense shards. This is the
+            # decision that COMMITS (it drops 66 GB from the pull) and it runs for an EXPLICIT
+            # request too, which the auto selector's gate never sees.
+            logger.info(
+                "video.denoiser_prequant: this install cannot deserialize a pre-quantized "
+                "checkpoint, so the %s request keeps its dense denoiser shards",
+                transformer_quant,
+            )
             return False
         try:
             from huggingface_hub import HfApi
@@ -4090,68 +4112,116 @@ class VideoBackend:
             )
             effective_speed = SPEED_DEFAULT
         if device != "cpu":
-            manager.enable_auto_cpu_offload(
-                # Measured H3 activations need substantially more than the
-                # official 12 GB example at 10-15 seconds. Forty GB also keeps
-                # very large GPUs from retaining both 66 GB components and OOMing
-                # while smaller caps succeed by offloading one of them.
-                device = device,
-                memory_reserve_margin = "40GB",
-            )
-            offload_policy = "model"
             # The partition this workflow opened, not a hardcoded "transformer": a reference run
             # denoises out of transformer_ref, so pinning and sizing both have to name it or they
             # act on a component this load never built.
             denoiser = getattr(pipe, denoiser_component, None)
-            if transformer_quant_engaged:
-                # enable_auto_cpu_offload just parked every component on the CPU and will move
-                # each one back inside its own pre_forward. A torchao pre-quantized denoiser does
-                # not survive that mid-block move (see pin_prequantized_module), so place it now
-                # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
-                # keep their hooks and still offload around it.
-                from .diffusion_prequant import pin_prequantized_module
-                denoiser_pinned = pin_prequantized_module(manager, denoiser, device, logger = logger)
-            elif denoiser is not None and effective_speed != SPEED_OFF:
-                # The RELEASED bfloat16 denoiser, for a different reason: not correctness, speed.
-                # Which is why speed=off skips this branch and keeps the rotation: taking a module
-                # out of the offload rotation is not free, it trades the ability to budget the
-                # denoiser against the requested frame count for throughput, and an explicit "off"
-                # is the one request that says do not make that trade. The pre-quantized pin above
-                # is NOT gated the same way: there it is correctness, not speed.
-                # Every denoise step moves the same 66.3 GB module in and out, and a module that
-                # moves cannot be compiled either (the onload hooks fight the graph). Quantizing
-                # the conditioner is what makes pinning affordable -- 66.3 GB denoiser + 27.2 GB
-                # encoder resident rather than two 66 GB components. Sized against LIVE free
-                # memory, after every component is built and parked: the only reading that
-                # describes the card this load actually got.
-                sizes = _h3_dense_denoiser_resident_bytes(
-                    fam, denoiser = denoiser, te_scheme = text_encoder_quant_engaged, dtype = dtype
+            # Asked BEFORE the offload is installed, because the answer decides whether to install
+            # it at all. ``_h3_dense_denoiser_resident_bytes`` already returns the denoiser plus
+            # EVERYTHING else -- conditioner at its engaged precision, VAEs, activation headroom --
+            # so "the denoiser fits" and "the whole set fits" are the same question, asked once.
+            #
+            # Reading free memory here rather than after the offload reads the same number: this
+            # workflow builds every component on the CPU (load_components does, and the hosted
+            # denoiser is seeded with device="cpu" for exactly this reason), so there is nothing
+            # resident yet for the offload to have freed. And if that ever stopped being true the
+            # reading would be SMALLER, which makes this check stricter, never looser.
+            whole_set_sizes = _h3_dense_denoiser_resident_bytes(
+                fam, denoiser = denoiser, te_scheme = text_encoder_quant_engaged, dtype = dtype
+            )
+            free_before_placement = _h3_free_device_bytes(device)
+            # The same speed_mode="off" gate the released-denoiser pin below carries, and for the
+            # same reason: the headroom in the sizing above is for the family's DEFAULT frame
+            # count, so a resident set trades the rotation's ability to absorb a much longer clip
+            # for throughput. An explicit "off" is the one request that says do not make that
+            # trade, and it keeps exactly the behaviour it has today.
+            whole_set_resident = effective_speed != SPEED_OFF and _h3_dense_denoiser_fits(
+                whole_set_sizes, free_before_placement
+            )
+            if whole_set_resident:
+                # Nothing to rotate. enable_auto_cpu_offload parks EVERY component in host RAM and
+                # moves each one back inside its own pre_forward, so installing it on a card that
+                # can hold the whole set buys nothing and costs twice: tens of GB of host RAM held
+                # for the life of the load, and the conditioner and VAEs crossing the bus on every
+                # generation. Measured 42.2 GB peak host RSS on a 183 GB card with 103 GB of it in
+                # use, purely to service a rotation that never needed to happen.
+                #
+                # pipe.to() rather than the manager: with no hooks installed there is nothing to
+                # unpin, and a torchao denoiser moves safely here because this is load time, not
+                # mid-block (the move that breaks it is the one a pre_forward makes -- see
+                # pin_prequantized_module).
+                pipe.to(device)
+                offload_policy = "none"
+                # Resident and hookless, which is the condition the regional compile needs.
+                denoiser_pinned = denoiser is not None
+                logger.info(
+                    "video.h3_placement: the whole component set fits on this device (%.1f GB "
+                    "against %.1f GB free), so every component stays resident and the CPU-offload "
+                    "rotation is not installed",
+                    sum(whole_set_sizes) / 1e9,
+                    (free_before_placement or 0) / 1e9,
                 )
-                free_bytes = None
-                if sizes is not None:
-                    try:
-                        free_bytes = torch.cuda.mem_get_info()[0] if device == "cuda" else None
-                    except Exception:  # noqa: BLE001 -- unreadable free memory keeps the rotation
-                        free_bytes = None
-                if sizes is not None and free_bytes is not None:
-                    denoiser_bytes, others_bytes = sizes
-                    if _h3_dense_denoiser_fits(sizes, free_bytes):
-                        from .diffusion_prequant import pin_prequantized_module
-                        denoiser_pinned = pin_prequantized_module(
-                            manager,
-                            denoiser,
-                            device,
-                            logger = logger,
-                            label = "released bfloat16 denoiser",
-                        )
-                    else:
-                        logger.info(
-                            "video.h3_denoiser_placement: %.1f GB free is under the %.1f GB the "
-                            "denoiser plus the other components need, so it stays in the offload "
-                            "rotation (and is not compiled)",
-                            free_bytes / 1e9,
-                            (denoiser_bytes + others_bytes) / 1e9,
-                        )
+            else:
+                manager.enable_auto_cpu_offload(
+                    # Measured H3 activations need substantially more than the
+                    # official 12 GB example at 10-15 seconds. Forty GB also keeps
+                    # very large GPUs from retaining both 66 GB components and OOMing
+                    # while smaller caps succeed by offloading one of them.
+                    device = device,
+                    memory_reserve_margin = "40GB",
+                )
+                offload_policy = "model"
+                if transformer_quant_engaged:
+                    # enable_auto_cpu_offload just parked every component on the CPU and will move
+                    # each one back inside its own pre_forward. A torchao pre-quantized denoiser does
+                    # not survive that mid-block move (see pin_prequantized_module), so place it now
+                    # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
+                    # keep their hooks and still offload around it.
+                    from .diffusion_prequant import pin_prequantized_module
+                    denoiser_pinned = pin_prequantized_module(
+                        manager, denoiser, device, logger = logger
+                    )
+                elif denoiser is not None and effective_speed != SPEED_OFF:
+                    # The RELEASED bfloat16 denoiser, for a different reason: not correctness, speed.
+                    # Which is why speed=off skips this branch and keeps the rotation: taking a module
+                    # out of the offload rotation is not free, it trades the ability to budget the
+                    # denoiser against the requested frame count for throughput, and an explicit "off"
+                    # is the one request that says do not make that trade. The pre-quantized pin above
+                    # is NOT gated the same way: there it is correctness, not speed.
+                    # Every denoise step moves the same 66.3 GB module in and out, and a module that
+                    # moves cannot be compiled either (the onload hooks fight the graph). Quantizing
+                    # the conditioner is what makes pinning affordable -- 66.3 GB denoiser + 27.2 GB
+                    # encoder resident rather than two 66 GB components. Sized against LIVE free
+                    # memory, after every component is built and parked: the only reading that
+                    # describes the card this load actually got.
+                    sizes = _h3_dense_denoiser_resident_bytes(
+                        fam, denoiser = denoiser, te_scheme = text_encoder_quant_engaged, dtype = dtype
+                    )
+                    free_bytes = None
+                    if sizes is not None:
+                        try:
+                            free_bytes = _h3_free_device_bytes(device)
+                        except Exception:  # noqa: BLE001 -- unreadable free memory keeps the rotation
+                            free_bytes = None
+                    if sizes is not None and free_bytes is not None:
+                        denoiser_bytes, others_bytes = sizes
+                        if _h3_dense_denoiser_fits(sizes, free_bytes):
+                            from .diffusion_prequant import pin_prequantized_module
+                            denoiser_pinned = pin_prequantized_module(
+                                manager,
+                                denoiser,
+                                device,
+                                logger = logger,
+                                label = "released bfloat16 denoiser",
+                            )
+                        else:
+                            logger.info(
+                                "video.h3_denoiser_placement: %.1f GB free is under the %.1f GB the "
+                                "denoiser plus the other components need, so it stays in the offload "
+                                "rotation (and is not compiled)",
+                                free_bytes / 1e9,
+                                (denoiser_bytes + others_bytes) / 1e9,
+                            )
 
         # ── the speed layer this workflow used to skip entirely.
         # apply_speed_optims / select_attention_backend live below the modular dispatch in
@@ -4697,7 +4767,11 @@ class VideoBackend:
                     device_obj = torch.device(state.device)
                     device_module = getattr(torch, device_obj.type, None)
                     if device_module is not None and hasattr(device_module, "mem_get_info"):
-                        free_bytes, _ = device_module.mem_get_info(device_obj)
+                        # Windows ROCm's free half is an over-report and this is a
+                        # hard refusal, so cap it against the allocator (#8403).
+                        from utils.hardware import trusted_mem_get_info
+
+                        free_bytes, _ = trusted_mem_get_info(device_obj, module = device_module)
                         reserved_bytes = (
                             device_module.memory_reserved(device_obj)
                             if hasattr(device_module, "memory_reserved")

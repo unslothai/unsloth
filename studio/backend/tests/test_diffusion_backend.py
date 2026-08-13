@@ -6685,6 +6685,79 @@ _ZIMAGE_BASE_SIBLINGS = [
 _ZIMAGE_BASE_SIBLINGS_BY_NAME = {s.rfilename: s.size for s in _ZIMAGE_BASE_SIBLINGS}
 
 
+_QWEN_EDIT_Q6 = "qwen-image-edit-2511-Q6_K.gguf"
+_QWEN_EDIT_BASE_SIBLINGS = [
+    _FakeSibling("model_index.json", 516),
+    # Live Hub sizes: the five dense shards are the extra ~40.9 GB this regression prevents.
+    _FakeSibling("transformer/diffusion_pytorch_model-00001-of-00005.safetensors", 9_973_578_592),
+    _FakeSibling("transformer/diffusion_pytorch_model-00002-of-00005.safetensors", 9_987_326_072),
+    _FakeSibling("transformer/diffusion_pytorch_model-00003-of-00005.safetensors", 9_987_307_440),
+    _FakeSibling("transformer/diffusion_pytorch_model-00004-of-00005.safetensors", 9_930_685_712),
+    _FakeSibling("transformer/diffusion_pytorch_model-00005-of-00005.safetensors", 982_130_472),
+    _FakeSibling("text_encoder/model-00001-of-00004.safetensors", 4_968_243_304),
+    _FakeSibling("text_encoder/model-00002-of-00004.safetensors", 4_991_495_816),
+    _FakeSibling("text_encoder/model-00003-of-00004.safetensors", 4_932_751_040),
+    _FakeSibling("text_encoder/model-00004-of-00004.safetensors", 1_691_924_384),
+    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 253_806_966),
+    _FakeSibling("processor/merges.txt", 1_671_853),
+    _FakeSibling("processor/tokenizer.json", 11_421_896),
+    _FakeSibling("processor/vocab.json", 2_776_833),
+]
+
+
+def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transformer(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """Cover the reported live Q6 shape and its explicit-quant causal control."""
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+
+    checkpoint_repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+    base_repo = "Qwen/Qwen-Image-Edit-2511"
+    _fake_hf_api(
+        monkeypatch,
+        {
+            checkpoint_repo: [_FakeSibling(_QWEN_EDIT_Q6, 16_852_417_120)],
+            base_repo: _QWEN_EDIT_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base_repo)
+    _split_cache_roots(tmp_path, monkeypatch)
+    _no_cache(monkeypatch)
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = False, steady_total_mib = 39_900),
+    )
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(
+            total_mib = 81_920, free_mib = 80_000, memory_kind = "discrete_vram"
+        ),
+    )
+
+    auto = backend.download_plan(checkpoint_repo, gguf_filename = _QWEN_EDIT_Q6)
+    auto_base = next(e for e in auto["entries"] if e["gguf_filename"] is None)
+    auto_transformer = [f for f in auto_base["files"] if f.startswith("transformer/")]
+    assert auto_transformer == []
+    assert 16_000_000_000 < auto_base["bytes"] < 18_000_000_000
+
+    explicit = backend.download_plan(
+        checkpoint_repo, gguf_filename = _QWEN_EDIT_Q6, transformer_quant = "int8"
+    )
+    explicit_base = next(e for e in explicit["entries"] if e["gguf_filename"] is None)
+    explicit_transformer = [f for f in explicit_base["files"] if f.startswith("transformer/")]
+    assert len(explicit_transformer) == 5
+    assert 55_000_000_000 < explicit_base["bytes"] < 60_000_000_000
+
+
 def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):
     # The plan drives the download manager, so it must agree with the load: a declined prequant
     # stages neither its .pt nor the base transformer/ shards the dense build wanted.
@@ -8504,19 +8577,45 @@ def test_generate_refuses_a_resolution_whose_activations_cannot_fit(
 def test_generate_guard_measures_the_input_image_not_the_sliders(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # img2img / inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading
-    # the width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
+    # inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading the
+    # width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
     # the sliders left at 1024 is four times the planned area.
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match = "2048x2048"):
+    with pytest.raises(ValueError) as excinfo:
         backend.generate(
             prompt = "a sloth",
             width = 1024,
             height = 1024,
             steps = 4,
             init_image = _png_b64(2048),
+            mask_image = _mask_b64(2048),
         )
+    message = str(excinfo.value)
+    assert "2048x2048" in message
+    # ...and must not advise changing the Resolution control, which cannot move that number
+    # for a workflow whose canvas comes from the upload.
+    assert "Upload a smaller source image" in message
+    assert "smaller resolution" not in message
+
+
+def test_transform_fits_the_upload_to_the_sliders_instead_of_refusing(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Reported: Transform refused at 2048x2048 however small the sliders were set, because
+    # img2img sized from the upload alone. Fitting the upload to the requested box renders
+    # instead of refusing, at the size that was asked for.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    out = backend.generate(
+        prompt = "a sloth",
+        width = 1024,
+        height = 1024,
+        steps = 4,
+        init_image = _png_b64(2048),
+    )
+    assert len(out["images"]) == 1
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (1024, 1024)
 
 
 def test_generate_guard_uses_the_hint_the_load_planned_with(fake_runtime, tmp_path, monkeypatch):

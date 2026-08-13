@@ -28,6 +28,15 @@ from core.inference.video import (
 from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
+@pytest.fixture(autouse = True)
+def _assume_the_restricted_load_is_available(monkeypatch):
+    """A checkpoint only deserializes where torchao is importable, which here it may not be. These
+    tests are about the load/plan decisions; the capability is covered in
+    test_diffusion_prequant.py."""
+    import core.inference.diffusion_prequant as _pq
+    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
+
 class _FakeDtype:
     def __init__(self, name: str) -> None:
         self._name = name
@@ -2958,8 +2967,10 @@ def test_the_h3_loader_optimises_the_partition_it_denoises_with():
         ), f"{helper} is handed {ast.dump(first)}, not the denoiser view"
 
 
-def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
-    # bf16 keeps the dense shards, so there is nothing to replace and no third repo to stage.
+def test_download_plan_adds_no_prequant_entry_when_bfloat16_is_pinned(monkeypatch):
+    # transformer_quant="none" keeps the dense shards, so there is nothing to replace and no
+    # third repo to stage. An UNSET request resolves to int8 now and stages the hosted
+    # checkpoint instead, which is a different case; this one is the explicit opt-out.
     _cuda_bf16_target(monkeypatch)
     _plan_api(
         monkeypatch,
@@ -2973,6 +2984,7 @@ def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
         "MiniMaxAI/MiniMax-H3",
         family_override = "minimax-h3",
         model_kind = "pipeline",
+        transformer_quant = "none",
     )
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
@@ -3585,7 +3597,7 @@ def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path)
     backend = VideoBackend()
     fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
     assert fam is not None
-    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3"):
         backend._run_load_h3_native(
             fam = fam,
             token = None,
@@ -4974,6 +4986,9 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
 
     backend = VideoBackend()
     status = backend._load_h3_modular_pipeline(
+        # Precision is not what this covers, and an unset request resolves to int8 now,
+        # which sends the load down the hosted-checkpoint path instead of this one.
+        transformer_quant = "none",
         diffusers = diffusers,
         torch = torch,
         fam = fam,
@@ -5073,8 +5088,9 @@ def test_h3_modular_load_pins_a_hosted_prequant_denoiser_out_of_the_offload_rota
     assert calls["pinned"]["manager"] is manager
     assert calls["pinned"]["device"] == "cuda"
 
-    # No hosted checkpoint engaged -> released bfloat16 components, which the manager moves fine.
-    status = load(None)
+    # No hosted checkpoint engaged -> released bfloat16 components, which the manager moves
+    # fine. Asked for EXPLICITLY: an unset request resolves to int8 now.
+    status = load("none")
     assert status["transformer_quant"] is None
     assert "pinned" not in calls
 
@@ -5622,6 +5638,9 @@ def test_h3_modular_load_brings_up_the_requested_partition(monkeypatch):
 
     backend = VideoBackend()
     status = backend._load_h3_modular_pipeline(
+        # Precision is not what this covers, and an unset request resolves to int8 now,
+        # which sends the load down the hosted-checkpoint path instead of this one.
+        transformer_quant = "none",
         diffusers = diffusers,
         torch = torch,
         fam = fam,

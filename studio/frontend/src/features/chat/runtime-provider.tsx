@@ -50,7 +50,7 @@ import {
   loadConnectionsEnabled,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+  providerModelSupportsVision,
 } from "./external-providers";
 import {
   OPEN_DOCUMENT_SPREADSHEET_MIME,
@@ -190,8 +190,9 @@ class VisionImageAdapter implements AttachmentAdapter {
       const provider = providers.find(
         (p) => p.id === externalSelection.providerId,
       );
-      externalSupportsVision = providerTypeSupportsVision(
+      externalSupportsVision = providerModelSupportsVision(
         provider?.providerType,
+        externalSelection.modelId,
       );
       externalModelLabel = externalSelection.modelId;
     }
@@ -566,6 +567,10 @@ async function generateTitleWithModel(payload: {
       repetition_penalty: 1.0,
       enable_thinking: false,
       reasoning_effort: "none",
+      // Titling is a one-shot summarisation: never let it enter the tool loop.
+      // Omitting the field would inherit the server's tools-on default and put
+      // python/terminal schemas in a 24-token prompt.
+      enable_tools: false,
       messages: [
         {
           role: "system",
