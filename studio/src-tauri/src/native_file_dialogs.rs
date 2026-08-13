@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -41,28 +41,31 @@ const CHAT_IMPORT_HANDLE_LIMIT: usize = 8;
 #[derive(Default)]
 pub struct ChatImportRegistry {
     /// Oldest first, so the eviction below drops the least recent pick.
-    files: Mutex<Vec<(String, PathBuf)>>,
+    files: Mutex<Vec<(String, PathBuf, Arc<Mutex<File>>)>>,
 }
 
 impl ChatImportRegistry {
-    fn register(&self, path: PathBuf) -> String {
+    /// Holds the file the picker opened, not just its path. Resolving a path
+    /// again per range would read whatever occupies it by then, so a file
+    /// replaced mid-import could splice its bytes into the stream.
+    fn register(&self, path: PathBuf, file: File) -> String {
         let token: String = (0..4)
             .map(|_| format!("{:016x}", rand::random::<u64>()))
             .collect();
         let mut files = self.files.lock().expect("chat import registry poisoned");
-        files.push((token.clone(), path));
+        files.push((token.clone(), path, Arc::new(Mutex::new(file))));
         while files.len() > CHAT_IMPORT_HANDLE_LIMIT {
             files.remove(0);
         }
         token
     }
 
-    fn resolve(&self, token: &str) -> Option<PathBuf> {
+    fn resolve(&self, token: &str) -> Option<(PathBuf, Arc<Mutex<File>>)> {
         let files = self.files.lock().expect("chat import registry poisoned");
         files
             .iter()
-            .find(|(candidate, _)| candidate == token)
-            .map(|(_, path)| path.clone())
+            .find(|(candidate, _, _)| candidate == token)
+            .map(|(_, path, file)| (path.clone(), Arc::clone(file)))
     }
 }
 
@@ -317,7 +320,9 @@ fn open_selected_import(
         .and_then(|name| name.to_str())
         .map(str::to_string)
         .unwrap_or_else(|| format!("chat-import.{extension}"));
-    let token = registry.register(path);
+    let file =
+        File::open(&path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+    let token = registry.register(path, file);
     Ok(Some(NativeChatImport {
         name,
         size: metadata.len(),
@@ -450,13 +455,20 @@ async fn stream_url_to_path(url: &str, path: &Path, read_timeout: Duration) -> R
     Ok(())
 }
 
-fn read_range(path: &Path, offset: u64, length: usize) -> Result<Vec<u8>, String> {
-    let mut file =
-        File::open(path).map_err(|error| format!("Failed to open {}: {error}", path.display()))?;
+fn read_range(
+    handle: &Arc<Mutex<File>>,
+    path: &Path,
+    offset: u64,
+    length: usize,
+) -> Result<Vec<u8>, String> {
+    let mut file = handle
+        .lock()
+        .map_err(|_| format!("Failed to read {}: handle poisoned", path.display()))?;
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     let mut bytes = Vec::with_capacity(length.min(MAX_CHAT_IMPORT_CHUNK_BYTES));
-    file.take(length as u64)
+    Read::by_ref(&mut *file)
+        .take(length as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
     Ok(bytes)
@@ -471,13 +483,13 @@ pub async fn read_native_chat_import_chunk(
     length: usize,
 ) -> Result<tauri::ipc::Response, String> {
     let registry = app.state::<ChatImportRegistry>();
-    let path = registry
+    let (path, handle) = registry
         .resolve(&token)
         .ok_or_else(|| "That import is no longer available -- pick the file again.".to_string())?;
 
     let length = length.min(MAX_CHAT_IMPORT_CHUNK_BYTES);
     // Off the async runtime: an import is tens of these reads back to back.
-    let bytes = tokio::task::spawn_blocking(move || read_range(&path, offset, length))
+    let bytes = tokio::task::spawn_blocking(move || read_range(&handle, &path, offset, length))
         .await
         .map_err(|error| format!("Failed to read the import: {error}"))??;
     Ok(tauri::ipc::Response::new(bytes))
@@ -843,7 +855,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(opened.size, 15);
-        assert_eq!(registry.resolve(&opened.token), Some(jsonl_path.clone()));
+        assert_eq!(registry.resolve(&opened.token).unwrap().0, jsonl_path);
 
         // An Open WebUI export is a .json array, so that extension has to be accepted now.
         let json_path = temp_path("openwebui").with_extension("json");
@@ -906,39 +918,72 @@ mod tests {
         let _ = fs::remove_dir(directory);
     }
 
+    fn register_for_test(registry: &ChatImportRegistry, path: &Path) -> String {
+        registry.register(path.to_path_buf(), File::open(path).unwrap())
+    }
+
     #[test]
     fn ranges_are_readable_only_through_a_token_the_picker_issued() {
         let registry = ChatImportRegistry::default();
         let path = temp_path("ranges").with_extension("jsonl");
         fs::write(&path, "0123456789").unwrap();
+
+        let token = register_for_test(&registry, &path);
+        let (resolved, handle) = registry.resolve(&token).unwrap();
+        assert_eq!(resolved, path);
+        assert!(registry.resolve("not-a-token").is_none());
+
         // Ranges are cut on byte boundaries, so a character split across two of
         // them is the frontend decoder's problem, not a truncated read here.
-        assert_eq!(read_range(&path, 0, 4).unwrap(), b"0123");
-        assert_eq!(read_range(&path, 4, 4).unwrap(), b"4567");
-        assert_eq!(read_range(&path, 8, 4).unwrap(), b"89");
-        assert!(read_range(&path, 10, 4).unwrap().is_empty());
-
-        let token = registry.register(path.clone());
-        assert_eq!(registry.resolve(&token), Some(path.clone()));
-        assert_eq!(registry.resolve("not-a-token"), None);
+        assert_eq!(read_range(&handle, &path, 0, 4).unwrap(), b"0123");
+        assert_eq!(read_range(&handle, &path, 4, 4).unwrap(), b"4567");
+        assert_eq!(read_range(&handle, &path, 8, 4).unwrap(), b"89");
+        assert!(read_range(&handle, &path, 10, 4).unwrap().is_empty());
 
         // Picking again must not invalidate the earlier handle: that import can
         // still be streaming, and its next range read would fail mid-history.
         let second = temp_path("ranges-2").with_extension("jsonl");
         fs::write(&second, "abc").unwrap();
-        let newer = registry.register(second.clone());
-        assert_eq!(registry.resolve(&token), Some(path.clone()));
-        assert_eq!(registry.resolve(&newer), Some(second.clone()));
+        let newer = register_for_test(&registry, &second);
+        assert_eq!(registry.resolve(&token).unwrap().0, path);
+        assert_eq!(registry.resolve(&newer).unwrap().0, second);
         assert_ne!(token, newer);
 
         // The map is bounded, so a long session cannot accumulate handles.
         for index in 0..CHAT_IMPORT_HANDLE_LIMIT {
-            registry.register(temp_path(&format!("ranges-fill-{index}")).with_extension("jsonl"));
+            let filler = temp_path(&format!("ranges-fill-{index}")).with_extension("jsonl");
+            fs::write(&filler, "x").unwrap();
+            register_for_test(&registry, &filler);
+            let _ = fs::remove_file(filler);
         }
-        assert_eq!(registry.resolve(&token), None);
+        assert!(registry.resolve(&token).is_none());
 
         let _ = fs::remove_file(path);
         let _ = fs::remove_file(second);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_swapped_under_the_path_mid_import_cannot_reach_the_stream() {
+        // Reopening the path per range would splice a replacement file into the
+        // export, and a same-size swap leaves no short read to catch it.
+        let registry = ChatImportRegistry::default();
+        let path = temp_path("swapped").with_extension("jsonl");
+        fs::write(&path, "original--").unwrap();
+        let token = register_for_test(&registry, &path);
+
+        let replacement = temp_path("swapped-other").with_extension("jsonl");
+        fs::write(&replacement, "replaced--").unwrap();
+        fs::rename(&replacement, &path).unwrap();
+
+        let (resolved, handle) = registry.resolve(&token).unwrap();
+        assert_eq!(
+            read_range(&handle, &resolved, 0, 10).unwrap(),
+            b"original--"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"replaced--");
+
+        let _ = fs::remove_file(path);
     }
 
     #[cfg(unix)]

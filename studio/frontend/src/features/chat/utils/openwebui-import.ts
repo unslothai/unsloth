@@ -51,12 +51,20 @@ function looksLikeOpenWebUIMessage(value: unknown): boolean {
   return (
     "parentId" in value ||
     "childrenIds" in value ||
-    "timestamp" in value ||
     "modelName" in value ||
     "modelIdx" in value ||
     "done" in value ||
-    "output" in value
+    "output" in value ||
+    // A timestamp alone is generic enough for an OpenAI JSONL conversation to
+    // carry one; alongside a message id it is Open WebUI's own shape.
+    ("timestamp" in value && typeof value.id === "string")
   );
+}
+
+/** A Chat Completions tool turn: the OpenAI JSONL format we already import. */
+function looksLikeOpenAIToolMessage(value: unknown): boolean {
+  if (!isDict(value)) return false;
+  return value.role === "tool" || "tool_calls" in value || "tool_call_id" in value;
 }
 
 export function isOpenWebUIRecord(value: unknown): boolean {
@@ -71,7 +79,11 @@ export function isOpenWebUIRecord(value: unknown): boolean {
   const blob = chatBlob(value);
   if (!blob) return false;
   if (isDict(blob.history) && isDict(blob.history.messages)) return true;
-  return Array.isArray(blob.messages) && blob.messages.some(looksLikeOpenWebUIMessage);
+  if (!Array.isArray(blob.messages)) return false;
+  // One tool turn settles it: Open WebUI keeps tool calls in the message body,
+  // never as sibling Chat Completions turns.
+  if (blob.messages.some(looksLikeOpenAIToolMessage)) return false;
+  return blob.messages.some(looksLikeOpenWebUIMessage);
 }
 
 // Content
@@ -229,6 +241,23 @@ function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: 
         .join("");
       if (text.trim()) sawMessage = true;
       pushText(parts, text);
+      continue;
+    }
+
+    if (item.type === "image_generation_call") {
+      // The item carries the generated image itself as base64. The call id is
+      // an OpenAI session reference that means nothing outside the export, so
+      // only the image comes over.
+      const encoded = str(item.result) ?? str(item.b64_json);
+      if (encoded) {
+        const format = str(item.output_format) ?? "png";
+        parts.push({
+          type: "image",
+          image: encoded.startsWith("data:")
+            ? encoded
+            : `data:image/${format};base64,${encoded}`,
+        });
+      }
       continue;
     }
 
@@ -469,11 +498,13 @@ export function openWebUIRecordToConversation(
 
   const threadId = crypto.randomUUID();
   const nodes = collectNodes(chat);
+  // The first message is a better start than `updated_at`, which is the end of
+  // the conversation and would drag every message in it up to that moment.
   const createdAt =
     epochMs(outer.created_at) ??
     epochMs(chat.timestamp) ??
-    epochMs(outer.updated_at) ??
     earliestTimestamp(nodes) ??
+    epochMs(outer.updated_at) ??
     Date.now();
 
   const messages: MessageRecord[] = [];

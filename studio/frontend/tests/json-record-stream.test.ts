@@ -340,3 +340,20 @@ test("a broken first row is recovered while the file streams, not held until the
     `first record arrived only after ${pulledAtFirstRecord} of ${pulled} chunks`,
   );
 });
+
+test("a nested value at column 0 does not end the record that contains it", async () => {
+  // JSON cannot continue `{"nested":` with anything but a value, so the brace
+  // below it is nesting; after a finished value it would be the next record.
+  const nested = '{"nested":\n{"id":2}\n}';
+  for (const size of [1, 4, 9, 17, nested.length]) {
+    const out: unknown[] = [];
+    const malformed: string[] = [];
+    for await (const record of streamJsonRecords(asChunks(`{"id":1}\n${nested}\n`, size), {
+      onMalformed: (bad) => malformed.push(bad),
+    })) {
+      out.push(record);
+    }
+    assert.deepEqual(out, [{ id: 1 }, { nested: { id: 2 } }], `chunk size ${size}`);
+    assert.deepEqual(malformed, [], `chunk size ${size}`);
+  }
+});

@@ -558,3 +558,75 @@ test("the assistant answer survives next to a tool result no call in this turn m
   assert.ok(text(conversation, 0).includes("sunny, 21C"));
   assert.ok(text(conversation, 0).includes("It is sunny in Lisbon."));
 });
+
+test("an updated-only chat is still dated from its first message, not its last edit", () => {
+  const bare = {
+    updated_at: 1_600_100_000,
+    history: historyOf(
+      [
+        { id: "m1", parentId: null, role: "user", content: "q", timestamp: 1_600_000_000 },
+        { id: "m2", parentId: "m1", role: "assistant", content: "a", timestamp: 1_600_000_060 },
+      ],
+      "m2",
+    ),
+  };
+
+  const conversation = openWebUIRecordToConversation(bare, "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.createdAt, 1_600_000_000_000);
+  assert.equal(conversation.messages[1].createdAt, 1_600_000_060_000);
+});
+
+test("a timestamped OpenAI conversation is not mistaken for an Open WebUI chat", () => {
+  // `timestamp` alone is generic; routing this record here would drop tool_calls.
+  const oaiToolConversation = {
+    messages: [
+      { role: "user", content: "weather?", timestamp: 1 },
+      { role: "assistant", content: "", tool_calls: [{ id: "c1", function: { name: "w", arguments: "{}" } }], timestamp: 2 },
+      { role: "tool", tool_call_id: "c1", content: "21C", timestamp: 3 },
+    ],
+  };
+  assert.equal(isOpenWebUIRecord(oaiToolConversation), false);
+  // Even when the exporter gave every message an id of its own.
+  assert.equal(
+    isOpenWebUIRecord({
+      messages: oaiToolConversation.messages.map((message, index) => ({ ...message, id: `m${index}` })),
+    }),
+    false,
+  );
+  // Open WebUI's own fields still identify a flat legacy chat.
+  assert.equal(
+    isOpenWebUIRecord({
+      messages: [{ role: "user", content: "hi", parentId: null, childrenIds: [], timestamp: 1 }],
+    }),
+    true,
+  );
+});
+
+test("a generated image comes over as an image, not as a dropped output item", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content: "Here it is.",
+          output: [
+            { type: "image_generation_call", id: "img_1", result: "AAAA", output_format: "png" },
+            { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text: "Here it is." }] },
+          ],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.deepEqual(
+    parts(conversation, 0).filter((part) => part.type === "image"),
+    [{ type: "image", image: "data:image/png;base64,AAAA" }],
+  );
+});

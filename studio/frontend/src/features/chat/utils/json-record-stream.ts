@@ -93,6 +93,9 @@ interface Salvage {
   damaged: string[];
 }
 
+/** A line-leading `{`/`[` that follows a finished value: the next record. */
+const NEW_RECORD_LINE = /[^\s:,[{]\s*\n[[{]/;
+
 /**
  * Recover records after an unclosed JSONL row. Until line framing is proven,
  * only unindented object or array lines qualify as record boundaries.
@@ -206,13 +209,15 @@ export async function* streamJsonRecords(
       }
 
       // A pending record is damaged once a later line starts a record of its
-      // own at column 0. The indented continuation lines of a pretty-printed
-      // record never look like that, so where the chunk boundary fell does not
-      // decide whether it survives. Recovering here rather than only at end of
-      // input also keeps a file whose first row is broken from buffering whole.
+      // own. That is a line-leading `{` or `[` which JSON could not continue
+      // the pending text with: after a finished value another value is a new
+      // record, while after `:` `,` `[` `{` it is this record's own nesting.
+      // Deciding it that way keeps the outcome independent of where the chunk
+      // boundary fell, and recovering here rather than only at end of input
+      // keeps a file whose first row is broken from buffering whole.
       if (!sawArrayStart && start >= 0) {
         const lastNewline = buffer.lastIndexOf("\n");
-        if (lastNewline > start && /\n[[{]/.test(buffer.slice(start, lastNewline))) {
+        if (lastNewline > start && NEW_RECORD_LINE.test(buffer.slice(start, lastNewline))) {
           const salvaged = salvageLines(buffer.slice(start, lastNewline), lineFramed);
           for (const text of salvaged.damaged) options.onMalformed?.(text);
           yield* salvaged.records;
