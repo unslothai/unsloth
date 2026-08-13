@@ -85,17 +85,27 @@ def test_setdefault_inside_try_block():
 def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
-    # Exception, not just ImportError: #8603 widened this deliberately, because a half-built
-    # unsloth_zoo raises RuntimeError or AttributeError and the pin is an optimisation that must
-    # not fail an export. Anything narrower than ImportError would leave the warning unreachable
-    # on the failure it exists for, so that is the floor.
-    caught = {
-        h.type.id: h
+    # #8603 widened this from ImportError deliberately: a half-built unsloth_zoo raises
+    # RuntimeError or AttributeError, and the pin is an optimisation that must not fail an
+    # export. Reverting to ImportError alone would abort those exports again, so the handler
+    # has to catch Exception, or name the non-import cases explicitly.
+    def _caught_names(handler) -> set[str]:
+        if isinstance(handler.type, ast.Name):
+            return {handler.type.id}
+        if isinstance(handler.type, ast.Tuple):
+            return {e.id for e in handler.type.elts if isinstance(e, ast.Name)}
+        return set()
+
+    covering = [
+        h
         for h in try_node.handlers
-        if isinstance(h.type, ast.Name) and h.type.id in ("Exception", "ImportError")
-    }
-    assert caught, "expected the scripts pin to fall back rather than raise"
-    handler = caught.get("Exception") or caught["ImportError"]
+        if "Exception" in _caught_names(h)
+        or {"RuntimeError", "AttributeError"} <= _caught_names(h)
+    ]
+    assert covering, (
+        "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
+    )
+    handler = covering[0]
     flag_reads = []
     flag_writes = []
     warning_calls = []
