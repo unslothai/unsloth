@@ -5150,6 +5150,9 @@ export function createOpenAIStreamAdapter(
                     // registered under this id; without it a swallowed fetch abort
                     // (Colab/proxy) would leave python/terminal/MCP/RAG running.
                     cancel_id: cancelId,
+                    // the loop aggregates provider usage and emits a trailing
+                    // choices: [] chunk; the proxy drops it unless we opt in.
+                    stream_options: { include_usage: true },
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"
                       ? {}
