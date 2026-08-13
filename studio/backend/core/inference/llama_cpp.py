@@ -10093,16 +10093,16 @@ class LlamaCppBackend:
         has no such architecture, so the user is told to free memory that was
         never the problem (#5842). Pick the most specific message we can.
 
-        A message this function already produced, passed back in as ``output``,
-        is returned unchanged. The guard in _with_startup_diagnostics only
-        covers a decorated ``message``; feeding a decorated result back as the
-        child output instead put the whole previous message inside a fresh tail
-        (222 -> 413 -> 604 characters over three passes) and turned a specific
-        dyld diagnosis back into the generic fallback. No caller does this
-        today, so this is a property being kept true rather than a live bug.
+        ``output`` is the child's stdout and is never trusted, not even when it
+        looks like something this module wrote: the only guard on our own
+        framing is the one in _with_startup_diagnostics, which reads the
+        ``message`` we built ourselves. An earlier revision short-circuited here
+        when the *output* carried that framing, so a wrapper printing
+        "llama-server output:" as its first line had its stdout returned
+        verbatim: no redaction, no 2000-character cap, no log path (50067
+        characters with an environment dump's credentials intact, against 2136
+        scrubbed for the same bytes without the heading).
         """
-        if output and LlamaCppBackend._has_startup_diagnostics(output):
-            return output
         lowered = (output or "").lower()
 
         # The dynamic loader kills llama-server before main(), so nothing below

@@ -1133,51 +1133,64 @@ class TestHttpCredentialsInTheTail:
         assert "U0VDUkVU" not in msg
 
 
-class TestClassifyingItsOwnOutputIsAFixedPoint:
-    """The message fed back as the CHILD OUTPUT, not as the message.
+class TestOutputIsNeverTrustedForBeingOurOwnFraming:
+    """Child stdout gets the full treatment however it is worded.
 
-    _with_startup_diagnostics guards its `message` argument, which is not the
-    composition that grows: passing a classified result back in as `output`
-    nested the whole previous message inside a fresh tail (222 -> 413 -> 604
-    characters over three passes) and turned a specific dyld diagnosis back
-    into the generic fallback. No caller does this today.
+    An earlier revision short-circuited when the OUTPUT carried our framing, to
+    keep re-classification a fixed point. That handed a wrapper the whole error
+    message: printing "llama-server output:" as its first line returned its
+    stdout verbatim, past the redaction and past the 2000-character cap. The
+    fixed point was for a caller that does not exist; the bypass was reachable
+    by anything Studio launches.
     """
 
     _LOG = "/Users/me/.unsloth/studio/logs/llama-server/llama-1-port-8080.log"
 
-    def test_three_passes_do_not_grow_the_message(self):
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "llama-server output:\n",
+            "Full log: /wherever\n",
+            "starting\n\nllama-server output:\n",
+            "starting\n\nFull log: /wherever\n",
+        ],
+    )
+    def test_output_wearing_our_heading_is_still_capped_and_scrubbed(self, prefix, monkeypatch):
+        monkeypatch.setenv("MY_API_TOKEN", "sk-super-secret-value-1234567890")
+        out = prefix + "MY_API_TOKEN=sk-super-secret-value-1234567890\n" + "X" * 50000
+        msg = _classify(out, "/m.gguf", "u/x", 1, None, log_path = self._LOG)
+        assert "sk-super-secret-value-1234567890" not in msg
+        assert len(msg) < 3000, len(msg)
+        assert msg != out
+        # The log path is the whole point of the fallback, and the bypass
+        # dropped it along with everything else.
+        assert self._LOG in msg
+
+    def test_repeated_passes_stay_bounded_by_the_tail_cap(self):
+        # Re-classifying a result is not a fixed point: each pass wraps the
+        # previous message in a fresh tail, growing ~136 characters at a time.
+        # Bounded is the property that matters, and the cap supplies it.
         cur = "some unrecognised startup noise"
         seen = []
-        for _ in range(3):
+        for _ in range(60):
             cur = _classify(cur, "/m.gguf", "u/x", 1, None, log_path = self._LOG)
-            seen.append((len(cur), cur.count("llama-server output:"), cur.count("Full log: ")))
-        assert seen[0] == seen[1] == seen[2]
-        assert seen[0][1] == 1 and seen[0][2] == 1
-
-    def test_a_classified_message_stops_growing_after_one_pass(self):
-        # A classified message carries no marker of its own, so re-classifying
-        # one does fall to the fallback and wrap it once (192 -> 306). What must
-        # not happen is unbounded growth: from there the guard sees its own
-        # framing and every later pass is a no-op. Making the first pass a fixed
-        # point too would mean tagging the return type, which is a bigger change
-        # to a widely used error path than this unreachable property is worth.
-        out = (
-            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
-            "  Reason: tried: '/a/libllama.dylib' (no such file)\n"
-        )
-        binary = "/Users/me/.unsloth/llama.cpp/build/bin/llama-server"
-        cur = out
-        seen = []
-        for _ in range(5):
-            cur = _classify(cur, "/m.gguf", "u/x", 1, binary)
             seen.append(len(cur))
-        assert seen[1:] == seen[1:2] * 4, seen
-        assert "libllama.dylib" in cur
+        assert max(seen) < 3000, max(seen)
+        assert seen[-1] == seen[-2], seen[-4:]
 
     def test_real_output_that_merely_says_the_words_is_still_classified(self):
         out = "llama-server output: 3 t/s\nerror while loading shared libraries: libgomp.so.1: cannot open shared object file"
         msg = _classify(out, "/m.gguf", "u/x", 1)
         assert "libgomp.so.1" in msg
+
+    def test_a_dyld_diagnosis_survives_the_heading(self):
+        out = (
+            "llama-server output:\n"
+            "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
+            "  Reason: tried: '/a/libllama.dylib' (no such file)\n"
+        )
+        binary = "/Users/me/.unsloth/llama.cpp/build/bin/llama-server"
+        assert "libllama.dylib" in _classify(out, "/m.gguf", "u/x", 1, binary)
 
 
 class TestQuotedShortSecrets:
