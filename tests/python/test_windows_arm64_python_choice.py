@@ -305,9 +305,9 @@ def test_every_arm_filtered_copy_is_cleaned_up():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     calls = source.count("= Get-ArmFilteredRequirements ")
     cleanups = source.count("\n                Remove-ArmFilteredRequirements\n")
-    assert calls and calls == cleanups, (
-        f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
-    )
+    assert (
+        calls and calls == cleanups
+    ), f"{calls} Get-ArmFilteredRequirements call sites but {cleanups} cleanups"
 
 
 def test_a_failed_install_does_not_leave_the_tier_in_the_callers_shell():

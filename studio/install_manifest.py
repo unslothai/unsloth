@@ -506,7 +506,10 @@ def verify_install(
     # PyMuPDF 1.28.x reads as missing against studio.txt's ==1.27.2.3 for ever.
     lifts = tier_version_lifts(reqs) if tier else None
     missing = missing_requirements(
-        reqs / BOOT_REQUIREMENT_FILE, installed = installed, omit = omit, lifts = lifts,
+        reqs / BOOT_REQUIREMENT_FILE,
+        installed = installed,
+        omit = omit,
+        lifts = lifts,
     )
     deps_ok = not missing
 

@@ -361,16 +361,23 @@ class TestTierVersionLifts:
         req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
         installed = {"pymupdf": "1.28.2"}
         assert im.missing_requirements(req, installed = installed) == ["pymupdf"]
-        assert im.missing_requirements(
-            req, installed = installed, lifts = {"pymupdf": ">=1.28.2"},
-        ) == []
+        assert (
+            im.missing_requirements(
+                req,
+                installed = installed,
+                lifts = {"pymupdf": ">=1.28.2"},
+            )
+            == []
+        )
 
     def test_a_version_below_the_lift_is_still_missing(self, tmp_path):
         """Tolerating the lift must not turn the check off."""
         req = tmp_path / "studio.txt"
         req.write_text("pymupdf==1.27.2.3\n", encoding = "utf-8")
         assert im.missing_requirements(
-            req, installed = {"pymupdf": "1.26.0"}, lifts = {"pymupdf": ">=1.28.2"},
+            req,
+            installed = {"pymupdf": "1.26.0"},
+            lifts = {"pymupdf": ">=1.28.2"},
         ) == ["pymupdf"]
 
     def test_a_missing_overrides_file_yields_no_lifts(self, tmp_path):
