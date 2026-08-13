@@ -3,12 +3,18 @@
 
 import { useHfTokenStore } from "@/features/hub";
 import {
-  type TransformersUpgradeCheck,
   checkTransformersUpgrade,
+  useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { trainingLoadsIn4Bit } from "../api/mappers";
+import {
+  hasUpgradeNoticeCache,
+  readUpgradeNoticeCache,
+  upgradeNoticeCacheKey,
+  writeUpgradeNoticeCache,
+} from "../lib/training-upgrade-notice-cache";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 
 export interface TrainingTransformersUpgradeNotice {
@@ -22,22 +28,6 @@ const EMPTY: TrainingTransformersUpgradeNotice = {
   installVersion: null,
   fourBitUnavailable: false,
 };
-
-// One answer per (model, cached copy, token). The backend caches the PyPI/GitHub snapshot
-// for a day, but the config.json read behind it is still a network round trip, and this
-// hook runs on every Configure render; without this, scrubbing a slider would re-ask.
-const cache = new Map<string, TransformersUpgradeCheck>();
-
-// Separator no field can contain: a model id, a cache path and a token are all printable.
-const KEY_SEPARATOR = "\u0001";
-
-function cacheKey(
-  modelName: string,
-  localPath: string | null,
-  hfToken: string,
-): string {
-  return [modelName, localPath ?? "", hfToken].join(KEY_SEPARATOR);
-}
 
 /** What the Configure preview must disclose about the transformers this model needs.
  *
@@ -55,6 +45,14 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
       })),
     );
   const hfToken = useHfTokenStore((s) => s.token);
+  // Every cached answer is about the sidecar that was installed when it was taken: an
+  // install lands the release the preview offered AND flips the run to 16-bit. Reading
+  // through the generation re-asks after one, so returning to Configure in the same
+  // session does not keep offering an install that already ran, or keep promising 4-bit
+  // for a run the new overlay loads in 16-bit.
+  const sidecarGeneration = useTransformersUpgradeDialogStore(
+    (s) => s.sidecarGeneration,
+  );
   // The copy the run would load, resolved as the start path resolves it: a cached model
   // loads from its pinned snapshot, and the preview must describe that snapshot's
   // architecture rather than whatever the repo publishes today.
@@ -66,12 +64,20 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
   // changes with it.
   const [, markAnswered] = useState(0);
   const key = selectedModel
-    ? cacheKey(selectedModel, localPath, hfToken)
+    ? upgradeNoticeCacheKey(
+        sidecarGeneration,
+        selectedModel,
+        localPath,
+        hfToken,
+      )
     : null;
-  const check = key ? (cache.get(key) ?? null) : null;
+  const check = key ? readUpgradeNoticeCache(sidecarGeneration, key) : null;
 
   useEffect(() => {
-    if (!(key && selectedModel) || cache.has(key)) {
+    if (
+      !(key && selectedModel) ||
+      hasUpgradeNoticeCache(sidecarGeneration, key)
+    ) {
       return;
     }
     let active = true;
@@ -80,7 +86,7 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
       modelLocalPath: localPath,
     })
       .then((result) => {
-        cache.set(key, result);
+        writeUpgradeNoticeCache(sidecarGeneration, key, result);
         if (active) {
           markAnswered((n) => n + 1);
         }
@@ -91,7 +97,7 @@ export function useTrainingTransformersUpgradeNotice(): TrainingTransformersUpgr
     return () => {
       active = false;
     };
-  }, [key, selectedModel, localPath, hfToken]);
+  }, [key, selectedModel, localPath, hfToken, sidecarGeneration]);
 
   if (!(selectedModel && check)) {
     return EMPTY;

@@ -91,3 +91,27 @@ test("the gate reaches the install through the shared consent dialog", () => {
   assert.ok(gate.includes("confirmTransformersUpgradeIfNeeded"));
   assert.ok(gate.includes("checkTransformersUpgrade"));
 });
+
+test("the Configure preview re-asks the check after an install", () => {
+  // The hook itself is React, so this is the cheap guard on the wiring the notice cache
+  // depends on: the store counts completed installs, and the hook keys its cached
+  // answers on that count. Break either end and Configure keeps showing the pre-install
+  // answer -- an install that already ran, and 4-bit for a run the new sidecar loads in
+  // 16-bit.
+  const store = read(
+    "../src/features/transformers-upgrade/stores/transformers-upgrade-dialog-store.ts",
+  );
+  assert.ok(
+    /sidecarGeneration:\s*get\(\)\.sidecarGeneration \+ 1/.test(store),
+    "a successful install must advance sidecarGeneration",
+  );
+
+  const hook = read(
+    "../src/features/training/hooks/use-training-transformers-upgrade-notice.ts",
+  );
+  assert.ok(hook.includes("s.sidecarGeneration"));
+  assert.ok(
+    /upgradeNoticeCacheKey\(\s*sidecarGeneration/.test(hook),
+    "the preview cache key must carry the generation, or an install cannot retire it",
+  );
+});

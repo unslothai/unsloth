@@ -27,6 +27,23 @@ export function getTrainingTransformersUpgradeRequiredMessage(
   return `${modelName} is not supported yet by the installed transformers, and the newer release it needs was not installed. Start the run again to install it.`;
 }
 
+/** The dev-only case: the architecture is on the transformers development branch and no
+ *  PyPI release ships it, so the dialog has no Install action at all. Telling the user to
+ *  start again to install it would be an instruction the app can never carry out. */
+export function getTrainingTransformersUpgradeUnavailableMessage(
+  modelName: string,
+): string {
+  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which Unsloth does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
+}
+
+/** The resume that installing would strand: the checkpoint is attested against a 4-bit
+ *  model load the latest sidecar permanently refuses, so the install cannot rescue it. */
+export function getTrainingResumeUpgradeWouldStrandMessage(
+  modelName: string,
+): string {
+  return `${modelName} is not supported yet by the installed transformers, and installing the release it needs would permanently retire the 4-bit model load this checkpoint was attested with, so the resume would still fail. Start a new run on this model instead.`;
+}
+
 /** Gate a training start on the transformers release the model needs.
  *
  * Chat pauses a load on this dialog from `/validate`; training never asked, so a model
@@ -64,16 +81,27 @@ export async function confirmTrainingTransformersUpgrade({
   if (!check.upgrade) {
     return { proceed: true, error: null, forces16Bit: check.forces16Bit };
   }
-  if (check.installBreaksExactResume && check.requiresTrustRemoteCode) {
+  if (check.installBreaksExactResume) {
     // This resume is attested against a 4-bit model load the latest sidecar refuses,
     // and that sidecar is a persistent overlay: consenting here would strand the
-    // checkpoint for good. The model ships its own modeling code, so the custom-code
-    // gate that runs next loads it on the CURRENT transformers, in the 4-bit mode the
-    // checkpoint needs. Nothing to offer, so offer nothing.
-    //
-    // Without that fallback the install is the only way the resume runs at all (a fresh
-    // venv that lost the sidecar), so the dialog is still raised below.
-    return { proceed: true, error: null, forces16Bit: false };
+    // checkpoint for good.
+    if (check.requiresTrustRemoteCode) {
+      // The model ships its own modeling code, so the custom-code gate that runs next
+      // loads it on the CURRENT transformers, in the 4-bit mode the checkpoint needs.
+      // Nothing to offer, so offer nothing.
+      return { proceed: true, error: null, forces16Bit: false };
+    }
+    // No fallback either, and the install is not the way out it looks like: it activates
+    // the latest tier, after which effective_training_load_in_4bit RAISES for exactly
+    // this config (provenance.py gates on the same disjunction the backend answered
+    // install_breaks_exact_resume with). The resume fails whether or not the user
+    // consents, so the only thing consent buys is an irreversible overlay. Say so
+    // instead of offering it.
+    return {
+      proceed: false,
+      error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
+      forces16Bit: false,
+    };
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({
@@ -98,9 +126,17 @@ export async function confirmTrainingTransformersUpgrade({
       .catch(() => undefined);
   }
   if (!upgraded) {
+    // "Start again to install it" only means something when there is something to
+    // install. A dev-only upgrade gives the dialog no Install action, so the same text
+    // would send the user round a loop that can never end.
+    const installable = Boolean(
+      check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
+    );
     return {
       proceed: false,
-      error: getTrainingTransformersUpgradeRequiredMessage(modelName),
+      error: installable
+        ? getTrainingTransformersUpgradeRequiredMessage(modelName)
+        : getTrainingTransformersUpgradeUnavailableMessage(modelName),
       forces16Bit: false,
     };
   }

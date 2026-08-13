@@ -9083,8 +9083,9 @@ def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> st
     config.json names an architecture no installed transformers ships says nothing about
     the pinned snapshot on disk that this run will load, and vice versa.
 
-    The identifier itself stays the response's ``model_name`` and the input to the LoRA
-    base resolve, which is what the scan route does with it too.
+    The identifier itself stays the response's ``model_name``, for display; every read
+    -- including the LoRA base resolve -- goes through this target, which is what the
+    scan route does too.
 
     Falls back to the identifier on any resolution failure: this route never raises.
     """
@@ -9171,12 +9172,17 @@ async def check_transformers_upgrade_route(
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # The worker activates transformers for the BASE model, so a local or remote
-        # adapter has to be judged by what it is an adapter for.
+        # adapter has to be judged by what it is an adapter for. Resolved from the LOAD
+        # TARGET, not the identifier: the worker reads the base out of the adapter_config
+        # it opens (get_base_model_from_lora_identifier(load_target)), and the scan route
+        # reads it out of its resolved scan target. A repo that repointed
+        # base_model_name_or_path since the pin was taken would otherwise have this route
+        # judging a base the run never loads.
         base = await asyncio.to_thread(
             _offline_guarded,
-            model_name,
+            load_target,
             get_base_model_from_lora_identifier,
-            model_name,
+            load_target,
             request.hf_token,
         )
         if base:

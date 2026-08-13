@@ -236,6 +236,37 @@ def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_pa
     assert all(target == str(snapshot) for target in inspected), inspected
 
 
+def test_the_lora_base_is_resolved_from_the_pinned_snapshot(monkeypatch, tmp_path):
+    # The worker resolves a LoRA's base from its load target
+    # (core/training/worker.py: get_base_model_from_lora_identifier(load_target)), and the
+    # scan route does the same with its resolved scan target. Reading the Hub identifier
+    # here instead asks the CURRENT adapter_config.json which base to judge, while the run
+    # loads the pinned snapshot's -- a repo that repointed base_model_name_or_path since
+    # the pin was taken then gets the upgrade, custom-code and precision answers for a
+    # base the run never opens.
+    resolved_from: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None)
+    snapshot = _cached_snapshot(monkeypatch, tmp_path)
+
+    def _base(identifier, *args, **kwargs):
+        resolved_from.append(identifier)
+        return None
+
+    monkeypatch.setattr(
+        "utils.models.model_config.get_base_model_from_lora_identifier", _base
+    )
+
+    _call(
+        inf_mod,
+        model = "org/model",
+        model_snapshot_path = str(snapshot),
+        model_snapshot_repo_id = "org/model",
+        prefer_local_cache = True,
+    )
+
+    assert resolved_from == [str(snapshot)], resolved_from
+
+
 def test_an_unpinned_model_is_still_checked_by_identifier(monkeypatch):
     inspected: list = []
     inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)

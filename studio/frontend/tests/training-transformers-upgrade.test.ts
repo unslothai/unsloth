@@ -168,9 +168,13 @@ test("an exact 4-bit resume is never offered an install that strands it", async 
   assert.equal(stub.calls[0]?.args[2]?.resumeRunId, "run-42");
 });
 
-test("a resume with no custom-code way out can still install", async () => {
-  // The case the gate exists for: a fresh venv that lost the sidecar. Without the
-  // install this resume cannot load the model at all, so the dialog is still raised.
+test("a resume with no custom-code way out is not offered a doomed install", async () => {
+  // No fallback, so the install looks like the only way to load the model at all -- but
+  // it is not one. Installing activates the latest tier, and effective_training_load_in_4bit
+  // then RAISES for exactly the config the backend answered installBreaksExactResume
+  // with, so this resume fails either way. The only thing consent buys is a persistent
+  // overlay that also retires 4-bit for every later run on this model, so the start is
+  // refused with a reason instead.
   stub.resetStub();
   stub.state.checkResult = {
     upgrade: UPGRADE,
@@ -187,8 +191,55 @@ test("a resume with no custom-code way out can still install", async () => {
     resumeRunId: "run-42",
   });
 
-  assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
-  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+  assert.equal(outcome.proceed, false);
+  assert.equal(outcome.forces16Bit, false);
+  assert.match(String(outcome.error), /4-bit model load/);
+  assert.match(String(outcome.error), /Start a new run/);
+  assert.equal(
+    stub.calls.length,
+    1,
+    "an install that cannot rescue the resume must never be offered",
+  );
+});
+
+test("declining a dev-only upgrade is not told to start again and install it", async () => {
+  // Nothing to install: the architecture is only on transformers main, so the dialog
+  // shows no Install action at all. Reusing the installable wording would send the user
+  // round a loop that can never end.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: { ...UPGRADE, supported_in_pypi: false },
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: false,
+  };
+  stub.state.consentResult = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
+
+  assert.equal(outcome.proceed, false);
+  assert.doesNotMatch(String(outcome.error), /Start the run again/);
+  assert.match(String(outcome.error), /development branch/);
+  assert.match(String(outcome.error), /next transformers release/);
+});
+
+test("declining an installable upgrade is still told how to get it", async () => {
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: UPGRADE,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: true,
+  };
+  stub.state.consentResult = false;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
+
+  assert.match(String(outcome.error), /Start the run again to install it/);
 });
 
 test("the check is asked about the copy the run will load", async () => {
