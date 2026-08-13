@@ -1347,6 +1347,24 @@ fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) ->
 /// exemption is scoped to the variables whose reader proves it, because the
 /// syntax is only special there: a directory really called "[llama]" is legal on
 /// Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
+/// `value` expanded until it stops changing, or None if it never does.
+///
+/// One pass is what each reader does, and one pass is all a value Windows itself
+/// built ever needs. A nested reference (LOCALAPPDATA holding %USERPROFILE%)
+/// needs more, and a self-reference needs infinitely many. The twin of
+/// `_expand_settled` in the CLI guard.
+fn expand_settled(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> Option<String> {
+    let mut value = value.to_string();
+    for _ in 0..8 {
+        let expanded = expand_windows_vars(&value, lookup);
+        if expanded == value {
+            return Some(value);
+        }
+        value = expanded;
+    }
+    None
+}
+
 fn names_a_path(name: &str, value: &str) -> bool {
     if INLINE_JSON_ENV.contains(&name) && (value.starts_with('[') || value.starts_with('{')) {
         return false;
@@ -1412,11 +1430,11 @@ fn relative_override_pins_from(
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
     // Written out, so the reader that expands %VAR% and the reader that does not
     // land in the same folder. Only for the names that have both.
-    let expanded = |name: &str, value: &str| -> String {
+    let expanded = |name: &str, value: &str| -> Option<String> {
         if EXPANDED_ENV.contains(&name) {
-            expand_windows_vars(value, &lookup)
+            expand_settled(value, &lookup)
         } else {
-            value.to_string()
+            Some(value.to_string())
         }
     };
     let Some(cwd) = cwd else {
@@ -1451,7 +1469,9 @@ fn relative_override_pins_from(
                 // that decides nothing here (an expanded %LOCALAPPDATA%, inline
                 // JSON, a 0/1 toggle) would be read as relative and refuse
                 // every spawn over a value no directory ever decided.
-                let entry = expanded(name, entry);
+                let Some(entry) = expanded(name, entry) else {
+                    continue;
+                };
                 let entry = match home {
                     Some(home) => expand_windows_user(&entry, home),
                     None => entry,
@@ -1494,7 +1514,12 @@ fn relative_override_pins_from(
         }
         let Some(value) = lookup(name) else { continue };
         let original = value.trim().to_string();
-        let value = expanded(name, &original);
+        // A value whose expansion never settles is left exactly as written: no
+        // reader can resolve it either, and anchoring a half-expanded string
+        // would build a folder name with a second drive in the middle of it.
+        let Some(value) = expanded(name, &original) else {
+            continue;
+        };
         let value = match home {
             Some(home) => expand_windows_user(&value, home),
             None => value,
@@ -1525,7 +1550,10 @@ fn relative_override_pins_from(
         let mut entries: Vec<String> = Vec::new();
         for entry in raw.split(';') {
             let original = entry.trim().to_string();
-            let entry = expanded(name, &original);
+            let Some(entry) = expanded(name, &original) else {
+                entries.push(original);
+                continue;
+            };
             // PYTHONPATH has two spellings that follow the process rather than
             // the caller: an empty component means the working directory itself,
             // and a leading `~` is never expanded there, so Python reads
@@ -3142,6 +3170,42 @@ mod managed_cli_working_dir_tests {
             relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_expansion_that_never_settles_leaves_the_value_alone() {
+        // %LOCALAPPDATA% holding %USERPROFILE% needs a second pass; HF_HOME
+        // holding itself needs infinitely many. Anchoring a half-expanded string
+        // would build a folder name with a second drive in the middle of it.
+        let cwd = PathBuf::from("C:\\Windows\\System32");
+        let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
+        let env = |name: &str| match name {
+            "USERPROFILE" => Some("C:\\Users\\me".to_string()),
+            "LOCALAPPDATA" => Some("%USERPROFILE%\\AppData\\Local".to_string()),
+            "HF_HUB_CACHE" => Some("%LOCALAPPDATA%\\hub".to_string()),
+            "HF_HOME" => Some("%HF_HOME%\\cache".to_string()),
+            _ => None,
+        };
+        let absolute = |value: &str| panic!("unexpected value needing the OS: {value}");
+        let pins = relative_override_pins_from(
+            Some(cwd),
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            pins,
+            vec![(
+                // Nested, so it settles on the second pass and names one folder.
+                "HF_HUB_CACHE",
+                PathBuf::from("C:\\Users\\me\\AppData\\Local\\hub")
+            )],
+            "a self-referencing value is left as written, a nested one is resolved"
         );
     }
 

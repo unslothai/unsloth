@@ -352,6 +352,7 @@ def _guard_outcome(
     missing_homes: tuple[str, ...] = (),
     syspath: list[str] | None = None,
     real_paths: tuple[str, ...] = (),
+    pass_syspath: bool = True,
 ) -> tuple[str | None, str | None, list[str]]:
     """Run the guard with ntpath semantics; returns (message, colour, chdir calls)."""
     real_windows_dirs = {
@@ -419,10 +420,12 @@ def _guard_outcome(
         abspath = _abspath,
         home_isdir = lambda path: ntpath.normcase(path)
         not in {ntpath.normcase(home) for home in missing_homes},
-        # The real sys.path belongs to pytest; the guard gets a copy to pin.
-        syspath = syspath if syspath is not None else [],
         # Windows expansion, from the same environment the guard is reading.
         expandvars = lambda value: _expand_windows_vars(value, environ),
+        # The real sys.path belongs to pytest, so the guard gets a copy to pin.
+        # pass_syspath = False leaves it out, which is what the console script
+        # does: only then does the guard reach the real list.
+        **({"syspath": syspath if syspath is not None else []} if pass_syspath else {}),
     )
     if environ_out is not None:
         environ_out.clear()
@@ -1178,6 +1181,52 @@ def test_cli_guard_anchors_relative_import_roots_before_it_moves():
         # An archive that is really there is anchored like any other root.
         r"C:\Windows\System32\modules.zip",
     ]
+
+
+def test_cli_guard_leaves_an_expansion_that_never_settles_as_written():
+    r"""%LOCALAPPDATA% holding %USERPROFILE% needs a second pass, and HF_HOME
+    holding itself needs infinitely many. Anchoring a half-expanded value would
+    build a folder name with a second drive in the middle of it, so a value whose
+    expansion never settles is left exactly as it was."""
+    environ_out: dict[str, str] = {}
+    _message, colour, _chdir_calls = _guard_outcome(
+        r"C:\Windows\System32",
+        ["unsloth", "studio", "--api-only"],
+        environ_extra = {
+            "LOCALAPPDATA": r"%USERPROFILE%\AppData\Local",
+            "HF_HUB_CACHE": r"%LOCALAPPDATA%\hub",
+            "HF_HOME": r"%HF_HOME%\cache",
+        },
+        environ_out = environ_out,
+    )
+    assert colour == "yellow"
+    # Nested, so it settles on the second pass and names one folder.
+    assert environ_out["HF_HUB_CACHE"] == r"C:\Users\me\AppData\Local\hub"
+    # Self-referencing, so it is left exactly as written.
+    assert environ_out["HF_HOME"] == r"%HF_HOME%\cache"
+
+
+def test_cli_guard_restores_the_real_sys_path_when_the_move_fails():
+    """The console script passes no list, so the guard has to snapshot the real
+    sys.path before pinning it, or a chdir that then fails leaves the process
+    carrying import roots it never agreed to."""
+    import sys
+
+    before = list(sys.path)
+    sys.path.insert(0, "lib")
+    try:
+        _message, colour, chdir_calls = _guard_outcome(
+            r"C:\Windows\System32",
+            ["unsloth", "studio", "--api-only"],
+            chdir_error = PermissionError("denied"),
+            real_paths = ("lib",),
+            pass_syspath = False,
+        )
+        assert colour == "red"
+        assert chdir_calls == [_RELOCATED]
+        assert sys.path[0] == "lib"
+    finally:
+        sys.path[:] = before
 
 
 def test_cli_guard_pins_the_model_paths_llama_server_reads_for_itself():

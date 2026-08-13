@@ -509,6 +509,21 @@ def _anchor_list_entry(
     return _anchor(name, entry, cwd, pathmod, abspath, expandvars, expanduser) or entry
 
 
+def _expand_settled(value, expandvars, passes = 8):
+    """The value expanded until it stops changing, or None if it never does.
+
+    One pass is what each reader does, and one pass is enough for the values
+    Windows itself builds. A nested reference (LOCALAPPDATA holding %USERPROFILE%)
+    needs more, and a self-reference needs infinitely many.
+    """
+    for _ in range(passes):
+        expanded = expandvars(value)
+        if expanded == value:
+            return value
+        value = expanded
+    return None
+
+
 def _anchor(
     name,
     value,
@@ -532,7 +547,13 @@ def _anchor(
     if name in _EXPANDED_ENV and value:
         # Written out, so the reader that expands and the one that does not land
         # in the same folder. An unset variable is left exactly as written.
-        value = (expandvars or _os.path.expandvars)(value)
+        value = _expand_settled(value, expandvars or _os.path.expandvars)
+        if value is None:
+            # A value whose expansion never settles (%HF_HOME% inside HF_HOME) is
+            # left exactly as it was: no reader can resolve it either, and
+            # anchoring a half-expanded string would build a folder name with a
+            # second drive in the middle of it.
+            return None
     if not value:
         return None
     if _is_fully_qualified(value, pathmod):
@@ -675,7 +696,14 @@ def check_working_directory(
     # The caller's own process state when the guard runs inside a host, so nothing
     # stays rewritten unless the move actually happens.
     environ_before = dict(environ)
-    syspath_before = list(syspath) if syspath is not None else None
+    if syspath is None:
+        # Resolved here rather than inside the pinning, or the console script,
+        # which passes nothing, would rewrite the real sys.path with no snapshot
+        # to put back when the move then fails.
+        import sys as _sys
+
+        syspath = _sys.path
+    syspath_before = list(syspath)
     if target is not None:
         try:
             # Before moving, or a relative override would end up naming a folder
@@ -708,7 +736,7 @@ def check_working_directory(
         if environ_before != environ:
             environ.clear()
             environ.update(environ_before)
-        if syspath_before is not None and syspath_before != syspath:
+        if syspath_before != syspath:
             syspath[:] = syspath_before
     if unpinnable is not None:
         # Named separately from the profile case below: blaming the user folder
