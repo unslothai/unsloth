@@ -8,6 +8,7 @@ import {
   type ReconciledGpuSelection,
   type SystemGpuDevice,
   pickLoadDevice,
+  pinnableGpuContext,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
 } from "./gpu-selection";
