@@ -11784,9 +11784,13 @@ class LlamaCppBackend:
                         # device whose arch we cannot read.
                         _coverage = self._installed_llama_gfx_archs(binary)
                         _arch_by_id = self._rocm_arch_by_physical_id() if _ungated else {}
-                        _all_uncovered = bool(_ungated) and _coverage is not None and all(
-                            (_arch_by_id.get(idx) or "") not in ("", *_coverage)
-                            for idx, _free, _total in _ungated
+                        _all_uncovered = (
+                            bool(_ungated)
+                            and _coverage is not None
+                            and all(
+                                (_arch_by_id.get(idx) or "") not in ("", *_coverage)
+                                for idx, _free, _total in _ungated
+                            )
                         )
                         if _all_uncovered:
                             _arch_gate_forced_cpu = True
