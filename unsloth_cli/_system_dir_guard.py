@@ -509,7 +509,11 @@ def _anchor_list_entry(
     return _anchor(name, entry, cwd, pathmod, abspath, expandvars, expanduser) or entry
 
 
-def _expand_settled(value, expandvars, passes = 8):
+def _expand_settled(
+    value,
+    expandvars,
+    passes = 8,
+):
     """The value expanded until it stops changing, or None if it never does.
 
     One pass is what each reader does, and one pass is enough for the values
@@ -701,7 +705,6 @@ def check_working_directory(
         # which passes nothing, would rewrite the real sys.path with no snapshot
         # to put back when the move then fails.
         import sys as _sys
-
         syspath = _sys.path
     syspath_before = list(syspath)
     if target is not None:
