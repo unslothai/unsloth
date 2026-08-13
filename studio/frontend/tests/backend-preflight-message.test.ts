@@ -44,3 +44,32 @@ test("a genuinely stale install still says to update", () => {
 test("the reason string matches the one the Rust side sends", () => {
   assert.equal(WORKING_DIRECTORY_UNAVAILABLE, "working_directory_unavailable");
 });
+
+test("the roaming-profile cause is offered on Windows and withheld elsewhere", () => {
+  // `home_dir_available()` is called ungated from the preflight probe, so this
+  // reason reaches Linux and macOS too. There the same symptom is an unmounted
+  // home or a permissions problem, and a roaming profile is a Windows concept.
+  const original = globalThis.navigator;
+  const withPlatform = (platform: string) => {
+    Object.defineProperty(globalThis, "navigator", {
+      value: { platform },
+      configurable: true,
+    });
+    return preflightStaleMessage("managed_stale", WORKING_DIRECTORY_UNAVAILABLE);
+  };
+  try {
+    assert.match(withPlatform("Win32"), /roaming profile/);
+    for (const platform of ["Linux x86_64", "MacIntel"]) {
+      const message = withPlatform(platform);
+      assert.doesNotMatch(message, /roaming profile/);
+      // The symptom and the remedy still have to survive the trim.
+      assert.match(message, UNREACHABLE_PROFILE);
+      assert.match(message, /Reconnect and try again/);
+    }
+  } finally {
+    Object.defineProperty(globalThis, "navigator", {
+      value: original,
+      configurable: true,
+    });
+  }
+});
