@@ -710,15 +710,27 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # How far each Cursor session has been imported. Deleting a message drops the
-    # only other record of it, so without this a re-import cannot tell a turn the
-    # user removed from one Cursor has since appended, and would write it back.
+    # How far each imported session (Cursor, Claude Code, ...) has been brought
+    # over. Deleting a message drops the only other record of it, so without
+    # this a re-import cannot tell a turn the user removed from one the tool
+    # has since appended, and would write it back.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS cursor_import_sessions (
             session_id TEXT NOT NULL PRIMARY KEY,
             transcript_updated_at INTEGER NOT NULL,
             turns_imported INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_import_sessions (
+            source TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            transcript_updated_at INTEGER NOT NULL,
+            turns_imported INTEGER NOT NULL,
+            PRIMARY KEY (source, session_id)
         ) WITHOUT ROWID
         """
     )
@@ -4840,6 +4852,49 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def get_external_import_mark(source: str, session_id: str) -> Optional[dict]:
+    """How far an imported session was brought over, or None if it never was."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT transcript_updated_at, turns_imported
+            FROM external_import_sessions WHERE source = ? AND session_id = ?
+            """,
+            (source, session_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "transcriptUpdatedAt": row["transcript_updated_at"],
+            "turnsImported": row["turns_imported"],
+        }
+    finally:
+        conn.close()
+
+
+def record_external_import_mark(
+    source: str, session_id: str, transcript_updated_at: int, turns: int
+) -> None:
+    """Record an imported session as brought over through its first *turns* messages."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions
+                (source, session_id, transcript_updated_at, turns_imported)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                transcript_updated_at = excluded.transcript_updated_at,
+                turns_imported = MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+            """,
+            (source, session_id, int(transcript_updated_at), int(turns)),
+        )
+        conn.commit()
     finally:
         conn.close()
 

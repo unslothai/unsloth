@@ -1502,6 +1502,14 @@ export const ptBR = {
       importedCursorChatCount:
         "{count} conversas importadas do Cursor.",
       cursorUpToDate: "As conversas do Cursor já estão atualizadas.",
+      importFromClaude: "Importar do Claude Code",
+      importFromClaudeDescription:
+        "Copie suas conversas do Claude Code para o Studio, agrupadas por projeto.",
+      importClaudeNoChats: "Nenhuma conversa do Claude Code encontrada.",
+      importedClaudeOneChat: "1 conversa importada do Claude Code.",
+      importedClaudeChatCount:
+        "{count} conversas importadas do Claude Code.",
+      claudeUpToDate: "As conversas do Claude Code já estão atualizadas.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",

@@ -73,6 +73,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import {
+  type ClaudeImportStatus,
+  importClaudeChats,
+  loadClaudeImportStatus,
+} from "../api/claude-import";
+import {
   type CursorImportStatus,
   importCursorChats,
   loadCursorImportStatus,
@@ -139,6 +144,12 @@ export function DataTab() {
     null,
   );
   const [cursorImporting, setCursorImporting] = useState(false);
+  // Same gate as Cursor: the Claude row only appears for a machine that has
+  // Claude Code conversations to bring over.
+  const [claudeStatus, setClaudeStatus] = useState<ClaudeImportStatus | null>(
+    null,
+  );
+  const [claudeImporting, setClaudeImporting] = useState(false);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
@@ -238,6 +249,9 @@ export function DataTab() {
     void loadCursorImportStatus()
       .then((status) => setCursorStatus(status.available ? status : null))
       .catch(() => setCursorStatus(null));
+    void loadClaudeImportStatus()
+      .then((status) => setClaudeStatus(status.available ? status : null))
+      .catch(() => setClaudeStatus(null));
   }, []);
 
   const handleExport = async () => {
@@ -378,6 +392,33 @@ export function DataTab() {
       });
     } finally {
       setCursorImporting(false);
+    }
+  };
+
+  const handleImportFromClaude = async () => {
+    setClaudeImporting(true);
+    try {
+      const result = await importClaudeChats();
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      setClaudeStatus(await loadClaudeImportStatus().catch(() => claudeStatus));
+      toast.success(
+        result.chats === 0
+          ? t("settings.chat.importClaudeNoChats")
+          : result.newChats === 0
+            ? t("settings.chat.claudeUpToDate")
+            : result.newChats === 1
+              ? t("settings.chat.importedClaudeOneChat")
+              : t("settings.chat.importedClaudeChatCount", {
+                  count: result.newChats,
+                }),
+      );
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setClaudeImporting(false);
     }
   };
 
@@ -1027,6 +1068,32 @@ export function DataTab() {
                 />
               )}
               {cursorImporting
+                ? t("settings.chat.importingAction")
+                : t("settings.chat.importChatsAction")}
+            </Button>
+          </SettingsRow>
+        ) : null}
+
+        {claudeStatus ? (
+          <SettingsRow
+            label={t("settings.chat.importFromClaude")}
+            description={t("settings.chat.importFromClaudeDescription")}
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleImportFromClaude()}
+              disabled={claudeImporting}
+            >
+              {claudeImporting ? (
+                <Spinner className="size-3.5 mr-1.5" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Upload01Icon}
+                  className="size-3.5 mr-1.5"
+                />
+              )}
+              {claudeImporting
                 ? t("settings.chat.importingAction")
                 : t("settings.chat.importChatsAction")}
             </Button>

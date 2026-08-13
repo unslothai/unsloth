@@ -1515,6 +1515,15 @@ export const es = {
         "Se importaron {count} conversaciones desde Cursor.",
       cursorUpToDate:
         "Las conversaciones de Cursor ya están actualizadas.",
+      importFromClaude: "Importar desde Claude Code",
+      importFromClaudeDescription:
+        "Copia tus conversaciones de Claude Code a Studio, agrupadas por proyecto.",
+      importClaudeNoChats: "No se encontraron conversaciones de Claude Code.",
+      importedClaudeOneChat: "Se importó 1 conversación desde Claude Code.",
+      importedClaudeChatCount:
+        "Se importaron {count} conversaciones desde Claude Code.",
+      claudeUpToDate:
+        "Las conversaciones de Claude Code ya están actualizadas.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",
       clearAction: "Borrar",

@@ -1524,6 +1524,14 @@ export const de = {
       importedCursorChatCount:
         "{count} Konversationen aus Cursor importiert.",
       cursorUpToDate: "Die Cursor-Konversationen sind bereits aktuell.",
+      importFromClaude: "Aus Claude Code importieren",
+      importFromClaudeDescription:
+        "Kopiere deine Claude-Code-Konversationen nach Studio, gruppiert nach Projekt.",
+      importClaudeNoChats: "Keine Claude-Code-Konversationen gefunden.",
+      importedClaudeOneChat: "1 Konversation aus Claude Code importiert.",
+      importedClaudeChatCount:
+        "{count} Konversationen aus Claude Code importiert.",
+      claudeUpToDate: "Die Claude-Code-Konversationen sind bereits aktuell.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
       clearAction: "Löschen",

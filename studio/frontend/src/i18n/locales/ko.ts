@@ -1479,6 +1479,14 @@ export const ko = {
       importedCursorOneChat: "Cursor에서 대화 1개를 가져왔습니다.",
       importedCursorChatCount: "Cursor에서 대화 {count}개를 가져왔습니다.",
       cursorUpToDate: "Cursor 대화가 이미 최신 상태입니다.",
+      importFromClaude: "Claude Code에서 가져오기",
+      importFromClaudeDescription:
+        "Claude Code 대화를 프로젝트별로 그룹화하여 Studio로 복사합니다.",
+      importClaudeNoChats: "Claude Code 대화를 찾을 수 없습니다.",
+      importedClaudeOneChat: "Claude Code에서 대화 1개를 가져왔습니다.",
+      importedClaudeChatCount:
+        "Claude Code에서 대화 {count}개를 가져왔습니다.",
+      claudeUpToDate: "Claude Code 대화가 이미 최신 상태입니다.",
       clearHistory: "채팅 기록 지우기",
       clearHistoryDescription: "이 기기에서 채팅 기록을 삭제합니다.",
       clearAction: "지우기",

@@ -1449,6 +1449,13 @@ export const zhCN = {
       importedCursorOneChat: "已从 Cursor 导入 1 个对话。",
       importedCursorChatCount: "已从 Cursor 导入 {count} 个对话。",
       cursorUpToDate: "Cursor 对话已是最新。",
+      importFromClaude: "从 Claude Code 导入",
+      importFromClaudeDescription:
+        "将您的 Claude Code 对话按项目分组复制到 Studio。",
+      importClaudeNoChats: "未找到 Claude Code 对话。",
+      importedClaudeOneChat: "已从 Claude Code 导入 1 个对话。",
+      importedClaudeChatCount: "已从 Claude Code 导入 {count} 个对话。",
+      claudeUpToDate: "Claude Code 对话已是最新。",
       clearHistory: "清除聊天记录",
       clearHistoryDescription: "从此设备删除本地聊天记录。",
       clearAction: "清除",

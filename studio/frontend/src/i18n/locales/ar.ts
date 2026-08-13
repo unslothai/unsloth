@@ -1483,6 +1483,13 @@ export const ar = {
       importedCursorChatCount:
         "تم استيراد المحادثات من Cursor. العدد: {count}.",
       cursorUpToDate: "محادثات Cursor محدَّثة بالفعل.",
+      importFromClaude: "الاستيراد من Claude Code",
+      importFromClaudeDescription:
+        "انسخ محادثات Claude Code إلى Studio، مجمّعة حسب المشروع.",
+      importClaudeNoChats: "لم يتم العثور على محادثات Claude Code.",
+      importedClaudeOneChat: "تم استيراد محادثة واحدة من Claude Code.",
+      importedClaudeChatCount: "تم استيراد {count} محادثات من Claude Code.",
+      claudeUpToDate: "محادثات Claude Code محدَّثة بالفعل.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
       clearAction: "مسح",
