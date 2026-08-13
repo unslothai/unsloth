@@ -183,6 +183,21 @@ _WINDOWS_CLI_ENTRYPOINT = (
     "sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 )
 
+# Asks the managed interpreter whether the trampoline's import would resolve,
+# without running it. The sys.path[0] scrub is _WINDOWS_CLI_ENTRYPOINT's, kept a
+# separate literal because a parity test literal_evals that constant; the two
+# must agree or the probe answers for a different sys.path than the launch uses.
+_MANAGED_CLI_IMPORT_PROBE = (
+    "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; "
+    "import importlib.util; sys.exit(0 if importlib.util.find_spec('unsloth_cli') else 1)"
+)
+
+# Seconds, and generous: this is a bare interpreter start plus a path-finder
+# walk, but it can run from cold on a machine whose antivirus is scanning the
+# venv it just quarantined a file out of. The caller treats a timeout as "no
+# verdict" rather than as a missing package, so overrunning it is not fatal.
+_MANAGED_CLI_IMPORT_PROBE_TIMEOUT = 60
+
 # CreateProcess refuses a program blocked by an Application Control policy with
 # ERROR_ACCESS_DISABLED_BY_POLICY, which Python surfaces as OSError.winerror.
 _ERROR_ACCESS_DISABLED_BY_POLICY = 1260
@@ -290,24 +305,62 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
-def _managed_cli_package_present(python: Path) -> bool:
-    """Whether the venv holding *python* still has the package the CLI imports.
+def _managed_cli_site_packages_layout(python: Path) -> bool:
+    """On-disk hint that the venv holding *python* still carries the CLI.
 
-    Windows only, and only asked when the console script is gone. The generated
-    unsloth.exe is what proves a CLI on POSIX, but on Windows nothing launches it
-    any more (issue #8490) and antivirus quarantine deletes the unsigned stub
-    while leaving the environment perfectly able to run. site-packages is the
-    same kind of cheap on-disk proof, one layer down.
+    Weaker than the import probe below and only used when the probe could not be
+    run at all: an empty ``unsloth_cli/`` or an orphaned dist-info left by an
+    interrupted install answers yes here without being importable.
 
     The dist-info is accepted alongside the package directory because an
     editable install of the checkout leaves a .pth and no unsloth_cli/ here.
     """
-    if platform.system() != "Windows":
-        return False
     site_packages = python.parent.parent / "Lib" / "site-packages"
     if (site_packages / "unsloth_cli").is_dir():
         return True
     return any(site_packages.glob("unsloth-*.dist-info"))
+
+
+def _managed_cli_package_present(python: Path) -> bool:
+    """Whether the venv holding *python* can still import the package the CLI runs.
+
+    Windows only, and only asked when the console script is gone. The generated
+    unsloth.exe is what proves a CLI on POSIX, but on Windows nothing launches it
+    any more (issue #8490) and antivirus quarantine deletes the unsigned stub
+    while leaving the environment perfectly able to run.
+
+    Asked of the interpreter rather than of site-packages, because the two are
+    not the same claim. What Windows launches is the trampoline's
+    ``from unsloth_cli import app``, so an orphaned ``unsloth-*.dist-info`` (a
+    moved editable checkout, an interrupted install) or an empty ``unsloth_cli/``
+    directory is metadata, not a runnable CLI. It matters here specifically:
+    this gate stands in front of the headless-public strip of
+    .bootstrap_password, so passing a venv that then fails to import is the one
+    outcome the gate's placement exists to prevent -- a public Studio with no
+    login page and no plaintext recovery credential.
+
+    find_spec locates without executing, so the probe runs no package import
+    side effects, and the same sys.path[0] scrub as the trampoline is applied so
+    an ``unsloth_cli`` directory in the caller's cwd cannot answer for the venv.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        probe = subprocess.run(
+            [str(python), "-X", "utf8", "-c", _MANAGED_CLI_IMPORT_PROBE],
+            capture_output = True,
+            timeout = _MANAGED_CLI_IMPORT_PROBE_TIMEOUT,
+            # Same as every other managed-interpreter probe here: a non-interactive
+            # Windows launch must not flash a console window (issue #8490's sibling).
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        # The probe itself never produced a verdict (no interpreter, a policy
+        # block, a hang). That is not evidence of a broken package, so fall back
+        # to the on-disk layout rather than aborting a venv quarantine only
+        # half broke -- the failure this whole fallback exists to remove.
+        return _managed_cli_site_packages_layout(python)
+    return probe.returncode == 0
 
 
 def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
