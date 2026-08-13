@@ -4280,3 +4280,66 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     assert executed == []  # nothing parsed, nothing ran
     assert ends, "provisional card left dangling (no tool_end)"
     assert ends[-1]["tool_call_id"] == "call_0"
+
+
+def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch):
+    """Regression: the early card for a large-argument MCP call must already
+    carry the server display name. Without it the card (and a cancelled turn's
+    saved history/export/search text) shows the internal uuid server id."""
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    mcp_servers_db.create_server(
+        id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m"
+    )
+
+    tool_name = "mcp__a3f9c1d2e4b6f807__create_issue"
+    args = {"title": "Bug", "body": "x" * 400}
+    assert len(json.dumps(args)) > _PROVISIONAL_ARGS_MIN_CHARS
+
+    first_stream = _streamed_structured_tool_call(tool_name, args, "call_mcp_big")
+    final_stream = [_sse({"content": "Filed."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "file a bug"}],
+            tools = [{"type": "function", "function": {"name": tool_name}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    assert len(provisional) == 1, tool_starts
+    assert provisional[0]["provenance"].get("provisional") is True
+    assert provisional[0]["provenance"].get("mcp_server") == "GitHub"
+
+
+def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
+    """A plain tool's provisional card gains no mcp_server key."""
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+
+    big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
+    first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], [])
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "OK")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "write code"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+        )
+    )
+    provisional = [
+        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
+    ]
+    assert len(provisional) == 1, events
+    assert "mcp_server" not in provisional[0]["provenance"]

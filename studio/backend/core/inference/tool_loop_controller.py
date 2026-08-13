@@ -223,6 +223,16 @@ def mcp_display_parts(tool_name: str) -> "tuple[str, str] | None":
     return (str(display), parts[2]) if display else None
 
 
+def provisional_tool_provenance(tool_name: str) -> dict[str, object]:
+    """Provisional-card provenance, MCP display name included so an early or
+    orphaned card (cancel/error before the real tool_start) never shows the id."""
+    mcp = mcp_display_parts(tool_name)
+    return tool_event_provenance(
+        provisional = True,
+        mcp_server = mcp[0] if mcp else None,
+    )
+
+
 def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     """Return the status text already used by local tool streams."""
     if tool_name == "web_search":

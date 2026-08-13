@@ -1371,3 +1371,16 @@ def test_prepare_call_stamps_mcp_server_provenance(tmp_path, monkeypatch):
 
     plain = controller.prepare_call({"function": {"name": "python", "arguments": {}}})
     assert "mcp_server" not in plain.provenance
+
+
+def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
+    from core.inference.tool_loop_controller import provisional_tool_provenance
+
+    prov = provisional_tool_provenance("mcp__srv1__create_issue")
+    assert prov["provisional"] is True
+    assert prov["mcp_server"] == "GitHub"
+
+    assert "mcp_server" not in provisional_tool_provenance("python")
+    assert "mcp_server" not in provisional_tool_provenance("mcp__missing__x")
