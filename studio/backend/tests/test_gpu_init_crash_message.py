@@ -73,6 +73,15 @@ def _managed_runtime(monkeypatch, tmp_path):
         "_is_unsloth_managed_binary",
         staticmethod(lambda _binary: True),
     )
+    # _cpu_isolated_binary asks whether this is an install tree, which is not
+    # the same question as whether the updater can replace the file: a
+    # --with-llama-cpp-dir checkout is the active install while being the
+    # user's to maintain. Staging a CPU copy only reads, so it uses this one.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_llama_install_tree",
+        staticmethod(lambda _binary: True),
+    )
     monkeypatch.setattr(
         llama_cpp,
         "_swa_cache_path",
@@ -297,6 +306,9 @@ class TestPlatformMatrix:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
         monkeypatch.setattr(
             LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_llama_install_tree", staticmethod(lambda _binary: True)
         )
         monkeypatch.setattr(
             llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
@@ -858,6 +870,11 @@ class TestCpuIsolatedReplay:
         monkeypatch.setattr(
             LlamaCppBackend,
             "_is_unsloth_managed_binary",
+            staticmethod(lambda _binary: True),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_is_llama_install_tree",
             staticmethod(lambda _binary: True),
         )
         monkeypatch.setattr(

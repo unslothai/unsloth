@@ -2432,7 +2432,15 @@ def run_server(
                 "\n"
                 "Fix one of:\n"
                 f"  - run the installer's binary directly: {installer_bin} studio\n"
-                "  - pass --frontend <path/to/studio/frontend/dist>\n"
+                + (
+                    # An Application Control policy can block the generated
+                    # unsloth.exe while the signed interpreter beside it still
+                    # runs, so name a route that does not go through it.
+                    f"  - or through the interpreter: {sys.executable} -I -m unsloth_cli studio\n"
+                    if sys.platform == "win32"
+                    else ""
+                )
+                + "  - pass --frontend <path/to/studio/frontend/dist>\n"
                 "  - pass --api-only to skip serving the web UI\n"
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )

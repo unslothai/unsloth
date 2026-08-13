@@ -16,7 +16,6 @@ export const zhCN = {
     searchAriaLabel: "搜索{noun}",
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
-    pickModelFile: "从磁盘选择模型文件",
     modelDropped: "已不再提供",
     modelDroppedByProvider: "{provider} · 已不再提供",
     modelDisabled: "未启用",
@@ -403,6 +402,11 @@ export const zhCN = {
         launchAtLogin: "登录时运行 Unsloth",
         launchAtLoginDescription:
           "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+
+        closeToTray: "关闭到系统托盘",
+        closeToTrayDescription:
+          "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
+        closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
@@ -935,11 +939,13 @@ export const zhCN = {
       exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
-        "从 JSONL、NDJSON 或 CSV 导出文件将对话导入到最近对话。",
+        "将 Open WebUI、JSONL、NDJSON 或 CSV 导出文件导入到最近对话。",
       importChatsAction: "导入",
       importNoConversations: "文件中未找到对话。",
       importedOneChat: "已导入 1 个对话到最近对话。",
       importedChatCount: "已导入 {count} 个对话到最近对话。",
+      importingChats: "正在导入对话：已完成 {count} 个（{percent}%）...",
+      importedChatCountPartial: "已将 {count} 个对话导入到最近对话；{failed} 个未能保存。",
       importFailed: "导入失败。",
       clearHistory: "清除聊天记录",
       clearHistoryDescription: "从此设备删除本地聊天记录。",
