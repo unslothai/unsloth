@@ -38,6 +38,42 @@ export type ExtraArgsParse = {
 };
 
 /**
+ * A stored list with the flags this build refuses removed, values and all.
+ *
+ * The panel hydrates from the stored override and then sends what it holds as an
+ * explicit list, which /load validates strictly rather than putting through the
+ * carry-over paths that drop such a flag quietly. An install upgraded across a
+ * denylist change would therefore fail to load a model that worked the day before.
+ * Mirrors drop_managed_flags: a flag takes its value with it, or llama-server reads
+ * the orphan as a positional model path.
+ */
+export function dropManagedExtraArgs(
+  tokens: readonly string[],
+  managed: ReadonlySet<string>,
+): string[] {
+  const kept: string[] = [];
+  let skipNext = false;
+  for (const [index, token] of tokens.entries()) {
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
+    const flag = extraArgFlagName(token);
+    if (flag === null || !managed.has(flag)) {
+      kept.push(token);
+      continue;
+    }
+    const next = tokens[index + 1];
+    skipNext =
+      !token.includes("=") &&
+      flag === token.trim() &&
+      next !== undefined &&
+      extraArgFlagName(next) === null;
+  }
+  return kept;
+}
+
+/**
  * Split a command-line fragment into argv tokens.
  *
  * Newlines are separators like spaces, so a multi-line box reads as one command and
@@ -245,6 +281,21 @@ const GPU_SELECTION_STRIPPED_FLAGS: Record<string, string> = {
   "-mg": "GPU selection",
 };
 
+/**
+ * Smallest value the backend's own parser accepts, per flag.
+ *
+ * parse_ctx_override refuses a negative context; parse_gpu_layers_override accepts
+ * -1 (all layers) and nothing below it. The rest are checked for being integers
+ * only, because that is all those parsers claim.
+ */
+const INTEGER_VALUE_MINIMUM: Record<string, number> = {
+  "--ctx-size": 0,
+  "-c": 0,
+  "--gpu-layers": -1,
+  "--n-gpu-layers": -1,
+  "-ngl": -1,
+};
+
 /** Values the backend parses as integers, and refuses the load over. */
 const INTEGER_VALUE_FLAGS = new Set([
   "--ctx-size",
@@ -331,14 +382,30 @@ export function diagnoseExtraArgs(
     // in `-ngl 20 -ngl many` it is the second one the backend parses and refuses, so
     // checking only the first would leave Load enabled for a request that 400s.
     if (INTEGER_VALUE_FLAGS.has(flag)) {
-      const value =
-        flag === token.trim() ? tokens[index + 1] : token.split("=")[1];
-      if (value !== undefined && value !== "" && !INTEGER.test(value.trim())) {
-        const message = `${flag} takes a number, and "${value}" is not one.`;
-        if (!reportedValues.has(message)) {
-          reportedValues.add(message);
-          out.push({ level: "error", message });
-        }
+      const attached = flag !== token.trim();
+      const value = attached ? token.split("=")[1] : tokens[index + 1];
+      // A flag whose value is the next token has none when that token is itself a
+      // flag: `--ctx-size --numa` reads --numa as the value in a shell and as a
+      // missing one here, which is what the backend's parser says too.
+      const missing =
+        value === undefined ||
+        value === "" ||
+        (!attached && extraArgFlagName(value) !== null);
+      const minimum = INTEGER_VALUE_MINIMUM[flag];
+      let message: string | null = null;
+      if (missing) {
+        message = `${flag} needs a number after it.`;
+      } else if (!INTEGER.test(value.trim())) {
+        message = `${flag} takes a number, and "${value}" is not one.`;
+      } else if (minimum !== undefined && Number(value.trim()) < minimum) {
+        message =
+          minimum === 0
+            ? `${flag} cannot be negative.`
+            : `${flag} takes ${minimum} or more.`;
+      }
+      if (message !== null && !reportedValues.has(message)) {
+        reportedValues.add(message);
+        out.push({ level: "error", message });
       }
     }
     if (seen.has(flag)) {

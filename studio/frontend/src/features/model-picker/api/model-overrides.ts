@@ -78,6 +78,12 @@ export function modelOverrideKey(
  */
 /** A POSIX absolute path, which the backend keeps case-sensitive. */
 const POSIX_PATH = /^\//;
+/**
+ * A WSL drive mount, which is a Windows volume seen through Linux and folds like
+ * one. _fold_case_insensitive_path treats /mnt/<letter> this way, so leaving it
+ * under the POSIX rule strands an override the server does apply.
+ */
+const WSL_DRIVE_PATH = /^\/mnt\/[a-zA-Z](\/|$)/;
 
 function foldOverrideKey(key: string): string {
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
@@ -90,36 +96,47 @@ function foldOverrideKey(key: string): string {
   // Only the quant folds for a POSIX path: "/models/Foo:Q4_K_M" has to be
   // reachable from the browser's "/models/Foo:q4_k_m" without "/models/foo"
   // matching "/models/Foo".
-  return POSIX_PATH.test(id) ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
+  const caseSensitive = POSIX_PATH.test(id) && !WSL_DRIVE_PATH.test(id);
+  return caseSensitive ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
 }
 
 export function resolveStoredExtraArgs(
   overrides: ApiModelOverrides,
   keys: readonly string[],
 ): string[] {
-  for (const key of keys) {
-    const exact = overrides[key]?.llama_extra_args;
-    if (exact && exact.length > 0) {
-      return exact;
-    }
-  }
-  // Folding, by the same rule the backend resolves with: a POSIX path is
-  // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
-  // arguments stored for /models/Foo.gguf and then send them explicitly on Load.
-  // Windows, UNC and WSL paths do fold, and so does the quant suffix the browser
-  // lowercases before storing.
-  const folded = new Map<string, string[]>();
+  // Whole ENTRIES, in the order the backend tries them, stopping at the first one
+  // that exists. The auto-switch loader breaks on the first non-empty override and
+  // reads its fields from there, so falling through to a bare repo id because the
+  // variant row happens to carry no arguments would launch the picker with flags an
+  // API load would not use.
+  // An entry with no fields is skipped rather than stopping the search, because
+  // that is what `if override: break` does on the server.
+  const present = (value: ApiModelOverride | undefined | null) =>
+    value && Object.keys(value).length > 0 ? value : null;
+  const folded = new Map<string, ApiModelOverride | null>();
   for (const [key, value] of Object.entries(overrides)) {
-    const args = value?.llama_extra_args;
-    const foldedKey = foldOverrideKey(key);
-    if (args && args.length > 0 && !folded.has(foldedKey)) {
-      folded.set(foldedKey, args);
+    if (!present(value)) {
+      continue;
     }
+    const foldedKey = foldOverrideKey(key);
+    // Ambiguous folds resolve to nothing, as resolve_model_override_key does:
+    // duplicate case variants left by an upgrade must not have one of them picked
+    // at enumeration order, which is another model's settings half the time.
+    folded.set(foldedKey, folded.has(foldedKey) ? null : value);
   }
   for (const key of keys) {
+    const exact = present(overrides[key]);
+    if (exact) {
+      return exact.llama_extra_args ?? [];
+    }
+    // Folding, by the same rule the backend resolves with: a POSIX path is
+    // case-sensitive, so lowercasing one whole would hand /models/foo.gguf the
+    // arguments stored for /models/Foo.gguf and then send them explicitly on Load.
+    // Windows, UNC and WSL paths do fold, and so does the quant suffix the browser
+    // lowercases before storing.
     const match = folded.get(foldOverrideKey(key));
     if (match) {
-      return match;
+      return match.llama_extra_args ?? [];
     }
   }
   return [];

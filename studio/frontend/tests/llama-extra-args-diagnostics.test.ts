@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { LlamaFlagCatalog } from "../src/features/model-picker/api/llama-flags.ts";
 import {
   diagnoseExtraArgs,
+  dropManagedExtraArgs,
   extraArgsAreLoadable,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
 
@@ -253,6 +254,64 @@ test("the same bad value is reported once, not once per copy", () => {
   );
 });
 
+test("a numeric flag with nothing after it is an error", () => {
+  // parse_ctx_override raises on a missing value rather than reading the next flag
+  // as one, so leaving Load enabled here only moves the failure to the backend.
+  for (const input of ["--ctx-size", "--ctx-size=", "--ctx-size --numa"]) {
+    const out = diagnoseExtraArgs(input, CATALOG);
+    assert.ok(
+      out.some((d) => d.level === "error" && d.message.includes("needs a number")),
+      `${input}: ${JSON.stringify(out)}`,
+    );
+  }
+});
+
+test("a numeric flag outside its range is an error", () => {
+  // The two ranges the backend's parsers actually enforce: a context cannot be
+  // negative, and -1 is the lowest meaningful layer count (all of them).
+  assert.ok(
+    diagnoseExtraArgs("--ctx-size -1", CATALOG).some(
+      (d) => d.level === "error" && d.message.includes("cannot be negative"),
+    ),
+  );
+  assert.ok(
+    diagnoseExtraArgs("-ngl -2", CATALOG).some(
+      (d) => d.level === "error" && d.message.includes("-1 or more"),
+    ),
+  );
+  // And -1 itself is fine, or the editor would refuse the ordinary way of asking
+  // for every layer.
+  assert.ok(
+    !diagnoseExtraArgs("-ngl -1", CATALOG).some((d) => d.level === "error"),
+  );
+});
+
+test("a stored flag this build refuses is dropped with its value", () => {
+  // Hydration turns a stored list into an explicit request, which /load validates
+  // strictly instead of dropping the flag the way the carry-over paths do. Leaving
+  // the value behind would hand llama.cpp a bare positional it reads as a model.
+  const managed = new Set(["--log-file", "--agent"]);
+  assert.deepEqual(
+    dropManagedExtraArgs(
+      ["--log-file", "/var/log/llama.log", "--numa", "distribute"],
+      managed,
+    ),
+    ["--numa", "distribute"],
+  );
+  assert.deepEqual(
+    dropManagedExtraArgs(["--agent", "--numa", "distribute"], managed),
+    ["--numa", "distribute"],
+  );
+  assert.deepEqual(
+    dropManagedExtraArgs(["--log-file=/x", "--top-k=20"], managed),
+    ["--top-k=20"],
+  );
+  // Nothing to drop is the list unchanged, and an empty denylist changes nothing.
+  const clean = ["--numa", "distribute"];
+  assert.deepEqual(dropManagedExtraArgs(clean, managed), clean);
+  assert.deepEqual(dropManagedExtraArgs(clean, new Set<string>()), clean);
+});
+
 // --- which stored row a model reads ---------------------------------------------
 // The module itself imports through the "@/" alias, which the node runner does not
 // resolve, so this is pinned the way the sibling tests pin such modules.
@@ -320,7 +379,11 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   assert.match(body, /fetchModelOverrides\(\)/);
   // Through the resolver, not a literal lookup: the backend folds identities and
   // falls back from repo:QUANT to the bare repo before it reads a row.
-  assert.match(body, /const stored = resolveStoredExtraArgs\(overrides, keys\)/);
+  assert.match(body, /resolveStoredExtraArgs\(overrides, keys\)/);
+  // And through the denylist first: hydrating makes the stored list an explicit
+  // request, which /load validates strictly rather than dropping a newly denied
+  // flag the way the carry-over paths do.
+  assert.match(body, /dropManagedExtraArgs\( resolveStoredExtraArgs/);
   // Into the config, not only the textarea. The load sends what the config holds,
   // and the route's omission path inherits from a resident process rather than
   // from this stored override, so a box that filled without the config would show

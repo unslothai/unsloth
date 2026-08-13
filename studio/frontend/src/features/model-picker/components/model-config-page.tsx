@@ -68,6 +68,7 @@ import {
 } from "../api/model-overrides";
 import {
   diagnoseExtraArgs,
+  dropManagedExtraArgs,
   extraArgsAreLoadable,
   formatExtraArgs,
   parseExtraArgs,
@@ -1470,8 +1471,8 @@ export function ModelConfigPage({
     // win a race with a fast click, not to make the button depend on a service
     // being up. Past this, a load simply behaves as it did before the feature.
     const release = setTimeout(() => setExtraArgsHydrating(false), 4000);
-    fetchModelOverrides()
-      .then((overrides) => {
+    Promise.all([fetchModelOverrides(), loadLlamaFlagCatalog()])
+      .then(([overrides, catalog]) => {
         // Marked here rather than before the request: StrictMode replays the effect
         // (setup, cleanup, setup), so a key marked up front would leave the first
         // fetch cancelled and the second setup returning early, and the box would
@@ -1482,7 +1483,15 @@ export function ModelConfigPage({
         extraArgsHydrated.current = identity;
         // Through the resolver, not a literal lookup: the backend folds identities
         // and falls back from repo:QUANT to the bare repo before it reads a row.
-        const stored = resolveStoredExtraArgs(overrides, keys);
+        // Sanitised against this build's denylist before it becomes a request:
+        // hydrating turns a stored list into an EXPLICIT one, which /load validates
+        // strictly instead of putting it through the carry-over paths that drop a
+        // newly denied flag quietly. Without this, an install upgraded across a
+        // denylist change stops loading a model that worked the day before.
+        const stored = dropManagedExtraArgs(
+          resolveStoredExtraArgs(overrides, keys),
+          catalog?.managed ?? new Set<string>(),
+        );
         if (stored.length === 0) {
           return;
         }
@@ -2112,7 +2121,15 @@ export function ModelConfigPage({
             size="sm"
             className="h-8"
             disabled={atDefault}
-            onClick={() => setConfig({ ...DEFAULT_PER_MODEL_CONFIG })}
+            onClick={() =>
+              setConfig({
+                // null, not the default's absent: absent omits the field, and the
+                // load then INHERITS the running process's arguments, so a reload
+                // after Reset kept the very flags the empty box says are gone.
+                ...DEFAULT_PER_MODEL_CONFIG,
+                llamaExtraArgs: null,
+              })
+            }
           >
             Reset
           </Button>
