@@ -22,6 +22,7 @@ because where the real packages ARE installed the import succeeds and proves not
 from __future__ import annotations
 
 import ast
+import warnings
 from functools import lru_cache
 from pathlib import Path
 
@@ -38,6 +39,18 @@ _SKIP_TOP_LEVEL = frozenset({"tests", "vendor", "unsloth_compiled_cache"})
 # Naming `unsloth` is enough to prove intent: a module that stubs it and forgets `trl` fails
 # loudly at collection, whereas one that stubs nothing is the silent case this guard catches.
 _REQUIRED_STUB = "unsloth"
+
+
+def _parse(source: str) -> ast.Module:
+    """``ast.parse`` without re-reporting warnings the file's own import already emits.
+
+    Every test module is parsed here, and a few carry an invalid escape sequence in a docstring,
+    which would otherwise add a SyntaxWarning per run that belongs to those files, not to this
+    guard.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(source)
 
 
 def _module_name(path: Path) -> str:
@@ -90,7 +103,7 @@ def _heavy_backend_modules() -> frozenset[str]:
         if rel.parts[0] in _SKIP_TOP_LEVEL:
             continue
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = _parse(path.read_text(encoding = "utf-8"))
         except (SyntaxError, UnicodeDecodeError):  # not this guard's job to report
             continue
         name = _module_name(path)
@@ -129,20 +142,28 @@ def _stubs_before(source: str, line: int | None) -> bool:
     return _REQUIRED_STUB in head and ("stub" in head or "sys.modules" in head)
 
 
+def _is_offender(source: str, heavy: frozenset[str]) -> bool:
+    """Whether ``source`` imports a heavy backend module at module scope unstubbed.
+
+    Every candidate is parsed. A textual prefilter on the dotted module names looks like a
+    cheap skip but is wrong: ``from core.training import trainer`` never spells the contiguous
+    string ``core.training.trainer``, so the file it was meant to skip is the collection-killing
+    one, and the guard reported no offender while the job died.
+    """
+    try:
+        tree = _parse(source)
+    except SyntaxError:  # not this guard's job to report
+        return False
+    return not _stubs_before(source, _first_heavy_import_line(tree, heavy))
+
+
 def _offenders() -> list[str]:
     heavy = _heavy_backend_modules()
-    offenders = []
-    for path in sorted(_TESTS_DIR.glob("test_*.py")):
-        source = path.read_text(encoding = "utf-8")
-        if not any(module in source for module in heavy):
-            continue
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:  # not this guard's job to report
-            continue
-        if not _stubs_before(source, _first_heavy_import_line(tree, heavy)):
-            offenders.append(path.name)
-    return offenders
+    return [
+        path.name
+        for path in sorted(_TESTS_DIR.glob("test_*.py"))
+        if _is_offender(path.read_text(encoding = "utf-8"), heavy)
+    ]
 
 
 def test_the_heavy_module_set_is_derived_from_the_backend_sources():
@@ -170,17 +191,23 @@ def test_the_guard_would_catch_an_unstubbed_module():
     heavy = _heavy_backend_modules()
 
     for source in (
+        # Split form: the source never spells "core.training.trainer", so a textual prefilter
+        # dropped it while it still killed collection. Asserted through _is_offender, the same
+        # entry point _offenders uses, so no filter can be reintroduced in front of it.
         "from core.training import trainer as t\n",
         "from core.training.trainer import UnslothTrainer\n",
         "import core.training.trainer\n",
         # The shape the hardcoded guard was blind to.
         "from core.inference.inference import InferenceEngine\n",
+        "from core.inference import inference\n",
     ):
         assert _first_heavy_import_line(ast.parse(source), heavy) == 1, source
         assert not _stubs_before(source, 1), source
+        assert _is_offender(source, heavy), source
 
     stubbed = '_stub_if_missing("unsloth", ())\nfrom core.training import trainer as t\n'
     assert _stubs_before(stubbed, _first_heavy_import_line(ast.parse(stubbed), heavy))
+    assert not _is_offender(stubbed, heavy)
 
     # And a stub that lands too late does not count.
     too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'

@@ -21,6 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 
 
+_STUBBED: list[str] = []
+
+
 def _stub_if_missing(name, attrs):
     """Register a stub module for a dep the backend pytest job does not install.
 
@@ -39,6 +42,7 @@ def _stub_if_missing(name, attrs):
         return
     except Exception:  # noqa: BLE001 - unusable here either way, so stub it
         pass
+    _STUBBED.append(name)
     mod = types.ModuleType(name)
     mod.__spec__ = None
     for attr in attrs:
@@ -55,6 +59,17 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS  # noqa: E402
 from core.training.trainer import UnslothTrainer  # noqa: E402
+
+# Drop the stubs now that the trainer holds its own references, because they outlive this module
+# otherwise and the whole suite then runs against them. utils.hardware.hardware._shared_policy
+# branches on `"unsloth" in sys.modules` and reaches for unsloth.dataset_num_proc, which a
+# spec-less non-package stub cannot provide, so it returns None and every shared-policy case in
+# test_dataset_map_num_proc.py skips instead of running. core.training.trainer itself stays in
+# sys.modules: the tests below monkeypatch it by dotted name, which would re-import it, and this
+# is the job where the real unsloth is not installed. A real install stubs nothing, so this is a
+# no-op there.
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
 
 import transformers  # noqa: E402
 
@@ -129,6 +144,21 @@ def _run(
         dataset_local_files_only = True,
         dataset_local_path = "/cache/snapshot",
     )
+
+
+def test_the_stubs_do_not_outlive_this_module():
+    """A leaked stub silently disables coverage in modules collected after this one.
+
+    utils.hardware.hardware._shared_policy takes `"unsloth" in sys.modules` as proof the real
+    package is usable; against a stub it returns None and test_dataset_map_num_proc.py skips its
+    shared-policy cases rather than failing, so nothing else would report this.
+    """
+    from utils.hardware import hardware as hw
+
+    for name in _STUBBED:
+        assert name not in sys.modules, name
+    if _STUBBED:
+        assert hw._shared_policy() is not None, "the stub is still hiding the policy module"
 
 
 def test_an_inconclusive_probe_on_an_audio_dataset_is_refused(monkeypatch):
