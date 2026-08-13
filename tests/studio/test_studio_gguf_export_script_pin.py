@@ -85,11 +85,17 @@ def test_setdefault_inside_try_block():
 def test_warning_handler_gated_on_module_flag():
     try_node = _find_pin_try(TREE)
     assert try_node is not None
-    handlers = [
-        h for h in try_node.handlers if isinstance(h.type, ast.Name) and h.type.id == "ImportError"
-    ]
-    assert handlers
-    handler = handlers[0]
+    # Exception, not just ImportError: #8603 widened this deliberately, because a half-built
+    # unsloth_zoo raises RuntimeError or AttributeError and the pin is an optimisation that must
+    # not fail an export. Anything narrower than ImportError would leave the warning unreachable
+    # on the failure it exists for, so that is the floor.
+    caught = {
+        h.type.id: h
+        for h in try_node.handlers
+        if isinstance(h.type, ast.Name) and h.type.id in ("Exception", "ImportError")
+    }
+    assert caught, "expected the scripts pin to fall back rather than raise"
+    handler = caught.get("Exception") or caught["ImportError"]
     flag_reads = []
     flag_writes = []
     warning_calls = []
