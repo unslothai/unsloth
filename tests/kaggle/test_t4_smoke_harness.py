@@ -805,9 +805,13 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
         workflow,
         "workflow_dispatch default",
     )
-    fallback = one(
-        r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}", workflow, "workflow fallback"
-    )
+    # The fallback is stated once per step that reads the input (the validation
+    # and the build), so the arity check here is that they AGREE rather than
+    # that there is one of them, and that there is at least one at all.
+    fallbacks = re.findall(r"inputs\.max_steps \|\| (\d+)", workflow)
+    assert fallbacks, "the workflow no longer defaults the dispatched step count"
+    assert len(set(fallbacks)) == 1, f"the steps disagree on the default: {fallbacks}"
+    fallback = fallbacks[0]
     payload = one(
         r'"--max-steps",\s*type\s*=\s*int,\s*default\s*=\s*(\d+)',
         (SMOKE_DIR / "run_t4_smoke.py").read_text(encoding = "utf-8"),
@@ -2342,6 +2346,96 @@ def test_an_unresolvable_zoo_commit_stands_the_run_down():
         assert "steps.pins.outputs.stand_down != 'true'" in steps[names.index(name)]["if"]
     launch_step = steps[names.index("Launch on Kaggle and collect")]
     assert launch_step["if"] == "steps.recheck.outputs.should_run == 'true'"
+
+
+def test_a_step_count_that_could_only_report_red_stands_the_run_down():
+    """A dispatched max_steps is free text, and the payload is the wrong place
+    to find out.
+
+    Both bad values cost a whole Kaggle session and report the pull request red
+    for the dispatch rather than for the code: a non-integer dies in the
+    payload's argparse, and the generated cell turns that crash into a failing
+    report on purpose, while a count below the fp16 scaler's leading skipped
+    steps applies no optimizer update at all.
+    """
+    sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
+    import check_steps
+
+    for bad in ("foo", "", "0", "-4", "3.5", "1e3"):
+        stood_down, reason = check_steps.decide(bad, SMOKE_DIR)
+        assert stood_down, f"{bad!r} would have been pushed"
+        assert reason
+    # The floor is MEASURED off the committed reference and the payload's own
+    # verdict, not declared here: the reference's first three steps are scaler
+    # skips and its fourth does not lower the loss, so five is the shortest run
+    # that trains anything, and this test states the derivation rather than the
+    # number.
+    from run_t4_smoke import optimisation_failures
+
+    metrics = check_steps.reference_metrics(SMOKE_DIR)
+    floor = check_steps.minimum_steps(metrics, optimisation_failures)
+    assert floor and 1 < floor <= len(metrics)
+    assert optimisation_failures(metrics[: floor - 1]), "the floor is not the shortest passing run"
+    assert not optimisation_failures(metrics[:floor])
+    assert check_steps.decide(str(floor - 1), SMOKE_DIR)[0] is True
+    assert check_steps.decide(str(floor), SMOKE_DIR)[0] is False
+    # And the count CI actually runs is above it, or every unsampled run would
+    # stand down.
+    assert check_steps.decide("10", SMOKE_DIR)[0] is False
+    # An unmeasurable floor is not a floor of zero.
+    assert check_steps.minimum_steps([], optimisation_failures) is None
+    assert check_steps.decide("10", REPO_ROOT / "tests" / "kaggle")[0] is True
+
+
+def test_the_dispatched_step_count_is_checked_before_a_kernel_is_paid_for():
+    """Validating it inside the payload is validating it after the bill."""
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    assert "Validate the dispatched step count" in names
+    check = steps[names.index("Validate the dispatched step count")]
+    assert check["id"] == "stepcount"
+    assert "check_steps.py" in check["run"]
+    # Nothing that builds or spends anything runs after it stands down.
+    assert names.index("Validate the dispatched step count") < names.index(
+        "Build the kernel notebooks"
+    )
+    for name in (
+        "Build the kernel notebooks",
+        "Recheck the Kaggle account",
+        "Report the stale approval",
+    ):
+        assert "steps.stepcount.outputs.stand_down != 'true'" in steps[names.index(name)]["if"]
+    # Through the environment, and only after the check: the dispatched value is
+    # free text, so interpolating it into a step's shell puts it in the command
+    # line rather than in an argument.
+    for step in (check, steps[names.index("Build the kernel notebooks")]):
+        assert step["env"]["MAX_STEPS"].startswith("${{ inputs.max_steps")
+        assert "inputs.max_steps" not in step["run"]
+    assert "--max-steps $MAX_STEPS" in steps[names.index("Build the kernel notebooks")]["run"]
+
+
+def test_an_evidence_upload_outage_cannot_colour_the_check_red():
+    """The verdict is Report's; the artifact service does not get a vote.
+
+    An upload step with no continue-on-error fails the job on a transient
+    artifact outage, and the job is what the pull request shows, so a run whose
+    payloads all passed went red for an evidence upload. This file promises red
+    ONLY for a payload that ran and failed its assertions.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    names = [s.get("name") for s in steps]
+    upload = steps[names.index("Upload evidence")]
+    assert upload["continue-on-error"] is True
+    assert upload["id"] == "evidence"
+    # Non-fatal, not silent: continue-on-error leaves `outcome` at failure while
+    # `conclusion` becomes success, and that outcome is what says so.
+    warn = steps[names.index("Report the evidence upload failure")]
+    assert "steps.evidence.outcome == 'failure'" in warn["if"]
+    assert "::warning" in warn["run"]
+    # The verdict still runs, and still on its own condition.
+    report = steps[names.index("Report")]
+    assert report["if"] == "always() && steps.recheck.outputs.should_run == 'true'"
+    assert "steps.evidence" not in report["if"]
 
 
 def test_the_harness_and_the_package_under_test_are_one_snapshot():

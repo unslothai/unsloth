@@ -452,9 +452,14 @@ def _drive_main(
         user,
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
+        attempted = None,
     ):
         clock["t"] += push_seconds
-        return outcomes.pop(0)
+        outcome = outcomes.pop(0)
+        # Like the real one: the caller's list is filled as the slugs are filed.
+        if attempted is not None:
+            attempted.extend(outcome.get("attempts") or [])
+        return outcome
 
     waits: list[int] = []
 
@@ -684,6 +689,109 @@ def test_a_push_that_times_out_does_not_abandon_the_kernel_already_accepted(monk
     assert all(k["released"] for k in result["kernels"])
 
 
+@pytest.mark.parametrize(
+    "boom",
+    [
+        # `text=True` wraps the pipes in a TextIOWrapper with STRICT error
+        # handling, so one byte the locale encoding cannot decode raises out of
+        # `subprocess.run` itself, after the request was filed.
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        # And the runner's own answers, which are not the foreseen ones either.
+        OSError("cannot allocate memory"),
+        MemoryError("the runner ran out"),
+    ],
+    ids = ["decode", "oserror", "memory"],
+)
+def test_a_push_that_raises_outside_the_timeout_still_gives_up_its_slug(
+    monkeypatch, tmp_path, boom
+):
+    """The slug is filed BEFORE `kaggle kernels push` is invoked.
+
+    So the failure that loses it is not the push reporting an error -- that is
+    reported and reconciled -- but the push raising something the retry loop
+    does not handle. Only `TimeoutExpired` was, and every other raise unwound
+    past the line that filed the entry, so `release()` iterated a list with no
+    entry for this notebook at all and a kernel Kaggle may have accepted was
+    left billing to its own ceiling with nobody reading it.
+
+    Reconciliation must therefore not depend on `push()` RETURNING.
+    """
+    deleted: list[str] = []
+    pushes = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            deleted.append(cmd[3])
+            return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+        pushes["n"] += 1
+        if pushes["n"] == 1:
+            return types.SimpleNamespace(
+                returncode = 0, stdout = "Kernel version 1 successfully pushed", stderr = ""
+            )
+        raise boom
+
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    (tmp_path / "k0.ipynb").write_text("{}", encoding = "utf-8")
+    (tmp_path / "k1.ipynb").write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            "--notebook",
+            str(tmp_path / "k0.ipynb"),
+            "--notebook",
+            str(tmp_path / "k1.ipynb"),
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path / "ev"),
+            "--expect",
+            "2",
+        ],
+    )
+
+    assert launch.main() == 0
+    result = json.loads((tmp_path / "ev" / "launch_result.json").read_text(encoding = "utf-8"))
+    assert result["verdict"] == "infra"
+    assert len(result["kernels"]) == 2, "the notebook whose push raised left no entry to reconcile"
+    raised_on = result["kernels"][1]
+    assert raised_on["attempted"], "the slug that push filed was lost with the exception"
+    for slug in raised_on["attempted"]:
+        assert slug in deleted, slug
+    # And the kernel already accepted goes too, as it did for the timeout.
+    assert result["kernels"][0]["slug"] in deleted
+    assert all(k["released"] for k in result["kernels"])
+    assert result["unreleased"] == []
+
+
+def _accepting_push(slug: str):
+    """A `push` stub Kaggle accepted, with the real one's calling convention.
+
+    Including `attempted`, the caller-owned list the real push fills as it files
+    each slug: a stub that only returned the slugs would let a caller that never
+    reads the return value pass here and leak a kernel on Kaggle.
+    """
+
+    def fake_push(
+        notebook,
+        user,
+        kernel_timeout_sec,
+        accelerator = "NvidiaTeslaT4",
+        attempted = None,
+    ):
+        if attempted is not None:
+            attempted.append(slug)
+        return {"ok": True, "slug": slug, "attempts": [slug]}
+
+    return fake_push
+
+
 def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypatch, tmp_path):
     """The outer guard, not the timeout specifically.
 
@@ -705,15 +813,7 @@ def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypa
         return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
 
     monkeypatch.setattr(launch, "_api", lambda: object())
-    monkeypatch.setattr(
-        launch,
-        "push",
-        lambda notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4": {
-            "ok": True,
-            "slug": "someuser/unsloth-t4-ci-abcd",
-            "attempts": ["someuser/unsloth-t4-ci-abcd"],
-        },
-    )
+    monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
         launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
@@ -754,15 +854,7 @@ def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
     release path and nothing else.
     """
     monkeypatch.setattr(launch, "_api", lambda: object())
-    monkeypatch.setattr(
-        launch,
-        "push",
-        lambda notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4": {
-            "ok": True,
-            "slug": "someuser/unsloth-t4-ci-abcd",
-            "attempts": ["someuser/unsloth-t4-ci-abcd"],
-        },
-    )
+    monkeypatch.setattr(launch, "push", _accepting_push("someuser/unsloth-t4-ci-abcd"))
     monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
     monkeypatch.setattr(
         launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}

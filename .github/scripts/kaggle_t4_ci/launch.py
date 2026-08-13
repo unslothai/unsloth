@@ -181,6 +181,7 @@ def push(
     user: str,
     kernel_timeout_sec: int,
     accelerator: str = "NvidiaTeslaT4",
+    attempted: list[str] | None = None,
 ) -> dict:
     """Push as a fresh private kernel. Every attempt gets its own slug.
 
@@ -199,9 +200,18 @@ def push(
 
     Returns the accepted attempt's slug, plus ``attempts``: every slug this call
     filed, newest last.
+
+    ``attempted`` is that list, and the caller may OWN it: pass a list and every
+    slug appears in it the moment it is filed, rather than on return. Only a
+    return can be lost, and this function reaches the network, so anything it
+    raises other than the timeout it handles (``subprocess.run(text=True)``
+    decodes with strict error handling and raises ``UnicodeDecodeError`` on a
+    malformed response; the runner can also answer with ``OSError`` or
+    ``MemoryError``) would otherwise take the slug of a push Kaggle may have
+    ACCEPTED with it, leaving a kernel nothing will delete. See main().
     """
     base = _slugify("unsloth t4 ci")[:32]
-    attempted: list[str] = []
+    attempted = [] if attempted is None else attempted
 
     def _discard(slug: str) -> None:
         """Best effort; the attempt usually created nothing at all.
@@ -689,20 +699,38 @@ def main() -> int:
         result["kernels"] = kernels
         for notebook in args.notebook:
             _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
-            pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
             entry = {
                 "notebook": notebook,
-                "slug": pushed.get("slug"),
+                "slug": None,
                 # Every slug filed, accepted or not: a push that reported an
                 # error may still have landed, and this is the only record of
                 # what to reconcile against the account afterwards.
-                "attempted": pushed.get("attempts") or [],
+                #
+                # Published EMPTY, before the push, and filled by push() as it
+                # files each slug. Reading the returned list instead meant the
+                # entry existed only if push() RETURNED: an exception it does
+                # not handle (a decode error on a malformed response, an OSError
+                # from the runner) unwound past this line, so release() found no
+                # entry for this notebook and the kernel Kaggle may have just
+                # accepted was left billing. The per-notebook granularity below
+                # was already fixed for the same reason; this is the same bug one
+                # level down, and the list being the caller's own object is what
+                # closes it for every raise rather than for the ones foreseen.
+                "attempted": [],
                 "state": None,
-                "push_error": None
-                if pushed["ok"]
-                else f"{pushed['reason']}: {pushed.get('detail', '')}",
+                "push_error": None,
             }
             kernels.append(entry)
+            pushed = push(
+                Path(notebook),
+                args.user,
+                args.kernel_timeout_sec,
+                attempted = entry["attempted"],
+            )
+            entry["slug"] = pushed.get("slug")
+            entry["push_error"] = (
+                None if pushed["ok"] else f"{pushed['reason']}: {pushed.get('detail', '')}"
+            )
             if pushed["ok"]:
                 _log(f"pushed as {pushed['slug']}")
             else:

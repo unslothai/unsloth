@@ -56,7 +56,10 @@
 # grad_norm NaN at steps 1, 2 and 3 and a finite value from step 4. So a 3-step
 # run applies ZERO optimizer updates, never learns the canary and asserts
 # nothing about training; anything under about five steps needs
-# --init-loss-scale AND a reference recaptured with it.
+# --init-loss-scale AND a reference recaptured with it. A dispatch that asks for
+# one is stood down before the kernels are pushed rather than reported red after
+# they are paid for: check_steps.py measures that floor from this reference and
+# the payload's own optimisation checks.
 #
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
@@ -427,7 +430,7 @@ jobs:
       # torch from the CPU index and transformers WITHOUT it: the payload modules
       # the suites import need both to import at all, and the CPU wheel is a
       # minute against a session that costs quota. Measured in a bare venv with
-      # exactly these three: 296 passed.
+      # exactly these three: 302 passed.
       - name: Test the harness
         run: |
           python -m pip install --quiet pytest transformers
@@ -571,6 +574,30 @@ jobs:
           echo "reference_max_steps=$REF_STEPS" >> "$GITHUB_OUTPUT"
           echo "committed reference was captured at max_steps=$REF_STEPS"
 
+      # BEFORE anything is built, and long before anything is pushed. max_steps
+      # is free text on a dispatch and both ways of getting it wrong end as RED
+      # LEGS after the session is paid for, rather than as the configuration
+      # error they are: a value that is not an integer reaches the payload's
+      # argparse, which exits 2 with no report, and the generated cell reports
+      # that crash as a failure on purpose; a value shorter than the fp16
+      # scaler's leading skipped steps applies no optimizer update at all, and
+      # the payload's own optimisation checks fail it.
+      #
+      # check_steps.py MEASURES the floor from the committed reference and the
+      # payload's own optimisation_failures rather than restating a number here
+      # that would go stale as soon as either moved. Standing down is the answer
+      # an unresolvable ref gets: a warning and a green job, nothing having been
+      # learned about the code under test.
+      - name: Validate the dispatched step count
+        id: stepcount
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true'
+        env:
+          MAX_STEPS: ${{ inputs.max_steps || 10 }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/check_steps.py \
+            --max-steps "$MAX_STEPS" \
+            --payload-dir tests/kaggle/t4_smoke
+
       # --all-kernels builds every kernel in legs.KERNELS and emits the
       # launcher's --notebook arguments and the expected payload count, so the
       # leg-to-kernel plan is stated once, in legs.py.
@@ -582,7 +609,7 @@ jobs:
       # should be. See tests/kaggle/t4_smoke/references/README.md.
       - name: Build the kernel notebooks
         id: build
-        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
           MAX_STEPS: ${{ inputs.max_steps || 10 }}
@@ -608,7 +635,7 @@ jobs:
             --all-kernels \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
-            --smoke-args "--max-steps ${{ inputs.max_steps || 10 }}" \
+            --smoke-args "--max-steps $MAX_STEPS" \
             --per-run-timeout 3300 \
             $SKIP
 
@@ -637,7 +664,7 @@ jobs:
       # in. The quota floor and the concurrency survey run in full.
       - name: Recheck the Kaggle account
         id: recheck
-        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
@@ -650,7 +677,7 @@ jobs:
       # Through the environment rather than an inline expression, so nothing the
       # Kaggle API put in that string is interpolated into a shell.
       - name: Report the stale approval
-        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.recheck.outputs.should_run != 'true'
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true' && steps.recheck.outputs.should_run != 'true'
         env:
           REASON: ${{ steps.recheck.outputs.reason }}
         run: |
@@ -673,8 +700,23 @@ jobs:
 
       # always(): the evidence is most valuable when something went wrong, and
       # the executed notebooks are kilobytes.
+      #
+      # continue-on-error, because this step decided the check colour and had no
+      # business doing so: an artifact-service outage (or a throttled upload) is
+      # a step failure, a step failure fails the job, and the job is what the
+      # pull request shows. The verdict is Report's, below, which runs under
+      # always() and can still read the payloads and conclude pass; red here for
+      # an evidence upload contradicts this file's FAILURE SEMANTICS, which
+      # promise red ONLY for a payload that ran and failed its assertions.
+      #
+      # It stays visible: continue-on-error leaves the step's `outcome` at
+      # failure while its `conclusion` becomes success, so the runner still
+      # annotates it and the step below reads that outcome and says so in the
+      # summary.
       - name: Upload evidence
+        id: evidence
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: kaggle-t4-evidence
@@ -687,6 +729,14 @@ jobs:
           # where a reference is recaptured from.
           retention-days: 14
           if-no-files-found: warn
+
+      # The upload above cannot fail the job any more, so it says out loud that
+      # it failed. Without this the only trace is the runner's own annotation on
+      # a green job, and the evidence is what a red verdict is read from.
+      - name: Report the evidence upload failure
+        if: always() && steps.evidence.outcome == 'failure'
+        run: |
+          echo "::warning title=The evidence artifact did not upload::the executed notebooks and kernel logs for this run are not attached. The verdict below stands on its own; re-run the job if the evidence is needed."
 
       # Only when the launcher actually ran: a run that stood down at the
       # recheck has no evidence, and "0 of 4 payloads" would read as a failure
