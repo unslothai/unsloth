@@ -1465,7 +1465,7 @@ export function useChatModelRuntime() {
               // still holds unless this was a different model.
               loadedLlamaExtraArgs:
                 loadLlamaExtraArgs !== undefined
-                  ? loadLlamaExtraArgs.length > 0
+                  ? loadLlamaExtraArgs != null && loadLlamaExtraArgs.length > 0
                     ? loadLlamaExtraArgs
                     : null
                   : resetsPerModelSettings
