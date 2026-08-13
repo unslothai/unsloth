@@ -716,6 +716,145 @@ def test_an_idle_unload_retries_a_worker_that_outlived_the_kill(monkeypatch):
     assert sidecar._idle_timer.started is True
 
 
+def _install_worker(monkeypatch, *, is_alive, close):
+    """Install a worker handle whose liveness and close behaviour a test chooses."""
+    workers = []
+
+    class _ScriptedWorker:
+        def __init__(self) -> None:
+            self.generation_config = SimpleNamespace(is_multilingual = None)
+            self.device = None
+            self.closes = 0
+            self.alive = True
+            workers.append(self)
+
+        def start(
+            self,
+            _snapshot_path,
+            device,
+            _dtype_name,
+            _cancel_event = None,
+        ):
+            self.device = device
+
+        def is_alive(self):
+            return is_alive(self)
+
+        def close(self):
+            self.closes += 1
+            return close(self)
+
+    monkeypatch.setattr(
+        "core.inference.stt_transformers_worker.WhisperWorker", _ScriptedWorker, raising = True
+    )
+    return workers
+
+
+def _closed(worker):
+    worker.alive = False
+    return True
+
+
+def test_a_worker_whose_liveness_cannot_be_read_stays_resident(monkeypatch):
+    # An unanswerable probe is not evidence that the accelerator context was
+    # released, so reporting nothing resident would let training be admitted
+    # against memory the child is still holding.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def unreadable(_worker):
+        raise OSError("the process handle cannot be inspected")
+
+    workers = _install_worker(monkeypatch, is_alive = unreadable, close = _closed)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    assert stt_sidecar_module._engine_is_alive(workers[0]) is True
+    assert sidecar.loaded_model == "small"
+    assert workers[0].closes == 0
+
+
+def test_a_close_that_raises_is_a_failed_release(monkeypatch):
+    # close() raising out of join/terminate/kill says nothing was confirmed
+    # dead, so discarding the only handle would advertise the child's memory
+    # as free while it is still holding it.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def raising(_worker):
+        raise OSError("the worker could not be joined")
+
+    workers = _install_worker(monkeypatch, is_alive = lambda worker: True, close = raising)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model == "small"
+    assert sidecar.device == "cpu"
+
+
+def test_a_close_that_raises_over_a_child_already_gone_still_releases(monkeypatch):
+    # The other direction: bookkeeping that raised over a confirmed dead child
+    # holds no memory, and keeping it would refuse every later load.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    def raising_after_death(worker):
+        worker.alive = False
+        raise OSError("the worker pid could not be forgotten")
+
+    workers = _install_worker(
+        monkeypatch, is_alive = lambda worker: worker.alive, close = raising_after_death
+    )
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+    sidecar.unload()
+
+    assert workers[0].closes == 1
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None
+
+
+def test_a_worker_being_reaped_stays_visible_to_training_admission(monkeypatch):
+    # loaded_model and summarize_resident_stt() read the fields without the model
+    # lock, so clearing them before the reap would report nothing resident for the
+    # whole close, and training would start into the child's accelerator memory.
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    release = threading.Event()
+
+    def slow_close(worker):
+        release.wait(timeout = 10)
+        worker.alive = False
+        return True
+
+    _install_worker(monkeypatch, is_alive = lambda worker: worker.alive, close = slow_close)
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    seen = {}
+    unloading = threading.Thread(target = sidecar.unload, daemon = True)
+    unloading.start()
+    try:
+        time.sleep(0.2)  # inside the close
+        seen["model"] = sidecar.loaded_model
+        seen["device"] = sidecar.device
+    finally:
+        release.set()
+        unloading.join(timeout = 10)
+
+    assert seen["model"] == "small", "the reaping worker read as gone; training would miss its VRAM"
+    assert seen["device"] == "cpu"
+    # Only once the child is confirmed dead does it read as unloaded.
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None
+
+
 def test_a_host_that_cannot_spawn_keeps_dictation_in_process_on_cpu(monkeypatch):
     # Moving the engine out of process may not take dictation away from a host
     # that cannot create a child at all. The accelerator attempt goes through

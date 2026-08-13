@@ -1004,18 +1004,22 @@ def _dtype_name(dtype) -> str:
 
 
 def _engine_is_alive(engine) -> bool:
-    """False only for a worker whose process has died.
+    """False only for a worker whose process is confirmed dead.
 
     Anything without a liveness check counts as live, so a caller holding a
-    plain object (tests, or a future in-process engine) is unaffected.
+    plain object (tests, or a future in-process engine) is unaffected. So does
+    a probe that cannot answer: absence of liveness evidence is not evidence
+    that the accelerator context was released, and reporting nothing resident
+    is what lets training be admitted against memory that is not free.
     """
     is_alive = getattr(engine, "is_alive", None)
     if is_alive is None:
         return True
     try:
         return bool(is_alive())
-    except Exception:  # noqa: BLE001 - an unanswerable probe must not fail a status read
-        return False
+    except Exception as exc:  # noqa: BLE001 - an unanswerable probe must not fail a status read
+        logger.warning("Could not check whether the STT worker is alive: %s", exc)
+        return True
 
 
 def _close_engine(engine) -> bool:
@@ -1025,9 +1029,13 @@ def _close_engine(engine) -> bool:
     handle and emptying the cache cannot. A plain object (tests, or a future
     in-process engine) has no close and needs none.
 
-    False only when the engine says so itself, which WhisperWorker does for a
-    child that outlived terminate and kill and is therefore still holding the
-    memory this call was made to release.
+    False when the engine says so itself, which WhisperWorker does for a child
+    that outlived terminate and kill and is therefore still holding the memory
+    this call was made to release, and False when close() raises out of a
+    process operation: nothing was confirmed dead, so the handle has to be kept
+    rather than the memory advertised as free. A close that raised over a child
+    already gone still counts as released, so bookkeeping that failed after the
+    death cannot wedge every later load.
     """
     close = getattr(engine, "close", None)
     if close is None:
@@ -1036,7 +1044,7 @@ def _close_engine(engine) -> bool:
         return close() is not False
     except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
         logger.warning("Could not stop the STT worker: %s", exc)
-        return True
+        return not _engine_is_alive(engine)
 
 
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
@@ -1243,19 +1251,20 @@ class WhisperSttSidecar:
         would report the model unloaded and let training be admitted against
         memory that is not free. Keep it resident instead and rearm the idle
         timer, so the release is tried again rather than stranded.
+
+        The fields are cleared only once the worker is confirmed dead. close()
+        can take the full shutdown wait, and loaded_model reads the fields
+        without this lock, so clearing them first would report nothing resident
+        for that whole window.
         """
         self._cancel_idle_unload_locked()
         engine = self._engine
         device = self._device
-        model_id = self._model_id
-        self._engine = None
-        self._model_id = None
-        self._device = None
         released = _close_engine(engine)
-        if not released:
-            self._engine = engine
-            self._model_id = model_id
-            self._device = device
+        if released:
+            self._engine = None
+            self._model_id = None
+            self._device = None
         del engine
         _clear_device_cache(device)
         if not released:
