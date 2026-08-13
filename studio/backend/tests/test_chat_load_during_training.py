@@ -1205,6 +1205,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dspark_capable(),
             ):
                 off_gb = self.route._estimate_gguf_required_gb(
@@ -1246,6 +1247,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dspark_capable(False),
             ):
                 forced = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
@@ -1371,6 +1373,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dflash_capable(),
             ):
                 plain = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
@@ -1420,6 +1423,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dflash_capable(),
             ):
                 owned = self.route._estimate_gguf_required_gb(
@@ -1460,6 +1464,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             drafter.write_bytes(b"y" * 3000)
             with (
                 patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
                 self._dflash_capable(),
             ):
@@ -1490,6 +1495,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
         with (
             patch.object(mc, "list_gguf_variants", fake_list),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch.object(
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
@@ -1892,6 +1898,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -1922,6 +1929,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch("huggingface_hub.model_info", side_effect = AssertionError("priced as a repo")),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -1989,6 +1997,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 6 * 1024**3),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -2040,6 +2049,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             ),
             patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 3 * 1024**3),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             self._dflash_capable(),
         ):
             charged = self.route._estimate_gguf_required_gb(
@@ -2127,6 +2137,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
             patch.object(self.route, "_remote_drafter_repo_bytes", return_value = 8 * 1024**3),
             patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
         ):
             on_gpu = self.route._estimate_gguf_required_gb(
                 cfg, speculative_type = "auto", llama_extra_args = extras
@@ -2165,6 +2176,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dspark_capable(),
             ):
                 charged = self.route._estimate_gguf_required_gb(
@@ -2198,6 +2210,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with (
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                 self._dspark_capable(),
             ):
                 on_gpu = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
@@ -2394,6 +2407,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         )
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch(
                 "huggingface_hub.model_info",
                 return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
@@ -2426,6 +2440,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         siblings = [SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 2 * 1024**3)]
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
             patch(
                 "huggingface_hub.model_info",
                 return_value = SimpleNamespace(siblings = siblings),
