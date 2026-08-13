@@ -156,7 +156,6 @@ def windows_command_length(args: list) -> int:
     grammar can nearly double. Measuring it is the only honest check.
     """
     import subprocess
-
     return len(subprocess.list2cmdline([str(a) for a in args]))
 
 
@@ -262,11 +261,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
         else:
             # Its own value when attached, otherwise the tokens that follow.
             pending_values = (
-                0
-                if "=" in token or flag != token.strip()
-                else 2
-                if flag in _TWO_VALUE_FLAGS
-                else 1
+                0 if "=" in token or flag != token.strip() else 2 if flag in _TWO_VALUE_FLAGS else 1
             )
         out.append(token)
     if sys.platform == "win32":
