@@ -786,9 +786,7 @@ class TestSetupShReportBlamesTheRightCard:
         name itself is the uncovered card. Accepting it before the peer scan put the
         false verdict back through the other door."""
         verdict = _run_setup_report(tmp_path, lines, "AMD Radeon RX 5700 XT")
-        assert verdict == "GENERIC", (
-            f"a named hit skipped the covered-peer guard: {verdict!r}"
-        )
+        assert verdict == "GENERIC", f"a named hit skipped the covered-peer guard: {verdict!r}"
 
     def test_a_named_hit_survives_a_host_with_no_lspci(self, tmp_path):
         """The guard must not become a silencer: with no adapter list there is no peer to
