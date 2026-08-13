@@ -434,6 +434,12 @@ export const fr = {
         launchAtLogin: "Lancer Unsloth à la connexion",
         launchAtLoginDescription:
           "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
+
+        closeToTray: "Fermer dans la zone de notification",
+        closeToTrayDescription:
+          "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
+        closeToTraySaveError:
+          "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:

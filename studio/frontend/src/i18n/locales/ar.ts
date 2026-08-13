@@ -419,6 +419,11 @@ export const ar = {
         launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
         launchAtLoginDescription:
           "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+
+        closeToTray: "الإغلاق إلى علبة النظام",
+        closeToTrayDescription:
+          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+        closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },

@@ -432,6 +432,12 @@ export const es = {
         launchAtLogin: "Ejecutar Unsloth al iniciar sesión",
         launchAtLoginDescription:
           "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
+
+        closeToTray: "Cerrar en la bandeja del sistema",
+        closeToTrayDescription:
+          "Mantén Unsloth y su servidor ejecutándose en segundo plano al cerrar la ventana principal.",
+        closeToTraySaveError:
+          "No se pudo actualizar el ajuste de cierre en la bandeja del sistema.",
         loadError: "No se pudo cargar el ajuste de inicio automático.",
         saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },

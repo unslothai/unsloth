@@ -436,6 +436,12 @@ export const de = {
         launchAtLogin: "Unsloth bei der Anmeldung starten",
         launchAtLoginDescription:
           "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+
+        closeToTray: "In den Infobereich schließen",
+        closeToTrayDescription:
+          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+        closeToTraySaveError:
+          "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
