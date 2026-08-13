@@ -1154,6 +1154,47 @@ def test_an_identifier_is_matched_the_way_python_resolves_it():
     assert high == [], f"a normalized rebinding must cancel the alias: {high}"
 
 
+def test_an_assignment_expression_parks_the_builtins_module_too():
+    # `(b := builtins)` binds the module exactly as `b = builtins` does, and an
+    # assignment expression is legal wherever an expression is - including the
+    # `if` header, where the plain-`=` reader never looked. The alias went
+    # unrecorded and `b.exec(...)` under it read as an ordinary method call,
+    # which the pre-rule text scan flagged through its bare `exec\s*\(`.
+    for binding in (
+        "if (b := builtins):",
+        "if (b := __import__('builtins')):",
+        "if (b := importlib.import_module('builtins')):",
+    ):
+        payload = (
+            "import builtins, importlib, marshal\n"
+            "mod = __import__('os')\n"
+            f"{binding}\n"
+            "    b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a walrus-bound builtins must be flagged:\n{payload}"
+
+    # And it re-arms an alias a rebinding had cancelled, the way `=` does.
+    rearmed = (
+        "import builtins, marshal\n"
+        "mod = __import__('os')\n"
+        "b = load_model()\n"
+        "if (b := builtins):\n"
+        "    b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(rearmed, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a walrus must re-arm an alias a rebinding cancelled"
+
+    # A walrus over anything else binds nothing, so `.eval()` on it stays the
+    # ordinary inference call this whole rule exists to leave alone.
+    benign = "import marshal\nmod = __import__('os')\nif (m := load_model()):\n    m.eval()\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a walrus over a model must stay clean: {high}"
+
+
 def test_proc_self_status_read_flags_anti_analysis():
     # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
     # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the

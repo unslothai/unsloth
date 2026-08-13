@@ -184,6 +184,10 @@ _MAX_FSTRING_NESTING = len(_FSTRING_QUOTES)
 # eight-character module name however it is escaped - and a member is allowed
 # to hold a 64 MiB one.
 _MAX_LITERAL_DECODE = 512
+# `b := importlib.import_module('builtins', package = None)` is the longest form
+# a walrus value can take and still be the module, so nothing beyond this many
+# tokens has to be read to decide one.
+_MAX_WALRUS_VALUE = 32
 # An escape sequence that resolves to a character: `'buil\x74ins'` names the
 # `builtins` module without spelling it, so a file that carries one has to be
 # read even though the plain word never appears in it.
@@ -603,6 +607,43 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
         if len(group) != 1 or group[0].type != tokenize.NAME:
             return []  # a tuple, attribute or subscript target: not a plain alias
         names.append(group[0].string)
+    return names
+
+
+def _walrus_bindings(stmt: list, loaders: _Loaders) -> list:
+    """The names `stmt` binds to the `builtins` module with `:=`.
+
+    `if (b := builtins):` parks the module exactly as `b = builtins` does, and an
+    assignment expression is legal wherever an expression is, so the plain-`=`
+    reader above never sees one. The value is read only as far as the bracket or
+    separator that ends it, and only for the few tokens any accepted form can
+    span - a right-nested chain of walruses would otherwise cost the sum of its
+    value lengths, on members allowed up to 64 MiB.
+    """
+    names: list = []
+    for i, tok in enumerate(stmt):
+        if not (tok.type == tokenize.OP and tok.string == ":="):
+            continue
+        if not i or stmt[i - 1].type != tokenize.NAME:
+            continue
+        depth = 0
+        end = min(len(stmt), i + 1 + _MAX_WALRUS_VALUE)
+        for j in range(i + 1, end):
+            nxt = stmt[j]
+            if nxt.type != tokenize.OP:
+                continue
+            if nxt.string in _OPENERS:
+                depth += 1
+            elif nxt.string in _CLOSERS:
+                if depth == 0:
+                    end = j
+                    break
+                depth -= 1
+            elif depth == 0 and nxt.string in (",", ":"):
+                end = j
+                break
+        if _loads_builtins(stmt[i + 1 : end], loaders):
+            names.append(stmt[i - 1].string)
     return names
 
 
@@ -1405,8 +1446,10 @@ class _ExecEvalPattern:
                 else:
                     # `b = __import__('builtins')` binds an alias without an
                     # import statement, and the call through it is route 5 with
-                    # the module parked in a name first.
+                    # the module parked in a name first; `(b := builtins)` parks
+                    # it the same way inside an expression.
                     modules.update(_assignment_bindings(stmt, loaders))
+                    modules.update(_walrus_bindings(stmt, loaders))
             if failed:
                 re_modules, re_funcs = _regex_bindings(content)
                 modules |= re_modules
@@ -1445,7 +1488,9 @@ class _ExecEvalPattern:
                     _collect_rebindings(stmt, rebound, candidates)
                     if not rebound:
                         continue
-                    aliased = _assignment_bindings(stmt, loaders)
+                    aliased = _assignment_bindings(stmt, loaders) + _walrus_bindings(
+                        stmt, loaders
+                    )
                     if aliased:
                         # The statement that makes the name the module is not a
                         # rebinding of it, and it undoes any earlier one:
