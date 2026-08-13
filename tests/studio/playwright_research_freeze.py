@@ -325,6 +325,12 @@ def main() -> int:
 
     failures: list[str] = []
     stream = results["stream"]
+    # A list that ingested nothing has nothing to follow, so it measures zero frames and clears
+    # both budgets below. Recorded and unread was false-green; assert it.
+    if stream["activities"] < 1:
+        failures.append(
+            "the run ingested no activities; the frame budgets below measured an empty list"
+        )
     # Without these two the file records the per-frame cost and passes regardless, which is how
     # the original loop shipped: the numbers were there, nothing read them.
     if stream["raf_per_second"] > MAX_STREAM_RAF_PER_SECOND:
@@ -340,6 +346,15 @@ def main() -> int:
     modal = results["modal"]
     if not modal["dialog_opened"]:
         failures.append("plan review dialog never opened; the modal checks proved nothing")
+    # A dialog that never took the layer strands nothing, so every check below passes on a tree
+    # where the teardown is broken. Verified: with `modal={false}` on PlanReview's Dialog this
+    # reads "" and the whole phase went green. Recorded and unread was false-green; assert it.
+    if modal["body_pointer_events_while_open"] != "none":
+        failures.append(
+            "the plan review dialog never took the modal layer "
+            f"(body pointer-events was {modal['body_pointer_events_while_open']!r}, "
+            "expected 'none'); the stranding checks proved nothing"
+        )
     if modal["body_pointer_events_after_approve"] == "none":
         failures.append("body pointer-events stranded at none after approve")
     if modal["body_pointer_events_after_close"] == "none":

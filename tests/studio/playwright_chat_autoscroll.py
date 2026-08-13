@@ -275,6 +275,13 @@ def main() -> int:
     intent = results["intent"]
     if not intent["detached"]:
         failures.append("scrolling up did not detach")
+    # Without this the check above is vacuous: if the tokens streamed while detached add no
+    # height, "streaming re-pinned a detached reader" passes on a tree where following is broken
+    # in either direction. Recorded and unread was false-green; assert it.
+    if not intent["grewWhileDetached"]:
+        failures.append(
+            "the content did not grow while detached; the re-pin check proved nothing"
+        )
     if not intent["stillDetached"]:
         failures.append("streaming re-pinned a detached reader")
     if not intent["reattached"]:
