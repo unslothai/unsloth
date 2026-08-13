@@ -17608,7 +17608,10 @@ class LlamaCppBackend:
                     tool_calls = tool_calls[:1]
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
-                if reasoning_accum:
+                # A resumed partial precedes this iteration's new reasoning. The
+                # standard field renders before message content, which would
+                # reverse that order after the partial is merged below.
+                if reasoning_accum and not payload.get("continue_final_message"):
                     assistant_msg["reasoning_content"] = reasoning_accum
                 assistant_appended = False
                 # Collect no-op nudges and flush them after the batch, so a no-op

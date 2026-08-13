@@ -622,6 +622,43 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
     assert first_assistant["reasoning_content"] == "I should search for the weather."
 
 
+def test_resumed_tool_call_does_not_move_new_reasoning_before_partial(monkeypatch):
+    """A reasoning field renders before content, but a resumed partial came first."""
+    tool_stream = [
+        _sse({"reasoning_content": "I should verify that."}),
+        _sse({"content": "forecast."}),
+    ] + _structured_tool_call("web_search", {"query": "weather"}, "call_continued")
+    final_stream = [
+        _sse({"content": "It is sunny."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: "sunny"
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "Let me check the "},
+            ],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            continue_final_message = True,
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert len(payloads) == 2
+    first_assistant = next(
+        m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert first_assistant["content"] == "Let me check the forecast."
+    assert "reasoning_content" not in first_assistant
+
+
 def test_textual_tool_call_turn_replays_reasoning_only_trace_in_next_payload(monkeypatch):
     """A reasoning only tool turn has empty content, so without the field the
     trace left the conversation entirely."""
