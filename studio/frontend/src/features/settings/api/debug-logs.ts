@@ -3,6 +3,9 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { DebugLogRequestError } from "../lib/debug-log-error";
+
+export { DebugLogRequestError } from "../lib/debug-log-error";
 
 export type DebugLogStatus =
   | "ok"
@@ -86,8 +89,9 @@ export async function loadDebugLog(
     },
   );
   if (!response.ok) {
-    throw new Error(
+    throw new DebugLogRequestError(
       await readFastApiError(response, "Could not read the log."),
+      response.status,
     );
   }
   const body = await response.json();

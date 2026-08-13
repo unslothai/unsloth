@@ -25,8 +25,13 @@ import {
   parseRefreshMode,
   pollDelayMs,
 } from "../lib/debug-log-buffer";
+import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
+// How often the picker rescans for log files that did not exist when the tab
+// was opened. Slower than the poll, since it is a directory walk rather than a
+// tail read.
+const SOURCE_RESCAN_MS = 10_000;
 
 function readStoredMode(): RefreshMode {
   if (typeof window === "undefined") return DEFAULT_REFRESH_MODE;
@@ -56,6 +61,7 @@ export function DebuggingTab() {
   const inFlightRef = useRef(false);
   const paneRef = useRef<HTMLPreElement | null>(null);
   const pinnedRef = useRef(true);
+  const lastSourceScanRef = useRef(Date.now());
 
   useEffect(() => {
     try {
@@ -65,19 +71,63 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    loadDebugLogSources(controller.signal)
-      .then((result) => {
+  const refreshSources = useCallback(
+    async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
+      try {
+        const result = await loadDebugLogSources(options.signal);
         setSources(result.sources);
-        setSourceId((current) => current ?? result.defaultSourceId);
-      })
-      .catch(() => {
+        setSourceId((current) =>
+          options.reselect
+            ? result.defaultSourceId
+            : (current ?? result.defaultSourceId),
+        );
+      } catch {
         // The log read below reports the real reason; a failed source list just
         // means the picker stays empty.
-      });
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshSources({ signal: controller.signal });
     return () => controller.abort();
-  }, []);
+  }, [refreshSources]);
+
+  const onPollFailed = useCallback(
+    async (error: unknown, signal?: AbortSignal) => {
+      if (isAbort(error)) return;
+      if (isLogSourceGone(error)) {
+        // The id we hold is no longer enumerated: the file was removed, or a
+        // run of failed load attempts pushed it out of the per-family window.
+        // The backend sends 404 precisely so the picker rebuilds itself;
+        // without this the loop re-polls a dead id once a second forever.
+        // Reselecting the server's default also ends the loop, because that is
+        // recomputed from the same walk, and "nothing at all" is a 200 with a
+        // status rather than another 404.
+        cursorRef.current = null;
+        await refreshSources({ signal, reselect: true });
+        return;
+      }
+      setNotice((error as Error).message);
+    },
+    [refreshSources],
+  );
+
+  // The llama runner writes a NEW file per load attempt, so a list fetched once
+  // at mount goes stale exactly when it matters: open the tab, then fail a
+  // load, and the log for that failure is not offered. Rescanning is three
+  // directory listings, so it runs on its own slower cadence than the tail
+  // poll.
+  const rescanSourcesIfStale = useCallback(
+    async (signal?: AbortSignal) => {
+      if (Date.now() - lastSourceScanRef.current < SOURCE_RESCAN_MS) return;
+      lastSourceScanRef.current = Date.now();
+      await refreshSources({ signal });
+    },
+    [refreshSources],
+  );
 
   const poll = useCallback(
     async (signal?: AbortSignal) => {
@@ -105,14 +155,12 @@ export function DebuggingTab() {
           }),
         );
       } catch (error) {
-        if ((error as Error)?.name !== "AbortError") {
-          setNotice((error as Error).message);
-        }
+        await onPollFailed(error, signal);
       } finally {
         inFlightRef.current = false;
       }
     },
-    [sourceId, t],
+    [onPollFailed, sourceId, t],
   );
 
   // Switching source starts a fresh read rather than appending to the old file.
@@ -136,6 +184,7 @@ export function DebuggingTab() {
         typeof document === "undefined" ||
         document.visibilityState !== "hidden"
       ) {
+        await rescanSourcesIfStale(controller.signal);
         await poll(controller.signal);
       }
       if (stopped) return;
@@ -149,7 +198,7 @@ export function DebuggingTab() {
       controller.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [mode, poll]);
+  }, [mode, poll, rescanSourcesIfStale]);
 
   const text = useMemo(
     () => stripAnsi(buffer.lines.join("\n")),
@@ -242,7 +291,10 @@ export function DebuggingTab() {
               size="sm"
               variant="outline"
               disabled={mode !== "manual"}
-              onClick={() => void poll()}
+              onClick={() => {
+                void refreshSources();
+                void poll();
+              }}
             >
               {t("settings.debugging.refreshNow")}
             </Button>
