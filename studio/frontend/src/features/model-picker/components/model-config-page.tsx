@@ -666,10 +666,15 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {/* Manual mode opts out of the auto-fit the budget drives (both branches
-          plan with an empty device list), and a CPU-only host has no GPU to act
-          on, so promising "applies on the next load" would be false. */}
-      {!isDiffusion && !isManual && gpuDevices.length > 0 && <VramBudgetRow />}
+      {/* A fixed manual layer count is the one placement the budget cannot move,
+          and a CPU-only host has no GPU to act on, so promising "applies on the
+          next load" would be false. Manual + Auto is included: it leaves the
+          planner no device list, but --fit-target still carries the budget to
+          llama.cpp's fitter, so the setting applies and its notice has to be
+          reachable. */}
+      {!isDiffusion && (!isManual || autoLayers) && gpuDevices.length > 0 && (
+        <VramBudgetRow />
+      )}
       {!isDiffusion && isManual && (
         <>
           <AdvancedGpuSlider

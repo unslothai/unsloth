@@ -236,7 +236,7 @@ test("Run also waits for a save the debounce already sent", () => {
   assert.match(settle, /flushVramBudgetSave\(\) \?\?/);
   assert.match(
     settle,
-    /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain : null/,
+    /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
   );
   // The counter has to come back down however the write ends.
   assert.match(client, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
@@ -456,6 +456,55 @@ test("a read displaced by a forced one does not publish", () => {
   // the Reload button that the forced read had just cleared.
   assert.match(
     client.replace(/\s+/g, " "),
-    /inFlightVramBudget === read \? publishVramBudget\(settings\) : settings/,
+    /inFlightVramBudget === read &&/,
+  );
+});
+
+test("settling before a load hears about the write that failed", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  const flat = client.replace(/\s+/g, " ");
+  // The chain swallows rejections so one failed save cannot strand the ones behind
+  // it, so a Run waiting on the chain was told the save succeeded and never
+  // dropped the retry, which the teardown then flushed against the load.
+  assert.match(
+    flat,
+    /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
+  );
+  assert.match(
+    flat,
+    /vramBudgetWriteChain = write\.catch\(\(\) => undefined\); vramBudgetNewestWrite = write;/,
+  );
+});
+
+test("a read does not repaint over a write issued while it was in the air", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
+  );
+  const flat = client.replace(/\s+/g, " ");
+  // Waiting behind the writes open at read time says nothing about a save made
+  // while the GET is in the air; that PUT can publish first and the late GET would
+  // then restore the fraction the server no longer holds.
+  assert.match(flat, /const generationAtRead = vramBudgetWriteGeneration;/);
+  assert.match(
+    flat,
+    /generationAtRead === vramBudgetWriteGeneration \? publishVramBudget/,
+  );
+});
+
+test("Manual with automatic layers still shows the budget", () => {
+  // --fit-target carries the budget into that mode, and the launched fraction is
+  // recorded for it, so hiding the row left a model loaded under an older budget
+  // with neither the notice nor a way to reload.
+  assert.match(
+    pageSource.replace(/\s+/g, " "),
+    /\{!isDiffusion && \(!isManual \|\| autoLayers\) && gpuDevices\.length > 0 && \( <VramBudgetRow \/> \)\}/,
   );
 });

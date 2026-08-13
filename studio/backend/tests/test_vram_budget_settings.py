@@ -632,7 +632,7 @@ class TestFitTarget:
 
     _CAPS = {"supports_fit_ctx": True, "supports_fit_target": True, "supports_kv_unified": True}
 
-    def _flags(self, *, auto_fit, extra):
+    def _flags(self, *, auto_fit, delta):
         import core.inference.llama_cpp as lc
         return lc.LlamaCppBackend._ctx_integrity_flags(
             1,
@@ -641,29 +641,42 @@ class TestFitTarget:
             0,
             0,
             self._CAPS,
-            fit_target_extra_mib = extra,
+            fit_target_delta_mib = delta,
         )
 
     def test_the_default_budget_emits_exactly_what_it_did_before(self):
         # The acceptance bar for the whole feature: an untouched slider must not
         # move a single flag.
-        assert self._flags(auto_fit = True, extra = 0.0)[-2:] == ["--fit-target", "512"]
-        assert "--fit-target" not in self._flags(auto_fit = False, extra = 0.0)
+        assert self._flags(auto_fit = True, delta = 0.0)[-2:] == ["--fit-target", "512"]
+        assert "--fit-target" not in self._flags(auto_fit = False, delta = 0.0)
 
     def test_a_lowered_budget_reaches_the_fitter_on_both_paths(self):
         # Raised from each path's own starting margin, not from zero: measuring
         # from zero would hand the legacy path 512 where it used to keep 1024, so
         # lowering the slider would have made llama.cpp pack MORE onto the card.
-        assert self._flags(auto_fit = True, extra = 4096.0)[-2:] == ["--fit-target", "4608"]
-        assert self._flags(auto_fit = False, extra = 4096.0)[-2:] == ["--fit-target", "5120"]
+        assert self._flags(auto_fit = True, delta = 4096.0)[-2:] == ["--fit-target", "4608"]
+        assert self._flags(auto_fit = False, delta = 4096.0)[-2:] == ["--fit-target", "5120"]
 
     def test_the_margin_grows_as_the_budget_falls(self):
         seen = [
-            int(self._flags(auto_fit = auto, extra = extra)[-1])
+            int(self._flags(auto_fit = auto, delta = delta)[-1])
             for auto in (True, False)
-            for extra in (512.0, 1024.0, 2048.0)
+            for delta in (512.0, 1024.0, 2048.0)
         ]
         assert seen == sorted(seen[:3]) + sorted(seen[3:])
+
+    def test_a_raised_budget_reaches_the_fallback_too(self):
+        # 100% is meant to reclaim VRAM on exactly the tight models that fall back
+        # to --fit, and there llama.cpp was still keeping its own 1024 MiB, so the
+        # slider said one thing and the fitter did another.
+        assert self._flags(auto_fit = False, delta = -369.0)[-2:] == ["--fit-target", "655"]
+
+    def test_a_raised_budget_stops_at_the_floor(self):
+        # The same 512 MiB floor every other reserve here respects: at 100% a card
+        # keeps that much and no less, on this path as on the planner's.
+        assert self._flags(auto_fit = False, delta = -4096.0)[-2:] == ["--fit-target", "512"]
+        # Manual + Auto already sits on the floor, so raising cannot move it.
+        assert self._flags(auto_fit = True, delta = -4096.0)[-2:] == ["--fit-target", "512"]
 
     def test_nothing_is_emitted_without_the_capability(self):
         # An older llama-server rejects unknown flags outright.
@@ -677,11 +690,11 @@ class TestFitTarget:
             0,
             0,
             caps,
-            fit_target_extra_mib = 4096.0,
+            fit_target_delta_mib = 4096.0,
         )
         assert "--fit-target" not in flags
 
-    def test_the_extra_is_measured_from_the_largest_card(self):
+    def test_the_move_is_measured_from_the_largest_card(self):
         # --fit-target takes a per-device list, but in llama.cpp's device order,
         # not ours. One broadcast value sized by the largest card leaves no device
         # under the budget.
@@ -690,9 +703,13 @@ class TestFitTarget:
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert "if_vram_frac<_CTX_FIT_VRAM_FRACTIONand" in compact
-        assert "_fit_target_extra_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*max(" in compact
-        assert "fit_target_extra_mib=_fit_target_extra_mib," in compact
+        assert "if_vram_frac!=_CTX_FIT_VRAM_FRACTIONandgpus:" in compact
+        assert "_fit_target_delta_mib=(_CTX_FIT_VRAM_FRACTION-_vram_frac)*max(" in compact
+        assert "fit_target_delta_mib=_fit_target_delta_mib," in compact
+        # Free stands in for an unreported total (MIG/vGPU, two-column probe), or
+        # the whole adjustment would come out of a zero and the budget would be
+        # dropped on the devices whose headroom is hardest to see.
+        assert "total_by_idx.get(_idx)or_freefor_idx,_freeingpus" in compact
 
 
 class TestManualAutoIsPriced:
@@ -724,10 +741,7 @@ class TestManualAutoIsPriced:
         import core.inference.llama_cpp as lc
 
         compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
-        assert (
-            '_fit_target_priced=(_fit_target_extra_mib>0and"--fit-target"in_integrity_flags)'
-            in compact
-        )
+        assert '_fit_target_priced="--fit-target"in_integrity_flags' in compact
 
     def test_a_cpu_fallback_child_is_still_refused(self):
         # The recovery path leaves gpus populated AND may have emitted the flag on

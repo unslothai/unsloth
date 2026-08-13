@@ -78,9 +78,14 @@ export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
  * that request replaces. The chain swallows rejections the debounced save reported.
  */
 export function settleVramBudgetSave(): Promise<unknown> | null {
+  // The newest write, not the chain: the chain swallows rejections so one failed
+  // save cannot strand the ones behind it, and a caller waiting on it would be
+  // told the save succeeded. Only the newest write can have re-staged a retry
+  // (the generation check sees to that), and writes settle in order, so waiting
+  // on it covers every open write and still reports the failure that matters.
   return (
     flushVramBudgetSave() ??
-    (vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : null)
+    (vramBudgetWritesOpen > 0 ? vramBudgetNewestWrite : null)
   );
 }
 
@@ -162,6 +167,12 @@ export async function loadVramBudgetSettings(
   // subscription cannot untangle that, since only the order is wrong.
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
+  // Waiting behind the writes open now says nothing about a save issued while the
+  // GET is in the air: that PUT can publish the new fraction first and this answer
+  // would then repaint the slider, and the Reload state, with what the server held
+  // before it. Reachable from the post-load refresh, where the control is live
+  // again while the load runs.
+  const generationAtRead = vramBudgetWriteGeneration;
   if (options.force) {
     // reloadRequired describes the running child, so a read that started before a
     // load finished answers about the child being replaced. Sharing it would
@@ -175,7 +186,10 @@ export async function loadVramBudgetSettings(
         // Publish only while this is still the current read. A read displaced by a
         // forced one describes the child being replaced, and answering late would
         // restore the notice, and the Reload button, that the forced read cleared.
-        inFlightVramBudget === read ? publishVramBudget(settings) : settings,
+        inFlightVramBudget === read &&
+        generationAtRead === vramBudgetWriteGeneration
+          ? publishVramBudget(settings)
+          : settings,
       )
       .finally(() => {
         // Identity-checked: a forced read displaces this one, and clearing blindly
@@ -214,6 +228,8 @@ async function putVramBudget(
 // the database row and the published value. Chaining serialises the writes; the
 // generation lets only the newest publish, so a late response cannot repaint.
 let vramBudgetWriteChain: Promise<unknown> = Promise.resolve();
+// The same write, unswallowed, for callers that need to hear about a failure.
+let vramBudgetNewestWrite: Promise<unknown> = Promise.resolve();
 let vramBudgetWriteGeneration = 0;
 // Issued but unsettled writes, so a load can tell whether to wait.
 let vramBudgetWritesOpen = 0;
@@ -235,6 +251,7 @@ export function updateVramBudgetSettings(
     });
   // The chain must survive a rejection, or one failed save strands all later ones.
   vramBudgetWriteChain = write.catch(() => undefined);
+  vramBudgetNewestWrite = write;
   return write.then(
     (settings) =>
       generation === vramBudgetWriteGeneration

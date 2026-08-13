@@ -10781,9 +10781,10 @@ class LlamaCppBackend:
             # with a stale fraction while the check reads the live one, and could
             # evict the resident child for a budget it then fails to apply.
             _vram_frac = _active_vram_fraction()
-            # Extra margin to hand llama.cpp's own fitter, set once the device
-            # totals are known. Zero unless the budget is below the default.
-            _fit_target_extra_mib = 0.0
+            # How far this budget moves llama.cpp's own fitter margin, set once the
+            # devices are known. Signed: a lowered budget holds more back, a raised
+            # one lets the fitter pack closer to the card. Zero at the default.
+            _fit_target_delta_mib = 0.0
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -11602,17 +11603,22 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
                     # The --fit fallback is llama.cpp's fitter, and it knows nothing
                     # about this budget: it leaves its own margin per device and packs
-                    # everything else on, so a lowered slider did not reach the one
-                    # path that runs when the fit is tightest. Hand it the extra the
-                    # user asked to hold back. Measured from the default, not from
-                    # zero, so the command at the default fraction is byte-identical
-                    # to before and the margin only ever grows as the slider falls.
+                    # everything else on, so the slider did not reach the one path that
+                    # runs when the fit is tightest. Hand it the difference the user
+                    # asked for, in both directions. Measured from the default, not
+                    # from zero, so the command at the default fraction is byte-
+                    # identical to before and the margin tracks the slider.
                     # One value, broadcast: --fit-target takes a per-device list, but
                     # its order is llama.cpp's device order, not ours. The largest
                     # card sets it, so no device is left under the budget.
-                    if _vram_frac < _CTX_FIT_VRAM_FRACTION and gpus and total_by_idx:
-                        _fit_target_extra_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * max(
-                            total_by_idx.get(_idx, 0.0) for _idx, _free in gpus
+                    if _vram_frac != _CTX_FIT_VRAM_FRACTION and gpus:
+                        # Free stands in for an unreported total, the same scale
+                        # _vram_usable_mib falls back to: MIG/vGPU and the two-column
+                        # probe report no total, and deriving the whole adjustment
+                        # from a zero would silently drop the budget on exactly the
+                        # devices whose headroom is hardest to see.
+                        _fit_target_delta_mib = (_CTX_FIT_VRAM_FRACTION - _vram_frac) * max(
+                            total_by_idx.get(_idx) or _free for _idx, _free in gpus
                         )
 
                     def _gpu_usable(g, frac = _vram_frac):
@@ -13040,14 +13046,12 @@ class LlamaCppBackend:
                     requested_ctx,
                     effective_ctx,
                     server_caps,
-                    fit_target_extra_mib = _fit_target_extra_mib,
+                    fit_target_delta_mib = _fit_target_delta_mib,
                 )
                 # Read from the flags themselves, not from the inputs: --fit off, an
                 # older server without the capability, or a budget at the default all
                 # leave the child unpriced, and each is decided inside that call.
-                _fit_target_priced = (
-                    _fit_target_extra_mib > 0 and "--fit-target" in _integrity_flags
-                )
+                _fit_target_priced = "--fit-target" in _integrity_flags
                 cmd.extend(_integrity_flags)
                 offload_overridden = _extra_args_set_any_flag(
                     extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
@@ -16532,7 +16536,7 @@ class LlamaCppBackend:
         effective_ctx: int,
         caps: dict,
         *,
-        fit_target_extra_mib: float = 0.0,
+        fit_target_delta_mib: float = 0.0,
     ) -> list[str]:
         """Flags that keep the per-request window equal to the advertised ctx.
 
@@ -16541,13 +16545,13 @@ class LlamaCppBackend:
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         at an explicitly requested ctx so it offloads or fails instead of
-        silently shrinking the window. The 8192 auto-floor and tighter
-        The 8192 auto-floor applies only under Manual + Auto (``auto_fit``),
-        which omits ``-c``: on the legacy auto path ``-c 0`` already pins the
-        native window and ``--fit-ctx 8192`` would override it down to 8192.
-        ``--fit-target`` is the tighter 512 MiB margin there, and on the legacy
-        path llama.cpp's own default, raised on both by whatever a below-default
-        VRAM budget asked to hold back (``fit_target_extra_mib``).
+        silently shrinking the window. The 8192 auto-floor applies only under
+        Manual + Auto (``auto_fit``), which omits ``-c``: on the legacy auto path
+        ``-c 0`` already pins the native window and ``--fit-ctx 8192`` would
+        override it down to 8192. ``--fit-target`` starts from the tighter 512 MiB
+        margin there and from llama.cpp's own default on the legacy path, moved by
+        whatever the VRAM budget asks for either way (``fit_target_delta_mib``)
+        and never below the 512 MiB floor.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -16560,19 +16564,19 @@ class LlamaCppBackend:
                 # Manual + Auto omits -c, so floor at 8192 so --fit doesn't
                 # shrink the window below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
-        _extra = max(0.0, fit_target_extra_mib)
         if use_fit and caps.get("supports_fit_target"):
-            if auto_fit:
-                # Leave 512 MiB free per device so llama.cpp packs more of the
-                # model onto the GPU before spilling to system RAM, plus whatever
-                # a below-default VRAM budget asked to hold back on top.
-                flags.extend(["--fit-target", str(int(_VRAM_FLOOR_RESERVE_MIB + _extra))])
-            elif _extra > 0:
-                # Default mode falls back to --fit with no target of its own, so
-                # llama.cpp keeps its 1024 MiB and the budget never reaches the
-                # fitter. Only emitted when the budget is below the default, so the
-                # command is unchanged for everyone who leaves the slider alone.
-                flags.extend(["--fit-target", str(int(_LLAMA_FIT_TARGET_DEFAULT_MIB + _extra))])
+            # Each path keeps its own starting margin: the tighter 512 under Manual
+            # + Auto, so llama.cpp packs more of the model on before spilling to
+            # system RAM, and llama.cpp's own 1024 on the legacy path, which passes
+            # nothing today. The budget moves that margin from where the path
+            # already sits, so the default fraction changes neither, and a raised
+            # budget stops at the same 512 floor every other reserve here respects.
+            _base = _VRAM_FLOOR_RESERVE_MIB if auto_fit else _LLAMA_FIT_TARGET_DEFAULT_MIB
+            _target = max(_VRAM_FLOOR_RESERVE_MIB, _base + fit_target_delta_mib)
+            # The legacy path stays silent when it would only restate llama.cpp's
+            # own default, so an untouched slider leaves the command unchanged.
+            if auto_fit or _target != _LLAMA_FIT_TARGET_DEFAULT_MIB:
+                flags.extend(["--fit-target", str(int(_target))])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:
