@@ -114,6 +114,38 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 
 
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_the_flag_cannot_route_a_hosted_only_selection_into_the_loop(provider_type):
+    """The flag decides ambiguous names, it does not override the whole rule.
+
+    There is no local loop for image_generation to run in, so honouring the flag
+    here would enter the studio-tools path, find nothing to execute, fall back to
+    the same passthrough, and skip the confirmation rejection on the way, since
+    that guard keys on the request not having taken the loop. A caller asking for
+    confirmation would get none.
+    """
+    from routes.inference import _selects_only_provider_hosted_tools
+
+    payload = _payload(
+        enabled_tools = ["image_generation"],
+        run_tools_locally = True,
+        confirm_tool_calls = True,
+    )
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is True
+
+
+@pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
+def test_a_mixed_selection_with_the_flag_still_takes_the_loop(provider_type):
+    """One name Studio can run is enough; the hosted one rides along as a flag."""
+    from routes.inference import _selects_only_provider_hosted_tools
+
+    payload = _payload(
+        enabled_tools = ["web_search", "image_generation"],
+        run_tools_locally = True,
+    )
+    assert _selects_only_provider_hosted_tools(payload, provider_type) is False
+
+
 def test_mcp_still_wins_regardless_of_the_flag():
     """MCP is unambiguous on its own and predates the flag."""
     from routes.inference import _selects_only_provider_hosted_tools

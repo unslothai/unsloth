@@ -2367,6 +2367,7 @@ from core.inference.providers import (
     get_base_url,
     get_provider_info,
     hosted_only_tools,
+    LOCAL_STANDINS_FOR_HOSTED_TOOLS,
     provider_hosted_tools,
     provider_model_runs_local_tools,
     provider_runs_local_tools,
@@ -2804,12 +2805,6 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     """
     if getattr(payload, "mcp_enabled", False):
         return False
-    if getattr(payload, "run_tools_locally", None) is True:
-        # The caller said which it wants, so stop inferring. Name-matching alone
-        # cannot separate "Search, run by the provider" from "Search, run here":
-        # both are enabled_tools ["web_search"]. Absent, the hosted reading still
-        # wins, which is what a client written before this existed meant.
-        return False
     enabled = getattr(payload, "enabled_tools", None)
     # None means "every local tool"; an empty list selects nothing and never
     # reaches the loop anyway. Neither is a hosted-tool request.
@@ -2823,7 +2818,19 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # local implementation of those names either, so reading such a request as
     # "local" would drop them just the same, only after also replacing the
     # provider's search with ours.
-    return all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled)
+    if not all(isinstance(name, str) and name in HOSTED_TOOL_NAMES for name in enabled):
+        return False
+    # Every selected name is hosted vocabulary. run_tools_locally only decides
+    # the ambiguous ones -- the names Studio can also run itself, web_search
+    # being the case it exists for. A selection of nothing BUT names with no
+    # local stand-in stays hosted whatever the flag says: there is no local loop
+    # to route it to, so honouring the flag would only skip the confirmation
+    # guard on the way to the same passthrough.
+    if getattr(payload, "run_tools_locally", None) is True:
+        return not any(
+            LOCAL_STANDINS_FOR_HOSTED_TOOLS.get(name) for name in enabled if isinstance(name, str)
+        )
+    return True
 
 
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
