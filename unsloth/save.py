@@ -2402,6 +2402,7 @@ def unsloth_save_pretrained_merged(
         save_directory,
         save_method,
         push_to_hub = push_to_hub,
+        state_dict = state_dict,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
@@ -3167,7 +3168,7 @@ def _quantized_sibling_bytes(
     return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
 
 
-def _full_model_checkpoint_bytes(model):
+def _full_model_checkpoint_bytes(model, state_dict = None):
     """Bytes `save_pretrained` writes for a model with no adapter to merge.
 
     Measured from the parameters' real storage rather than assumed to be a
@@ -3175,8 +3176,22 @@ def _full_model_checkpoint_bytes(model):
     model costs four bytes per parameter, a 4-bit one its packed storage.
     Zero when the model cannot be measured, which leaves the caller with
     today's behaviour.
+
+    A caller-supplied `state_dict` is measured INSTEAD of the model, because
+    it is what `save_pretrained` writes and the two can disagree by a whole
+    factor: only `"16bit" in save_method` casts the dict, so a `"lora"` save
+    on a model with no adapter forwards an fp32 dict verbatim while the
+    resident parameters are fp16, and sizing the model would price the export
+    at half. Undercounting here is not a crash but a missed `/tmp` redirect,
+    which is how the 20GB Kaggle working directory fills instead.
     """
     try:
+        if state_dict:
+            total = 0
+            for tensor in state_dict.values():
+                tensor = getattr(tensor, "data", tensor)
+                total += tensor.numel() * tensor.element_size()
+            return int(total)
         total = 0
         for parameter in model.parameters():
             total += parameter.numel() * parameter.element_size()
@@ -3226,6 +3241,7 @@ def _preflight_merge_disk(
     save_directory,
     save_method,
     push_to_hub = False,
+    state_dict = None,
 ):
     """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
 
@@ -3270,7 +3286,8 @@ def _preflight_merge_disk(
         # one always prices an intermediate GGUF conversion this never does.
         # The full-model fallback casts nothing, so it is sized from the
         # tensors' own dtype instead.
-        need = _full_model_checkpoint_bytes(model) if full_model_lora else model_16bit_bytes(model)
+        need = (_full_model_checkpoint_bytes(model, state_dict) if full_model_lora
+                else model_16bit_bytes(model))
         if need <= 0:
             return save_directory
         # What the torchao staging directory costs on whatever filesystem
@@ -3699,8 +3716,32 @@ def _preflight_gguf_disk(
         # difference is the checkpoint and nothing else. An estimator that
         # could not size the sibling leaves it 0, and then this is `need`:
         # the previous behaviour, not a relaxed one.
-        need_here = max(0, need - need_sibling)
-        need_here_with_cache = max(0, need_with_cache - need_sibling)
+        #
+        # Nothing else, though, includes the slack: both terms carry the
+        # estimator's flat `DISK_SLACK_BYTES` and the subtraction cancels it,
+        # leaving two bytes per parameter exactly. `merge_and_overwrite_lora`
+        # refuses that merge unless `free * 0.95` covers it, so the same
+        # reserve `_preflight_merge_disk` already applies has to be applied
+        # here too, or this passes an export the merge kills seconds later.
+        # The aggregate branch needs no such thing: it charges the quants as
+        # well, which is already more than the checkpoint plus its reserve.
+        checkpoint_here = max(0, need - need_sibling)
+        need_here = checkpoint_here
+        # The cache copy is not part of the merge and is not what the zoo
+        # guard measures, so it rides on top of the checkpoint rather than
+        # being reserved itself.
+        need_here_with_cache = checkpoint_here + max(0, need_with_cache - need)
+        if needs_merge and need_sibling > 0 and checkpoint_here > 0:
+            # Three conditions, each removing a way to charge for a guard that
+            # will not run. `needs_merge = False` writes no merge. A sibling
+            # the estimator could not size leaves `checkpoint_here` equal to
+            # the aggregate, which is a fallback figure and not a checkpoint
+            # to reserve against. And `min(need, ...)` keeps the promise the
+            # split made when it was introduced: it may cancel a redirect,
+            # never cause a refusal the aggregate would have allowed.
+            reserved = min(need, math.ceil(checkpoint_here / _MERGE_FREE_SPACE_RESERVE))
+            need_here = max(need_here, reserved)
+            need_here_with_cache = max(need_here_with_cache, reserved)
         # Not gated on the sibling being the TIGHTER of the two any more.
         # Now that the checkpoint is charged only its own portion, a sibling
         # with more free space than `save_directory` and still less than
@@ -3765,9 +3806,11 @@ def _preflight_gguf_disk(
                 f"`{gguf_directory}`, and that filesystem has "
                 f"{conversion_free / 1024**3:.1f}GB free; the conversion needs about "
                 f"{need_conversion / 1024**3:.1f}GB there.\n"
-                f"Options: free space on that filesystem, `os.chdir(...)` to a directory on "
-                f"the same filesystem as the export, or push straight to Hugging Face with "
-                f"`.push_to_hub_gguf(...)`.\n"
+                f"Options: free space on that filesystem, or `os.chdir(...)` to a directory "
+                f"on the same filesystem as the export.\n"
+                f"`.push_to_hub_gguf(...)` does not avoid this one: it exports through a "
+                f"temporary directory but never changes the working directory, so the "
+                f"conversion is written here either way.\n"
                 f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
             )
 
@@ -5816,6 +5859,7 @@ def unsloth_generic_save_pretrained_merged(
         save_directory,
         save_method,
         push_to_hub = push_to_hub,
+        state_dict = state_dict,
     )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.

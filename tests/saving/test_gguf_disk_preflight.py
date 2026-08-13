@@ -31,6 +31,7 @@ The sizing functions are stubbed rather than exercised, so this runs on CPU,
 in milliseconds, against any installed unsloth_zoo.
 """
 
+import contextlib
 import math
 import os
 
@@ -1162,6 +1163,65 @@ class TestFullModelSavedAsLora:
         assert "_is_peft = isinstance(model, PeftModel)" in source
         assert "model.save_pretrained(save_directory, **_save_kwargs)" in source
 
+    def test_a_caller_state_dict_is_what_gets_measured(self, sized):
+        """`save_pretrained` writes the dict it was handed, not the model.
+
+        Only `"16bit" in save_method` casts that dict, so a `"lora"` save can
+        forward an fp32 one over fp16 resident parameters and the export is
+        twice what sizing the model says. Undercounting is not a crash, it is
+        a missed redirect, which is how a 20GB Kaggle working directory fills.
+        """
+        import torch
+
+        model = torch.nn.Linear(8, 8, dtype = torch.float16)
+        state_dict = {
+            name: tensor.to(torch.float32) for name, tensor in model.state_dict().items()
+        }
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._full_model_checkpoint_bytes(model, state_dict) == n_parameters * 4
+        S._preflight_merge_disk(model, "model", "lora", state_dict = state_dict)
+        assert sized == [_with_merge_headroom(n_parameters * 4)]
+
+    @pytest.mark.parametrize("state_dict", [None, {}])
+    def test_no_state_dict_still_measures_the_model(self, sized, state_dict):
+        """Both spellings of "the caller passed nothing" keep the old answer."""
+        model = self._float32_model()
+        n_parameters = sum(p.numel() for p in model.parameters())
+        assert S._full_model_checkpoint_bytes(model, state_dict) == n_parameters * 4
+        S._preflight_merge_disk(model, "model", "lora", state_dict = state_dict)
+        assert sized == [_with_merge_headroom(n_parameters * 4)]
+
+    def test_both_call_sites_forward_the_dict(self, monkeypatch):
+        """A parameter nothing passes measures nothing.
+
+        Both of these accept a `state_dict` and both document `"lora"`, so
+        both have to hand it on. Driven rather than read, because the string
+        `state_dict = state_dict` also appears where they forward it to
+        `save_pretrained`, which would pass on a body that never wires it in.
+        """
+        import torch
+
+        seen = []
+        monkeypatch.setattr(
+            S,
+            "_preflight_merge_disk",
+            lambda *args, **kwargs: seen.append(kwargs.get("state_dict", "MISSING")) or args[1],
+        )
+        state_dict = {"weight": torch.zeros(4)}
+        for function in (
+            S.unsloth_save_pretrained_merged,
+            S.unsloth_generic_save_pretrained_merged,
+        ):
+            with contextlib.suppress(Exception):
+                function(
+                    self._float32_model(),
+                    "model",
+                    tokenizer = None,
+                    save_method = "lora",
+                    state_dict = state_dict,
+                )
+        assert seen == [state_dict, state_dict]
+
 
 class TestTheGgufSiblingIsMeasuredToo:
     """The GGUF files land in `save_directory + "_gguf"`, a SIBLING.
@@ -1342,16 +1402,22 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         split.update(free = 20 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
-    @pytest.mark.parametrize("free_gb,fits", [(16, True), (15, False)])
+    @pytest.mark.parametrize("free_gb,fits", [(17, True), (16, False)])
     def test_the_checkpoint_portion_is_the_boundary(self, split, free_gb, fits):
-        """`need - need_sibling`, not the aggregate, decides."""
+        """`need - need_sibling`, not the aggregate, decides.
+
+        The boundary is the 16GB checkpoint over the 0.95 reserve
+        `merge_and_overwrite_lora` applies, so 16.85GB rather than 16GB.
+        Exactly 16GB free is the case that motivates it: the checkpoint
+        nominally fits, and the merge refuses it anyway a moment later.
+        """
         split.update(free = free_gb * GB, sibling_free = 1000 * GB)
         if fits:
             assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
         else:
             with pytest.raises(RuntimeError) as error:
                 S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
-            assert "about 16.0GB" in str(error.value)
+            assert "about 16.8GB" in str(error.value)
 
     def test_the_cache_copy_is_charged_here_too(self, split):
         """The pre-warm goes to the HF cache, not the sibling, so it stays here.
@@ -1362,6 +1428,51 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         split.update(free = 30 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", True)
         split.update(free = 29 * GB)
+        assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
+
+    def test_the_split_carries_the_merge_guards_own_reserve(self, split):
+        """16GB of checkpoint on 16GB of disk is what the merge itself refuses.
+
+        `merge_and_overwrite_lora` will not write a merge unless `free * 0.95`
+        covers it, and the aggregate branch never had to think about that
+        because it charges the quants too. Charging the checkpoint alone
+        removes that cover, so the reserve has to come back with it or this
+        passes an export the merge kills seconds later.
+        """
+        split.update(free = 16 * GB, sibling_free = 1000 * GB)
+        with pytest.raises(RuntimeError):
+            S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m")
+        assert S.free_bytes("model") * S._MERGE_FREE_SPACE_RESERVE < self.CHECKPOINT
+
+    def test_an_export_writing_no_merge_is_not_charged_the_reserve(self, split):
+        """`needs_merge = False` reaches no merge guard, so it pays for none.
+
+        Nothing else is on this filesystem then, so the checkpoint portion is
+        zero, the whole export is the sibling's, and 1GB is enough here.
+        """
+        split.update(free = 1 * GB, sibling_free = 1000 * GB)
+        assert S._preflight_gguf_disk(
+            _FakeModel(), "model", "q4_k_m", needs_merge = False
+        ) == ("model", True)
+
+    def test_the_reserve_never_exceeds_the_aggregate(self, split, monkeypatch):
+        """A sibling small next to the checkpoint must not add a refusal.
+
+        1GB of sibling leaves 33GB of checkpoint, and 33 / 0.95 is 34.7GB:
+        more than the 34GB aggregate the single-filesystem branch charges. The
+        split may cancel a redirect, never cause a refusal the aggregate would
+        have allowed, so the reserved figure is clamped at `need`.
+        """
+        monkeypatch.setattr(
+            S,
+            "estimate_gguf_export_bytes",
+            lambda **kwargs: (
+                1 * GB if not kwargs.get("needs_merge", True)
+                else (self.AGGREGATE_WITH_CACHE if kwargs.get("base_cache_copy")
+                      else self.AGGREGATE)
+            ),
+        )
+        split.update(free = 34 * GB, sibling_free = 1000 * GB)
         assert S._preflight_gguf_disk(_FakeModel(), "model", "q4_k_m") == ("model", False)
 
     def test_a_short_sibling_roomier_than_the_checkpoint_disk_still_refuses(self, split):
@@ -1862,10 +1973,11 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
     def test_split_storage_charges_each_side_instead(self, phases):
         """The reclamation declines across filesystems, so the relief must too."""
         phases.update(separate = True, free = 62 * GB)
-        # 141 aggregate - 78 sibling = 63GB of checkpoint, which 62GB cannot hold.
+        # 141 aggregate - 78 sibling = 63GB of checkpoint, 66.3GB once the
+        # merge's own 0.95 reserve is on it, and 62GB holds neither.
         with pytest.raises(RuntimeError) as error:
             self._preflight(phases)
-        assert "63.0GB" in str(error.value)
+        assert "66.3GB" in str(error.value)
 
     def test_it_can_only_ever_lower_the_figure(self, phases, monkeypatch):
         """An estimator whose phases exceed the aggregate changes nothing."""
