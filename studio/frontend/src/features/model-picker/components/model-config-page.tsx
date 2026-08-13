@@ -1644,6 +1644,11 @@ export function ModelConfigPage({
     }
     const args = configState.llamaExtraArgs;
     if (args == null || args.length === 0) {
+      // The row leaves its objection standing when it unmounts, because the tokens
+      // it objected to still go out with the load. Once there are none, there is
+      // nothing left to object to: Reset with Advanced collapsed used to leave Load
+      // disabled over arguments the request no longer carries.
+      setExtraArgsLoadable(true);
       return;
     }
     let cancelled = false;

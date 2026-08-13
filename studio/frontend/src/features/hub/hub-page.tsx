@@ -1483,6 +1483,11 @@ export function ModelsPage() {
         isLora: target.meta.isLora,
         keepSpeculative: true,
         forceReload: true,
+        // The submitted config, not only its echo in the runtime store: the store
+        // does not carry llamaExtraArgs, so without this the load omits the field
+        // and the route keeps the resident server's old list. Applying an edit, or
+        // clearing the box, would then do nothing on this page.
+        config,
         previousConfig,
       }).catch(() => undefined);
     },

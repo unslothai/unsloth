@@ -2778,29 +2778,37 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // /load validates strictly rather than putting through the carry-over paths that
     // drop a newly denied flag quietly.
     let resolvedExtraArgs = config.llamaExtraArgs;
-    if (
-      candidate.kind === "gguf" &&
-      !isDiffusion &&
-      resolvedExtraArgs === undefined
-    ) {
+    if (candidate.kind === "gguf" && !isDiffusion) {
       try {
-        const stored = await fetchLoadExtraArgs(
-          modelPath,
-          modelPath,
-          candidate.ggufVariant ?? null,
-        );
-        if (stored.length > 0) {
-          const managed = await loadManagedLlamaFlags();
-          const cleaned = sanitizeStoredExtraArgs(
-            stored,
-            managed?.managed ?? new Set<string>(),
-            {
-              maxBytes: managed?.maxBytes,
-              windowsCommandBudget: managed?.windowsCommandBudget,
-            },
+        const managed = await loadManagedLlamaFlags();
+        const clean = (tokens: readonly string[]) =>
+          sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
+            maxBytes: managed?.maxBytes,
+            windowsCommandBudget: managed?.windowsCommandBudget,
+          });
+        if (resolvedExtraArgs === undefined) {
+          const stored = await fetchLoadExtraArgs(
+            modelPath,
+            // The advertised repository id as well as the path this load resolves
+            // to: cached inventory can hand back a different loadId, and the row
+            // was written under whichever of the two the user was looking at.
+            candidate.id,
+            candidate.ggufVariant ?? null,
           );
-          if (cleaned.length > 0) {
-            resolvedExtraArgs = cleaned;
+          if (stored.length > 0) {
+            const cleaned = clean(stored);
+            if (cleaned.length > 0) {
+              resolvedExtraArgs = cleaned;
+            }
+          }
+        } else if (resolvedExtraArgs !== null && resolvedExtraArgs.length > 0) {
+          // The local copy gets the same treatment as the fetched one. It was
+          // written by whatever build was running then, so a flag added to the
+          // managed set since would be sent explicitly and answered with a 400,
+          // and the remembered model would not come up at all.
+          const cleaned = clean(resolvedExtraArgs);
+          if (cleaned.length !== resolvedExtraArgs.length) {
+            resolvedExtraArgs = cleaned.length > 0 ? cleaned : [];
           }
         }
       } catch {

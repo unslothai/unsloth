@@ -4261,10 +4261,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # list a client would have to resend to reproduce this server, and the one
         # the rollback path needs. Empty reports as None, so "passed none" and
         # "never set" read alike to a client that only ever resends a non-empty list.
+        # getattr, unlike the rest of this block: the drift check below is what turns
+        # a backend missing a runtime field into one clear error naming all of them,
+        # and reading the attribute here would pre-empt it with a bare AttributeError.
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
-            else (list(llama_backend.requested_extra_args or []) or None)
+            else (list(getattr(llama_backend, "requested_extra_args", None) or []) or None)
         ),
     )
     unresolved = (

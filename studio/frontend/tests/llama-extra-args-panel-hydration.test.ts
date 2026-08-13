@@ -53,7 +53,14 @@ test("a background auto-load hydrates a server-only override", () => {
   assert.match(ADAPTER, /let resolvedExtraArgs = config\.llamaExtraArgs;/);
   assert.match(ADAPTER, /const stored = await fetchLoadExtraArgs\(/);
   // Sanitized, because this becomes an explicit list that /load validates strictly.
-  assert.match(ADAPTER, /const cleaned = sanitizeStoredExtraArgs\(/);
+  assert.match(ADAPTER, /sanitizeStoredExtraArgs\(tokens, managed\?\.managed/);
+  // The local copy too: it was written by whatever build was running then, so a
+  // flag added to the managed set since would be sent explicitly and 400.
+  assert.match(ADAPTER, /const cleaned = clean\(resolvedExtraArgs\);/);
+  // Resolved under the advertised repository id as well as the load path: cached
+  // inventory can hand back a different loadId, and the row was written under
+  // whichever of the two was on screen.
+  assert.match(ADAPTER, /candidate\.id,\n\s*candidate\.ggufVariant \?\? null,/);
   // And both the preflight and the load send what was resolved, not the raw config.
   assert.equal(
     ADAPTER.match(/llama_extra_args: resolvedExtraArgs \?\? \[\]/g)?.length,
@@ -61,4 +68,22 @@ test("a background auto-load hydrates a server-only override", () => {
   );
   // A diffusion GGUF takes none of them, so it is not fetched for either.
   assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
+});
+
+const HUB = readFileSync(
+  path.join(HERE, "..", "src/features/hub/hub-page.tsx"),
+  "utf8",
+);
+
+test("applying from the Hub settings page carries the arguments into the load", () => {
+  // applyPerModelConfigToRuntime does not store llamaExtraArgs, so a selection made
+  // without the config left the field undefined: the load omitted it, the route kept
+  // the resident server's old list, and an edit or a clear did nothing.
+  assert.match(HUB, /forceReload: true,\n(\s*\/\/.*\n)*\s*config,/);
+});
+
+test("a collapsed section stops objecting once nothing is left to object to", () => {
+  // Reset with Advanced collapsed clears the list, and the row is not mounted to
+  // withdraw the verdict it left standing, so Load stayed disabled.
+  assert.match(PANEL, /setExtraArgsLoadable\(true\);\n\s*return;/);
 });
