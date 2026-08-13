@@ -2107,6 +2107,29 @@ def test_base_download_files_skips_the_partition_the_prequant_checkpoint_replace
     )
 
 
+def _h3_pipeline_load_is_attemptable(fam) -> bool:
+    """Whether validate_load_request can even reach a pick's own checks for an H3 pipeline here.
+
+    Two of its refusals are about the machine, not the request: Metal cannot place the modular
+    workflow at all (torch.mps exposes no mem_get_info for the auto CPU offload), and a diffusers
+    without the bundled revision has no transformer class to build. Both raise the same ValueError
+    a genuine refusal does, so a caller that reads any ValueError as "this pick was rejected"
+    reports a regression on hosts where the pick was never in question."""
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    if resolve_diffusion_device_target().device == "mps":
+        return False
+    try:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    except Exception:  # noqa: BLE001 -- an unavailable pipeline class is a host fact, not a verdict
+        return False
+    if fam.modular_workflow:
+        import diffusers
+        return hasattr(diffusers, fam.transformer_class)
+    return True
+
+
 def test_a_quantized_reference_load_resolves_the_reference_denoiser():
     # This pairing used to be refused outright: the only hosted checkpoints were fl2va denoisers,
     # and one seeded into the reference workflow would have installed cleanly, passed every
@@ -2117,23 +2140,27 @@ def test_a_quantized_reference_load_resolves_the_reference_denoiser():
 
     backend = VideoBackend()
     fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    # The resolution below is a registry lookup and holds on every host; only the refusal check
+    # needs a host that can attempt the load at all.
+    check_refusal = _h3_pipeline_load_is_attemptable(fam)
     for scheme, expected in (
         ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
         ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
     ):
-        try:
-            backend.validate_load_request(
-                "MiniMaxAI/MiniMax-H3",
-                family_override = "minimax-h3",
-                model_kind = "pipeline",
-                transformer_quant = scheme,
-                h3_task = "ref2va",
-            )
-        except ValueError as exc:  # pragma: no cover - only on a regression
-            pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
-        except Exception:
-            # Anything past the quant check (the diffusers probe) is not this test's business.
-            pass
+        if check_refusal:
+            try:
+                backend.validate_load_request(
+                    "MiniMaxAI/MiniMax-H3",
+                    family_override = "minimax-h3",
+                    model_kind = "pipeline",
+                    transformer_quant = scheme,
+                    h3_task = "ref2va",
+                )
+            except ValueError as exc:  # pragma: no cover - only on a regression
+                pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
+            except Exception:
+                # Anything past the quant check (the diffusers probe) is not this test's business.
+                pass
         source = resolve_prequant_source(fam, scheme, task = "ref2va")
         assert source.filename == expected
 
