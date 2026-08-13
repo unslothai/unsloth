@@ -1706,7 +1706,9 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     # record already on the page reads as unknown and a POST that never landed is
     # reported as a finished image. Whitespace is normalised first, so reformatting
     # the call cannot break the pin.
-    snapshot_pattern = r"const (\w+) = new Set\(galleryCache\.images\.map\(\(image\) => image\.id\)\);"
+    snapshot_pattern = (
+        r"const (\w+) = new Set\(galleryCache\.images\.map\(\(image\) => image\.id\)\);"
+    )
     assert len(re.findall(snapshot_pattern, src)) == 1, "the pre-POST id snapshot is not unique"
     snapshot = re.search(snapshot_pattern, src)
     known_ids = snapshot.group(1)

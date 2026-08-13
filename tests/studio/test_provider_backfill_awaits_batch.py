@@ -67,14 +67,17 @@ def _tail_source() -> str:
 
 
 def _harness_source() -> str:
-    return textwrap.dedent(
-        """
+    return (
+        textwrap.dedent(
+            """
         // @ts-nocheck
         // ---- PRELUDE: the sliced tail reads only through its parameters ----
         // ---- PRELUDE ENDS: verbatim studio source follows ----
         """
-    ) + _helper_source() + textwrap.dedent(
-        """
+        )
+        + _helper_source()
+        + textwrap.dedent(
+            """
         export async function syncBackfillTail(
           backfillTasks,
           isCurrent,
@@ -82,7 +85,11 @@ def _harness_source() -> str:
           syncedProviders,
         ) {
         """
-    ) + "  " + _tail_source() + "\n}\n"
+        )
+        + "  "
+        + _tail_source()
+        + "\n}\n"
+    )
 
 
 SCRIPT = """
