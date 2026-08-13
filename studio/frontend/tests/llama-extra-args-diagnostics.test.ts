@@ -426,6 +426,28 @@ test("a multi-line quoted value is not a control-character fault", () => {
   );
 });
 
+test("a value with no flag in front of it is an error", () => {
+  // validate_extra_args refuses it, and llama-server answers "invalid argument"
+  // and refuses to start, so without this the box looks fine and the load 400s.
+  const out = diagnoseExtraArgs("--top-k 20 /models/other.gguf", CATALOG);
+  assert.ok(
+    out.some((d) => d.level === "error" && d.message.includes("belongs to no flag")),
+    JSON.stringify(out),
+  );
+  // The two-value option is not one of those.
+  assert.ok(
+    !diagnoseExtraArgs("--control-vector-layer-range 1 10", CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+  // Nor is an ordinary value.
+  assert.ok(
+    !diagnoseExtraArgs("--numa distribute", CATALOG).some(
+      (d) => d.level === "error",
+    ),
+  );
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 

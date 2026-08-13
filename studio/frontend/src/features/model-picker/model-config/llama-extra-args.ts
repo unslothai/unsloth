@@ -414,6 +414,9 @@ const INTEGER_VALUE_MINIMUM: Record<string, number> = {
   "-ngl": -1,
 };
 
+/** The one option in llama-server's help that takes two values. */
+const TWO_VALUE_FLAGS = new Set(["--control-vector-layer-range"]);
+
 /** Values the backend parses as integers, and refuses the load over. */
 /**
  * Flags whose value the backend reads with _last_flag_value, which raises when it is
@@ -506,6 +509,32 @@ export function diagnoseExtraArgs(
       level: "error",
       message: "Arguments contain an incomplete character.",
     });
+  }
+
+  // A token belonging to no flag. llama-server answers "invalid argument" and
+  // refuses to start, and validate_extra_args refuses it outright, so saying so here
+  // is the difference between a red line under the box and a failed load. Two-value
+  // flags are allowed for, as they are on the backend.
+  let pendingValues = 0;
+  for (const token of tokens) {
+    const flag = extraArgFlagName(token);
+    if (flag === null) {
+      if (pendingValues <= 0) {
+        out.push({
+          level: "error",
+          message: `"${token}" belongs to no flag. Every value has to follow its flag.`,
+        });
+        break;
+      }
+      pendingValues -= 1;
+      continue;
+    }
+    pendingValues =
+      token.includes("=") || flag !== token.trim()
+        ? 0
+        : TWO_VALUE_FLAGS.has(flag)
+          ? 2
+          : 1;
   }
 
   const seen = new Set<string>();
