@@ -976,6 +976,34 @@ else
     bad "setup.sh does not prepend ~/.local/bin over a pinned destination"
 fi
 
+# A signal between the two renames must leave what the ordinary rollback would leave. With a
+# predecessor that means restoring it; with none it means removing the uv we just published,
+# or the machine keeps a 0.12.1 uv beside whatever uvx it had.
+_cleanup_body=$(awk '/^_cleanup_install_temporaries\(\) \{/,/^\}/' "$INSTALL_SH")
+if printf '%s' "$_cleanup_body" | grep -q 'rm -f "$_UIP_DEST/uv"' \
+   && printf '%s' "$_cleanup_body" | grep -q 'rm -f "$_UIP_DEST/uvx"'; then
+    ok "the signal cleanup removes an orphan it published"
+else
+    bad "the signal cleanup removes an orphan it published"
+fi
+_setup_cleanup=$(awk '/^_setup_uv_cleanup_temporaries\(\) \{/,/^\}/' "$SETUP_SH")
+if printf '%s' "$_setup_cleanup" | grep -q 'rm -f "$_SIUP_DEST/uv"'; then
+    ok "setup.sh's signal cleanup removes an orphan it published"
+else
+    bad "setup.sh's signal cleanup removes an orphan it published"
+fi
+
+# The NSIS hooks run before the user can cancel and $INSTDIR can be a directory they chose, so
+# the tidy-up only applies where our own executable already is.
+_hooks="$SCRIPT_DIR/../../studio/src-tauri/windows/hooks.nsh"
+_h_gates=$(grep -c 'FileExists} "$INSTDIR\\${MAINBINARYNAME}.exe"' "$_hooks") || _h_gates=0
+_h_deletes=$(grep -c 'Delete "$INSTDIR\\install.sh"' "$_hooks") || _h_deletes=0
+if [ "$_h_gates" = "2" ] && [ "$_h_deletes" = "2" ]; then
+    ok "the NSIS hooks only tidy a directory that already holds an Unsloth install"
+else
+    bad "the NSIS hooks only tidy a directory that already holds an Unsloth install"
+fi
+
 echo
 echo "passed: $PASS  failed: $FAIL"
 [ "$FAIL" -eq 0 ]

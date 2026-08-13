@@ -1573,10 +1573,18 @@ _setup_uv_cleanup_temporaries() {
     if [ -n "${_SIUP_UNDO_UV:-}" ]; then
         [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UV" "$_SIUP_DEST/uv" 2>/dev/null
         rm -f "$_SIUP_UNDO_UV" 2>/dev/null || true
+    elif [ -n "${_SIUP_DEST:-}" ]; then
+        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
+        # ordinary rollback does. A no-op when the rename had not happened yet.
+        rm -f "$_SIUP_DEST/uv" 2>/dev/null || true
     fi
     if [ -n "${_SIUP_UNDO_UVX:-}" ]; then
         [ -n "${_SIUP_DEST:-}" ] && mv -f "$_SIUP_UNDO_UVX" "$_SIUP_DEST/uvx" 2>/dev/null
         rm -f "$_SIUP_UNDO_UVX" 2>/dev/null || true
+    elif [ -n "${_SIUP_DEST:-}" ]; then
+        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
+        # ordinary rollback does. A no-op when the rename had not happened yet.
+        rm -f "$_SIUP_DEST/uvx" 2>/dev/null || true
     fi
     _SIUP_WORK=""
     _SIUP_STAGE=""

@@ -735,10 +735,18 @@ _cleanup_install_temporaries() {
     if [ -n "${_UIP_UNDO_UV:-}" ]; then
         [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UV" "$_UIP_DEST/uv" 2>/dev/null
         rm -f "$_UIP_UNDO_UV" 2>/dev/null || true
+    elif [ -n "${_UIP_DEST:-}" ]; then
+        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
+        # ordinary rollback does. A no-op when the rename had not happened yet.
+        rm -f "$_UIP_DEST/uv" 2>/dev/null || true
     fi
     if [ -n "${_UIP_UNDO_UVX:-}" ]; then
         [ -n "${_UIP_DEST:-}" ] && mv -f "$_UIP_UNDO_UVX" "$_UIP_DEST/uvx" 2>/dev/null
         rm -f "$_UIP_UNDO_UVX" 2>/dev/null || true
+    elif [ -n "${_UIP_DEST:-}" ]; then
+        # No predecessor, so there is nothing to put back and ours comes off, exactly as the
+        # ordinary rollback does. A no-op when the rename had not happened yet.
+        rm -f "$_UIP_DEST/uvx" 2>/dev/null || true
     fi
 }
 
