@@ -243,6 +243,16 @@ test("a curated pipeline's fit comes from its size, not the QLoRA estimator", ()
   assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs before the curated size");
 });
 
+test("a curated pipeline's fit is judged on the device it loads into", () => {
+  const text = declarationText("recommendedMeta");
+  // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
+  // inventory, so the badge has to use the same budget the list's own fit filter uses.
+  assert.match(text, /loadScopedGpu\(gpu, Boolean\(task\)\)/);
+  assert.match(text, /exceedsSize\(curatedBytes, pipelineBudget\)/);
+  // GGUF rows keep the inference backend's budget, which is what they load through.
+  assert.match(text, /exceedsSize\(sizeBytes, inferenceGpu\)/);
+});
+
 test("capabilities fall back to the curated catalog", () => {
   assert.match(
     declarationText("capsById"),

@@ -3125,20 +3125,27 @@ export function HubModelPicker({
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
-    const hasDeviceBudget =
-      inferenceGpu.budgetKnown ||
-      inferenceGpu.memoryTotalGb > 0 ||
-      inferenceGpu.systemRamAvailableGb > 0;
-    /** Size-based verdict, for rows whose real footprint we know. */
-    const exceedsSize = (sizeBytes?: number) =>
-      hasDeviceBudget &&
+    /** Size-based verdict for a row whose real footprint we know, against the budget that row
+     *  actually loads into. Same split as the list's own fit filter, so the badge and the
+     *  "Fits on device" gate cannot disagree about one row. */
+    const exceedsSize = (
+      sizeBytes: number | undefined,
+      budget: typeof inferenceGpu,
+    ) =>
+      (budget.budgetKnown ||
+        budget.memoryTotalGb > 0 ||
+        budget.systemRamAvailableGb > 0) &&
       sizeBytes != null &&
       !fitsDevice({
         sizeBytes,
-        gpuGb: inferenceGpu.memoryTotalGb,
-        systemRamGb: inferenceGpu.systemRamAvailableGb,
-        budgetKnown: inferenceGpu.budgetKnown,
+        gpuGb: budget.memoryTotalGb,
+        systemRamGb: budget.systemRamAvailableGb,
+        budgetKnown: budget.budgetKnown,
       });
+    // A curated pipeline loads through torch, and a task load puts the whole thing on ONE
+    // device, so it is judged there. inferenceGpu is the GGUF backend's inventory, which can
+    // be a different install (Vulkan llama.cpp) or the sum of several cards.
+    const pipelineBudget = loadScopedGpu(gpu, Boolean(task));
     // Community rows come from their own listing; without them folded in here
     // they render with no size or VRAM chip.
     for (const r of [
@@ -3178,7 +3185,7 @@ export function HubModelPicker({
           (params ? estimateQuantBytes(params) : undefined);
         map.set(r.id, {
           meta,
-          status: exceedsSize(sizeBytes) ? "exceeds" : null,
+          status: exceedsSize(sizeBytes, inferenceGpu) ? "exceeds" : null,
           est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
         });
         continue;
@@ -3192,7 +3199,7 @@ export function HubModelPicker({
       if (curatedBytes) {
         map.set(r.id, {
           meta,
-          status: exceedsSize(curatedBytes) ? "exceeds" : null,
+          status: exceedsSize(curatedBytes, pipelineBudget) ? "exceeds" : null,
           est: Math.round(curatedBytes / 1024 ** 3),
         });
         continue;
@@ -3210,6 +3217,7 @@ export function HubModelPicker({
     communityBrowse.results,
     catalogSeedRows,
     catalog,
+    task,
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
