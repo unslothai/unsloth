@@ -34,6 +34,8 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+// Every part mammoth parses as XML, wherever it sits in the archive.
+const DOCX_XML_PART_RE = /\.(xml|rels)$/i;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -115,23 +117,29 @@ export function isOpenDocumentAttachment(
 
 // unpdf and mammoth decode the whole file on the main thread, so both refuse a
 // document past the ceiling the OpenDocument path already enforces, and refuse
-// it before the read rather than after.
-function assertDocumentAttachmentSize(file: File, label: "PDF" | "DOCX"): void {
+// it before the read rather than after. The adapters call this from add() as
+// well: the composer clears its text and attachments before it awaits send(),
+// so a throw there loses the typed message along with the file.
+export function assertDocumentAttachmentSize(
+  file: File,
+  label: "PDF" | "DOCX",
+): void {
   if (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES) {
     throw new Error(`${label} file is too large: ${file.name}`);
   }
 }
 
 // mammoth takes no entry filter, so the sizes the archive declares are checked
-// first. This pass decompresses nothing.
+// first. This pass decompresses nothing. Every .xml and .rels part is covered,
+// not just word/: mammoth opens "_rels/.rels" and "[Content_Types].xml" before
+// it ever reaches the document body.
 function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
   const oversized: string[] = [];
   try {
     unzipSync(bytes, {
       filter: (entry) => {
         if (
-          entry.name.startsWith("word/") &&
-          entry.name.endsWith(".xml") &&
+          DOCX_XML_PART_RE.test(entry.name) &&
           entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES
         ) {
           oversized.push(entry.name);

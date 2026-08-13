@@ -63,7 +63,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -137,6 +136,7 @@ export {
 } from "./external-providers";
 export {
   type AttachmentText,
+  assertDocumentAttachmentSize,
   attachmentAudioSrc,
   countAttachmentTextLines,
   isAudioAttachment,

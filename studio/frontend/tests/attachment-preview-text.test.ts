@@ -327,6 +327,39 @@ test("readAttachmentText refuses a docx that declares an oversized document.xml"
   );
 });
 
+// mammoth reads "_rels/.rels" first and "[Content_Types].xml" next, and picks
+// the body part out of "word/_rels/document.xml.rels", so a bomb parked in any
+// of them never passes through word/*.xml.
+test("readAttachmentText refuses an oversized docx part outside word/*.xml", async () => {
+  const huge = "a".repeat(11 * 1024 * 1024);
+  const parts = [
+    "[Content_Types].xml",
+    "_rels/.rels",
+    "word/_rels/document.xml.rels",
+  ];
+
+  for (const part of parts) {
+    const bytes = zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": strToU8("<Relationships/>"),
+      "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+      [part]: strToU8(huge),
+    });
+    const bomb = fakeDocumentFile("bomb.docx", bytes.length, bytes, []);
+    assert.equal(bomb.size < 1024 * 1024, true);
+    await assert.rejects(
+      readAttachmentText(bomb, bomb.name, undefined),
+      new RegExp(
+        `DOCX XML file is too large: bomb\\.docx:${part.replace(
+          /[.[\]/]/g,
+          "\\$&",
+        )}`,
+      ),
+      `a ${part} bomb reached mammoth`,
+    );
+  }
+});
+
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {
   const parsed = parseAttachmentText("<attachment name=notes.txt>\nbody");
   assert.deepEqual(parsed, {

@@ -3,12 +3,16 @@
 
 "use client";
 
-import { attachmentAudioSrc, isAudioAttachment } from "@/features/chat";
+import {
+  type AttachmentPreviewKind,
+  selectAttachmentSource,
+} from "@/components/assistant-ui/attachment-selection";
+import { attachmentAudioSrc } from "@/features/chat/attachment-content";
 import { useAuiState } from "@assistant-ui/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/shallow";
 
-export type AttachmentPreviewKind = "image" | "audio" | "text";
+export type { AttachmentPreviewKind };
 
 export type AttachmentSource = {
   kind: AttachmentPreviewKind;
@@ -38,50 +42,24 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 // Resolves what a preview can show for the attachment in scope: a composer
 // attachment still holds its File, a sent one only the content parts.
 export const useAttachmentSource = (): AttachmentSource => {
-  const source = useAuiState(
-    useShallow(({ attachment }) => {
-      const parts = attachment.content ?? [];
-      const file = (attachment as { file?: File }).file;
-      const contentType =
-        file?.type ||
-        (attachment as { contentType?: string }).contentType ||
-        undefined;
-      const audio = parts.find((part) => part.type === "audio")?.audio;
-      const isImage = attachment.type === "image";
-      const isAudio =
-        !isImage &&
-        (!!audio || isAudioAttachment(attachment.name, contentType));
-      const text = parts
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
-        .join("\n");
-      return {
-        kind: (isImage
-          ? "image"
-          : isAudio
-            ? "audio"
-            : "text") as AttachmentPreviewKind,
-        name: attachment.name,
-        contentType,
-        file,
-        contentSrc: isImage
-          ? parts.find((part) => part.type === "image")?.image
-          : audio
-            ? attachmentAudioSrc(audio, contentType, attachment.name)
-            : undefined,
-        text: text || undefined,
-      };
-    }),
-  );
+  const source = useAuiState(useShallow(selectAttachmentSource));
 
   const fileSrc = useFileSrc(source.kind === "text" ? undefined : source.file);
+  // Keyed on the part, so a 30 MB clip is joined once rather than per render.
+  const contentSrc = useMemo(
+    () =>
+      source.audio
+        ? attachmentAudioSrc(source.audio, source.contentType, source.name)
+        : source.image,
+    [source.audio, source.image, source.contentType, source.name],
+  );
 
   return {
     kind: source.kind,
     name: source.name,
     contentType: source.contentType,
     file: source.file,
-    src: fileSrc ?? source.contentSrc,
+    src: fileSrc ?? contentSrc,
     text: source.text,
   };
 };

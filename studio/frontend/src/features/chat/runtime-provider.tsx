@@ -60,6 +60,7 @@ import {
   readOpenDocumentAttachmentContent,
 } from "./open-document";
 import {
+  assertDocumentAttachmentSize,
   extractDocxAttachmentText,
   extractHtmlAttachmentText,
   extractPdfAttachmentText,
@@ -263,7 +264,10 @@ class VisionImageAdapter implements AttachmentAdapter {
 class PDFAttachmentAdapter implements AttachmentAdapter {
   accept = "application/pdf";
 
+  // Refused here, not at send: the composer empties itself before it awaits
+  // send(), so a ceiling that only fires there discards the typed message too.
   add({ file }: { file: File }): Promise<PendingAttachment> {
+    assertDocumentAttachmentSize(file, "PDF");
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
@@ -376,6 +380,7 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   add({ file }: { file: File }): Promise<PendingAttachment> {
+    assertDocumentAttachmentSize(file, "DOCX");
     return Promise.resolve({
       id: crypto.randomUUID(),
       type: "document",
