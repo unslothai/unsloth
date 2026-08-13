@@ -773,15 +773,16 @@ class TestSetupShKfdOnlyHost:
         """
         src = _normalised(_SETUP_SH)
         assert (
-            '_setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt") || _setup_unsup_gfx=""' in src
+            '_setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt") || _setup_unsup_gfx=""'
+            in src
         ), "studio/setup.sh: the gpu report no longer goes through the lspci-aware lookup"
         assert (
             'elif [ -n "$_setup_unsup_gfx" ]; then' in src
         ), "studio/setup.sh: the unsupported-arch report arm no longer reads the resolved lookup"
         # Resolved exactly once: it is an lspci shell-out, and a second call could disagree.
-        assert src.count("_setup_unsupported_gfx_any \"$_setup_mkt\"") == 1, (
-            "studio/setup.sh: _setup_unsupported_gfx_any is called more than once"
-        )
+        assert (
+            src.count('_setup_unsupported_gfx_any "$_setup_mkt"') == 1
+        ), "studio/setup.sh: _setup_unsupported_gfx_any is called more than once"
 
     def test_the_lspci_name_never_reaches_the_routing_table(self):
         """Routing must stay byte-identical. The supported inference table keys on
