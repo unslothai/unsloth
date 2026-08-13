@@ -207,7 +207,7 @@ class TestLaunchedMarker:
         backend._vram_fraction_launched = launched
         # The saved budget the next load would use, different from the running one.
         monkeypatch.setattr(lc, "_active_vram_fraction", lambda: active)
-        monkeypatch.setattr(backend, "adopt_load_intent_if_matched", lambda _intent: True)
+        monkeypatch.setattr(backend, "adopt_load_intent_if_matched", lambda _intent, **_kw: True)
         return backend, lc
 
     def test_duplicate_load_leaves_the_running_child_marker(self, monkeypatch):
@@ -374,7 +374,7 @@ class TestLaunchFinalization:
         compact = self._load_model_source()
         lock_at = compact.index("withself._serial_load_scope():")
         resolve_at = compact.index("_vram_frac=_active_vram_fraction()")
-        dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent):")
+        dedupe_at = compact.index("ifself.adopt_load_intent_if_matched(intent,")
         assert lock_at < resolve_at < dedupe_at
 
     def test_a_healthy_spawn_keeps_the_pending_value_until_the_commit(self):
@@ -382,7 +382,10 @@ class TestLaunchFinalization:
         # the first spawn and the marker is committed after them, so releasing the
         # pending value at the spawn would answer from the PREVIOUS child's marker.
         compact = self._load_model_source()
-        assert "ifnothealthy:self._vram_fraction_pending=None" in compact
+        # Nothing releases it around the spawn now: a failed first attempt can
+        # still be retried into a healthy child, and the load scope hands the
+        # value back on every exit.
+        assert "ifnothealthy:self._vram_fraction_pending=None" not in compact
         assert (
             "self._vram_fraction_launched=_budget_priced_placement()self._vram_fraction_pending=None"
             in compact
@@ -487,6 +490,32 @@ class TestFloorReserve:
         import core.inference.llama_cpp as lc
         return lc._vram_usable_mib(free, total, frac)
 
+    @pytest.mark.parametrize("total", [4_096, 8_192, 16_384, 24_576, 81_920])
+    def test_raising_the_budget_never_hands_back_less(self, total):
+        # A flat 512 MiB floor made the budget non-monotonic under about 17 GiB,
+        # where 3% is already less than that: an 8 GiB card offered 7946 MiB at
+        # 0.97 and only 7680 at 0.971, so nudging the slider up cost context while
+        # the control promised the opposite.
+        usable = [self._usable(total, total, frac) for frac in (0.80, 0.90, 0.97, 0.971, 0.99, 1.0)]
+        assert usable == sorted(usable), usable
+
+    def test_the_floor_never_exceeds_the_default_reserve(self):
+        import core.inference.llama_cpp as lc
+        for total in (4_096, 8_192, 16_384, 24_576, 81_920):
+            floor = lc._vram_reserve_floor_mib(total)
+            assert floor <= (1.0 - lc._CTX_FIT_VRAM_FRACTION) * total
+            assert floor <= lc._VRAM_FLOOR_RESERVE_MIB
+
+    def test_a_card_with_no_reported_total_still_keeps_a_margin(self):
+        # MIG/vGPU and the two-column probe report free with no total. The free
+        # reading is the only scale there, and it agrees with the known-total form
+        # at the default.
+        import core.inference.llama_cpp as lc
+        assert self._usable(24_576, 0, 1.0) == pytest.approx(24_576 - lc._VRAM_FLOOR_RESERVE_MIB)
+        assert self._usable(24_576, 0, lc._CTX_FIT_VRAM_FRACTION) == pytest.approx(
+            24_576 * lc._CTX_FIT_VRAM_FRACTION
+        )
+
     def test_full_budget_still_leaves_the_floor(self):
         import core.inference.llama_cpp as lc
 
@@ -494,8 +523,10 @@ class TestFloorReserve:
         assert self._usable(24_576, 24_576, 1.0) == pytest.approx(
             24_576 - lc._VRAM_FLOOR_RESERVE_MIB
         )
-        # And on a small card, where a pure percentage would leave nothing.
-        assert self._usable(8_192, 8_192, 1.0) == pytest.approx(8_192 - lc._VRAM_FLOOR_RESERVE_MIB)
+        # A card too small for the full floor keeps the default's own reserve
+        # instead, the most that can be left without taking context away from
+        # someone who raised the slider.
+        assert self._usable(8_192, 8_192, 1.0) == pytest.approx(8_192 * lc._CTX_FIT_VRAM_FRACTION)
 
     @pytest.mark.parametrize("total", [4_096, 8_192, 16_384, 24_576, 81_920])
     def test_the_default_reserve_is_unchanged_on_every_card_size(self, total):
@@ -521,5 +552,60 @@ class TestFloorReserve:
         # The tensor-parallel paths pass an already computed pool budget with
         # budget_frac = 1.0 and total_mib = None. Flooring there would subtract a
         # reserve the pool budget has already paid for on each of its cards.
-        assert self._usable(12_000, 0, 1.0) == pytest.approx(12_000)
-        assert self._usable(12_000, None, 1.0) == pytest.approx(12_000)
+        # Said explicitly rather than inferred from the sentinel, or a real card
+        # with no reported total would lose its margin at 100% too.
+        import core.inference.llama_cpp as lc
+        assert lc._vram_usable_mib(12_000, 0, 1.0, pooled = True) == pytest.approx(12_000)
+        assert lc._vram_usable_mib(12_000, None, 1.0, pooled = True) == pytest.approx(12_000)
+
+    def test_every_pooled_caller_says_so(self):
+        # Five call sites hand _fit_context_to_vram an absolute pool budget; each
+        # has to be marked, since the flag is what keeps them from double-paying.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert compact.count("budget_frac=1.0,pooled=True,total_mib=None,") == 5
+
+
+class TestRetriesAndDedup:
+    def test_a_nonterminal_retry_keeps_the_pending_value(self):
+        # The flash-attn-off and drafterless retries spawn a replacement child
+        # after the first attempt fails. Releasing the pending value at the first
+        # spawn left that window answered from the previous child's marker; the
+        # load scope releases it on every exit, so nothing has to here.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "ifnothealthy:self._vram_fraction_pending=None" not in compact
+
+    def test_the_duplicate_check_uses_the_captured_fraction(self):
+        # Resolve-once: the load captured a fraction under the lock, so the check
+        # must not read the setting again and decide against a different number.
+        import inspect
+
+        import core.inference.llama_cpp as lc
+
+        compact = "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+        assert "adopt_load_intent_if_matched(intent,vram_fraction=_vram_frac)" in compact
+
+    def test_the_route_fast_path_still_resolves_its_own(self, monkeypatch):
+        # It has no load to inherit from, so the parameter defaults to a live read.
+        import core.inference.llama_cpp as lc
+
+        backend = lc.LlamaCppBackend()
+        backend._process = object()
+        backend._healthy = True
+        backend._vram_fraction_launched = 0.97
+        monkeypatch.setattr(backend, "matches_load_source", lambda _i: True)
+        monkeypatch.setattr(backend, "_runtime_matches_intent", lambda _i, _e: True)
+        monkeypatch.setattr(backend, "_record_matching_gpu_request", lambda *_a, **_k: None)
+        monkeypatch.setattr(lc, "_active_vram_fraction", lambda: 0.85)
+        intent = lc.GgufLoadIntent(model_identifier = "owner/repo")
+
+        assert not backend.adopt_load_intent_if_matched(intent)
+        # ...and an explicit fraction wins over the live read.
+        assert backend.adopt_load_intent_if_matched(intent, vram_fraction = 0.97)

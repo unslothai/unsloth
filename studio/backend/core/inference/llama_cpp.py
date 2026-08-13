@@ -1896,24 +1896,41 @@ _MTP_VRAM_RESERVE_FRAC = 0.05
 
 
 # Left on every card even at 100%, matching the --fit-target margin llama.cpp
-# keeps for its own fitter. Applied only above the default, so an unset budget
-# reserves exactly what it always did on every card size.
+# keeps for its own fitter.
 _VRAM_FLOOR_RESERVE_MIB = 512.0
 
 
-def _vram_usable_mib(free_mib: float, total_mib: float, frac: float) -> float:
+def _vram_reserve_floor_mib(total_mib: float) -> float:
+    """Smallest margin a card keeps: 512 MiB, or the default's own reserve if smaller.
+
+    Capping it at the default keeps the budget monotonic. A flat 512 MiB would
+    RAISE the reserve the moment the slider passed the default on any card under
+    about 17 GiB, where 3% is already less than that: an 8 GiB card offers 7946 MiB
+    at 0.97 but only 7680 at 0.971, so nudging the slider up would hand back less
+    context, the opposite of what the control promises. Capped, the reserve never
+    rises with the fraction, and at or below the default the percentage term always
+    wins, so an unset budget is untouched on every card size.
+    """
+    return min(_VRAM_FLOOR_RESERVE_MIB, (1.0 - _CTX_FIT_VRAM_FRACTION) * total_mib)
+
+
+def _vram_usable_mib(
+    free_mib: float, total_mib: float, frac: float, *, pooled: bool = False
+) -> float:
     """Free MiB one card offers a load at ``frac``, unclamped.
 
-    Only the known-total branch floors the reserve: without a total the caller may
-    be passing an already absolute pool budget (budget_frac = 1.0), which must not
-    be charged a second reserve.
+    ``pooled`` marks an already absolute budget summed over cards that have each
+    paid their own reserve; charging it again would double count. Everything else
+    is one device, including a probe reporting free memory with no total, which
+    still has to keep a margin: there the free reading is the only scale available,
+    and it agrees with the known-total form at the default.
     """
     if total_mib and total_mib > 0:
-        reserve = (1.0 - frac) * total_mib
-        if frac > _CTX_FIT_VRAM_FRACTION:
-            reserve = max(reserve, _VRAM_FLOOR_RESERVE_MIB)
+        reserve = max((1.0 - frac) * total_mib, _vram_reserve_floor_mib(total_mib))
         return free_mib - reserve
-    return free_mib * frac
+    if pooled:
+        return free_mib * frac
+    return min(free_mib * frac, free_mib - _vram_reserve_floor_mib(free_mib))
 
 
 def _active_vram_fraction() -> float:
@@ -6887,6 +6904,8 @@ class LlamaCppBackend:
         flash_attn: bool = True,
         kv_on_gpu: bool = True,
         mtp_engaged: bool = False,
+        # True only for an absolute budget already summed across cards.
+        pooled: bool = False,
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
         compute_ctx_bytes_fn: Optional[Callable[[int], int]] = None,
         budget_frac: Optional[float] = None,
@@ -6932,7 +6951,9 @@ class LlamaCppBackend:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _active_vram_fraction() - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
         # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
-        budget_mib = _vram_usable_mib(available_mib, total_mib or 0, budget_frac)
+        budget_mib = _vram_usable_mib(
+            available_mib, total_mib or 0, budget_frac, pooled = pooled
+        )
         if total_mib is not None and total_mib > 0:
             budget_mib = max(0.0, budget_mib)
         budget_bytes = budget_mib * 1024 * 1024
@@ -10257,7 +10278,7 @@ class LlamaCppBackend:
 
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
-            if self.adopt_load_intent_if_matched(intent):
+            if self.adopt_load_intent_if_matched(intent, vram_fraction = _vram_frac):
                 logger.info(
                     f"load_model: backend already in target state for "
                     f"'{model_identifier}', skipping reload"
@@ -11538,6 +11559,7 @@ class LlamaCppBackend:
                                         mtp_overhead_fn = None,
                                         compute_ctx_bytes_fn = _cc_n,
                                         budget_frac = 1.0,
+                                        pooled = True,
                                         total_mib = None,
                                     )
                                 )
@@ -11617,6 +11639,7 @@ class LlamaCppBackend:
                                         mtp_overhead_fn = mtp_overhead_fn,
                                         compute_ctx_bytes_fn = _cc_n,
                                         budget_frac = 1.0,
+                                        pooled = True,
                                         total_mib = None,
                                     )
                                 )
@@ -11820,6 +11843,7 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     compute_ctx_bytes_fn = _cc_sub,
                                     budget_frac = 1.0,
+                                    pooled = True,
                                     total_mib = None,
                                 )
                                 kv = _kv_bytes(capped)
@@ -11906,6 +11930,7 @@ class LlamaCppBackend:
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     compute_ctx_bytes_fn = _cc_sub,
                                     budget_frac = 1.0,
+                                    pooled = True,
                                     total_mib = None,
                                 )
                                 kv = _kv_bytes(capped)
@@ -12031,6 +12056,7 @@ class LlamaCppBackend:
                                 mtp_overhead_fn = mtp_overhead_fn,
                                 compute_ctx_bytes_fn = _cc_bytes,
                                 budget_frac = 1.0,
+                                pooled = True,
                                 total_mib = None,
                             )
                             _cap_footprint_mib = (
@@ -13448,12 +13474,6 @@ class LlamaCppBackend:
                     healthy = _spawn_and_wait(cmd)
                 finally:
                     self._memory_launch_pending = False
-                    # Only a failed spawn releases it here: a healthy child still has
-                    # the decode probe and the no-flash, drafter and projector retries
-                    # before the marker is committed, and a save in that gap would be
-                    # answered from the PREVIOUS child's marker, which is already gone.
-                    if not healthy:
-                        self._vram_fraction_pending = None
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -14426,8 +14446,15 @@ class LlamaCppBackend:
             self._speculative_type = "default"
         return flags
 
-    def adopt_load_intent_if_matched(self, intent: GgufLoadIntent) -> bool:
-        """Match live state and adopt the caller's compatible GPU placement."""
+    def adopt_load_intent_if_matched(
+        self, intent: GgufLoadIntent, vram_fraction: Optional[float] = None
+    ) -> bool:
+        """Match live state and adopt the caller's compatible GPU placement.
+
+        ``vram_fraction`` is the budget the calling load already captured, so the
+        decision and the plan that follows it price against one number. Resolved
+        here only for the route's fast path, which has no load to inherit from.
+        """
         if not self.matches_load_source(intent):
             return False
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
@@ -14482,7 +14509,10 @@ class LlamaCppBackend:
         # the child still on the old fraction. None means placement never used it
         # (manual, or no discrete GPU), where a reload would change nothing.
         _launched_frac = self._vram_fraction_launched
-        if _launched_frac is not None and float(_launched_frac) != _active_vram_fraction():
+        _active_frac = (
+            vram_fraction if vram_fraction is not None else _active_vram_fraction()
+        )
+        if _launched_frac is not None and float(_launched_frac) != _active_frac:
             logger.info("VRAM budget changed since launch; forcing a reload")
             return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):

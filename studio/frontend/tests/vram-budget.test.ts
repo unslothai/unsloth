@@ -267,3 +267,18 @@ test("the budget reads as a percentage and steps in tenths", () => {
   );
   assert.match(slider.slice(0, slider.indexOf("</div>")), /step = 1,/);
 });
+
+test("a failed save is re-staged rather than silently dropped", () => {
+  const row = vramBudgetRowSource();
+  const commit = row.slice(row.indexOf("const commit = (next: number) => {"));
+  const timer = commit.slice(commit.indexOf("setTimeout("));
+  const rejection = timer.slice(timer.indexOf(".catch("));
+  // The flush cleared the staged value as it sent, so without re-staging the
+  // control keeps showing a fraction the server never took and the next Run has
+  // nothing to retry or wait for.
+  assert.match(rejection, /stageVramBudgetSave\(vramPercentToFraction\(next\)\)/);
+  assert.ok(
+    rejection.indexOf("stageVramBudgetSave") < rejection.indexOf("toast.error"),
+    "re-stage before reporting, so a Run racing the toast still has the value",
+  );
+});
