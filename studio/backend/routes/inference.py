@@ -11467,9 +11467,7 @@ async def _proxy_to_external_provider(
         # Model-aware: Gemini's image models drop the function catalog inside the
         # native translator, so entering the loop for them would advertise tools
         # the model is never shown and finish as if none were selected.
-        provider_model_runs_local_tools(
-            provider_type, payload.external_model or payload.model
-        )
+        provider_model_runs_local_tools(provider_type, payload.external_model or payload.model)
         and payload.stream is True
         and _explicit_studio_tool_loop_requested(payload)
         # A selection of purely hosted names is the provider's tool envelope, not

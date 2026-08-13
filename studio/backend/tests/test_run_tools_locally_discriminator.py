@@ -82,7 +82,6 @@ def test_an_explicit_false_is_not_read_as_a_local_request(provider_type):
 def test_self_hosted_providers_are_unaffected(provider_type):
     """They declare no hosted tools, so this was never ambiguous for them."""
     from routes.inference import _selects_only_provider_hosted_tools
-
     for flag in (None, True, False):
         payload = _payload(enabled_tools = ["web_search"], run_tools_locally = flag)
         assert _selects_only_provider_hosted_tools(payload, provider_type) is False
