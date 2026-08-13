@@ -1824,6 +1824,16 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
+    // setCheckpoint clamps deep research off for an external model, and only a
+    // local model or an openai_codex provider can run it, so a stored true must
+    // not re-arm the pill behind that clamp.
+    if (
+      key === "deepResearchEnabled" &&
+      value === true &&
+      isExternalModelId(state.params.checkpoint)
+    ) {
+      continue;
+    }
     if (
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]

@@ -18,7 +18,12 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from routes.chat_history import ChatSettingsPayload  # noqa: E402
-from storage.studio_db import _deep_merge_settings  # noqa: E402
+from storage.studio_db import (  # noqa: E402
+    CorruptSettingsError,
+    _deep_merge_settings,
+    get_connection,
+    upsert_chat_settings_merge,
+)
 
 
 def test_mirrored_settings_round_trip():
@@ -78,6 +83,39 @@ def test_rag_source_replaces_rather_than_merges():
     )
     assert merged["ragSource"] == {"type": "thread"}
     ChatSettingsPayload.model_validate(merged)
+
+
+def _corrupt_stored_setting(key: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_settings SET value_json = ? WHERE key = ?", ("{not json", key)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_valid_rag_source_repairs_a_corrupt_row():
+    """An atomic key carries its whole value, so it can replace a quarantined row.
+
+    The corrupt-key guard exists because a partial patch would merge onto a base
+    that is no longer there. Applying it to ragSource would 409 the user's pick and
+    leave the selection unsaved.
+    """
+    upsert_chat_settings_merge({"ragSource": {"type": "kb", "kbId": "notes"}})
+    _corrupt_stored_setting("ragSource")
+
+    merged = upsert_chat_settings_merge({"ragSource": {"type": "thread"}})
+    assert merged["ragSource"] == {"type": "thread"}
+
+
+def test_a_partial_patch_onto_a_corrupt_row_still_conflicts():
+    upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.7, "topP": 0.9}})
+    _corrupt_stored_setting("inferenceParams")
+
+    with pytest.raises(CorruptSettingsError):
+        upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.2}})
 
 
 def test_other_nested_settings_still_merge():
