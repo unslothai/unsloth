@@ -39,9 +39,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 #   The 'Get-ExecutionPolicy' command was found in the module
 #   'Microsoft.PowerShell.Security', but the module could not be loaded.
 #
-# astral's uv installer calls Get-ExecutionPolicy, and the run ends there with
-# exit 1 and no further output. The try/catch around that call does not help,
-# because Invoke-Expression runs the installer in this process.
+# Any Security cmdlet reached during the run ends it there with exit 1 and no
+# further output -- Get-AuthenticodeSignature, which verifies the VC++ runtime
+# download, sits on this path. A try/catch does not help, because the failure is
+# module loading in this process rather than an error the caller can catch.
 #
 # Prepended, not appended: the problem is precedence, not absence. Clearing the
 # variable so 5.1 rebuilds its default does not help either, because the
@@ -4336,6 +4337,217 @@ function Assert-VenvActivated {
     Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
 }
 
+# Mirrors install.ps1's Install-UvFromRelease: same archive, destination priority and user-PATH
+# prepend as astral's installer, but it fetches a data file with a pinned SHA-256 instead of
+# running remote script text in-process, which is what AMSI scores hardest. Bumping the version
+# means bumping all 3 hashes:
+#   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
+$UvPinnedVersion = "0.12.1"
+$UvPinnedAssets = @{
+    "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
+    "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
+    "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+}
+
+# Not Get-HostMachineArch: it answers arm64/other for the VC++ and prebuilt probes, and "other"
+# cannot pick between the x86_64 and i686 archives. install.ps1's resolution order.
+function Get-UvHostArch {
+    $osArch = ""
+    try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
+    $signals = @([string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
+    foreach ($s in $signals) {
+        if ($s.ToLowerInvariant() -eq "arm64") { return "arm64" }
+    }
+    foreach ($s in $signals) {
+        if ([string]::IsNullOrWhiteSpace($s)) { continue }
+        switch ($s.ToLowerInvariant()) {
+            "amd64" { return "x86_64" }
+            "x64" { return "x86_64" }
+            "x86" { return "x86" }
+        }
+    }
+    return "unknown"
+}
+
+# Writes to the pipeline, not the console: under Invoke-SetupCommand a quiet run swallows this
+# exactly as it swallowed astral's output, and a verbose run shows it. The console lines around
+# the call site are unchanged.
+function Get-SetupUvExecutableVerdict {
+    # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
+    # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
+    # no verdict, and the digest already proved the bytes are astral's pinned release.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        if (-not $proc.WaitForExit(20000)) {
+            try { $proc.Kill() } catch {}
+            Write-Output "uv did not answer --version within 20s; installing it unprobed."
+            return "unknown"
+        }
+        # The timed overload can return before the exit code is cached, which is how
+        # arm64 and the Windows containers reported an EMPTY code and had a working uv
+        # read as broken. The parameterless wait settles it and returns at once, since
+        # the process has already exited. No code at all is still no verdict.
+        try { $proc.WaitForExit() } catch {}
+        $code = $null
+        try { $code = $proc.ExitCode } catch {}
+        if ($null -eq $code -or "$code" -eq "") {
+            Write-Output "uv --version gave no exit code; installing it unprobed."
+            return "unknown"
+        }
+        if ($code -eq 0) { return "ok" }
+        $detail = ""
+        try {
+            $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+        } catch {}
+        if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+        Write-Output "uv --version exited $code.$detail"
+        return "failed"
+    } catch {
+        Write-Output "could not probe uv: $($_.Exception.Message); installing it unprobed."
+        return "unknown"
+    } finally {
+        Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-UvFromPinnedRelease {
+    $arch = Get-UvHostArch
+    if (-not $UvPinnedAssets.ContainsKey($arch)) {
+        Write-Output "No uv build is published for this architecture ($arch)."
+        return $false
+    }
+    $asset  = $UvPinnedAssets[$arch].Asset
+    $wanted = $UvPinnedAssets[$arch].Sha256
+
+    # astral's destination priority, so an existing uv is replaced in place and the Get-Command
+    # probe after Refresh-Environment still finds it.
+    $destDir = $null
+    foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+        if ($candidate) { $destDir = $candidate; break }
+    }
+    if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
+    if (-not $destDir) {
+        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+        if (-not $userHome) {
+            Write-Output "Could not determine a home directory to install uv into."
+            return $false
+        }
+        $destDir = Join-Path $userHome ".local\bin"
+    }
+
+    # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL (and its older
+    # alias INSTALLER_DOWNLOAD_URL) outrank the mirror variables there, and a host that sets one
+    # usually cannot reach the public endpoints at all, so trying those first would stall. The pin
+    # still applies: a source serving a different build fails the digest and the caller falls back.
+    $uvBase = if ($env:UV_DOWNLOAD_URL) {
+        @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+        @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+    } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
+        @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
+        @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
+    } else {
+        @("https://releases.astral.sh/github/uv/releases/download/$UvPinnedVersion",
+          "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion")
+    }
+
+    $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-uv-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $zip  = Join-Path $work $asset
+    try {
+        [System.IO.Directory]::CreateDirectory($work) | Out-Null
+        # Digest per mirror, as install.ps1 does: a proxy answering 200 with its own body is a
+        # successful download by every measure Invoke-WebRequest has.
+        $downloaded = $false
+        foreach ($base in $uvBase) {
+            Write-Output "downloading uv $UvPinnedVersion ($arch) from $base..."
+            try {
+                Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
+            } catch {
+                Write-Output "uv download failed: $($_.Exception.Message)"
+                continue
+            }
+            $actual = ""
+            try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
+            if ($actual -eq $wanted) {
+                $downloaded = $true
+                break
+            }
+            Write-Output "uv download failed checksum verification -- discarding it."
+            Write-Output "expected $wanted, got $actual"
+            Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
+        }
+        if (-not $downloaded) { return $false }
+
+        # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
+        Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+        [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+        $stagedUv = Join-Path $work "uv.exe"
+        if (-not (Test-Path -LiteralPath $stagedUv)) {
+            Write-Output "uv.exe was not present in $asset."
+            return $false
+        }
+        # Run it where it landed, before the destination is touched: a host can have a working
+        # older uv while a policy refuses this one, and copying first leaves it with neither.
+        if ((Get-SetupUvExecutableVerdict -Path $stagedUv) -eq "failed") {
+            Write-Output "the downloaded uv $UvPinnedVersion could not run on this machine."
+            return $false
+        }
+
+        # uvw.exe is the windowless launcher and has no console to answer a probe on, so the
+        # staged uv.exe above stands for the set: it came from the same verified archive.
+        # Copy-Item under Stop so a locked or ACL-denied destination fails the install rather
+        # than leaving half a set behind quietly.
+        $haveUv = $true
+        foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
+            $src = Join-Path $work $exe
+            if (-not (Test-Path -LiteralPath $src)) { continue }
+            $dst = Join-Path $destDir $exe
+            try {
+                Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+            } catch {
+                $haveUv = $false
+                break
+            }
+            if ($exe -eq "uv.exe") {
+                # Invoke-SetupCommand sets ErrorActionPreference to Continue, so compare
+                # against the archive we verified: a stale uv.exe must not pass for ours.
+                $copied = $false
+                try {
+                    $copied = (Test-Path -LiteralPath $dst) -and
+                        (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                        (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                } catch { $copied = $false }
+                if (-not $copied) { $haveUv = $false; break }
+            }
+        }
+        if (-not $haveUv) {
+            Write-Output "uv.exe was not present in $asset."
+            return $false
+        }
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # astral's PATH treatment and opt-outs: an unmanaged install forces no-modify-path there, so
+    # it must here too. The user-PATH prepend is what survives the Refresh-Environment below.
+    if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
+        Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
+    }
+    $env:PATH = "$destDir;$env:PATH"
+    # Recorded on the script scope as well as returned: the caller runs this through
+    # Invoke-SetupCommand, which hands back [int]$LASTEXITCODE rather than the pipeline value,
+    # so the return alone cannot tell the fallback whether to run.
+    $script:UvPinnedInstalled = $true
+    return $true
+}
+
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
 Assert-VenvActivated -VenvDir $VenvDir
@@ -4347,7 +4559,18 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 } else {
     substep "installing uv package manager..."
     try {
-        Invoke-SetupCommand { Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1") } | Out-Null
+        $script:UvPinnedInstalled = $false
+        Invoke-SetupCommand { Install-UvFromPinnedRelease } | Out-Null
+        # The merge base ran astral's installer here, so a failed pinned install needs somewhere
+        # to go: with no fallback the setup drops to pip for torch, bitsandbytes and Triton, which
+        # is a different resolver rather than a different download. winget, not the remote script,
+        # which is the shape this branch removes and is what install.ps1 already tries first.
+        if (-not $script:UvPinnedInstalled -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Invoke-SetupCommand {
+                winget install --id astral-sh.uv --source winget --accept-source-agreements `
+                    --accept-package-agreements --silent
+            } | Out-Null
+        }
         Refresh-Environment
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory

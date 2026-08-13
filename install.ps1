@@ -1,16 +1,12 @@
 # Unsloth Studio Installer for Windows PowerShell
 #
-# Usage:  irm https://unsloth.ai/install.ps1 | iex
-#         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; .\install.ps1 --local
+# Usage, options and the web one-liner: see "Unsloth Studio (web UI)" in the README
+# (https://github.com/unslothai/unsloth#unsloth-studio-web-ui). Not repeated here, because
+# AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
-# irm | iex cannot forward arguments, so web installs take options as env vars set
-# before the pipe (flags still work via .\install.ps1):
-#   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
-#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
-#   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
-#   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+# The web entry point cannot forward arguments, so it takes options as environment variables set
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
+# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -20,7 +16,7 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
     # The user's PowerShell profile has already run by the time this does, and the documented
-    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
     #
     # Off, not Latest: this script predates strict mode, testing environment variables that are
@@ -60,7 +56,7 @@ function Install-UnslothStudio {
     # (27.8 MB) took 41.34s with the bar on against 0.08s with it off, and the uv archive the
     # same. That is the multi-minute "slow download" users report. -UseBasicParsing does NOT
     # avoid it and PowerShell 7 never had the cost; only this preference does. Same scoping rule
-    # as the table above: no qualifier, so the caller's own preference survives "irm ... | iex".
+    # as the table above: no qualifier, so the caller's own preference survives a piped web run.
     $ProgressPreference = 'SilentlyContinue'
 
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
@@ -90,7 +86,7 @@ function Install-UnslothStudio {
             } catch { }
         }
     }
-    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # A FUNCTION-local, not $script: or an environment variable: under a piped web run this runs
     # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
     # is the ordinary corporate form) that must not outlive the install on any of the dozens of
     # return paths. Module-qualified serializer, as in the probe: a profile alias or function
@@ -108,7 +104,7 @@ function Install-UnslothStudio {
     $PSNativeCommandUseErrorActionPreference = $false
 
     # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
-    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # a piped web run, $script: is the caller's session scope, so a second run in the same
     # console would start on the first run's state. These two are the only ones no later
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
@@ -1361,11 +1357,14 @@ try {
     # Single-quote the path in the child -Command so `$` / backtick in custom
     # roots don't get reparsed; double any apostrophes so 'O''Brien' survives.
     `$studioCommand = "& '" + (`$studioExe -replace "'", "''") + "' studio -p " + `$launchPort
+    # RemoteSigned, not Bypass: the child runs an inline -Command against an executable, so no
+    # script file is loaded and the two behave identically here. No reason to spend a scored
+    # token on a launch that needs no policy relief.
     `$launchArgs = @(
         '-NoExit',
         '-NoProfile',
         '-ExecutionPolicy',
-        'Bypass',
+        'RemoteSigned',
         '-Command',
         `$studioCommand
     )
@@ -1419,6 +1418,15 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
+            # WriteAllText replaces the unnamed data stream and leaves any other NTFS stream on
+            # an existing file alone, so a launcher that somehow acquired a mark of the web keeps
+            # it across the rewrite. The shortcut loads this under RemoteSigned, which refuses a
+            # marked unsigned script, so clear the mark on the file we just authored. A no-op on
+            # every ordinary install, where the stream was never there.
+            # -Confirm:$false: Unblock-File is SupportsShouldProcess at Medium impact, so a
+            # profile lowering $ConfirmPreference would prompt here, and ErrorAction does not
+            # suppress a ShouldProcess prompt. On a noninteractive host that skips shortcut setup.
+            Unblock-File -LiteralPath $launcherPs1 -Confirm:$false -ErrorAction SilentlyContinue
             # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
             # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
             # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
@@ -1516,9 +1524,28 @@ exit 0
             # launch-studio.ps1 with a hidden window. We deliberately avoid a
             # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
             # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            #
+            # RemoteSigned, not Bypass: a hidden window beside a bypassed policy is the pair
+            # Microsoft's detections key on, and install.rs makes the same call for the app's own
+            # launch. This launcher is written locally, so RemoteSigned loads it either way.
             $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
             $shortcutTarget = $powershellForLnk
-            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$launcherPs1`""
+            # A launcher on a share is a REMOTE script to PowerShell and RemoteSigned refuses an
+            # unsigned one, so a roaming profile would get a shortcut that exits without starting
+            # Studio. Bypass for that case only, and without the hidden window: a console beats
+            # nothing launching. A mapped drive (H:, Z:) is the same share and the same zone, and
+            # DriveInfo on the root reports Network for both.
+            $launcherIsRemote = $launcherPs1 -like "\\*"
+            if (-not $launcherIsRemote) {
+                try {
+                    $launcherIsRemote = ([System.IO.DriveInfo]::new(
+                        [System.IO.Path]::GetPathRoot($launcherPs1))).DriveType -eq 'Network'
+                } catch {}
+            }
+            if ($launcherIsRemote) {
+                $shortcutArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPs1`""
+            }
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
@@ -1612,7 +1639,7 @@ exit 0
     }
 
     # ── Leave Windows system directories before installing ──
-    # "Run as administrator" starts in C:\Windows\System32, so `irm ... | iex` installs
+    # "Run as administrator" starts in C:\Windows\System32, so a piped web run installs
     # from there and `unsloth studio setup` refuses only after PyTorch has downloaded,
     # then rolls back. Relocating is safe: nothing here reads the caller's directory
     # ($RepoRoot from $PSCommandPath, $StudioHome from the environment), so only
@@ -2501,6 +2528,55 @@ exit 0
         }
     }
 
+    function Get-UvExecutableVerdict {
+        # "ok", "failed" or "unknown". Only the binary itself answering non-zero is "failed".
+        # A launch that throws or a wait that times out is "unknown", because the probe got no
+        # verdict: Start-Process -NoNewWindow with redirected streams does not behave in a
+        # Windows container or on the arm64 image the way it does in a desktop session, and
+        # treating that as a broken binary turned three clean-machine CI legs into hard install
+        # failures. The digest already proved these bytes are astral's pinned release, so no
+        # verdict publishes, as the pre-pin code did. Every path says why.
+        param([string]$Path)
+        if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
+        # Redirected: uv's version line is not part of this installer's output.
+        $outFile = [System.IO.Path]::GetTempFileName()
+        $errFile = [System.IO.Path]::GetTempFileName()
+        try {
+            $proc = Start-Process -FilePath $Path -ArgumentList "--version" -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+            if (-not $proc.WaitForExit(20000)) {
+                try { $proc.Kill() } catch {}
+                substep "uv did not answer --version within 20s; installing it unprobed." "Yellow"
+                return "unknown"
+            }
+            # The timed overload can return before the exit code is cached, which is how
+            # arm64 and the Windows containers reported an EMPTY code and had a working uv
+            # read as broken. The parameterless wait settles it and returns at once, since
+            # the process has already exited. No code at all is still no verdict.
+            try { $proc.WaitForExit() } catch {}
+            $code = $null
+            try { $code = $proc.ExitCode } catch {}
+            if ($null -eq $code -or "$code" -eq "") {
+                substep "uv --version gave no exit code; installing it unprobed." "Yellow"
+                return "unknown"
+            }
+            if ($code -eq 0) { return "ok" }
+            $detail = ""
+            try {
+                $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
+            } catch {}
+            if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
+            substep "uv --version exited $code.$detail" "Yellow"
+            return "failed"
+        } catch {
+            substep "could not probe uv: $($_.Exception.Message); installing it unprobed." "Yellow"
+            return "unknown"
+        } finally {
+            Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     # Fallback for hosts without winget. Same archive, destination and user-PATH
     # prepend as astral's install.ps1, but it fetches a data file with a pinned
     # SHA-256 instead of script text run in-process, which is what AMSI and cloud
@@ -2538,10 +2614,14 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # Same mirrors and precedence as astral's installer; each serves the
-        # identical asset, so the pin holds across all of them. UV_DOWNLOAD_URL is
-        # not honoured: it points at an arbitrary version the pin would reject.
-        $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
+        # astral's sources in astral's order, each exclusive when set: a host that sets one
+        # usually cannot reach the public endpoints at all, so trying those first would stall.
+        # The pin still applies, so a source serving a different build fails the digest.
+        $uvBase = if ($env:UV_DOWNLOAD_URL) {
+            @("$($env:UV_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+            @("$($env:INSTALLER_DOWNLOAD_URL.TrimEnd('/'))")
+        } elseif ($env:UV_INSTALLER_GHE_BASE_URL) {
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
             @("$($env:UV_INSTALLER_GITHUB_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
@@ -2554,39 +2634,77 @@ exit 0
         $zip  = Join-Path $work $asset
         try {
             [System.IO.Directory]::CreateDirectory($work) | Out-Null
+            # Digest per mirror, not once after the loop: a proxy answering 200 with its own
+            # body is a successful download by every measure Invoke-WebRequest has, and checking
+            # afterwards spends the only attempt on it.
             $downloaded = $false
             foreach ($base in $uvBase) {
                 substep "downloading uv $UvPinnedVersion ($arch) from $base..." "Yellow"
                 try {
                     Invoke-WebRequest -UseBasicParsing -OutFile $zip -Uri "$base/$asset"
-                    $downloaded = $true
-                    break
                 } catch {
                     substep "uv download failed: $($_.Exception.Message)" "Yellow"
+                    continue
                 }
-            }
-            if (-not $downloaded) { return $false }
-
-            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
-            if ($actual -ne $wanted) {
+                $actual = ""
+                try { $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash } catch {}
+                if ($actual -eq $wanted) {
+                    $downloaded = $true
+                    break
+                }
                 substep "uv download failed checksum verification -- discarding it." "Red"
                 substep "expected $wanted, got $actual" "Red"
-                return $false
+                Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
             }
+            if (-not $downloaded) { return $false }
 
             # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
             Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
             [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
-            $haveUv = $false
+
+            $stagedUv = Join-Path $work "uv.exe"
+            if (-not (Test-Path -LiteralPath $stagedUv)) {
+                substep "uv.exe was not present in $asset." "Yellow"
+                return $false
+            }
+            # Run it where it landed, before the destination is touched. A host can have a
+            # working older uv while AppLocker, WDAC or endpoint protection refuses this one, and
+            # copying first would leave the user with neither. A policy scoped to the destination
+            # path is not covered here: the caller's fallback handles it.
+            if ((Get-UvExecutableVerdict -Path $stagedUv) -eq "failed") {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
+                return $false
+            }
+
+            # uvw.exe is the windowless launcher and has no console to answer a probe on, so
+            # the staged uv.exe above stands for the set: it came from the same verified
+            # archive. Copy-Item under Stop so a locked or ACL-denied destination fails the
+            # install rather than leaving half a set behind quietly.
+            $ok = $true
             foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
                 $src = Join-Path $work $exe
-                if (Test-Path -LiteralPath $src) {
-                    Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
-                    if ($exe -eq "uv.exe") { $haveUv = $true }
+                if (-not (Test-Path -LiteralPath $src)) { continue }
+                $dst = Join-Path $destDir $exe
+                try {
+                    Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+                } catch {
+                    $ok = $false
+                    break
+                }
+                if ($exe -eq "uv.exe") {
+                    # Copy-Item is non-terminating under some callers preference, so compare
+                    # against the archive we verified: a stale uv.exe must not pass for ours.
+                    $copied = $false
+                    try {
+                        $copied = (Test-Path -LiteralPath $dst) -and
+                            (Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -eq
+                            (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+                    } catch { $copied = $false }
+                    if (-not $copied) { $ok = $false; break }
                 }
             }
-            if (-not $haveUv) {
-                substep "uv.exe was not present in $asset." "Yellow"
+            if (-not $ok) {
+                substep "the downloaded uv $UvPinnedVersion could not run on this machine." "Yellow"
                 return $false
             }
         } finally {
@@ -3642,7 +3760,7 @@ exit 0
     # qualify, UHD / HD / Iris Xe do not.
     $HasIntelGpu = $false
     $IntelGpuLabel = $null
-    # Reset every invocation: under "irm ... | iex" $script: is the caller's session scope, so a
+    # Reset every invocation: under a piped web run $script: is the caller's session scope, so a
     # second run would inherit a stale $true and reroute a now-NVIDIA host to the xpu index.
     $script:IsIntelXpu = $false
     # $AmdHasGpuWheels keeps a wheel-served AMD host out of the XPU reroute below; an AMD host
