@@ -531,13 +531,14 @@ def test_a_loop_over_an_attribute_target_rebinds_nothing():
         high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
         assert high, f"`for {target} in` must not cancel the alias: {payload!r}"
 
-    # A loop that does bind the name still cancels it, tuple targets included.
+    # A loop that does bind the name cancels it inside the body, where the name
+    # is the item, tuple targets included.
     for target in ("m", "m, rest", "(m, rest)"):
         clean = (
             "import builtins as m\nimport marshal\n"
             "mod = __import__('os')\n"
-            f"for {target} in rows: pass\n"
-            "m.eval()\n"
+            f"for {target} in rows:\n"
+            "    m.eval()\n"
         )
         findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
         high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
@@ -3011,9 +3012,10 @@ def test_a_comprehension_target_does_not_rebind_the_surrounding_alias():
         payload = f"{prelude}{comprehension}\nb.exec(marshal.loads(BLOB))\n"
         assert _high(payload), f"{comprehension} must not cancel the alias"
 
-    # A real `for` statement does rebind, and still cancels.
-    statement = f"{prelude}for b in xs:\n    pass\nb.eval(y)\n"
-    assert _high(statement, "pkg/_infer.py") == [], "a `for` statement still rebinds"
+    # A real `for` statement rebinds the name inside its body, where the loop
+    # variable is the item.
+    statement = f"{prelude}for b in xs:\n    b.eval(y)\n"
+    assert _high(statement, "pkg/_infer.py") == [], "a `for` body binds the target"
 
 
 def test_an_exception_alias_does_not_outlive_its_handler():
@@ -3038,3 +3040,119 @@ def test_an_exception_alias_does_not_outlive_its_handler():
     # `with ... as b` really does bind past its block, and still cancels.
     with_stmt = f"{prelude}with open(f) as b:\n    pass\nb.eval(y)\n"
     assert _high(with_stmt, "pkg/_infer.py") == [], "`with ... as` still rebinds"
+
+
+def test_a_loop_target_cancels_its_body_and_nothing_after_it():
+    # `for b in ():` never runs, so the alias below the loop is still the module
+    # and `b.exec(BLOB)` is the builtin. Recording the target as a persistent
+    # rebinding cancelled it to the end of the file, which downgraded the
+    # payload to the non-blocking MEDIUM obfuscation finding.
+    prelude = "import builtins as b\nimport marshal\n"
+    payload = f"{prelude}for b in ():\n    pass\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(payload), "an empty loop cannot cancel the alias below it"
+
+    # A one-line suite and an `else` clause are both outside the body.
+    oneline = f"{prelude}for b in xs: pass\nb.exec(marshal.loads(BLOB))\n"
+    assert _high(oneline), "the call after a one-line loop is still the builtin"
+    with_else = f"{prelude}for b in xs:\n    pass\nelse:\n    b.exec(marshal.loads(BLOB))\n"
+    assert _high(with_else), "the `else` clause runs whether the loop bound anything"
+
+    # Inside the body the name is the item, whatever the iterable held.
+    body = f"{prelude}mod = __import__('os')\nfor b in xs:\n    b.eval(y)\n"
+    assert _high(body, "pkg/_infer.py") == [], "the body sees the loop variable"
+
+
+def test_a_parameter_shadows_the_alias_for_the_whole_body():
+    # `def process(run):` binds `run` to the argument for the length of the body,
+    # so the call inside it is the callback and not the builtin. Only the
+    # function's own name was recorded, so this was a false HIGH that failed the
+    # enforced scan on an ordinary callback.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    for params in ("run", "*run", "**run", "a, /, run, *, kw = 1", "a: int = 1, run: Any = None"):
+        payload = f"{prelude}def process({params}):\n    run(marshal.loads(BLOB))\n"
+        assert _high(payload, "pkg/_infer.py") == [], f"`def process({params})` shadows the alias"
+
+    # A method's parameter reaches its own body and not its sibling's.
+    method = (
+        f"{prelude}class C:\n    def m(self, run):\n        pass\n"
+        "    def n(self, data):\n        run(marshal.loads(data))\n"
+    )
+    assert _high(method), "a sibling method still sees the module-level alias"
+
+    # The parameter list is not the body: a default runs in the enclosing scope.
+    default = f"{prelude}def process(cb = run(marshal.loads(BLOB))):\n    pass\n"
+    assert _high(default), "a default value is evaluated where the `def` is written"
+
+    # And nothing after the function is shadowed by it.
+    after = f"{prelude}def process(run):\n    pass\nrun(marshal.loads(BLOB))\n"
+    assert _high(after), "a parameter binds nothing outside its function"
+
+
+def test_an_exception_target_is_the_exception_inside_its_handler():
+    # A handler runs only when the exception is raised, so inside the suite the
+    # name is that exception - `run(payload)` there is not the builtin. Ignoring
+    # the binding entirely kept the outer alias alive after the handler, which is
+    # right, but left the call inside it a false HIGH.
+    prelude = "from builtins import exec as run\nimport marshal\n"
+    payload = (
+        f"{prelude}try:\n    go()\nexcept CallableError as run:\n"
+        "    run(marshal.loads(BLOB))\n"
+    )
+    assert _high(payload, "pkg/_infer.py") == [], "the handler binds its own `run`"
+
+    nested = (
+        f"{prelude}def f():\n    try:\n        go()\n    except CallableError as run:\n"
+        "        if x:\n            run(marshal.loads(BLOB))\n"
+    )
+    assert _high(nested, "pkg/_infer.py") == [], "the whole suite is the handler"
+
+    # The name does not survive the handler, so the call below it is the builtin.
+    after = (
+        f"{prelude}try:\n    go()\nexcept CallableError as run:\n    pass\n"
+        "run(marshal.loads(BLOB))\n"
+    )
+    assert _high(after), "a call after the handler is still the builtin"
+
+
+def test_an_import_inside_a_function_is_not_visible_to_a_sibling():
+    # `from builtins import exec as run` in one function binds a local. The
+    # sibling below it resolves its own `run`, so reading that call as the
+    # builtin was a false HIGH on a file that never exposes the alias.
+    tail = "def sibling(data):\n    run(marshal.loads(data))\n"
+    payload = f"import marshal\ndef loader():\n    from builtins import exec as run\n    return run\n{tail}"
+    assert _high(payload, "pkg/_infer.py") == [], "the alias does not leave `loader`"
+
+    # In its own scope, and in a scope written inside it, it is the builtin.
+    inside = "import marshal\ndef loader(data):\n    from builtins import exec as run\n    run(marshal.loads(data))\n"
+    assert _high(inside), "the importing function still runs the builtin"
+    nested = (
+        "import marshal\ndef loader():\n    import builtins as b\n"
+        "    def inner(data):\n        b.exec(marshal.loads(data))\n    return inner\n"
+    )
+    assert _high(nested), "a nested function closes over the alias"
+
+    # Anything that also binds the name file-wide keeps it visible everywhere:
+    # a module-level import, an assignment, or a `global` declaration.
+    imported = (
+        "import marshal\nfrom builtins import exec as run\n"
+        f"def loader():\n    from builtins import exec as run\n{tail}"
+    )
+    assert _high(imported), "a module-level import of the same name is visible everywhere"
+    assigned = (
+        "import marshal\ndef loader():\n    import builtins as b\n"
+        "b = __import__('builtins')\n"
+        "def sibling(data):\n    b.exec(marshal.loads(data))\n"
+    )
+    assert _high(assigned), "a module-level assignment binds the alias too"
+    declared = (
+        "import marshal\ndef loader():\n    global run\n"
+        f"    from builtins import exec as run\n{tail}"
+    )
+    assert _high(declared), "`global run` binds the module-level name"
+
+    # A class body binds an attribute, not a local, and is left file-wide.
+    in_class = (
+        "import marshal\nclass C:\n    from builtins import exec as run\n"
+        "    def m(self, data):\n        run(marshal.loads(data))\n"
+    )
+    assert _high(in_class), "a class-body import is not scoped away"

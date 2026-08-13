@@ -827,7 +827,47 @@ def _add_assignment_targets(part: list, rebound: set) -> None:
             _add_assignment_targets(toks[1:-1], rebound)
 
 
-def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None:
+def _add_param_names(stmt: list, start: int, scoped: set, candidates: frozenset) -> None:
+    """Record the parameters of a `def` header that shadow an alias.
+
+    A parameter binds its name for the whole body and nothing outside it, so
+    `from builtins import exec as run` ... `def process(run):` makes the
+    `run(...)` written inside the function the callback rather than the builtin.
+    Only a name that opens a parameter is one: an annotation or a default is an
+    expression evaluated in the enclosing scope and binds nothing, and `*`, `**`
+    and `/` are punctuation between parameters. Filtered to `candidates`, so a
+    long parameter list of ordinary names costs a membership test each.
+    """
+    depth = 0
+    opened = False  # the parameter list, not the type parameters of `def f[T]()`
+    expect = False
+    for tok in stmt[start:]:
+        if tok.type == tokenize.OP:
+            if tok.string in _OPENERS:
+                if depth == 0 and tok.string == "(":
+                    opened = True
+                    expect = True
+                depth += 1
+                continue
+            if tok.string in _CLOSERS:
+                depth -= 1
+                if depth <= 0:
+                    if opened:
+                        return
+                    depth = 0
+                continue
+            if opened and depth == 1 and tok.string == ",":
+                expect = True
+            continue
+        if expect and depth == 1 and tok.type == tokenize.NAME:
+            if tok.string in candidates:
+                scoped.add(tok.string)
+            expect = False
+
+
+def _collect_rebindings(
+    stmt: list, rebound: set, candidates: frozenset, scoped: "set | None" = None
+) -> None:
     """Record the names in `candidates` that `stmt` binds to something else.
 
     An alias that the file rebinds (`import builtins as m` ... `m = load()`) is
@@ -835,7 +875,15 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
     becomes a false positive again. Restricted to the handful of names that are
     actually aliases, so a statement that cannot change the answer costs one
     membership test per token instead of a full target analysis.
+
+    `scoped` collects the bindings that reach the statement's own suite and
+    nothing after it - a loop target, an exception target, a parameter. They are
+    separated because the difference decides both directions: `for b in ():`
+    never runs its body, so cancelling `b` past the loop would suppress a real
+    `b.exec(...)` below it, while inside the suite the name really is the item,
+    the exception or the argument.
     """
+    body = rebound if scoped is None else scoped
     for tok in stmt:
         if tok.type == tokenize.NAME and tok.string in candidates:
             break
@@ -849,11 +897,14 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
         and stmt[head + 1].type == tokenize.NAME
     ):
         rebound.add(stmt[head + 1].string)
-    # `except E as b` is not a rebinding that outlives anything: with no
-    # exception the name is never bound, and with one Python deletes it at the
-    # end of the handler. Recording the header cancelled the alias to the end of
-    # the file - and the header sits at the same indent as the code below it, so
-    # nothing ever closed the span.
+        if scoped is not None:
+            _add_param_names(stmt, head + 2, scoped, candidates)
+    # `except E as b` binds nothing that outlives the handler: with no exception
+    # the name is never bound, and with one Python deletes it at the end of the
+    # suite. Recording the header as an ordinary rebinding cancelled the alias
+    # to the end of the file - and the header sits at the same indent as the
+    # code below it, so nothing ever closed the span. Inside the suite the name
+    # is the exception, which is what the scoped span says.
     handler = stmt[head].type == tokenize.NAME and stmt[head].string == "except"
     depth = 0
     for j, tok in enumerate(stmt):
@@ -877,11 +928,12 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
             # The target binds what an ordinary assignment would: `for a, b
             # in ...` rebinds both, `for holder.b in ...` rebinds neither -
             # taking every name in between would let that no-op loop cancel
-            # a live alias.
-            _add_assignment_targets(stmt[j + 1 : k], rebound)
-        elif tok.string == "as" and not handler:  # `with ... as x`, `import x as y`
+            # a live alias. Scoped to the suite, because an empty iterable
+            # leaves the outer binding exactly as it was.
+            _add_assignment_targets(stmt[j + 1 : k], body)
+        elif tok.string == "as":  # `with ... as x`, `import x as y`, `except E as x`
             if j + 1 < len(stmt) and stmt[j + 1].type == tokenize.NAME:
-                rebound.add(stmt[j + 1].string)
+                (body if handler else rebound).add(stmt[j + 1].string)
     groups: list = []
     cur: list = []
     depth = 0
@@ -1114,6 +1166,7 @@ class _Aliases:
         "live_funcs",
         "cancel",
         "declared_global",
+        "scoped_imports",
         "loader_modules",
         "safe_receivers",
         "safe_funcs",
@@ -1128,11 +1181,16 @@ class _Aliases:
         loader_funcs: "set | None" = None,
         declared_global: "dict | None" = None,
         loader_modules: "set | None" = None,
+        scoped_imports: "dict | None" = None,
     ):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
         self.cancel = _index_cancellations(cancel)
         self.declared_global = declared_global or {}
+        # An alias only a function-local import binds is not the module anywhere
+        # else in the file: `def a(): from builtins import exec as run` leaves
+        # the `run(...)` in a sibling function its own name, not the builtin.
+        self.scoped_imports = scoped_imports or {}
         self.safe_receivers = frozenset(self.live_receivers - set(cancel))
         self.safe_funcs = frozenset(self.live_funcs - set(cancel))
         # `__import__` is a builtin, so it means the loader in any file; the
@@ -1213,31 +1271,54 @@ def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
                     del opened[name]
 
 
-def _close_scope(scope: list, declared_global: dict, end: int) -> None:
-    """Record the offsets of a `def` or `class` body that declared names global.
+def _close_scope(
+    scope: list,
+    declared_global: dict,
+    end: int,
+    local_imports: "dict | None" = None,
+    file_wide: "set | None" = None,
+) -> None:
+    """Record what a closing `def` or `class` body bound, as offset spans.
 
-    The scope is what the declaration governs, not the statement: `global b`
+    The scope is what a declaration governs, not the statement: `global b`
     applies to the whole function, including the lines written above it. So the
-    span runs from the header to wherever the body ends.
+    span runs from the header to wherever the body ends, and an alias imported
+    in the body is visible over exactly the same range - the function and the
+    scopes nested in it, which are written inside it.
     """
     names = scope[3]
+    imported = scope[4] if len(scope) > 4 else None
+    if imported and local_imports is not None:
+        for name in imported:
+            if names and name in names:
+                # `global run` then `from builtins import exec as run` binds the
+                # module-level name, which every scope in the file can see.
+                if file_wide is not None:
+                    file_wide.add(name)
+            else:
+                local_imports.setdefault(name, []).append((scope[2], end))
     if not names:
         return
     for name in names:
         declared_global.setdefault(name, []).append((scope[2], end))
 
 
-def _declares_global(spans: list, start: int) -> bool:
-    """Whether offset `start` sits in a scope that declared the name global.
+def _in_scope(spans: list, start: int) -> bool:
+    """Whether offset `start` sits inside one of `spans`.
 
     Walked rather than bisected: the spans nest, so containment is not the
-    rightmost-match test a bisection answers, and a file declares a builtins
-    alias global in approximately no scopes at all.
+    rightmost-match test a bisection answers, and a file binds a builtins alias
+    in approximately no scopes at all.
     """
     for at, end in spans:
         if at <= start < end:
             return True
     return False
+
+
+def _declares_global(spans: list, start: int) -> bool:
+    """Whether offset `start` sits in a scope that declared the name global."""
+    return _in_scope(spans, start)
 
 
 def _index_cancellations(cancel: dict) -> dict:
@@ -1393,13 +1474,18 @@ def _fstring_spans(
         return
     base = offsets.of(*tok.start)
     live = None
-    if cancel:
+    scoped = aliases.scoped_imports if positional else None
+    if cancel or scoped:
 
         def live(name: str, at: int) -> bool:
-            frontier = cancel.get(name)
+            start = base + at
+            if scoped:
+                where = scoped.get(name)
+                if where is not None and not _in_scope(where, start):
+                    return False  # imported in some other function
+            frontier = cancel.get(name) if cancel else None
             if frontier is None:
                 return True
-            start = base + at
             spans = aliases.declared_global.get(name)
             return not _is_cancelled(
                 frontier, start, col, bool(spans) and _declares_global(spans, start)
@@ -1456,6 +1542,12 @@ def _statement_spans(
             if not direct:
                 alias = tok.string
         start = offsets.of(*stmt[at].start)
+        if positional and alias is not None and aliases.scoped_imports:
+            # The alias is bound by an import written inside one function, so a
+            # call anywhere else in the file resolves some other `run`.
+            where = aliases.scoped_imports.get(alias)
+            if where is not None and not _in_scope(where, start):
+                continue
         if cancel and alias is not None:
             frontier = cancel.get(alias)
             # `import builtins as m` ... `m = load_model()` ... `m.eval()`: past
@@ -1649,9 +1741,16 @@ class _ExecEvalMatcher:
         loader_funcs: "set | None" = None,
         declared_global: "dict | None" = None,
         loader_modules: "set | None" = None,
+        scoped_imports: "dict | None" = None,
     ):
         self.aliases = _Aliases(
-            modules, funcs, cancel or {}, loader_funcs, declared_global, loader_modules
+            modules,
+            funcs,
+            cancel or {},
+            loader_funcs,
+            declared_global,
+            loader_modules,
+            scoped_imports,
         )
         self.receivers = self.aliases.live_receivers
         self.funcs = self.aliases.live_funcs
@@ -1801,6 +1900,9 @@ class _ExecEvalPattern:
         # that declared it. A call in there resolves at module level, so no
         # enclosing function's local of that name can silence it.
         declared_global: dict = {}
+        # Where an alias imported inside a function may be read, for the aliases
+        # no module-level binding makes visible everywhere.
+        scoped_imports: dict = {}
         loaders = _Loaders()
         # An escaped literal spells the module without the word appearing, so
         # that file has to be read too - but only when it also holds a call to
@@ -1814,6 +1916,11 @@ class _ExecEvalPattern:
             or (("exec" in content or "eval" in content) and _RE_STRING_ESCAPE.search(content))
         ):
             failed: list = []
+            # The aliases bound by something other than an import. An import is
+            # the one route whose scope the second pass tracks, so a name also
+            # bound this way is left visible everywhere rather than confined to
+            # some function that happens to import it too.
+            by_value: set = set()
             for stmt in _statements(content, failed):
                 head = stmt[0]
                 if head.type == tokenize.NAME and head.string in ("import", "from"):
@@ -1823,12 +1930,16 @@ class _ExecEvalPattern:
                     # import statement, and the call through it is route 5 with
                     # the module parked in a name first; `(b := builtins)` parks
                     # it the same way inside an expression.
-                    modules.update(_assignment_bindings(stmt, loaders))
-                    modules.update(_walrus_bindings(stmt, loaders))
+                    by_value.update(_assignment_bindings(stmt, loaders))
+                    by_value.update(_walrus_bindings(stmt, loaders))
+            modules |= by_value
             if failed:
                 re_modules, re_funcs = _regex_bindings(content)
                 modules |= re_modules
                 funcs |= re_funcs
+                # The fallback reports no scope, so a name it binds is read
+                # wherever it appears.
+                by_value |= re_modules | re_funcs
             if modules or funcs:
                 # Only now is a second pass worth its cost: without an alias
                 # there is nothing for a rebinding to cancel, and every file
@@ -1840,6 +1951,9 @@ class _ExecEvalPattern:
                 # difference would let the trailing line erase the call above it.
                 offsets = _Offsets(content)
                 rebound: set = set()
+                # The bindings that reach only the statement's own suite: a loop
+                # target, an exception target, a parameter.
+                scoped: set = set()
                 # The rebindings whose block is still open, so a sibling scope
                 # does not inherit one: `def a(): b = model` stops deciding
                 # anything at the next statement written no deeper than it.
@@ -1848,10 +1962,13 @@ class _ExecEvalPattern:
                 # nothing costs one comparison however many names are open.
                 levels: list = []
                 # The `def` and `class` headers the statement sits under, as
-                # [indent, is a class, header offset, names declared global].
-                # Only those two open a scope, so this is what says whether a
-                # binding is a class attribute.
+                # [indent, is a class, header offset, names declared global,
+                # aliases imported here]. Only those two open a scope, so this
+                # is what says whether a binding is a class attribute.
                 scopes: list = []
+                # Where an alias imported inside a function is visible, as the
+                # offsets of the scope that imported it.
+                local_imports: dict = {}
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
@@ -1860,7 +1977,9 @@ class _ExecEvalPattern:
                     if levels:
                         _cancel_close(opened, levels, at, col)
                     while scopes and scopes[-1][0] >= col:
-                        _close_scope(scopes.pop(), declared_global, at)
+                        _close_scope(
+                            scopes.pop(), declared_global, at, local_imports, by_value
+                        )
                     opens = _opens_scope(stmt)
                     # A class body is the one scope a name does not cross: the
                     # methods written in it do not see its bindings. Read before
@@ -1868,7 +1987,7 @@ class _ExecEvalPattern:
                     # header itself so a one-line `class C: b = model` counts.
                     in_class = (scopes and scopes[-1][1]) or opens == "class"
                     if opens is not None:
-                        scopes.append([col, opens == "class", at, None])
+                        scopes.append([col, opens == "class", at, None, None])
                     if head.type == tokenize.NAME and head.string == "global":
                         # `global b` in a nested function makes its `b` the
                         # module-level one, whatever the enclosing function did
@@ -1884,17 +2003,46 @@ class _ExecEvalPattern:
                                     names.add(tok.string)
                         continue
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
-                        if cancel:
-                            # Only once something is cancelled can an import
-                            # re-arm it, so the ordinary file never parses its
-                            # imports twice.
+                        # Only an import naming an alias can bind or re-arm one,
+                        # so the ordinary file never parses its imports twice.
+                        if any(
+                            t.type == tokenize.NAME and t.string in candidates for t in stmt
+                        ):
                             bound: set = set()
                             _collect_import_bindings(stmt, bound, bound, None)
                             for name in bound:
                                 cancel.pop(name, None)
                                 opened.pop(name, None)
+                            if scopes and not scopes[-1][1]:
+                                # An import inside a `def` binds a local: the
+                                # sibling function below it does not see the
+                                # alias, and reading its own `run(...)` as the
+                                # builtin is a false positive. A class body is
+                                # left file-wide instead of scoped - its
+                                # bindings are attributes, and guessing which
+                                # of them a method resolves is how a real call
+                                # would go unread.
+                                local = scopes[-1][4]
+                                if local is None:
+                                    local = scopes[-1][4] = set()
+                                local |= bound
+                            else:
+                                by_value |= bound
                         continue
-                    _collect_rebindings(stmt, rebound, candidates)
+                    _collect_rebindings(stmt, rebound, candidates, scoped)
+                    if scoped:
+                        # Recorded one indent deeper than the header, which is
+                        # what makes the span end at the first statement written
+                        # back at the header's own indent: the suite is
+                        # everything below the header and indented past it. The
+                        # binding does not survive the suite - an empty loop or
+                        # an unraised exception never made it, and Python
+                        # deletes an exception target at the end of its handler
+                        # - so nothing after the block may be cancelled by it.
+                        ends = offsets.of(*stmt[-1].end)
+                        for name in scoped:
+                            _cancel_add(cancel, opened, levels, name, ends, col + 1)
+                        scoped.clear()
                     if not rebound:
                         continue
                     same = _self_assigned(stmt)
@@ -1934,7 +2082,9 @@ class _ExecEvalPattern:
                         _cancel_add(cancel, opened, levels, name, ends, col)
                     rebound.clear()
                 for scope in reversed(scopes):
-                    _close_scope(scope, declared_global, len(content))
+                    _close_scope(
+                        scope, declared_global, len(content), local_imports, by_value
+                    )
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
                     # indent to compare against; cancel from the top of the file
@@ -1942,10 +2092,27 @@ class _ExecEvalPattern:
                     # always did.
                     for name in _regex_rebindings(content) & candidates:
                         cancel[name] = [[0, 0, None]]
+                else:
+                    # A name the file also binds at module level, by assignment
+                    # or through the regex fallback is visible everywhere; only
+                    # the ones bound by a function-local import alone are
+                    # confined to the scope that imported them.
+                    for name, spans in local_imports.items():
+                        if name in by_value:
+                            continue
+                        spans.sort()
+                        scoped_imports[name] = spans
                 for spans in declared_global.values():
                     spans.sort()
         matcher = _ExecEvalMatcher(
-            modules, funcs, cancel, content, loaders.funcs, declared_global, loaders.modules
+            modules,
+            funcs,
+            cancel,
+            content,
+            loaders.funcs,
+            declared_global,
+            loaders.modules,
+            scoped_imports,
         )
         self._cached = (content, matcher)
         return matcher
