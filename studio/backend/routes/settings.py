@@ -124,7 +124,7 @@ class ImageGenerationPresetParams(BaseModel):
     steps: int = Field(default = 9, ge = 1, le = 100)
     guidance: float = Field(default = 0, ge = 0, le = 20)
     batchSize: int = Field(default = 1, ge = 1, le = 32)
-    runs: int = Field(default = 1, ge = 1, le = 128)
+    runs: int = Field(default = 1, ge = 1)
 
 
 class VideoGenerationPresetParams(BaseModel):
@@ -243,23 +243,79 @@ def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[A
     return result, removed
 
 
-def _validated_without_invalid_fields(schema: type[BaseModel], payload: dict) -> BaseModel:
+def _validated_without_invalid_fields(
+    schema: type[BaseModel], payload: dict
+) -> tuple[BaseModel, list[tuple[Any, ...]]]:
     """Validate, dropping only the fields that fail.
 
     Resetting the whole recipe over one unreadable field would hand the client schema defaults,
     which it then autosaves over the rest of a perfectly good stored recipe.
     """
     remaining = payload
+    removed_locations = []
     while True:
         try:
-            return schema.model_validate(remaining)
+            return schema.model_validate(remaining), removed_locations
         except ValidationError as exc:
             for error in exc.errors():
-                remaining, removed = _without_field_at_location(remaining, error.get("loc", ()))
+                location = tuple(error.get("loc", ()))
+                remaining, removed = _without_field_at_location(remaining, location)
                 if removed:
+                    removed_locations.append(location)
                     break
             else:
-                return schema()
+                return schema(), removed_locations
+
+
+_MISSING = object()
+
+
+def _value_at_location(value: Any, location: tuple[Any, ...]) -> Any:
+    for key in location:
+        if not isinstance(value, dict) or key not in value:
+            return _MISSING
+        value = value[key]
+    return value
+
+
+def _with_value_at_location(
+    value: Any, location: tuple[Any, ...], replacement: Any
+) -> tuple[Any, bool]:
+    if not location:
+        return replacement, True
+    key, *rest = location
+    if not isinstance(value, dict) or key not in value:
+        return value, False
+    result = dict(value)
+    nested, replaced = _with_value_at_location(result[key], tuple(rest), replacement)
+    if replaced:
+        result[key] = nested
+    return result, replaced
+
+
+def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
+    """Do not mistake a recovery default for an edit to an unreadable stored field.
+
+    A downgraded GET omits known fields whose values this schema cannot validate, then Pydantic
+    supplies their defaults in the response. The client cannot tell those defaults from stored
+    values and echoes them in its next state write. Preserve the raw leaf only while the submitted
+    value is still the synthesized value; a real edit remains authoritative.
+    """
+    recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
+    recovered_values = recovered.model_dump()
+    merged = submitted
+    for location in locations:
+        previous = _value_at_location(stored, location)
+        submitted_value = _value_at_location(submitted, location)
+        recovered_value = _value_at_location(recovered_values, location)
+        if (
+            previous is not _MISSING
+            and submitted_value is not _MISSING
+            and recovered_value is not _MISSING
+            and submitted_value == recovered_value
+        ):
+            merged, _ = _with_value_at_location(merged, location, previous)
+    return merged
 
 
 def _validated_readable_model(schema: type[BaseModel], payload: Any) -> Optional[BaseModel]:
@@ -287,7 +343,9 @@ def _get_generation_preset_settings(kind, schema):
         state = {
             key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
         }
-        response = _validated_without_invalid_fields(schema, {**state, "customPresets": readable})
+        response, _ = _validated_without_invalid_fields(
+            schema, {**state, "customPresets": readable}
+        )
     response.saved = bool(stored)
     return response
 
@@ -306,7 +364,13 @@ def get_image_generation_preset_settings(
 def update_image_generation_preset_settings(
     payload: ImageGenerationPresetState, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
-    set_media_generation_preset_settings("image", payload.model_dump())
+    set_media_generation_preset_settings(
+        "image",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            ImageGenerationPresetState, stored, submitted
+        ),
+    )
     return {"saved": True}
 
 
@@ -324,7 +388,13 @@ def get_video_generation_preset_settings(
 def update_video_generation_preset_settings(
     payload: VideoGenerationPresetState, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, bool]:
-    set_media_generation_preset_settings("video", payload.model_dump())
+    set_media_generation_preset_settings(
+        "video",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            VideoGenerationPresetState, stored, submitted
+        ),
+    )
     return {"saved": True}
 
 

@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from threading import RLock
-from typing import Callable, Literal
+from typing import Callable, Literal, Optional
 
 
 MediaGenerationKind = Literal["image", "video"]
@@ -46,7 +46,11 @@ def get_media_generation_preset_settings(kind: MediaGenerationKind) -> dict:
         return _stored_settings(kind)
 
 
-def set_media_generation_preset_settings(kind: MediaGenerationKind, settings: dict) -> None:
+def set_media_generation_preset_settings(
+    kind: MediaGenerationKind,
+    settings: dict,
+    preserve_recovered: Optional[Callable[[dict, dict], dict]] = None,
+) -> None:
     """Write the page's current recipe and selection, never the named presets.
 
     Those have their own endpoints so a debounced state write can never race a save or a delete
@@ -55,9 +59,12 @@ def set_media_generation_preset_settings(kind: MediaGenerationKind, settings: di
     from storage.studio_db import upsert_app_settings
     with _settings_lock:
         stored = _stored_settings(kind)
+        submitted = {**settings, "customPresets": stored.get("customPresets", [])}
+        if preserve_recovered is not None:
+            submitted = preserve_recovered(stored, submitted)
         updated = _with_unknown_preserved(
             stored,
-            {**settings, "customPresets": stored.get("customPresets", [])},
+            submitted,
         )
         upsert_app_settings({_setting_key(kind): updated})
 

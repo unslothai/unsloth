@@ -3,6 +3,7 @@
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from auth.authentication import get_current_subject
 from routes import settings as settings_routes
@@ -81,7 +82,7 @@ def test_image_preset_payload_accepts_generation_control_limits(monkeypatch):
     response = client.put(
         "/api/settings/generation-presets/image",
         json = {
-            "currentParams": {"batchSize": 32, "runs": 128},
+            "currentParams": {"batchSize": 32, "runs": 129},
             "activePreset": "Default",
         },
     )
@@ -319,16 +320,14 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
 def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
     # The response is still "saved", so the client applies and autosaves it. Handing back schema
     # defaults for a recipe that read fine would overwrite the stored one.
-    client = _client(
-        monkeypatch,
-        {
-            "image_generation_presets": {
-                "activePreset": "X" * 200,
-                "currentParams": {"steps": 24, "guidance": 3.5},
-                "customPresets": [{"name": "Keep", "params": {"steps": 20}}],
-            }
-        },
-    )
+    stored = {
+        "image_generation_presets": {
+            "activePreset": "X" * 200,
+            "currentParams": {"steps": 24, "guidance": 3.5},
+            "customPresets": [{"name": "Keep", "params": {"steps": 20}}],
+        }
+    }
+    client = _client(monkeypatch, stored)
 
     body = client.get("/api/settings/generation-presets/image").json()
 
@@ -337,25 +336,48 @@ def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
     assert body["currentParams"]["guidance"] == 3.5
     assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
 
+    echoed = {"activePreset": body["activePreset"], "currentParams": body["currentParams"]}
+    assert client.put("/api/settings/generation-presets/image", json = echoed).status_code == 200
+    assert stored["image_generation_presets"]["activePreset"] == "X" * 200
 
-def test_one_unreadable_nested_recipe_field_does_not_reset_its_siblings(monkeypatch):
-    client = _client(
-        monkeypatch,
-        {
-            "image_generation_presets": {
-                "activePreset": "Keep",
-                "currentParams": {"steps": 24, "guidance": 100},
-                "customPresets": [{"name": "Keep", "params": {"steps": 24}}],
-            }
-        },
-    )
+    echoed["activePreset"] = "Keep"
+    assert client.put("/api/settings/generation-presets/image", json = echoed).status_code == 200
+    assert stored["image_generation_presets"]["activePreset"] == "Keep"
 
-    body = client.get("/api/settings/generation-presets/image").json()
+
+@pytest.mark.parametrize(("kind", "recovered_guidance"), (("image", 0), ("video", 1)))
+def test_one_unreadable_nested_recipe_field_does_not_reset_its_siblings(
+    monkeypatch, kind, recovered_guidance
+):
+    stored = {
+        f"{kind}_generation_presets": {
+            "activePreset": "Keep",
+            "currentParams": {"steps": 24, "guidance": 100},
+            "customPresets": [{"name": "Keep", "params": {"steps": 24}}],
+        }
+    }
+    client = _client(monkeypatch, stored)
+
+    body = client.get(f"/api/settings/generation-presets/{kind}").json()
 
     assert body["activePreset"] == "Keep"
     assert body["currentParams"]["steps"] == 24
-    assert body["currentParams"]["guidance"] == 0
+    assert body["currentParams"]["guidance"] == recovered_guidance
     assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
+
+    # The client echoes the recovered representation after any recipe change. Its synthesized
+    # guidance default must not replace the raw value merely because this older schema was opened.
+    body["currentParams"]["steps"] = 30
+    echoed = {"activePreset": body["activePreset"], "currentParams": body["currentParams"]}
+    assert client.put(f"/api/settings/generation-presets/{kind}", json = echoed).status_code == 200
+    kept = stored[f"{kind}_generation_presets"]["currentParams"]
+    assert kept["steps"] == 30
+    assert kept["guidance"] == 100
+
+    # An actual edit to the recovered field still replaces the unreadable value.
+    echoed["currentParams"]["guidance"] = 5
+    assert client.put(f"/api/settings/generation-presets/{kind}", json = echoed).status_code == 200
+    assert stored[f"{kind}_generation_presets"]["currentParams"]["guidance"] == 5
 
 
 def test_preset_bounds_match_the_generation_request(monkeypatch):
