@@ -4792,14 +4792,18 @@ if ($_verifyUpdate) {
     # PEP 503-normalized on both sides, matching importlib.metadata's own lookup, and
     # PYTHONPATH and working-directory entries are dropped from sys.path so same-name
     # metadata outside the managed environment cannot satisfy the probe (python -c
-    # leaves the inherited cwd on sys.path; the shell probe's -I covers both).
-    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]; sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]; import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
+    # leaves the inherited cwd on sys.path; the shell probe's -I covers both) --
+    # except the interpreter's own site-packages, which stays even when the caller
+    # launched from inside it or named it on PYTHONPATH. Metadata only counts when
+    # its recorded top-level modules exist on disk: a leftover dist-info with the
+    # payload deleted still reports a version.
+    $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; import importlib.metadata as m, importlib.util, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _d = next((d for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), None); _tl = ((_d.read_text('top_level.txt') if _d is not None else None) or '').split(); _files = (_d.files if _d is not None else None) or []; _ftops = [_f for _f in _files if len(_f.parts) == 2 and _f.parts[1] == '__init__.py'] or [_f for _f in _files if len(_f.parts) == 1 and str(_f).endswith('.py')]; _broken = (not any(importlib.util.find_spec(_t) for _t in _tl if _t)) if _tl else (bool(_ftops) and not any(_d.locate_file(_f).exists() for _f in _ftops)); print('POSTVER=' + ('__MISSING__' if (_d is None or _broken) else _d.version))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
     $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
     if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
-        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, sys; _pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]; sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
+        $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import os, site, sys; _keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else [])); _pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p); _pp.add(os.getcwd()); sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]; from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
@@ -4833,8 +4837,11 @@ if ($_verifyUpdate) {
                 $_relPathB64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_relPath))
                 $_bestCode = @"
 import base64, os, sys
-_pp = [os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p] + [os.getcwd()]
-sys.path[:] = [_sp for _sp in sys.path if _sp and os.path.abspath(_sp) not in _pp]
+import site
+_keep = set(os.path.abspath(_k) for _k in (site.getsitepackages() if hasattr(site, 'getsitepackages') else []))
+_pp = set(os.path.abspath(_p) for _p in (os.environ.get('PYTHONPATH') or '').split(os.pathsep) if _p)
+_pp.add(os.getcwd())
+sys.path[:] = [_sp for _sp in sys.path if _sp and (os.path.abspath(_sp) in _keep or os.path.abspath(_sp) not in _pp)]
 try:
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version, InvalidVersion

@@ -1666,12 +1666,27 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
         # -I so an inherited PYTHONPATH cannot satisfy the probe with same-name
         # metadata from outside the managed venv
         POST_VER=$("$VENV_DIR/bin/python" -I -c "
-import sys
-from importlib.metadata import version, PackageNotFoundError
+import importlib.util, sys
+from importlib.metadata import distribution, PackageNotFoundError
 try:
-    print(version(sys.argv[1]))
+    d = distribution(sys.argv[1])
 except PackageNotFoundError:
     print('__MISSING__')
+    sys.exit(0)
+# a leftover dist-info with the payload deleted still reports a version:
+# metadata only counts when its top-level modules are actually loadable
+# (find_spec locates without importing). RECORD existence is the fallback
+# for wheels without top_level.txt; 3.14+ already filters d.files to what
+# exists, so an empty ftops there falls back to trusting the metadata.
+tops = (d.read_text('top_level.txt') or '').split()
+if tops:
+    broken = not any(importlib.util.find_spec(t) for t in tops if t)
+else:
+    files = d.files or []
+    ftops = [f for f in files if len(f.parts) == 2 and f.parts[1] == '__init__.py'] \
+        or [f for f in files if len(f.parts) == 1 and str(f).endswith('.py')]
+    broken = bool(ftops) and not any(d.locate_file(f).exists() for f in ftops)
+print('__MISSING__' if broken else d.version)
 " "$_PKG_NAME" 2>/dev/null || echo "")
         _UPDATE_OK=false
         if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
