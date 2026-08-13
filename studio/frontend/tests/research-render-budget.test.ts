@@ -73,6 +73,15 @@ test("plugin needs follow the document", () => {
   assert.equal(markdownPluginNeeds("costs $5 to run").math, false);
   assert.equal(markdownPluginNeeds("```mermaid\ngraph TD;\n```").mermaid, true);
   assert.equal(markdownPluginNeeds("```python\npass\n```").mermaid, false);
+  // CommonMark opens a fenced block with three-or-more backticks *or* tildes, and allows a
+  // longer fence than three of either. All of these reach the renderer as lang "mermaid".
+  assert.equal(markdownPluginNeeds("~~~mermaid\ngraph TD;\n~~~").mermaid, true);
+  assert.equal(markdownPluginNeeds("````mermaid\ngraph TD;\n````").mermaid, true);
+  assert.equal(markdownPluginNeeds("~~~~mermaid\ngraph TD;\n~~~~").mermaid, true);
+  assert.equal(markdownPluginNeeds("~~~ mermaid\ngraph TD;\n~~~").mermaid, true);
+  assert.equal(markdownPluginNeeds("~~~python\npass\n~~~").mermaid, false);
+  // Two tildes is strikethrough, not a fence.
+  assert.equal(markdownPluginNeeds("~~mermaid~~ is a tool").mermaid, false);
 });
 
 test("highlighting is capped, and the cap is one constant", () => {
