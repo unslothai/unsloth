@@ -3,6 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
+import { autoscrollDelta } from "./autoscroll";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
   type ReactElement,
@@ -72,6 +73,24 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
+// Nearest ancestor that actually scrolls, so a drag can pull the list along with
+// it. In the storage dialog this is the detail pane's overflow-y-auto wrapper.
+function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (
+      (overflowY === "auto" || overflowY === "scroll") &&
+      node.scrollHeight > node.clientHeight
+    ) {
+      return node;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+
 // Reorderable list of prompt texts. Rows are keyed by a synthetic uid rather
 // than by array index so React keeps each textarea (and its DOM node) attached
 // to its text through a reorder. Index keys would swap the values under the
@@ -91,6 +110,7 @@ export function SortablePromptItems({
   const [draggingUid, setDraggingUid] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const pointerYRef = useRef(0);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevRects = useRef(new Map<string, DOMRect>());
   const uidsRef = useRef(uids);
@@ -160,6 +180,7 @@ export function SortablePromptItems({
       // stops receiving pointermove after the very first swap and the drag dies
       // one row in. The window listener in the effect below outlives the move.
       e.preventDefault();
+      pointerYRef.current = e.clientY;
       setDraggingUid(uid);
     },
     [],
@@ -167,10 +188,12 @@ export function SortablePromptItems({
 
   useEffect(() => {
     if (!draggingUid) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const scroller = findScrollParent(container);
+    let raf = 0;
 
-    const onMove = (e: PointerEvent) => {
-      const container = containerRef.current;
-      if (!container) return;
+    const evaluate = () => {
       const order = uidsRef.current;
       const from = order.indexOf(draggingUid);
       if (from < 0) return;
@@ -179,7 +202,7 @@ export function SortablePromptItems({
       // animation leaves a translateY on every row it moved, and a client rect
       // reports that transformed position, so mid-flight the rows would claim
       // to still be where they were. offsetTop/offsetHeight ignore transforms.
-      const localY = e.clientY - container.getBoundingClientRect().top;
+      const localY = pointerYRef.current - container.getBoundingClientRect().top;
       let to = order.length - 1;
       for (let i = 0; i < order.length; i++) {
         const el = rowRefs.current.get(order[i]);
@@ -192,12 +215,36 @@ export function SortablePromptItems({
       if (to !== from) applyOrder(from, to);
     };
 
+    // Holding near an edge scrolls the pane and re-runs the hit-test, so a list
+    // taller than the pane can be reordered end to end. pointerdown suppresses
+    // the browser's own drag gesture, so without this the reachable range is
+    // whatever happens to be on screen -- which matters most on touch.
+    const tick = () => {
+      if (scroller) {
+        const rect = scroller.getBoundingClientRect();
+        const delta = autoscrollDelta(pointerYRef.current, rect.top, rect.bottom);
+        if (delta !== 0) {
+          const limit = scroller.scrollHeight - scroller.clientHeight;
+          const before = scroller.scrollTop;
+          scroller.scrollTop = Math.max(0, Math.min(limit, before + delta));
+          if (scroller.scrollTop !== before) evaluate();
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    const onMove = (e: PointerEvent) => {
+      pointerYRef.current = e.clientY;
+      evaluate();
+    };
     const onUp = () => setDraggingUid(null);
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
