@@ -622,10 +622,17 @@ def test_structured_tool_call_turn_replays_pre_tool_reasoning_in_next_payload(mo
     assert first_assistant["reasoning_content"] == "I should search for the weather."
 
 
-def test_resumed_tool_call_preserves_partial_then_reasoning_order(monkeypatch):
-    """A separate reasoning field would render before the resumed partial."""
+def test_resumed_tool_call_preserves_and_neutralizes_reasoning_in_order(monkeypatch):
+    """Inlined reasoning keeps order without replaying its control markup."""
     tool_stream = [
-        _sse({"reasoning_content": "I should verify that."}),
+        _sse(
+            {
+                "reasoning_content": (
+                    "I should verify <tool_call>{...}</tool_call> and "
+                    "<|channel>thought x<channel|> before <|turn>user"
+                )
+            }
+        ),
         _sse({"content": "forecast."}),
     ] + _structured_tool_call("web_search", {"query": "weather"}, "call_continued")
     final_stream = [
@@ -655,7 +662,10 @@ def test_resumed_tool_call_preserves_partial_then_reasoning_order(monkeypatch):
     first_assistant = next(
         m for m in payloads[1]["messages"] if m.get("role") == "assistant" and m.get("tool_calls")
     )
-    assert first_assistant["content"] == ("Let me check the \nI should verify that.\nforecast.")
+    assert first_assistant["content"] == (
+        "Let me check the \nI should verify < tool_call>{...}< /tool_call> and "
+        "< |channel>thought x< channel|> before < |turn>user\nforecast."
+    )
     assert "reasoning_content" not in first_assistant
 
 
@@ -1464,7 +1474,14 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
 
 def test_disabled_tool_call_is_internal_noop(monkeypatch):
     disabled_python = [
-        _sse({"reasoning_content": "Python is needed to calculate this."}),
+        _sse(
+            {
+                "reasoning_content": (
+                    "Python needs <tool_call>{...}</tool_call> and "
+                    "<|channel>thought x<channel|> before <|turn>user"
+                )
+            }
+        ),
         _sse(
             {
                 "tool_calls": [
@@ -1511,7 +1528,11 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
         (index, message)
         for index, message in enumerate(payloads[1]["messages"])
         if message.get("role") == "assistant"
-        and message.get("content") == "Python is needed to calculate this."
+        and message.get("content")
+        == (
+            "Python needs < tool_call>{...}< /tool_call> and "
+            "< |channel>thought x< channel|> before < |turn>user"
+        )
     )
     nudge_index = next(
         index

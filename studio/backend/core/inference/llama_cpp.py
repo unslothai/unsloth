@@ -16732,6 +16732,7 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 append_assistant_turn,
+                neutralize_control_markup,
                 neutralize_control_markup_in_messages,
             )
 
@@ -17615,7 +17616,11 @@ class LlamaCppBackend:
                         # the generated trace in content, with neutral line boundaries,
                         # so the merge below preserves partial, reasoning, content, then
                         # tool-call order without inventing model-specific channel tags.
-                        assistant_msg["content"] = f"\n{reasoning_accum}"
+                        safe_reasoning = neutralize_control_markup(
+                            reasoning_accum,
+                            self.markup_profile,
+                        )
+                        assistant_msg["content"] = f"\n{safe_reasoning}"
                         if content_text:
                             assistant_msg["content"] += f"\n{content_text}"
                     else:
@@ -17815,7 +17820,10 @@ class LlamaCppBackend:
                     # tool_calls. Some templates only render structured reasoning
                     # on tool-call turns; replay it as content before the no-op nudge.
                     if assistant_msg.get("reasoning_content"):
-                        assistant_msg["content"] = reasoning_accum
+                        assistant_msg["content"] = neutralize_control_markup(
+                            reasoning_accum,
+                            self.markup_profile,
+                        )
                         if content_text:
                             assistant_msg["content"] += f"\n{content_text}"
                         del assistant_msg["reasoning_content"]
