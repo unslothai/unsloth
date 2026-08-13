@@ -169,6 +169,33 @@ export function setProviderModelCapabilities(
   persistProviderModelCapabilities();
 }
 
+/** Drop persisted capabilities for provider types the registry no longer lists.
+ *
+ * This map outlives the backend that wrote it: it is localStorage, so a browser
+ * carries it across a downgrade, and a per-entry write can only ever correct the
+ * entries the registry still returns. A provider that has been hidden or that a
+ * rolled-back backend does not know about is simply absent from the response, so
+ * without this its last-known `studio_tools: true` latches forever and the
+ * composer keeps offering a loop that backend cannot run.
+ *
+ * Convergence is the point: the registry response is the whole truth about which
+ * provider types exist, so an empty one legitimately means "none", and clearing
+ * is the safe direction anyway (an unknown capability reads as null, which every
+ * caller treats as "not capable").
+ */
+export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<string>): void {
+  hydrateProviderModelCapabilities();
+  const known = new Set(knownProviderTypes);
+  let removed = false;
+  for (const providerType of [...REGISTRY_MODEL_CAPABILITIES.keys()]) {
+    if (!known.has(providerType)) {
+      REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+      removed = true;
+    }
+  }
+  if (removed) persistProviderModelCapabilities();
+}
+
 
 export function providerModelSupportsVision(
   providerType: string | null | undefined,

@@ -173,7 +173,16 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
                 summary_parts.append({"type": "summary_text", "text": text})
     # `id` and `summary` only: Responses rejects `status` on an input item
     # ("Unknown parameter: 'input[1].status'"), which 400d every replayed edit.
-    return {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    replay: dict[str, Any] = {"type": "reasoning", "id": item_id, "summary": summary_parts}
+    # A zero-data-retention org has `store=false` forced on it, and OpenAI then
+    # attaches `encrypted_content` to every reasoning item because the id alone
+    # resolves to nothing server-side on the next turn. Carry it whenever it is
+    # present: without it the replay is an id pointing at a response that was
+    # never stored.
+    encrypted = item.get("encrypted_content")
+    if isinstance(encrypted, str) and encrypted:
+        replay["encrypted_content"] = encrypted
+    return replay
 
 
 # OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
@@ -4784,10 +4793,15 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # Collected rather than appended directly: the turn's reasoning
+                # items have to lead it, and whether any of them may be replayed
+                # at all is only known once the function_call items survive the
+                # server-builtin filter below.
+                _turn_items: list[dict[str, Any]] = []
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
-                    input_items.append({"role": "assistant", "content": content})
+                    _turn_items.append({"role": "assistant", "content": content})
                 elif isinstance(content, list):
                     _asst_parts: list[dict[str, Any]] = []
                     for _part in content:
@@ -4806,7 +4820,7 @@ class ExternalProviderClient:
                             if _u:
                                 _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
-                        input_items.append({"role": "assistant", "content": _asst_parts})
+                        _turn_items.append({"role": "assistant", "content": _asst_parts})
 
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
@@ -4838,9 +4852,37 @@ class ExternalProviderClient:
                     if _is_server_builtin:
                         skipped_server_builtin_call_ids.add(_call_id_out)
                         continue
-                    input_items.append(
+                    _turn_items.append(
                         responses_function_call(_call_id_out, _fn["name"], _args_raw)
                     )
+                # OpenAI requires the reasoning items that came back alongside a
+                # tool call to be replayed with the function_call /
+                # function_call_output pair whenever the history is managed by
+                # hand, which is exactly what the Studio tool loop does: "any
+                # reasoning items returned in model responses with tool calls
+                # must also be passed back with tool call outputs"
+                # (https://developers.openai.com/api/docs/guides/function-calling).
+                # Dropping them loses the model's chain of thought across every
+                # local tool hop and misses the prompt cache on the turn after.
+                #
+                # They lead the turn, matching response.output order, and only
+                # when something followed them survived: a trailing reasoning
+                # item is a hard 400 ("Item 'rs_...' of type 'reasoning' was
+                # provided without its required following item"), so a turn whose
+                # calls were all dropped server-side builtins replays none.
+                if _turn_items:
+                    _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                    _reasoning_replay = (
+                        _msg_extra.get("openai_responses_reasoning")
+                        if isinstance(_msg_extra, dict)
+                        else None
+                    )
+                    if isinstance(_reasoning_replay, list):
+                        for _r_item in _reasoning_replay:
+                            _replay = _sanitize_openai_reasoning_replay_item(_r_item)
+                            if _replay:
+                                input_items.append(_replay)
+                input_items.extend(_turn_items)
                 # Assistant text already emitted above (in order) so we don't
                 # fall through to the generic content branches.
                 continue
@@ -5978,13 +6020,29 @@ class ExternalProviderClient:
                                         }
                                     )
                                     sc_state["tool_end_emitted"] = True
+                                # Hand this turn's reasoning items back so the
+                                # next request can replay them beside the
+                                # function_call they belong to; the tool loop
+                                # latches delta.extra_content onto the assistant
+                                # message it rebuilds. Only on a turn that
+                                # actually called a tool: prose needs none, and
+                                # shipping them would grow every following body
+                                # for nothing. Mirrors the openai_codex client's
+                                # openai_codex_reasoning.
+                                _terminal_delta: dict[str, Any] = {}
+                                if saw_function_call and openai_reasoning_replay_items:
+                                    _terminal_delta["extra_content"] = {
+                                        "openai_responses_reasoning": list(
+                                            openai_reasoning_replay_items.values()
+                                        )
+                                    }
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {},
+                                            "delta": _terminal_delta,
                                             "finish_reason": (
                                                 "tool_calls" if saw_function_call else "stop"
                                             ),

@@ -25,6 +25,7 @@ import {
   removeExternalProviderApiKey,
 
   PROVIDER_CAPABILITY_WILDCARD,
+  pruneProviderModelCapabilities,
   setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
@@ -155,6 +156,11 @@ export async function syncExternalProvidersFromBackend(
     }
     setProviderModelCapabilities(entry.provider_type, capabilities);
   }
+  // Writing per returned entry can only correct what came back. Capabilities are
+  // persisted in localStorage and outlive the backend that wrote them, so a
+  // provider the registry has stopped listing (hidden, or unknown to a rolled
+  // back backend) would otherwise keep its last `studio_tools: true` forever.
+  pruneProviderModelCapabilities(registryRows.map((entry) => entry.provider_type));
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
     saveLegacyKey: migrateProviderApiKey,

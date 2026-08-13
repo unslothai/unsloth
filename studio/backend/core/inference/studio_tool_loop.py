@@ -611,6 +611,13 @@ async def stream_with_studio_tools(
                 if payload is None:
                     yield line
                     continue
+                # OpenRouter and friends resolve a routing alias to a concrete
+                # model and name it on every chunk. That id is more specific than
+                # the one the request asked for, so let it win for the summed
+                # usage chunk this loop emits once the answer ends.
+                upstream_model = payload.get("model")
+                if isinstance(upstream_model, str) and upstream_model:
+                    model_name = upstream_model
                 if "usage" in payload:
                     _merge_usage(usage_totals, payload.get("usage"))
                     if _is_usage_only(payload):
