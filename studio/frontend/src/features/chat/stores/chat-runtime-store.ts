@@ -365,6 +365,9 @@ function saveSettingsPatch(patch: SettingsPatch): void {
 if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", () => {
     if (pendingTimer !== null) clearTimeout(pendingTimer);
+    // An edit still waiting on hydration is a user edit like any other, and the
+    // tab is closing, so send it rather than let the next session hydrate over it.
+    drainPreHydrationPatch();
     if (Object.keys(pendingPatch).length === 0) return;
     inflightFlush = inflightFlush
       .catch(() => undefined)
@@ -571,6 +574,13 @@ function mirrorSettingToBackend(key: string, raw: string): void {
     return;
   }
   saveSettingsPatch(patch);
+}
+
+/** Move any held startup edits onto the outgoing patch. */
+function drainPreHydrationPatch(): void {
+  if (!preHydrationPatch) return;
+  mergePatch(pendingPatch, preHydrationPatch);
+  preHydrationPatch = null;
 }
 
 /** Replay the edits made while the initial GET was still in flight. */
