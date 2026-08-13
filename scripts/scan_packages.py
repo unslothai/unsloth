@@ -955,7 +955,7 @@ class _Aliases:
         self.loaders = frozenset(_DEFAULT_LOADER_FUNCS | (loader_funcs or set()))
 
 
-def _cancel_add(cancel: dict, opened: dict, name: str, at: int, col: int) -> None:
+def _cancel_add(cancel: dict, opened: dict, levels: list, name: str, at: int, col: int) -> None:
     """Record that `name` stops being the module at offset `at`, indent `col`.
 
     A rebinding only reaches a call inside the block it is written in: `def f():
@@ -966,6 +966,11 @@ def _cancel_add(cancel: dict, opened: dict, name: str, at: int, col: int) -> Non
     open at this indent or shallower decides every call the new one would, so
     the record stays at one entry per indent level however many times a hostile
     file rebinds the name.
+
+    `levels` holds those same spans grouped by indent, deepest last, so closing
+    a block reaches only the spans that block actually ends. Every statement
+    closes and only a rebinding opens, so the walk over every name ever opened
+    is the one shape that must stay off the per-statement path.
     """
     stack = opened.setdefault(name, [])
     if stack and stack[-1][1] <= col:
@@ -973,13 +978,33 @@ def _cancel_add(cancel: dict, opened: dict, name: str, at: int, col: int) -> Non
     entry = [at, col, None]
     cancel.setdefault(name, []).append(entry)
     stack.append(entry)
+    # `_cancel_close` has already ended every span deeper than `col`, so the
+    # deepest surviving group is at `col` or shallower and the list stays sorted.
+    if levels and levels[-1][0] == col:
+        levels[-1][1].append((name, entry))
+    else:
+        levels.append((col, [(name, entry)]))
 
 
-def _cancel_close(opened: dict, at: int, col: int) -> None:
-    """End the spans whose block a statement at `at`, indent `col`, has left."""
-    for stack in opened.values():
-        while stack and stack[-1][1] > col:
-            stack.pop()[2] = at
+def _cancel_close(opened: dict, levels: list, at: int, col: int) -> None:
+    """End the spans whose block a statement at `at`, indent `col`, has left.
+
+    Only the groups deeper than `col` are touched and each one ends once, so a
+    file holding N aliases rebound in a block and then N ordinary statements
+    costs N closes in total rather than N per statement. Walking `opened`
+    instead kept every name that had ever been rebound in the loop, empty stack
+    or not, which on a member allowed up to 64 MiB is enough to stall the scan.
+    """
+    while levels and levels[-1][0] > col:
+        for name, entry in levels.pop()[1]:
+            entry[2] = at
+            stack = opened.get(name)
+            if stack:
+                # The deepest span recorded for the name is the one in this
+                # group; a name re-armed meanwhile has no stack left to pop.
+                stack.pop()
+                if not stack:
+                    del opened[name]
 
 
 def _is_cancelled(frontier: list, start: int, col: int) -> bool:
@@ -1497,11 +1522,14 @@ class _ExecEvalPattern:
                 # does not inherit one: `def a(): b = model` stops deciding
                 # anything at the next statement written no deeper than it.
                 opened: dict = {}
+                # The same spans grouped by indent, so a statement that closes
+                # nothing costs one comparison however many names are open.
+                levels: list = []
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
-                    if opened:
-                        _cancel_close(opened, offsets.of(*head.start), head.start[1])
+                    if levels:
+                        _cancel_close(opened, levels, offsets.of(*head.start), head.start[1])
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         if cancel:
                             # Only once something is cancelled can an import
@@ -1540,7 +1568,7 @@ class _ExecEvalPattern:
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
-                        _cancel_add(cancel, opened, name, at, head.start[1])
+                        _cancel_add(cancel, opened, levels, name, at, head.start[1])
                     rebound.clear()
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or

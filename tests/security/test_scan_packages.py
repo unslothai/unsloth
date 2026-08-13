@@ -730,6 +730,45 @@ def test_alias_matching_stays_linear_on_hostile_source():
     assert elapsed < 1.0, f"alias collection is not linear: {elapsed:.2f}s"
 
 
+def test_closing_a_rebinding_block_does_not_walk_every_alias():
+    # Every statement closes the rebinding spans its block has left, and only a
+    # rebinding opens one. Checking each name ever opened made that per-statement
+    # walk cost the alias count, so N aliases rebound in one block followed by N
+    # ordinary statements cost N**2 - a way to stall a scan on members allowed
+    # up to 64 MiB. Measured on this shape before the fix: 0.64 s at N=3,000 and
+    # 1.92 s at N=6,000 (3.0x per doubling); after, 0.33 s and 0.68 s (2.05x).
+    # The assertion is the growth rate, so a slow runner moves both together.
+    def hostile(n):
+        return (
+            "import marshal\n"
+            + "".join(f"import builtins as a{i}\n" for i in range(n))
+            + "if flag:\n"
+            + "".join(f"    a{i} = m\n" for i in range(n))
+            + "".join(f"v{i} = 1\n" for i in range(n))
+            + "a0.exec(marshal.loads(BLOB))\n"
+        )
+
+    def best_of(src, rounds = 3):
+        out = []
+        for _ in range(rounds):
+            sp.RE_EXEC_EVAL._cached = None
+            start = time.monotonic()
+            findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
+            out.append(time.monotonic() - start)
+        # The rebindings sit in a block the call is below, so the alias is live
+        # again by the time it is called and the payload must still be flagged.
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the call below the closed block must still be flagged"
+        return min(out)
+
+    small = best_of(hostile(3_000))
+    large = best_of(hostile(6_000))
+    assert (
+        large < 2.6 * small
+    ), f"closing rebindings grows faster than the input: {small:.2f}s -> {large:.2f}s"
+
+
 def test_the_real_exec_builtin_is_still_flagged():
     # The narrowing must not cost a true positive: a bare builtin call beside the
     # same dynamic import is what the rule is for.
