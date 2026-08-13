@@ -3591,18 +3591,62 @@ def _is_overlayable_core_package(name: str) -> bool:
     return re.sub(r"[-_.]+", "-", name).lower() in ("unsloth", "unsloth-zoo")
 
 
+class _QuarantinedMetadata:
+    """Invalid metadata directories moved aside, restorable until committed.
+
+    pip cannot parse an unreadable record: a non-UTF-8 METADATA makes pip list,
+    show and uninstall raise for the whole environment, so the record has to be
+    out of the way before pip runs at all. Deleting it outright is not an
+    option either, because staging the replacement can still fail and a package
+    whose only record was deleted is left with files and no install at all.
+    """
+
+    def __init__(self) -> None:
+        self._holding = ""
+        self._moved: list = []
+
+    def take(self, paths) -> bool:
+        for path in paths:
+            if not self._holding:
+                self._holding = tempfile.mkdtemp(prefix = "unsloth_metadata_quarantine_")
+            target = os.path.join(self._holding, f"{len(self._moved)}_{os.path.basename(path)}")
+            try:
+                shutil.move(os.fspath(path), target)
+            except OSError:
+                return False
+            self._moved.append((os.fspath(path), target))
+        return True
+
+    def restore(self) -> None:
+        while self._moved:
+            original, target = self._moved.pop()
+            try:
+                shutil.move(target, original)
+            except OSError:
+                pass
+        self.discard()
+
+    def discard(self) -> None:
+        if self._holding:
+            shutil.rmtree(self._holding, ignore_errors = True)
+            self._holding = ""
+        self._moved.clear()
+
+
 def _stage_replacement(name: str):
-    """Download the wheel that will replace a package, before it is removed.
+    """Build the wheel that will replace a package, before it is removed.
 
     Returns a directory to install from, or None when the package cannot be
-    fetched -- which must abort the repair while the existing install is still
-    intact. Uses pip directly, as the uninstall loop does: this runs after the
-    unreadable records have been deleted, so pip can parse what remains.
+    obtained -- which must abort the repair while the existing install is still
+    intact. Uses pip directly, as the uninstall loop does.
+
+    pip wheel, not pip download: a source-only index leaves an sdist, and the
+    install that follows runs --no-index, so its isolated build could not fetch
+    setuptools and the package would stay uninstalled. Building here, while the
+    index is still reachable, keeps that install offline-safe.
     """
     staging = tempfile.mkdtemp(prefix = "unsloth_metadata_repair_")
-    # No --no-build-isolation: an index that only offers an sdist has to be able
-    # to build its metadata, exactly as the install that follows would.
-    cmd = [sys.executable, "-m", "pip", "download", "--no-deps", "--dest", staging, name]
+    cmd = [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", staging, name]
     result = subprocess.run(
         cmd,
         stdout = subprocess.PIPE,
@@ -3610,7 +3654,7 @@ def _stage_replacement(name: str):
         env = _install_env_for_cmd(cmd),
         **_windows_hidden_subprocess_kwargs(),
     )
-    if result.returncode != 0:
+    if result.returncode != 0 or not glob.glob(os.path.join(staging, "*.whl")):
         if VERBOSE and result.stdout:
             _safe_print(_redact_install_output(result.stdout))
         shutil.rmtree(staging, ignore_errors = True)
@@ -3652,19 +3696,20 @@ def _repair_duplicate_core_metadata(
 
     repaired: list[str] = []
     staging_dirs: list[str] = []
+    quarantine = _QuarantinedMetadata()
+    succeeded = False
     try:
         for name, record_count in duplicates:
             _step(_LABEL, f"duplicate metadata for {name} detected; reinstalling it", _dim)
             invalid_paths = install_manifest.invalid_metadata_paths(name)
-            for path in invalid_paths:
-                try:
-                    shutil.rmtree(path)
-                except OSError:
-                    _safe_print(
-                        _red(f"   could not remove invalid metadata for {name}: {path}"),
-                        file = sys.stderr,
-                    )
-                    return False
+            # Move the unreadable records aside rather than delete them: pip
+            # cannot run while they are in place, and staging can still fail.
+            if not quarantine.take(invalid_paths):
+                _safe_print(
+                    _red(f"   could not move invalid metadata for {name} aside"),
+                    file = sys.stderr,
+                )
+                return False
             if invalid_paths:
                 importlib.invalidate_caches()
                 record_count = len(install_manifest.installed_versions(name))
@@ -3735,19 +3780,31 @@ def _repair_duplicate_core_metadata(
                 )
                 return False
             repaired.append(name)
+
+        importlib.invalidate_caches()
+        unresolved = [
+            name for name in repaired if not install_manifest.installed_version_probe(name)[0]
+        ]
+        if unresolved:
+            _safe_print(
+                _red(
+                    "   package metadata is inconsistent after reinstall: "
+                    + ", ".join(unresolved)
+                ),
+                file = sys.stderr,
+            )
+            return False
+        succeeded = True
+        return True
     finally:
         for staging in staging_dirs:
             shutil.rmtree(staging, ignore_errors = True)
-
-    importlib.invalidate_caches()
-    remaining = [name for name in repaired if not install_manifest.installed_version_probe(name)[0]]
-    if remaining:
-        _safe_print(
-            _red("   package metadata is inconsistent after reinstall: " + ", ".join(remaining)),
-            file = sys.stderr,
-        )
-        return False
-    return True
+        # Anything short of a completed repair puts the quarantined records back,
+        # so a failure leaves the environment as it was found.
+        if succeeded:
+            quarantine.discard()
+        else:
+            quarantine.restore()
 
 
 def _translate_pip_args_for_uv(args: tuple[str, ...]) -> list[str]:

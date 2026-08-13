@@ -832,6 +832,91 @@ class TestDuplicateCoreMetadataRepair:
         assert installs == []
         assert "could not uninstall" in capsys.readouterr().err
 
+    def test_invalid_metadata_is_restored_when_staging_fails(self, monkeypatch, tmp_path):
+        """A package whose ONLY record is unreadable must survive a failed repair.
+
+        The record has to move out of pip's way before pip runs at all, but
+        deleting it and then failing to fetch the replacement leaves files with
+        no install, while the message claims nothing was touched.
+        """
+        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        malformed.mkdir()
+        (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        probes = iter(([""], []))
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: None)
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
+        assert malformed.is_dir()
+        assert (malformed / "METADATA").read_bytes() == b"\xff\xfe"
+
+    def test_invalid_metadata_is_dropped_once_the_repair_completes(self, monkeypatch, tmp_path):
+        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        malformed.mkdir()
+        (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        probes = iter(([""], [], ["2026.8.15"]))
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(ips, "_stage_replacement", lambda _name: "/staged")
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert not malformed.exists()
+
+    def test_pip_is_never_asked_to_read_the_invalid_record(self, monkeypatch, tmp_path):
+        """A non-UTF-8 METADATA makes pip raise for the whole environment, so the
+        record must already be out of the tree when staging runs."""
+        malformed = tmp_path / "unsloth-2026.8.12.dist-info"
+        malformed.mkdir()
+        (malformed / "METADATA").write_bytes(b"\xff\xfe")
+        probes = iter(([""], [], ["2026.8.15"]))
+        seen = []
+
+        monkeypatch.setattr(
+            ips.install_manifest, "installed_versions", lambda _name: next(probes)
+        )
+        monkeypatch.setattr(
+            ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
+        )
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
+        monkeypatch.setattr(
+            ips, "_stage_replacement",
+            lambda _name: seen.append(malformed.exists()) or "/staged",
+        )
+        monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
+        monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
+
+        assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
+        assert seen == [False]
+
+    def test_staging_builds_a_wheel_so_the_offline_install_can_work(self):
+        """pip download leaves an sdist for a source-only index, and the install
+        that follows runs --no-index, so its isolated build cannot fetch
+        setuptools and the package stays uninstalled."""
+        source = inspect.getsource(ips._stage_replacement).replace(" ", "")
+        assert '"wheel","--no-deps","--wheel-dir"' in source
+        assert '"download"' not in source
+        assert 'glob.glob(os.path.join(staging,"*.whl"))' in source
+
     def test_staging_directories_are_cleaned_up(self, monkeypatch, tmp_path):
         staged = tmp_path / "staged"
         staged.mkdir()
