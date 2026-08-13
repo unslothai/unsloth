@@ -3453,6 +3453,12 @@ def _fetch_installer(installer_name: str, *, verbose: bool = False) -> Optional[
         request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio-update"})
         with opener.open(request, timeout = _INSTALLER_FETCH_TIMEOUT) as response:
             body = response.read(_INSTALLER_MAX_BYTES + 1)
+            # read(amt) returns what arrived and does NOT check it against
+            # Content-Length; only a further read() does, raising IncompleteRead on a
+            # short body. Without this a transfer cut off mid-file still carries the
+            # markers below and would be piped into bash as a half-written script.
+            if len(body) <= _INSTALLER_MAX_BYTES:
+                body += response.read()
     except (
         urllib.error.URLError,
         # IncompleteRead / a malformed proxy response raises at the HTTP framing layer,

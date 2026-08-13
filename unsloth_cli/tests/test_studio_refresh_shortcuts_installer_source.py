@@ -188,3 +188,71 @@ def test_oversized_and_html_responses_return_none(monkeypatch, tmp_path):
 
         monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
         assert studio._fetch_installer("install.sh") is None
+
+
+def test_a_truncated_body_is_never_executed(monkeypatch, tmp_path):
+    """read(amt) does not check Content-Length, so a cut-off transfer must be caught.
+
+    The markers sit early in install.sh, so a body truncated a third of the way in
+    still satisfies _looks_like_installer. Without the follow-up read() that forces
+    http.client to compare against the declared length, that half-written script
+    would be piped into bash.
+    """
+    import http.client
+
+    studio = _posix(monkeypatch, tmp_path)
+    full = _SH + b"create_studio_shortcuts --shortcuts-only\n" + b"# tail\n" * 500
+    short = full[: len(full) // 3]
+    assert studio._looks_like_installer(
+        short, "install.sh"
+    ), "the truncated prefix still looks valid"
+
+    class _Response:
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, n = None):
+            self.calls += 1
+            if self.calls == 1:
+                return short
+            # What http.client raises when the body is shorter than Content-Length.
+            raise http.client.IncompleteRead(b"", len(full) - len(short))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, *a, **k):
+            return _Response()
+
+    monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
+    assert studio._fetch_installer("install.sh") is None
+
+
+def test_a_complete_body_survives_the_completeness_check(monkeypatch, tmp_path):
+    """The follow-up read() must not break the normal case: b"" means we have it all."""
+    studio = _posix(monkeypatch, tmp_path)
+
+    class _Response:
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, n = None):
+            self.calls += 1
+            return _SH if self.calls == 1 else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, *a, **k):
+            return _Response()
+
+    monkeypatch.setattr(studio.urllib.request, "build_opener", lambda *a, **k: _Opener())
+    assert studio._fetch_installer("install.sh") == _SH
