@@ -28,18 +28,23 @@ class _FakeEngine:
         self,
         repo_id = "unsloth/FLUX.1-dev",
         loaded = True,
+        **build,
     ):
         self.repo_id = repo_id
         self.loaded = loaded
         self.loading: tuple[str, ...] = ()
         self.active = False
         self.unloads = 0
+        # The rest of the build identity the real backends publish (H3 task, quants).
+        self.build = dict(build)
 
     def status(self):
+        rest = self.build if self.loaded else dict.fromkeys(self.build)
         return {
             "loaded": self.loaded,
             "repo_id": self.repo_id if self.loaded else None,
             "gguf_variant": None,
+            **rest,
         }
 
     def loading_repo_ids(self):
@@ -105,6 +110,23 @@ def test_media_ttl_env_overrides_and_can_disable(monkeypatch):
     # Below the shared minimum is floored, not honoured.
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "5")
     assert settings.get_media_auto_unload_idle_seconds() == settings.MIN_AUTO_UNLOAD_IDLE_SECONDS
+
+
+def test_api_only_disables_the_media_ttl(monkeypatch):
+    # "Only unload models loaded by the API" promises a model the user loaded from
+    # Studio stays resident, and nothing but the user ever loads an image or video
+    # model: /images/load and /video/load are the only entry points, and
+    # /v1/images/generations 503s rather than loading one. So with the setting on
+    # there is nothing here the idle unload is allowed to free.
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    # The env override is vetoed too, exactly as residency vetoes it.
+    monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+    assert settings.get_media_auto_unload_idle_seconds() == 900
 
 
 def test_residency_vetoes_the_media_ttl(monkeypatch):
@@ -212,6 +234,47 @@ def test_a_different_model_restarts_the_ttl(media, monkeypatch):
     assert engine.unloads == 0
 
 
+def test_api_only_spares_a_model_the_user_loaded(media, monkeypatch):
+    # The whole feature is off while the setting is on, and off means today's behaviour:
+    # nothing resolved, nothing unloaded.
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 60)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    _step()
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 0
+    assert media[arb.VIDEO].unloads == 0
+    # Turned off again, the same idle models are collectable: the setting was the only
+    # thing sparing them, so this does not cost the feature anything else.
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+    _step()
+    _step(*_BOTH)
+    assert media[arb.DIFFUSION].unloads == 1
+    assert media[arb.VIDEO].unloads == 1
+
+
+def test_a_cached_reload_of_another_h3_partition_is_not_unloaded(media, monkeypatch):
+    # MiniMax-H3 keeps its identity in more than the repo id: fl2va and ref2va are
+    # different denoiser partitions, and the quants are part of the build too. A cached
+    # reload between two ticks lands with the old timestamp already expired, so an
+    # identity that cannot tell the partitions apart frees it the moment it arrives.
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    engine = media[arb.VIDEO]
+    engine.repo_id = "MiniMaxAI/MiniMax-H3"
+    engine.build = {"h3_task": "fl2va", "transformer_quant": "fp8", "text_encoder_quant": None}
+    _step()
+    engine.build["h3_task"] = "ref2va"
+    _step(arb.VIDEO)
+    assert engine.unloads == 0
+    # A quant swap is a rebuild as well.
+    engine.build["transformer_quant"] = None
+    _step(arb.VIDEO)
+    assert engine.unloads == 0
+    # Unchanged and idle, it is still collectable.
+    _step(arb.VIDEO)
+    assert engine.unloads == 1
+
+
 def test_disabled_ttl_never_touches_the_backends(media, monkeypatch):
     # Today's behaviour, and the default: nothing is resolved, nothing is unloaded.
     monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 0)
@@ -259,6 +322,53 @@ def test_generate_routes_map_to_their_backend():
     assert mk.owner_for_path("/api/inference/images/generate-progress") is None
     assert mk.owner_for_path("/api/inference/images/generate/cancel") is None
     assert mk.owner_for_path("/v1/chat/completions") is None
+
+
+def test_load_routes_map_to_their_backend():
+    # A load registers with the backend only PART WAY through its POST, so the route has
+    # to hold the gate for the whole of it: sampling loading_repo_ids() cannot see a load
+    # the route has been accepted for but not yet started.
+    assert mk.owner_for_path("/api/inference/images/load") == arb.DIFFUSION
+    assert mk.owner_for_path("/api/inference/video/load") == arb.VIDEO
+    # Progress polling is not a load, and neither is planning a download.
+    assert mk.owner_for_path("/api/inference/images/load-progress") is None
+    assert mk.owner_for_path("/api/inference/video/load-progress") is None
+    assert mk.owner_for_path("/api/inference/images/download-plan") is None
+
+
+def test_a_load_that_has_not_registered_yet_is_not_unloaded(media, monkeypatch):
+    # The check/start race. The tick reads the backend as idle with no load in flight, the
+    # user's load is accepted a moment later, and the unload that tick issues bumps the load
+    # token and signals the fresh cancel event: the worker exits without publishing an error
+    # and the page silently rolls the pick back. The window has to be closed, not narrowed,
+    # so the tick is pinned to the exact moment the route has started and the backend still
+    # reports nothing loading.
+    from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware
+
+    monkeypatch.setattr(settings, "get_media_auto_unload_idle_seconds", lambda: 60)
+    _step()
+    engine = media[arb.VIDEO]
+    seen = {}
+
+    async def _app(scope, receive, send):
+        # Inside the load route, before begin_load has registered anything.
+        assert engine.loading == ()
+        _idle(arb.VIDEO)
+        await mk.idle_unload_step()
+        seen["unloads"] = engine.unloads
+        # begin_load registers only now; from here loading_repo_ids() covers it.
+        engine.loading = ("MiniMaxAI/MiniMax-H3",)
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    scope = {"type": "http", "method": "POST", "path": "/api/inference/video/load"}
+    asyncio.run(LlamaKeepWarmMiddleware(_app)(scope, None, lambda message: _noop()))
+    assert seen["unloads"] == 0
+    assert engine.unloads == 0
+    assert mk._TRACKERS[arb.VIDEO]._inflight == 0
+    # The accepted load kept it: once the load is in flight the existing guard has it.
+    _step(arb.VIDEO)
+    assert engine.unloads == 0
 
 
 def test_the_middleware_counts_a_generation_against_its_backend(media, monkeypatch):

@@ -81,16 +81,24 @@ class _Tracker:
 
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 
-# Suffixes of the generate routes, matched the way llama_keepwarm matches its own: endswith,
+# Suffixes of the tracked routes, matched the way llama_keepwarm matches its own: endswith,
 # so */generate-progress and */generate/cancel (polled while the user watches) are not activity.
+# The load routes are here too: a load registers with the backend only part way through its
+# POST, so sampling loading_repo_ids() cannot see one that has been accepted but not started.
+# Holding the gate for the whole request closes that window rather than narrowing it.
 _OWNER_SUFFIXES = (
-    (("/images/generate", "/images/generations"), DIFFUSION),
-    (("/video/generate",), VIDEO),
+    (("/images/generate", "/images/generations", "/images/load"), DIFFUSION),
+    (("/video/generate", "/video/load"), VIDEO),
 )
+
+# Same prefixes llama_keepwarm tracks on: the media routes are mounted under both.
+_OWNER_PREFIXES = ("/v1/", "/api/inference/")
 
 
 def owner_for_path(path: str) -> Optional[str]:
-    """Which media backend a tracked inference path generates on, if any."""
+    """Which media backend a tracked inference path generates or loads on, if any."""
+    if not path.startswith(_OWNER_PREFIXES):
+        return None
     for suffixes, owner in _OWNER_SUFFIXES:
         if path.endswith(suffixes):
             return owner
@@ -157,10 +165,26 @@ def _busy(backend: Any) -> bool:
     return bool(backend.loading_repo_ids()) or bool(backend.generate_progress().get("active"))
 
 
-def _identity(status: dict[str, Any]) -> Optional[tuple[Any, Any]]:
+# What makes one resident build different from another. The repo id is not enough:
+# MiniMax-H3 stages a different denoiser per h3_task, so a cached fl2va -> ref2va reload
+# is a new build under the same id, and the quants are picked per load too. Only fields
+# fixed at load time, so nothing that moves under a resident model (a Speed=Auto compile
+# flips speed_optims mid-life) can be mistaken for a reload and keep it warm forever.
+_IDENTITY_FIELDS = (
+    "repo_id",
+    "base_repo",
+    "model_kind",
+    "gguf_variant",
+    "h3_task",
+    "transformer_quant",
+    "text_encoder_quant",
+)
+
+
+def _identity(status: dict[str, Any]) -> Optional[tuple[Any, ...]]:
     if not status.get("loaded"):
         return None
-    return (status.get("repo_id"), status.get("gguf_variant"))
+    return tuple(status.get(field) for field in _IDENTITY_FIELDS)
 
 
 async def _tick(tracker: _Tracker, ttl: float) -> None:

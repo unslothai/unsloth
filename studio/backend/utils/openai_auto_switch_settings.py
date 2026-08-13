@@ -210,8 +210,15 @@ def get_media_auto_unload_idle_seconds() -> int:
     Defaults to the chat TTL, so the one setting the user already has frees every
     heavy GPU consumer rather than only the GGUF. UNSLOTH_MEDIA_IDLE_TTL overrides
     it, including 0 to keep pipelines resident while chat still idle-unloads.
-    Residency vetoes it exactly like the chat reader.
+    Residency vetoes it exactly like the chat reader, and so does "only unload
+    models loaded by the API": /images/load and /video/load are the only way a
+    pipeline is ever loaded (the OpenAI images route 503s instead of loading one),
+    so every resident image or video model is one the user loaded from Studio and
+    the setting promises to leave it alone. Chat can tell its two origins apart
+    per model and still frees the API-loaded ones; here there is nothing to free.
     """
+    if get_auto_unload_api_only():
+        return 0
     env = _env_media_idle_seconds()
     if env is None:
         return get_auto_unload_idle_seconds()

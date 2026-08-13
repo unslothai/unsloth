@@ -289,11 +289,19 @@ class LlamaKeepWarmMiddleware:
         # Inference endpoints are all POST; skipping non-POST avoids counting CORS
         # preflight (OPTIONS). ``or ""`` guards an explicit None path.
         path = scope.get("path") or ""
-        if (
-            scope.get("type") != "http"
-            or scope.get("method") != "POST"
-            or not _is_inference_path(path)
-        ):
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+        # An image/video generation gets the same bookkeeping against ITS backend, so the
+        # media idle unload cannot free the pipeline this request is about to generate on
+        # -- or the load it is about to start. The media load routes are tracked HERE only:
+        # they do not use the chat GGUF, so they must not stamp chat activity nor count
+        # towards other_inference_request_count().
+        from core.inference import media_keepwarm
+
+        media_owner = media_keepwarm.owner_for_path(path)
+        chat_tracked = _is_inference_path(path)
+        if not chat_tracked and media_owner is None:
             await self.app(scope, receive, send)
             return
         # Always track in-flight on inference paths, even when the feature is off,
@@ -302,20 +310,16 @@ class LlamaKeepWarmMiddleware:
         # cheap and invisible to clients (the response is proxied unchanged).
         # Mark pending before the gate so the idle loop (which holds the gate while
         # unloading) can't free the model while this request is waiting to start.
-        _note_pending()
-        started = False
-        try:
-            async with _unload_gate():
-                _note_start()
-                started = True
-        finally:
-            if not started:
-                _note_unpending()
-        # An image/video generation gets the same bookkeeping against ITS backend, so the
-        # media idle unload cannot free the pipeline this request is about to generate on.
-        from core.inference import media_keepwarm
-
-        media_owner = media_keepwarm.owner_for_path(path)
+        if chat_tracked:
+            _note_pending()
+            started = False
+            try:
+                async with _unload_gate():
+                    _note_start()
+                    started = True
+            finally:
+                if not started:
+                    _note_unpending()
         if media_owner is not None:
             await media_keepwarm.begin_request(media_owner)
         ended = {"done": False}
@@ -330,7 +334,7 @@ class LlamaKeepWarmMiddleware:
             # local GGUF, which says nothing about the media backend it was counted against.
             if media_owner is not None:
                 media_keepwarm.end_request(media_owner, counted = status["code"] not in (401, 403))
-            if scope.get(_UNTRACKED_SCOPE_KEY):
+            if not chat_tracked or scope.get(_UNTRACKED_SCOPE_KEY):
                 return
             # This middleware runs before FastAPI auth, so a 401/403 reaches here
             # without ever touching llama.cpp. Decrement the in-flight count (to

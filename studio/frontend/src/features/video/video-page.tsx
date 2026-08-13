@@ -1847,14 +1847,32 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [],
   );
 
-  const refreshStatus = useCallback(async () => {
+  // Answers with what it wrote, or null when the read failed or a newer one superseded it,
+  // so a caller can act on what the server now says.
+  const refreshStatus = useCallback(async (): Promise<VideoStatus | null> => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getVideoStatus());
+      const next = await getVideoStatus();
+      setStatusIfNewest(ticket, next);
+      return ticket === statusTicket.current ? next : null;
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
+      return null;
     }
   }, [setStatusIfNewest]);
+
+  // A generation can be refused because the runtime went away under the page: an idle
+  // auto-unload frees it server-side and the browser hears nothing, since the eject event
+  // is raised by whoever clicked eject. Without a re-read here Generate stays enabled off
+  // the stale flag and every retry 409s again, so the refusal is the news that the model
+  // is gone. Also clears the state that only means anything while one is resident (the
+  // Reapply target, a replacement load's tracking), as the indicator eject does.
+  const resyncAfterGenerateRefusal = useCallback(async () => {
+    const next = await refreshStatus();
+    if (!isMounted.current || next === null || next.loaded) return;
+    dropResidentState();
+    setQuant(null);
+  }, [refreshStatus, dropResidentState]);
 
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
@@ -2975,6 +2993,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       toast.error(err instanceof Error ? err.message : "Video generation failed");
       setBusy(null);
       setGenStep(null);
+      // The refusal can be "No video model is loaded": re-read rather than leave Generate
+      // enabled against a runtime that is already free.
+      void resyncAfterGenerateRefusal();
       return;
     }
     // Track live progress + the terminal outcome via the shared poll loop (also used by the mount-time resume).
@@ -3005,6 +3026,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     defaultAudioFlowShift,
     canPickAudioFlowShift,
     startGenPoll,
+    resyncAfterGenerateRefusal,
   ]);
 
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
