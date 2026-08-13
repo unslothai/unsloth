@@ -22270,7 +22270,10 @@ async def load_diffusion_model(
         resolve_local_single_file,
         resolve_model_kind,
     )
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.diffusion_engine_router import (
         active_engine_name,
         annotate_status,
@@ -22308,6 +22311,9 @@ async def load_diffusion_model(
         # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
+        # Refuse a missing index before anything is evicted or staged; begin_load re-checks, but only after the arbiter has taken the GPU.
+        if request.gpu_ids:
+            await asyncio.to_thread(resolve_selected_cuda_ordinal, request.gpu_ids)
 
         def _preflight(target):
             # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
@@ -22416,6 +22422,7 @@ async def load_diffusion_model(
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
                 loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
+                gpu_ids = request.gpu_ids,
             )
 
         def _begin_load():

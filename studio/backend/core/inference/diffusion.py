@@ -59,8 +59,10 @@ from .diffusion_families import (
 from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
 from .diffusion_device import (
     DiffusionDeviceTarget,
+    apply_diffusion_device_ordinal,
     diffusion_device_target_from_torch_device,
     resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
 from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
@@ -1094,6 +1096,8 @@ class DiffusionBackend:
         # Loaded ControlNets and their from_pipe pipelines, reusing resident modules; cleared on unload.
         self._cn_models: dict[str, Any] = {}
         self._cn_pipes: dict[tuple[str, str], Any] = {}
+        # This load's card selection; instance state because the generate, ControlNet and re-activation paths each re-resolve the target and must agree.
+        self._gpu_ids: Optional[list[int]] = None
 
     @property
     def is_loaded(self) -> bool:
@@ -1102,8 +1106,12 @@ class DiffusionBackend:
     def _pick_device_and_dtype(self) -> tuple[str, Any]:
         """(device, dtype) for the current host. Thin wrapper over the device
         policy module, kept as a method so tests can still monkeypatch it."""
-        target = resolve_diffusion_device_target()
-        return target.device, target.dtype
+        if not self._gpu_ids:
+            target = resolve_diffusion_device_target()
+            return target.device, target.dtype
+        target = resolve_diffusion_device_target(self._gpu_ids)
+        # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
+        return target.torch_device, target.dtype
 
     # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
     # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
@@ -1242,7 +1250,10 @@ class DiffusionBackend:
                 "diffusion.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)",
                 getattr(fam, "name", None),
             )
-        return diffusion_device_target_from_torch_device(device, effective)
+        target = diffusion_device_target_from_torch_device(device, effective)
+        # Here, not per call site: set_device is thread-local and every path resolves its target on its own thread.
+        apply_diffusion_device_ordinal(target)
+        return target
 
     def _resolve_gguf_path(self, repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> str:
         local_root = Path(repo_id).expanduser()
@@ -1662,10 +1673,13 @@ class DiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
+        # Outside the worker, so a missing index is the route's 400 rather than a load that dies mid-download.
+        resolve_selected_cuda_ordinal(gpu_ids)
         # base_repo is gated at the route pre-eviction; this only cheap-fails the resolved repo/family.
         fam = self.validate_load_request(
             repo_id,
@@ -1690,6 +1704,8 @@ class DiffusionBackend:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
             token = self._load_token
+            # Committed only past the validations: stored earlier, a rejected request would move the RESIDENT model's next generation onto another card.
+            self._gpu_ids = list(gpu_ids) if gpu_ids else None
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds but also
             # drops _loading, so clearing here would un-cancel that worker. Download preemption is best-effort; the token is the
             # real commit guard.
@@ -5642,6 +5658,8 @@ class DiffusionBackend:
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
+            # Nothing is resident, so the next load starts from the automatic pick.
+            self._gpu_ids = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
         with self._generate_lock:

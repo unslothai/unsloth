@@ -233,6 +233,17 @@ export function useGpuDevices(): SystemGpuDevice[] {
   return devices;
 }
 
+/**
+ * Cards an image or video load may be pinned to, or empty when there is nothing to choose
+ * between. Neither engine shards a diffusion checkpoint, so this drives a single-choice control
+ * rather than the chat picker's candidate pool.
+ */
+export function useDiffusionGpuChoices(): SystemGpuDevice[] {
+  const devices = useGpuDevices();
+  const context = pinnableGpuContext(devices, true);
+  return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];
+}
+
 /** Whether device discovery is settled enough to rewrite remembered UI state. */
 export function gpuDeviceCacheReady(): boolean {
   const cachedSystem = getCachedSystemInfo();

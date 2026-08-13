@@ -1194,6 +1194,32 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
+def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "CUDA0\tRTX 4070 Ti\nCUDA1\tRTX 5060 Ti\nCPU\tAMD Ryzen 9\n",
+    )
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) == "CUDA1"
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 0) == "CUDA0"
+    # An index this build does not enumerate keeps sd.cpp's own device choice.
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 3) is None
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", None) is None
+    assert bk.sd_cpp_device_name_for_ordinal(None, 1) is None
+
+    # ggml names its HIP backend ROCm on newer builds, and it takes the same physical index.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "ROCm1\tRadeon RX 7900\n")
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) == "ROCm1"
+
+    # Vulkan ordinals are another namespace, so they never match: pinning one would name a card the user did not choose.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "Vulkan1\tRTX 5060 Ti\n")
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) is None
+
+    # An unreadable probe is "cannot tell", so nothing is pinned.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_device_name_for_ordinal("/existing/sd-cli", 1) is None
+
+
 def test_unload_clears_state_and_signals_cancel():
     cancel = threading.Event()
     b = _loaded_backend()

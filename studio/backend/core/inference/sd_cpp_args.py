@@ -173,6 +173,27 @@ def metal_text_encoder_flags() -> list[str]:
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
+def device_backend_flags(
+    device_name: Optional[str], offload: Optional[list[str]] = None
+) -> list[str]:
+    """Pin the diffusion, text-encoder and VAE graphs to one ggml device (e.g. ``CUDA1``).
+
+    Without this sd.cpp picks its own default device, which is ordinal 0 whatever the user chose,
+    so on a mixed box the checkpoint lands on whichever card happens to be first rather than the
+    one that can hold it. Empty for an automatic pick, which keeps sd.cpp's own choice.
+
+    ``--clip-on-cpu`` / ``--vae-on-cpu`` are the deprecated spellings of ``te=cpu`` / ``vae=cpu``,
+    so a device pinned over them would be the last-wins value and silently undo the low_vram
+    policy. Those modules stay on the CPU and only the ones the policy left on the GPU are pinned.
+    """
+    if not device_name:
+        return []
+    flags = offload or []
+    te = "cpu" if "--clip-on-cpu" in flags else device_name
+    vae = "cpu" if "--vae-on-cpu" in flags else device_name
+    return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
+
+
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The SIGABRT takes sd-server down mid-generation.
 _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
 

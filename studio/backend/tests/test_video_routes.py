@@ -309,6 +309,57 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     assert acquired == [gpu_arbiter.VIDEO]  # the GPU was handed to VIDEO
 
 
+def test_load_forwards_the_gpu_selection(client, monkeypatch):
+    # /video/load carried no gpu_ids at all, so sd.cpp and diffusers both pinned ordinal 0.
+    import types
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.video as video_module
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", lambda ids: max(ids))
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role, register = None: register())
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "ltx-2.3-distilled-Q4_K_M.gguf",
+            "gpu_ids": [1],
+        },
+    )
+    assert resp.status_code == 200
+    assert video_module.get_video_backend().last_load_kwargs["gpu_ids"] == [1]
+
+
+def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
+    # Refused BEFORE the arbiter evicts chat, so a bad pick costs a resident model nothing.
+    import types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+
+    def _refuse(_ids):
+        raise ValueError("Requested GPU [7] but this host has 2 CUDA device(s).")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _refuse)
+    resp = client.post(
+        "/api/inference/video/load",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "ltx-2.3-distilled-Q4_K_M.gguf",
+            "gpu_ids": [7],
+        },
+    )
+    assert resp.status_code == 400
+    assert "2 CUDA device" in resp.json()["detail"]
+    assert gpu_arbiter._owner is None
+
+
 def test_load_value_error_returns_400(client):
     # A non-ltx repo is not a supported family: the cheap validation rejects it -> 400.
     resp = client.post(

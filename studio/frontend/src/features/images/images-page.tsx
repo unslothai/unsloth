@@ -50,6 +50,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { useDiffusionGpuChoices } from "@/hooks/use-gpu-info";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -1142,6 +1143,7 @@ type LoadAdvanced = Pick<
   | "memory_mode"
   | "transformer_cache"
   | "loras"
+  | "gpu_ids"
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
@@ -1236,6 +1238,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "auto",
   );
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  // "auto", or the physical index to pin this load to. Only offered on a multi-card CUDA / ROCm host.
+  const [selectedGpu, setSelectedGpu] = useState("auto");
+  const gpuChoices = useDiffusionGpuChoices();
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without the user re-picking it.
@@ -2250,6 +2255,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
         loras: baked.length > 0 ? baked : undefined,
+        // Dropped when the chosen card is gone (a driver reset, an eGPU unplugged), so a stale pick loads automatically instead of 400ing.
+        gpu_ids:
+          selectedGpu !== "auto" &&
+          gpuChoices.some((d) => String(d.index) === selectedGpu)
+            ? [Number(selectedGpu)]
+            : undefined,
       };
     },
     [
@@ -2260,6 +2271,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       attentionBackend,
       memoryMode,
       transformerCache,
+      selectedGpu,
+      gpuChoices,
     ],
   );
 
@@ -2332,6 +2345,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
+          gpu_ids: advanced.gpu_ids,
         });
         await startRequest;
       } catch (err) {
@@ -3368,6 +3382,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           ["low_vram", "Low VRAM"],
         ]}
       />
+      {gpuChoices.length > 0 && (
+        <AdvancedSelect
+          label="GPU"
+          hint="Which card this model loads on. Auto uses whichever device torch is pointing at, which on a mixed box is not necessarily the largest. An image model is never split across cards, so this is one choice, not a pool."
+          value={selectedGpu}
+          onValueChange={setSelectedGpu}
+          options={[
+            ["auto", "Auto"],
+            ...gpuChoices.map(
+              (d) =>
+                [
+                  String(d.index),
+                  `GPU ${d.index}${d.memoryTotalGb ? ` · ${Math.round(d.memoryTotalGb)} GB` : ""}`,
+                ] as [string, string],
+            ),
+          ]}
+        />
+      )}
       <AdvancedSelect
         label="Step cache"
         hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x). Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per image."

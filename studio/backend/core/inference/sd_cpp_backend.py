@@ -35,7 +35,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
-from core.inference.diffusion_device import resolve_diffusion_device_target
+from core.inference.diffusion_device import (
+    resolve_diffusion_device_target,
+    resolve_selected_cuda_ordinal,
+)
 from core.inference.diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -62,6 +65,7 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     build_img_gen_request,
+    device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
 )
@@ -352,6 +356,32 @@ def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
     if not names:
         return None
     return any(name.upper() != "CPU" for name in names)
+
+
+# ggml device-name prefixes indexed by CUDA physical ordinal (ggml names its HIP backend either way); Vulkan is excluded, its ordinals are another namespace.
+_PHYSICAL_INDEX_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM")
+
+
+def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]) -> Optional[str]:
+    """The ``--list-devices`` name for CUDA/ROCm physical index ``ordinal``, or None.
+
+    None whenever the answer is not certain -- no selection, an unreadable probe, a build whose
+    devices are in another namespace, or an index it does not list -- because the fallback is
+    sd.cpp's own device choice, which is what runs today.
+    """
+    if not binary or ordinal is None:
+        return None
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return None
+    for line in text.splitlines():
+        name = line.split("\t", 1)[0].strip()
+        head = name.rstrip("0123456789")
+        if head.upper() not in _PHYSICAL_INDEX_DEVICE_PREFIXES:
+            continue
+        if name[len(head):] == str(ordinal):
+            return name
+    return None
 
 
 def _h3_replacement_hint(binary: str) -> str:
@@ -1096,6 +1126,7 @@ class SdCppDiffusionBackend:
         model_kind: Optional[str] = None,
         # Parity with the diffusers load-time LoRA bake; native applies LoRA per generation, so a load-time selection is ignored.
         loras: Optional[list[tuple[str, float]]] = None,
+        gpu_ids: Optional[list[int]] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
@@ -1178,6 +1209,7 @@ class SdCppDiffusionBackend:
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
+                gpu_ids = gpu_ids,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1196,6 +1228,7 @@ class SdCppDiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
+        gpu_ids: Optional[list[int]] = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -1302,6 +1335,16 @@ class SdCppDiffusionBackend:
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
+                # After the policy, so the pin can read which modules it left on the CPU, and probed on the binary this load resolved: the names come from its own --list-devices.
+                offload += tuple(
+                    device_backend_flags(
+                        sd_cpp_device_name_for_ordinal(
+                            server_binary if mode == "server" else getattr(engine, "binary", None),
+                            resolve_selected_cuda_ordinal(gpu_ids),
+                        ),
+                        list(offload),
+                    )
+                )
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation started during

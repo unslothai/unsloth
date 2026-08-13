@@ -28,10 +28,17 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
+    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that string against "cuda", so a "cuda:1" there disables them silently.
+    ordinal: Optional[int] = None
 
     @property
     def is_cuda_torch_device(self) -> bool:
         return self.device == "cuda"
+
+    @property
+    def torch_device(self) -> str:
+        """The device string to PLACE weights on, indexed when one card was selected."""
+        return f"{self.device}:{self.ordinal}" if self.ordinal is not None else self.device
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +50,7 @@ class DiffusionDeviceTarget:
             "supports_default_torch_compile": self.supports_default_torch_compile,
             "supports_pinned_transfer": self.supports_pinned_transfer,
             "supports_float64": self.supports_float64,
+            "ordinal": self.ordinal,
         }
 
 
@@ -143,13 +151,80 @@ def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     return member is not None and studio_device == member
 
 
-def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
+def resolve_selected_cuda_ordinal(gpu_ids: Optional[list[int]]) -> Optional[int]:
+    """The one CUDA/ROCm physical index a diffusion load should run on, or None for automatic.
+
+    Neither engine shards a diffusion checkpoint: diffusers places whole components and sd.cpp
+    assigns whole modules per backend device, so a selection of several cards still resolves to
+    one. The most free VRAM wins, which is the rule ``auto_select_gpu_ids`` already applies to
+    training, and a tie takes the lowest index for a stable answer. Picking the FIRST id instead
+    would land on ordinal 0 whenever the user selects everything -- exactly the card that is too
+    small on the mixed boxes this selection exists to serve.
+
+    Raises ValueError for an index this host does not have, so the load is refused with a reason
+    rather than quietly running somewhere the user did not choose.
+    """
+    wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
+    if not wanted:
+        return None
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+    except Exception as exc:  # noqa: BLE001 -- no torch / no driver: reported, never guessed
+        raise ValueError(f"GPU selection needs a working CUDA or ROCm torch build: {exc}") from exc
+    out_of_range = [gpu_id for gpu_id in wanted if gpu_id < 0 or gpu_id >= count]
+    if out_of_range:
+        raise ValueError(
+            f"Requested GPU {out_of_range} but this host has {count} CUDA device(s). "
+            f"Clear the GPU selection to use the default device."
+        )
+    if len(wanted) == 1:
+        return wanted[0]
+
+    def _free_vram(gpu_id: int) -> int:
+        try:
+            import torch
+
+            return int(torch.cuda.mem_get_info(gpu_id)[0])
+        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
+            return -1
+
+    return max(wanted, key = lambda gpu_id: (_free_vram(gpu_id), -gpu_id))
+
+
+def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
+    """Point this thread's CUDA context at ``target.ordinal``.
+
+    ``torch.cuda.set_device`` is thread-local, so every worker that loads or runs a pipeline has to
+    call it; a load thread that sets it does nothing for the generate thread. It is the right lever
+    rather than an indexed device string because the offload policy reads
+    ``torch.cuda.mem_get_info()`` with no argument, i.e. the CURRENT device: setting it steers the
+    weights and the budget they are sized against to the same card. A no-op for an automatic pick.
+    """
+    if target.ordinal is None or not target.is_cuda_torch_device:
+        return
+    try:
+        import torch
+
+        torch.cuda.set_device(target.ordinal)
+    except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
+        pass
+
+
+def resolve_diffusion_device_target(
+    gpu_ids: Optional[list[int]] = None,
+) -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
     Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
     Silicon Studio may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
     probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
     reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
+
+    ``gpu_ids`` is the user's card selection, honoured only on CUDA / ROCm, where physical indices
+    are what the runners speak. Everything else ignores it: XPU ordinals have no applicator, and
+    MPS / CPU have nothing to choose between.
     """
     try:
         import torch
@@ -178,14 +253,14 @@ def resolve_diffusion_device_target() -> DiffusionDeviceTarget:
     if DeviceType is not None and studio_device is not None:
         if _studio_device_is(studio_device, DeviceType, "CUDA"):
             if torch.cuda.is_available():
-                return _cuda_or_rocm_target(torch, is_rocm = is_rocm)
+                return _cuda_or_rocm_target(torch, is_rocm = is_rocm, gpu_ids = gpu_ids)
             return _cpu_target(torch)
         if _studio_device_is(studio_device, DeviceType, "XPU"):
             return _xpu_target(torch)
         # MLX / CPU / else: diffusers uses MPS, so fall through to the torch probe (MPS over CPU).
 
     if torch.cuda.is_available():
-        return _cuda_or_rocm_target(torch, is_rocm = is_rocm)
+        return _cuda_or_rocm_target(torch, is_rocm = is_rocm, gpu_ids = gpu_ids)
 
     xpu = getattr(torch, "xpu", None)
     if xpu is not None and callable(getattr(xpu, "is_available", None)):
@@ -203,7 +278,7 @@ def diffusion_device_target_from_torch_device(
 ) -> DiffusionDeviceTarget:
     """Reconstruct a target from a (device, dtype) pair, so a caller overriding the tuple (the
     ``_pick_device_and_dtype`` shim / monkeypatch path) can still recover the capability flags."""
-    device = str(torch_device).split(":", 1)[0]
+    device, _, index = str(torch_device).partition(":")
     if device == "cuda":
         try:
             import torch
@@ -218,6 +293,8 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = not is_rocm,
             supports_pinned_transfer = True,
+            # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
+            ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
         return DiffusionDeviceTarget(
@@ -243,7 +320,10 @@ def diffusion_device_target_from_torch_device(
     return _cpu_target(torch = None, dtype = dtype)
 
 
-def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
+def _cuda_or_rocm_target(
+    torch: Any, *, is_rocm: bool, gpu_ids: Optional[list[int]] = None
+) -> DiffusionDeviceTarget:
+    ordinal = resolve_selected_cuda_ordinal(gpu_ids)
     if is_rocm:
         # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
         try:
@@ -253,8 +333,13 @@ def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
         # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16 slowly but report it supported).
+        # Asked of the SELECTED card, since the argument-less form reports the current device, a different generation on a mixed box; still argument-less without a selection.
         try:
-            major = torch.cuda.get_device_capability()[0]
+            major = (
+                torch.cuda.get_device_capability()
+                if ordinal is None
+                else torch.cuda.get_device_capability(ordinal)
+            )[0]
         except Exception:
             major = 0
         dtype = torch.bfloat16 if major >= 8 else torch.float16
@@ -266,6 +351,7 @@ def _cuda_or_rocm_target(torch: Any, *, is_rocm: bool) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = not is_rocm,
         supports_pinned_transfer = True,
+        ordinal = ordinal,
     )
 
 

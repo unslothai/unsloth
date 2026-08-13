@@ -1214,6 +1214,45 @@ def test_gpu_native_load_takes_arbiter(client, monkeypatch):
     assert acquired == [gpu_arbiter.DIFFUSION]
 
 
+def test_load_forwards_the_gpu_selection(client, monkeypatch):
+    # The bug this fixes: the UI's card pick reached chat and training but never the image load,
+    # so both engines pinned every module to ordinal 0 whatever was selected.
+    backend = diffusion_module.get_diffusion_backend()
+    _force_engine(monkeypatch, backend, engine_name = "diffusers", device = "cuda")
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", lambda ids: max(ids))
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "x/z-image",
+            "gguf_filename": "q.gguf",
+            "gpu_ids": [1],
+        },
+    )
+    assert resp.status_code == 200
+    assert backend.last_load_kwargs["gpu_ids"] == [1]
+
+
+def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
+    # Refused BEFORE the arbiter evicts chat, so a bad pick costs a resident model nothing.
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = "diffusers", device = "cuda")
+    import core.inference.diffusion_device as devmod
+
+    def _refuse(_ids):
+        raise ValueError("Requested GPU [7] but this host has 2 CUDA device(s).")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _refuse)
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "gpu_ids": [7]},
+    )
+    assert resp.status_code == 400
+    assert "2 CUDA device" in resp.json()["detail"]
+    assert acquired == []
+
+
 def test_images_info_lists_every_family(client):
     # The pure info endpoint is hardware-independent: one entry per auto-policy family with the quant estimates the UI shows.
     from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB

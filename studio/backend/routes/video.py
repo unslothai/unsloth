@@ -174,7 +174,10 @@ async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
     from core.inference.diffusion import resolve_local_single_file
-    from core.inference.diffusion_device import resolve_diffusion_device_target
+    from core.inference.diffusion_device import (
+        resolve_diffusion_device_target,
+        resolve_selected_cuda_ordinal,
+    )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
     from core.inference.video import (
         assert_video_precision_available,
@@ -227,6 +230,9 @@ async def load_video_model(
         )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+        # Refuse a missing index before anything is evicted or staged; begin_load re-checks, but only after the arbiter has taken the GPU.
+        if request.gpu_ids:
+            await asyncio.to_thread(resolve_selected_cuda_ordinal, request.gpu_ids)
 
         def _begin_load():
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates network-free.
@@ -245,6 +251,7 @@ async def load_video_model(
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
                 h3_task = request.h3_task,
+                gpu_ids = request.gpu_ids,
             )
 
         if device != "cpu":
