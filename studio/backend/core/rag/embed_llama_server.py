@@ -303,7 +303,7 @@ class LlamaServerBackend:
             # the CPU. Same clear the chat forced-CPU sentinel makes.
             from core.inference.llama_cpp import LlamaCppBackend
 
-            LlamaCppBackend._clear_child_device_selection(env)
+            LlamaCppBackend._clear_device_placement_env(env)
         return env
 
     @staticmethod

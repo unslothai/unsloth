@@ -36,6 +36,7 @@ import struct
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -2037,3 +2038,266 @@ class TestArchForcedCpuFlagLifecycle:
         backend._arch_gate_forced_cpu = True
         backend.unload_model()
         assert backend._arch_gate_forced_cpu is False
+
+
+class TestTheForcedCpuFlagIsNotSticky:
+    """``load_model`` phase 1 only kills the old process, so per-load state that
+    is only ever set TRUE outlives the launch that set it. For this flag that is
+    the dangerous direction: a host that gains coverage (a llama.cpp update, or
+    simply the next model) would report a VRAM-holding server as holding none,
+    and the GPU arbiter would leave it unclaimed beside a competing workload.
+    """
+
+    def _load(self, monkeypatch, tmp_path, targets, capture):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        return _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(
+                [
+                    _device("gfx1101", free_mib = 12049),
+                    _device("gfx1036", free_mib = 30000, is_integrated = 1),
+                ],
+                vendor = "amd",
+            ),
+            targets,
+            returncode = None,
+            capture = capture,
+        )
+
+    def test_a_covered_load_after_a_gated_one_clears_it(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The llama.cpp-update shape: the SAME backend instance loads again on
+        a build that now covers the dGPU, with no unload in between (load_model
+        phase 1 only kills the process)."""
+        gated: dict = {}
+        self._load(monkeypatch, tmp_path, GFX103X, gated)  # covers neither card
+        assert gated["backend"]._arch_gate_forced_cpu is True
+
+        covered: dict = {}
+        second = tmp_path / "second"
+        second.mkdir()
+        self._load(monkeypatch, second, GFX110X, covered)
+        # Carry the stale flag onto the instance the second load ran on: the
+        # harness builds a fresh backend per drive, so without this the assert
+        # would pass on a default rather than on the publish.
+        backend = covered["backend"]
+        assert backend._arch_gate_forced_cpu is False
+        assert backend.holds_no_vram is False
+
+    def test_the_publish_overwrites_a_stale_true(self, tmp_path, monkeypatch, probe_env):
+        """The mutation the class exists for, on one instance: pre-set the flag,
+        run a covered load, and the launch must publish False over it."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        _real_init = LlamaCppBackend.__init__
+
+        def _init_with_stale_flag(self, *args, **kwargs):
+            _real_init(self, *args, **kwargs)
+            self._arch_gate_forced_cpu = True
+
+        monkeypatch.setattr(LlamaCppBackend, "__init__", _init_with_stale_flag)
+        covered: dict = {}
+        self._load(monkeypatch, tmp_path, GFX110X, covered)
+        assert covered["backend"]._arch_gate_forced_cpu is False
+        assert covered["backend"].holds_no_vram is False
+
+    def test_the_diffusion_state_path_clears_it(self):
+        """A diffusion runner does hold VRAM, and its state block already resets
+        the sibling chat fields for exactly this reason."""
+        source = (
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        ).read_text(encoding = "utf-8")
+        block = source.split("Diffusion is never tensor-parallel")[1].split("def ")[0]
+        assert "self._arch_gate_forced_cpu = False" in block
+
+    def test_the_flag_is_published_not_only_set(self):
+        """Source-level, because the miss was structural: a branch that only
+        assigns True can never clear a previous launch's value."""
+        source = (
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        ).read_text(encoding = "utf-8")
+        assert "self._arch_gate_forced_cpu = bool(_arch_gate_forced_cpu)" in source
+        assert "self._arch_gate_forced_cpu = True" not in source
+
+
+class TestInheritedSplitEnvGoesWithTheArgvStrip:
+    """llama.cpp reads LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_TENSOR_SPLIT as the env
+    spelling of --split-mode / --tensor-split, so dropping the tokens alone
+    leaves the inherited value in force. The forced-CPU arm strips --split-mode
+    precisely because a tensor split aborts a child with no visible device, so
+    an inherited tensor mode walks straight back into that abort.
+    """
+
+    def _host(self):
+        return [
+            _device("gfx1101", free_mib = 12049),
+            _device("gfx1036", free_mib = 30000, is_integrated = 1),
+        ]
+
+    def test_the_forced_cpu_launch_clears_both(self, tmp_path, monkeypatch, probe_env):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(self._host(), vendor = "amd"),
+            GFX103X,  # covers neither card
+            returncode = None,
+            # Split mode unset on purpose. The existing tensor->layer
+            # reconciliation only clears the pair when an inherited mode is
+            # present and non-layer, so this is the shape that survives it.
+            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+        )
+        assert len(launches) == 1
+        cmd, env = launches[0]
+        assert "LLAMA_ARG_TENSOR_SPLIT" not in env
+        assert "--split-mode" not in cmd and "--tensor-split" not in cmd
+        assert env.get("HIP_VISIBLE_DEVICES") == "-1"
+
+    def test_an_inherited_tensor_mode_cannot_survive_the_forced_cpu_strip(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """The abort this strip exists to prevent: llama.cpp fails the load with
+        "LLAMA_SPLIT_MODE_TENSOR needs >= 1 devices" once the mask hides every
+        device, and an inherited tensor mode reinstates exactly that after the
+        argv flag is gone."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(self._host(), vendor = "amd"),
+            GFX103X,  # covers neither card
+            returncode = None,
+            intent_kwargs = {"tensor_parallel": True},
+            env_extra = {"LLAMA_ARG_SPLIT_MODE": "tensor"},
+        )
+        assert launches
+        cmd, env = launches[0]
+        assert "LLAMA_ARG_SPLIT_MODE" not in env
+        assert "--split-mode" not in cmd
+
+    def test_the_narrowed_pin_clears_both(self, tmp_path, monkeypatch, probe_env):
+        """A survivor pin re-indexes the visible devices, so an inherited
+        positional ratio would land on the wrong card."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda _b = None: [0])
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch(self._host(), vendor = "amd"),
+            GFX110X,
+            returncode = None,
+            model_bytes = 400 * 1024**3,  # too large to place: --fit on owns it
+            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+        )
+        assert launches
+        _cmd, env = launches[0]
+        assert "LLAMA_ARG_TENSOR_SPLIT" not in env
+
+    def test_an_ordinary_load_keeps_them(self, tmp_path, monkeypatch, probe_env):
+        """Only the gate's own branches clear these. An unrelated launch must
+        not lose an inherited setting the existing reconciliation allows."""
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            _fake_torch([_device("gfx1101", free_mib = 20000)], vendor = "amd"),
+            GFX110X,  # covers the only card: nothing to narrow
+            returncode = None,
+            env_extra = {"LLAMA_ARG_TENSOR_SPLIT": "3,1"},
+        )
+        assert launches
+        _cmd, env = launches[0]
+        assert env.get("LLAMA_ARG_TENSOR_SPLIT") == "3,1"
+
+
+class TestTheApuRetryRecomputesThePageLock:
+    """Residency is a property of the DEVICES, and the arch-crash retry changes
+    them. Crash on the discrete card, land on the unified-memory APU, and the
+    weights are host-backed after all -- so the page-lock the first launch
+    correctly skipped is the one the user asked for. Left alone the respawn runs
+    unlocked and records the missing lock as deliberate, which dedupes away the
+    reload that would apply it.
+    """
+
+    def _dgpu_then_apu(self, monkeypatch):
+        # The dGPU is picked first (more free VRAM after the APU host reserve),
+        # then crashes; the APU is what remains.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        return _fake_torch(
+            [
+                # The dGPU wins the free-memory rank (the APU's shared pool is
+                # reported minus the host reserve), so it is picked, crashes, and
+                # the APU is what remains.
+                _device("gfx1201", free_mib = 40000),
+                _device("gfx1151", free_mib = 30000, is_integrated = 1),
+            ],
+            vendor = "amd",
+        )
+
+    def _run(self, tmp_path, monkeypatch, *, mlock):
+        _apply_os(monkeypatch, "linux", is_rocm = True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 200000)
+        )
+        import utils.model_memory_settings as _mem_settings
+
+        # (keep_resident, no_ram_reserve): both should_mlock and
+        # apply_model_memory_policy read this one snapshot.
+        monkeypatch.setattr(
+            _mem_settings, "get_model_memory_settings", lambda: (mlock, False)
+        )
+
+        capture: dict = {}
+        launches = _run_auto_load(
+            monkeypatch,
+            tmp_path,
+            self._dgpu_then_apu(monkeypatch),
+            None,  # markerless: only the reactive retry can help
+            returncode = 1,
+            output = "ROCm error: device kernel image is invalid",
+            capture = capture,
+        )
+        return launches, capture
+
+    def test_the_respawn_onto_the_apu_gets_the_lock(self, tmp_path, monkeypatch, probe_env):
+        launches, capture = self._run(tmp_path, monkeypatch, mlock = True)
+        retry = [
+            (cmd, env)
+            for cmd, env in launches
+            if env.get("ROCR_VISIBLE_DEVICES") == "1"
+        ]
+        assert retry, f"the arch-crash retry never targeted the APU: {[_visibility(e) for _c, e in launches]}"
+        cmd, _env = retry[0]
+        assert "--mlock" in cmd or "mmap+mlock" in " ".join(cmd), cmd
+        # And the record agrees with the child, or the reload that would apply
+        # the policy is deduplicated away.
+        assert capture["backend"]._memory_mlock_applicable is True
+
+    def test_page_locking_off_changes_nothing(self, tmp_path, monkeypatch, probe_env):
+        launches, _capture = self._run(tmp_path, monkeypatch, mlock = False)
+        assert launches
+        for cmd, _env in launches:
+            assert "--mlock" not in cmd

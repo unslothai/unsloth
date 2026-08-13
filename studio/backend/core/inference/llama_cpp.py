@@ -5052,23 +5052,6 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _clear_child_device_selection(env: dict) -> None:
-        """Drop an inherited explicit llama.cpp device pick from a CPU-only child.
-
-        llama.cpp reads LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU as the env spelling
-        of --device / --main-gpu (common/arg.cpp set_env), and Studio passes
-        neither on the CPU path, so a value exported into the parent environment
-        reaches the child. Hiding every device while leaving the pick in place is
-        the one combination llama.cpp cannot serve: parse_device_list rejects a
-        name that no longer enumerates and the child exits instead of running on
-        the CPU we just chose for it. Same reasoning as the inherited
-        LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_FIT handling elsewhere in this file --
-        an inherited LLAMA_ARG_* is live input, not noise.
-        """
-        for name in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
-            env.pop(name, None)
-
-    @staticmethod
     def _emit_child_gpu_visibility(
         env: dict,
         pinned: str,
@@ -5098,7 +5081,12 @@ class LlamaCppBackend:
         would be dead there while the cleared HIP mask stops selecting."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         if pinned == "-1":
-            LlamaCppBackend._clear_child_device_selection(env)
+            # A CPU-only child must not keep an inherited LLAMA_ARG_DEVICE /
+            # LLAMA_ARG_MAIN_GPU: hiding every device while leaving the pick in
+            # place is the one combination llama.cpp cannot serve, since it
+            # rejects a device name that no longer enumerates and exits instead
+            # of running on the CPU we just chose for it.
+            LlamaCppBackend._clear_device_placement_env(env)
         try:
             import torch as _torch
 
@@ -6343,6 +6331,22 @@ class LlamaCppBackend:
     def _clear_device_placement_env(cls, env: dict[str, str]) -> None:
         """Remove inherited device placement owned by an explicit ``gpu_ids``."""
         for name in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+            env.pop(name, None)
+
+    @classmethod
+    def _clear_split_placement_env(cls, env: dict[str, str]) -> None:
+        """Remove an inherited split mode / ratio when the arch gate drops ours.
+
+        llama.cpp reads LLAMA_ARG_SPLIT_MODE and LLAMA_ARG_TENSOR_SPLIT as the
+        env spelling of --split-mode / --tensor-split, so stripping the tokens
+        alone leaves the inherited value in force -- the same reason the
+        tensor->layer reconciliation above clears them. It matters more here:
+        the forced-CPU arm strips --split-mode precisely because a tensor split
+        aborts a child with no visible device, and an inherited tensor mode
+        walks straight back into that abort. A narrowed set re-indexes the
+        survivors, so an inherited positional ratio lands on the wrong card too.
+        """
+        for name in ("LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT"):
             env.pop(name, None)
 
     @staticmethod
@@ -8260,6 +8264,10 @@ class LlamaCppBackend:
         # the unload reset) so /status doesn't misreport TP and an identical
         # re-Apply doesn't reload against stale tensor-parallel state.
         self._tensor_parallel = False
+        # Same reason, and a sharper consequence: a diffusion runner does hold
+        # VRAM, so a leftover arch-gate flag would answer holds_no_vram True and
+        # the arbiter would let a competing workload run into its memory (#7624).
+        self._arch_gate_forced_cpu = False
         # The single-device runner records only the lowest selected GPU (chosen
         # above), not the whole pick, and clears any explicit pin from a prior
         # chat load; a multi-GPU list would misreport placement and mis-dedup.
@@ -10606,9 +10614,6 @@ class LlamaCppBackend:
         self._gpu_layers = intent.gpu_layers
         self._n_cpu_moe = intent.n_cpu_moe
         self._tensor_split = intent.tensor_split
-        # A fresh intent has not been arch-gated yet; the launch sets it below if
-        # every device turns out to be uncovered.
-        self._arch_gate_forced_cpu = False
         self._tensor_parallel = intent.tensor_parallel
         self._gpu_ids = intent.gpu_ids
         self._requested_gpu_ids = None
@@ -14036,6 +14041,12 @@ class LlamaCppBackend:
                         cmd = _cpu_cmd
                         self._tensor_parallel = False
                         self._tensor_split = None
+                    if _arch_gate_forced_cpu:
+                        # Not gated on the argv strip above: llama.cpp reads the
+                        # LLAMA_ARG_* twins whether or not we ever emitted the
+                        # flags, so an inherited tensor mode aborts a child with
+                        # no visible device on its own.
+                        self._clear_split_placement_env(env)
                 elif gpu_indices is not None and not is_vulkan_backend:
                     # When the user picked GPUs by index, align CUDA's ordering
                     # with the PCI-bus order the picker enumerated (nvidia-smi),
@@ -14107,6 +14118,10 @@ class LlamaCppBackend:
                             "left visible; pinning the child to %s.",
                             _survivors,
                         )
+                        # The argv strips above cannot reach an inherited split
+                        # mode or ratio, and the mask re-indexes the survivors
+                        # under both.
+                        self._clear_split_placement_env(env)
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided above against
                         # gpu_indices, which is None here -- so an uncovered APU
                         # anywhere on the host turned it on, and this narrowing
@@ -14595,6 +14610,9 @@ class LlamaCppBackend:
                         self._emit_child_gpu_visibility(
                             env, ",".join(str(i) for i in _remaining), prefer_rocr = True
                         )
+                        # Same for the inherited env twins of the flags dropped
+                        # below: the new mask re-indexes the survivors under them.
+                        self._clear_split_placement_env(env)
                         # The mask re-indexes the surviving devices from 0, so a
                         # --tensor-split sized for the crashed set now weights the
                         # wrong cards (see _without_tensor_split). Drop it and let
@@ -14638,6 +14656,65 @@ class LlamaCppBackend:
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
+                        # Residency is a property of the DEVICES, and the retry
+                        # just changed them. The canonical #7624 shape crashes on
+                        # the discrete card and lands on the unified-memory APU,
+                        # where the weights are host-backed after all -- so the
+                        # page-lock the first launch correctly skipped ("fully
+                        # offloaded to a discrete GPU") is now the one the user
+                        # asked for. Left alone, the respawn runs unlocked AND
+                        # records _memory_mlock_applicable False, which reads the
+                        # missing lock as deliberate and dedupes away the reload
+                        # that would apply it. Recomputed through the same
+                        # helpers as the first launch so the two cannot drift.
+                        _retry_host_resident = self._weights_in_host_memory(
+                            fully_gpu_offloaded = fully_gpu_offloaded,
+                            gpu_memory_mode = gpu_memory_mode,
+                            gpu_layers = gpu_layers,
+                            extra_args = _mem_extra_args,
+                            gpu_indices = _remaining,
+                            is_vulkan_backend = is_vulkan_backend,
+                            binary = binary,
+                            env = env,
+                            probe_vulkan = should_mlock(),
+                            fit_active = fit_is_effectively_on(
+                                [*cmd, *(_mem_extra_args or [])], env
+                            ),
+                        )
+                        if _retry_host_resident != _mem_host_resident:
+                            _retry_managed, _ = apply_model_memory_policy(
+                                extra_args,
+                                supports_load_mode = bool(
+                                    server_caps.get("supports_load_mode")
+                                ),
+                                weights_in_host_memory = _retry_host_resident,
+                            )
+                            # Drop whatever the crashed launch's policy put on
+                            # argv before appending this one, so a respawn cannot
+                            # carry both spellings of the same decision.
+                            _stripped = self._without_flags(
+                                cmd, ("--mlock", "--no-mmap", "--load-mode")
+                            )
+                            if _stripped is not None:
+                                cmd = _stripped
+                            if _retry_managed:
+                                cmd.extend(_retry_managed)
+                            _mem_host_resident = _retry_host_resident
+                            self._memory_mlock_applicable = _retry_host_resident
+                            # Stays active if it already was: the flag also
+                            # covers extras this policy touched and env it
+                            # scrubbed, neither of which the respawn undoes.
+                            self._memory_policy_active = (
+                                bool(_retry_managed) or self._memory_policy_active
+                            )
+                            self._memory_state = resolve_effective_memory_state(
+                                list(_retry_managed) + list(_mem_extras), env
+                            )
+                            logger.info(
+                                "Arch-crash retry changed where the weights live; "
+                                "recomputed Model Memory (%s).",
+                                " ".join(_retry_managed) if _retry_managed else "no page-lock",
+                            )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
@@ -15034,15 +15111,19 @@ class LlamaCppBackend:
                 _deliberate_cpu_only = (
                     gpu_memory_mode == "manual" and gpu_layers == 0
                 ) or _arch_gate_forced_cpu
+                # Published on EVERY load, not only when it is true: load_model
+                # phase 1 only kills the old process, so a value left from a
+                # previous launch would answer holds_no_vram for the child that
+                # replaced it. A host that gains coverage (a llama.cpp update)
+                # then reports a VRAM-holding server as holding none, and the GPU
+                # arbiter leaves it unclaimed beside a competing workload.
+                self._arch_gate_forced_cpu = bool(_arch_gate_forced_cpu)
                 if _arch_gate_forced_cpu:
                     # False, never None. _classify_gpu_offload answers None here
                     # (the gated probe left _detected_gpus empty), and training
                     # spares only a server whose flag is exactly False -- so None
                     # unloads one whose death frees no VRAM at all.
                     self._gpu_offload_active = False
-                    # And the same fact for the GPU arbiter: this child was masked
-                    # onto the CPU, so it must not hold a GPU claim (holds_no_vram).
-                    self._arch_gate_forced_cpu = True
                 elif _deliberate_cpu_only:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(
                         _last_spawn_cmd, _detected_gpus, env
