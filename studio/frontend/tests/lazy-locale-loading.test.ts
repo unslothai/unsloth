@@ -7,6 +7,11 @@ import {
   installLocalStorageFake,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
+import {
+  type StubElement,
+  loadWithStubs,
+  stubJsxRuntime,
+} from "./helpers/module-stubs.ts";
 
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
@@ -378,4 +383,105 @@ test("a synchronous loader throw leaves an in-flight request pending", async () 
 
   finishLoading();
   await slow;
+});
+
+// The real component, with only its presentation imports faked, so these assert
+// against the value the shipped Select is actually given.
+const { LanguageSelect } = loadWithStubs<{ LanguageSelect: () => StubElement }>(
+  new URL(
+    "../src/features/settings/components/language-select.tsx",
+    import.meta.url,
+  ),
+  {
+    "react/jsx-runtime": stubJsxRuntime(),
+    "@/components/ui/select": {
+      Select: "Select",
+      SelectContent: "SelectContent",
+      SelectItem: "SelectItem",
+      SelectTrigger: "SelectTrigger",
+      SelectValue: "SelectValue",
+    },
+    "@/components/ui/spinner": { Spinner: "Spinner" },
+    // The store getters are what the module's hooks return, read here without a
+    // renderer so the test drives the same locale state the other tests do.
+    "@/i18n": {
+      AUTO_LOCALE: localeStore.AUTO_LOCALE,
+      LOCALES: messagesModule.LOCALES,
+      isLocalePreference: localeStore.isLocalePreference,
+      setLocale: localeStore.setLocale,
+      useLocale: localeStore.getLocale,
+      useLocalePreference: localeStore.getLocalePreference,
+      usePendingLocalePreference: localeStore.getPendingLocalePreference,
+      useT: () => (key: string) => key,
+    },
+  },
+);
+
+/** The value the language menu currently shows. */
+function shownLanguage(): unknown {
+  return LanguageSelect().props.value;
+}
+
+/**
+ * Radix's controlled Select only calls onValueChange when the picked value differs
+ * from the one it holds (useControllableState: `if (value !== prop) onChange(value)`),
+ * so whatever it shows is the one language the user cannot pick.
+ */
+function canPick(value: string): boolean {
+  return shownLanguage() !== value;
+}
+
+test("the language menu shows the language in effect after a catalog failure", async () => {
+  await localeStore.setLocale("en", { loadMessages: () => undefined });
+
+  const result = await localeStore.setLocale("de", {
+    loadMessages: () => Promise.reject(new Error("chunk 404")),
+    adoptOnFailure: true,
+  });
+
+  assert.equal(result, "failed");
+  assert.equal(localeStore.getLocalePreference(), "de");
+  assert.equal(localeStore.getLocale(), "en");
+  // Naming the adopted-but-failed language here would make it the value the
+  // Select already holds, and picking it again would then fire nothing, so a
+  // transient chunk failure would strand the user in English for good.
+  assert.equal(shownLanguage(), "en");
+  assert.ok(canPick("de"));
+});
+
+test("the language menu shows the preference once it is the one in effect", async () => {
+  assert.equal(
+    await localeStore.setLocale("de", {
+      loadMessages: () => Promise.resolve(),
+    }),
+    "applied",
+  );
+
+  assert.equal(localeStore.getLocale(), "de");
+  assert.equal(shownLanguage(), "de");
+});
+
+test("the language menu shows auto rather than the detected locale", () => {
+  assert.equal(
+    localeStore.setLocale("auto", { loadMessages: () => undefined }),
+    "applied",
+  );
+
+  assert.equal(localeStore.getLocalePreference(), "auto");
+  assert.equal(localeStore.getLocale(), "en");
+  assert.equal(shownLanguage(), "auto");
+});
+
+test("the language menu shows a pending choice while its catalog loads", async () => {
+  let finishLoading!: () => void;
+  const loading = new Promise<void>((resolve) => {
+    finishLoading = resolve;
+  });
+
+  const selected = localeStore.setLocale("it", { loadMessages: () => loading });
+  assert.equal(shownLanguage(), "it");
+
+  finishLoading();
+  assert.equal(await selected, "applied");
+  assert.equal(shownLanguage(), "it");
 });

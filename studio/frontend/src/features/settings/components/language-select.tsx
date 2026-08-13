@@ -14,6 +14,7 @@ import {
   LOCALES,
   isLocalePreference,
   setLocale,
+  useLocale,
   useLocalePreference,
   usePendingLocalePreference,
   useT,
@@ -21,12 +22,19 @@ import {
 
 export function LanguageSelect() {
   const t = useT();
+  const locale = useLocale();
   const preference = useLocalePreference();
   const pendingPreference = usePendingLocalePreference();
+  // A preference diverges from the locale only when its catalog failed and
+  // English was adopted. Show what is in effect there: a controlled Select never
+  // fires onValueChange for the value it already holds, so naming the failed
+  // language would leave no way to retry it.
+  const activePreference =
+    preference === AUTO_LOCALE || preference === locale ? preference : locale;
 
   return (
     <Select
-      value={pendingPreference ?? preference}
+      value={pendingPreference ?? activePreference}
       onValueChange={(value) => {
         if (isLocalePreference(value)) setLocale(value);
       }}

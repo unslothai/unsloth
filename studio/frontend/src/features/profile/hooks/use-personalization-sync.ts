@@ -310,8 +310,15 @@ export function usePersonalizationSync(enabled: boolean): void {
             // "superseded" means a newer request took over, so this language is
             // no longer the one in effect and must not be recorded as the
             // synchronized baseline: the newer request may itself have failed,
-            // leaving the local preference on neither value.
-            if (localeResult === "cancelled" || localeResult === "superseded") {
+            // leaving the local preference on neither value. Hydration still has
+            // to finish, or every later save stays paused for the session; an
+            // empty baseline makes the next push send whatever is in effect.
+            if (localeResult === "cancelled") return;
+            if (localeResult === "superseded") {
+              if (authGenerationRef.current === generation) {
+                lastSavedRef.current = "";
+                setHydratedGeneration(generation);
+              }
               return;
             }
           }
