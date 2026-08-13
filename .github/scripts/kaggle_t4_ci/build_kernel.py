@@ -303,17 +303,44 @@ if missing:
     }}), flush=True)
     raise SystemExit("payload dependencies incomplete: " + "; ".join(missing))
 
-import torch
-print("{PAYLOAD_SENTINEL} gpu " + json.dumps({{
-    "count": torch.cuda.device_count(),
-    "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-    "visible": __import__("os").environ.get("CUDA_VISIBLE_DEVICES"),
-}}), flush=True)
-# Exactly one GPU must be visible: two would mean the driver failed to pin
-# this payload to its own card, and accelerate would shard across both,
-# which is a different test from the single T4 a Colab user gets.
-assert torch.cuda.device_count() == 1, (
-    f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
+# The GPU check, under the same rule as the import probe above: whatever
+# goes wrong in here is a VERDICT and has to leave a report behind, because
+# nothing further down this notebook ever runs to write one.
+#
+# The case that made it necessary: the driver shows the T4s to `nvidia-smi`,
+# but dependency resolution picked a CPU-only or CUDA-incompatible torch
+# wheel, so `device_count()` is 0. The bare assert aborted the cell, the
+# launcher extracted no report for this leg, and no report is `infra` (or
+# `partial` next to its partner) -- both of which exit 0. A regression that
+# makes CUDA unusable was therefore invisible.
+#
+# `except BaseException`, and every line of the check inside it: the count
+# is only one of the ways this fails. `import torch` can raise on a broken
+# wheel, and get_device_properties can raise where device_count did not.
+try:
+    import torch
+    print("{PAYLOAD_SENTINEL} gpu " + json.dumps({{
+        "count": torch.cuda.device_count(),
+        "name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "visible": __import__("os").environ.get("CUDA_VISIBLE_DEVICES"),
+    }}), flush=True)
+    # Exactly one GPU must be visible: two would mean the driver failed to pin
+    # this payload to its own card, and accelerate would shard across both,
+    # which is a different test from the single T4 a Colab user gets. Zero
+    # means the payload cannot run at all on the hardware it was billed for.
+    assert torch.cuda.device_count() == 1, (
+        f"expected exactly 1 visible GPU, got {{torch.cuda.device_count()}}")
+except BaseException as exc:
+    detail = f"{{type(exc).__name__}}: {{exc}}"
+    print("{PAYLOAD_SENTINEL} GPU_UNUSABLE " + json.dumps(detail), flush=True)
+    print("{RESULT_PREFIX}" + json.dumps({{
+        "label": {json.dumps(leg.name)},
+        "model": "gpu probe",
+        "passed": False,
+        "versions_flat": RESOLVED,
+        "failures": ["the payload could not use its GPU -- " + detail],
+    }}), flush=True)
+    raise
 """
 
     argv = list(leg.args) + _shared_args_for(leg, tuple(extra_args))

@@ -471,8 +471,25 @@ def failures_for(result: dict, args) -> list[str]:
     # Conditioned on the card, not hardcoded to T4. FORCE_FLOAT32 exists
     # because this hardware has no bf16; on a card that has it, the patch not
     # firing is correct, and a red there would be this check's own bug.
+    #
+    # Three-way, not two-way. `is False` alone made the entire block
+    # conditional on a reading that is allowed to be absent: main() records
+    # `{"error": ...}` for the whole environment when the probe raises, and a
+    # torch build that changed or failed `is_bf16_supported()` therefore
+    # skipped the one assertion this leg uniquely carries while training,
+    # losses, adapter and generation all still passed. Anything that is not
+    # a literal True or False is unverifiable, and unverifiable is red here.
     environment = result.get("environment") or {}
-    if environment.get("bf16_supported") is False:
+    bf16_supported = environment.get("bf16_supported")
+    if bf16_supported is not True and bf16_supported is not False:
+        failures.append(
+            f"the card's bf16 support was not recorded, so whether the forced "
+            f"float32 path had to fire could not be established: "
+            f"environment={environment}. This leg exists to cover that path on "
+            f"hardware without bf16, and every other number in this report is "
+            f"produced with or without it"
+        )
+    elif bf16_supported is False:
         precision = result.get("precision")
         if not precision:
             failures.append(

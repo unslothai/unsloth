@@ -15,6 +15,7 @@ before they reach torch.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -746,3 +747,202 @@ def test_an_abort_anywhere_in_the_launcher_still_deletes_what_it_pushed(monkeypa
     result = json.loads((tmp_path / "launch_result.json").read_text(encoding = "utf-8"))
     assert result["verdict"] == "infra"
     assert "MemoryError" in result["reason"]
+
+
+# --------------------------------------------------------- kernel cleanup
+
+
+def _drive_one_kernel(monkeypatch, tmp_path, fake_run):
+    """`main()` over one kernel that pushes, completes and reports.
+
+    Everything except the delete calls is stubbed, so what comes back is a
+    reading of the release path and nothing else.
+    """
+    monkeypatch.setattr(launch, "_api", lambda: object())
+    monkeypatch.setattr(
+        launch,
+        "push",
+        lambda notebook, user, kernel_timeout_sec, accelerator = "NvidiaTeslaT4": {
+            "ok": True,
+            "slug": "someuser/unsloth-t4-ci-abcd",
+            "attempts": ["someuser/unsloth-t4-ci-abcd"],
+        },
+    )
+    monkeypatch.setattr(launch, "wait", lambda api, slug, poll_every, max_wait: "COMPLETE")
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, outdir, timeout = 300: {"notebooks": [], "log": None}
+    )
+    monkeypatch.setattr(
+        launch,
+        "extract_reports",
+        lambda outdir: [{"label": "control", "model": "m", "passed": True}],
+    )
+    monkeypatch.setattr(launch.subprocess, "run", fake_run)
+    monkeypatch.setattr(launch.time, "sleep", lambda _s: None)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising = False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "launch.py",
+            "--notebook",
+            "k0.ipynb",
+            "--user",
+            "someuser",
+            "--outdir",
+            str(tmp_path),
+            "--expect",
+            "1",
+        ],
+    )
+    code = launch.main()
+    return code, json.loads((tmp_path / "launch_result.json").read_text(encoding = "utf-8"))
+
+
+def _refusing_run(returncode: int, message: str, succeed_from: int = 10**6):
+    """A `subprocess.run` whose deletes fail until the nth attempt."""
+    calls: list[str] = []
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            calls.append(cmd[3])
+            if len(calls) >= succeed_from:
+                return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+            return types.SimpleNamespace(returncode = returncode, stdout = "", stderr = message)
+        return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    return fake_run, calls
+
+
+def test_a_delete_kaggle_refused_does_not_count_as_released(monkeypatch, tmp_path, capsys):
+    """`subprocess.run` does not raise on a nonzero exit.
+
+    So the release loop used to record every slug as released whatever came
+    back, and cleanup is the budget control here rather than a tidy-up. The
+    exact refusal below is the one that was live: the client the workflow
+    pinned had no `kernels delete` subcommand at all, so argparse answered
+    every delete with exit 2 and the run still reported the kernel released
+    while it billed on to its own ceiling.
+    """
+    fake_run, calls = _refusing_run(
+        2, "kaggle kernels: error: argument command: invalid choice: 'delete'"
+    )
+    code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
+
+    assert code == 0
+    entry = result["kernels"][0]
+    assert entry["released"] is False
+    assert entry["released_slugs"] == []
+    assert result["unreleased"] == ["someuser/unsloth-t4-ci-abcd"]
+    # And it is said out loud, or nobody goes and deletes it by hand.
+    out = capsys.readouterr().out
+    assert "::warning title=Kaggle kernels may still be running::" in out
+    assert "someuser/unsloth-t4-ci-abcd" in out
+
+
+def test_a_refused_delete_is_retried_before_it_is_given_up_on(monkeypatch, tmp_path):
+    """A 5xx or a reset connection is exactly as transient here as it is on
+    the push side, and giving up on the first one abandons a live kernel."""
+    fake_run, calls = _refusing_run(1, "503 Service Unavailable")
+    _code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
+
+    assert len(calls) == launch.DELETE_ATTEMPTS
+    assert result["kernels"][0]["released"] is False
+
+
+def test_a_delete_that_succeeds_on_a_retry_is_released(monkeypatch, tmp_path, capsys):
+    """The other direction: the retry has to be able to end in success, or
+    the check is just a slower way of always reporting a leak."""
+    fake_run, calls = _refusing_run(1, "502 Bad Gateway", succeed_from = 2)
+    _code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
+
+    assert len(calls) == 2
+    entry = result["kernels"][0]
+    assert entry["released"] is True
+    assert entry["released_slugs"] == ["someuser/unsloth-t4-ci-abcd"]
+    assert result["unreleased"] == []
+    assert "::warning title=Kaggle kernels may still be running::" not in capsys.readouterr().out
+
+
+def test_a_delete_that_never_ran_is_not_a_deletion(monkeypatch, tmp_path):
+    """`subprocess.run` raising is the one case the old code did notice, and
+    it is still not a released kernel."""
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[1:3] == ["kernels", "delete"]:
+            raise subprocess.TimeoutExpired(cmd, 180)
+        return types.SimpleNamespace(returncode = 0, stdout = "", stderr = "")
+
+    _code, result = _drive_one_kernel(monkeypatch, tmp_path, fake_run)
+    assert result["kernels"][0]["released"] is False
+    assert result["unreleased"] == ["someuser/unsloth-t4-ci-abcd"]
+
+
+def test_a_payload_that_cannot_see_its_gpu_reports_instead_of_vanishing(tmp_path, monkeypatch):
+    """A CPU-only torch wheel must not exit this job green.
+
+    `device_count() == 0` used to abort the verify cell with a bare assert.
+    The run cell is the only other thing that emits a report and it is never
+    reached from there, so the launcher extracted nothing for this leg and
+    called the run `infra` -- which exits 0. A dependency regression that
+    makes CUDA unusable was invisible.
+    """
+    monkeypatch.setattr(build_kernel, "KERNEL_ROOT", str(tmp_path / "src"))
+    leg = LEGS["control"]
+    # Import probe satisfied, so the cell reaches the GPU check.
+    trivial = type(leg)(
+        **{
+            **{field: getattr(leg, field) for field in leg.__dataclass_fields__},
+            "imports": ("json",),
+        }
+    )
+    cells = _payload_cells(trivial)
+
+    # A torch that installed and imports, and sees no card.
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "torch.py").write_text(
+        "class _Cuda:\n"
+        "    @staticmethod\n"
+        "    def device_count():\n"
+        "        return 0\n"
+        "    @staticmethod\n"
+        "    def is_available():\n"
+        "        return False\n"
+        "cuda = _Cuda()\n",
+        encoding = "utf-8",
+    )
+
+    outputs = []
+    for index in (0, 2):
+        script = tmp_path / f"cell{index}.py"
+        script.write_text(cells[index], encoding = "utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output = True,
+            text = True,
+            timeout = 600,
+            env = {**os.environ, "PYTHONPATH": str(stubs)},
+        )
+        outputs.append(proc.stdout + proc.stderr)
+    assert "KAGGLE_T4_CI_PAYLOAD GPU_UNUSABLE" in outputs[1]
+
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "t4_control_output.ipynb").write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "code", "outputs": [{"output_type": "stream", "text": text}]}
+                    for text in outputs
+                ]
+            }
+        ),
+        encoding = "utf-8",
+    )
+    reports = launch.extract_reports(evidence)
+    assert reports, "an unusable GPU produced no report at all"
+    assert reports[0]["passed"] is False
+    assert any("could not use its GPU" in f for f in reports[0]["failures"])

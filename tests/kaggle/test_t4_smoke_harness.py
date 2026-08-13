@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2591,6 +2592,13 @@ def _gptoss_ok() -> dict:
             "graph_breaks_total_delta": 2,
         },
         "generated": "analysis... assistantfinal 4",
+        # The card reading and the precision it forced, which the probe
+        # records on every run. Not decoration: the float32 assertion is
+        # conditioned on `bf16_supported`, so a floor fixture that omitted it
+        # left the one check this leg uniquely carries unexercised by every
+        # case below.
+        "environment": {"gpu_name": "Tesla T4", "bf16_supported": False},
+        "precision": {"fp16": False, "bf16": False, "force_float32_env": "1"},
     }
 
 
@@ -3179,3 +3187,109 @@ def test_the_frontier_leg_is_wired_on_the_seat_that_costs_nothing():
         "a second seat in an existing session is free and a new session is not"
     )
     assert "frontier" not in legs.UNWIRED
+
+
+def test_the_pinned_kaggle_client_carries_the_calls_this_workflow_makes():
+    """The pin is load bearing, and 1.7.4.5 could not do the job at all.
+
+    Three separate things this workflow depends on are simply absent from
+    older clients, and every one of them fails quietly rather than loudly:
+
+    * `authenticate()` on 1.7.4.5 refuses `KAGGLE_API_TOKEN` -- the only
+      credential this workflow has -- and demands a kaggle.json nothing here
+      writes.
+    * `kaggle kernels delete` landed in 1.7.5.0 (Kaggle/kaggle-cli#762),
+      first released in 1.8.0. Before it, argparse answers the release path
+      with `invalid choice: 'delete'` and exit 2.
+    * `quota_view()`, which gate.py reads remaining accelerator hours from,
+      exists only on 2.x; below it the call raises AttributeError into a
+      handler that records "quota unreadable" and lets the run proceed.
+
+    Pinned exactly, and the same version in every job that installs it.
+    """
+    packaging_version = pytest.importorskip("packaging.version")
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    pins = re.findall(r"pip install [^\n]*'kaggle==([0-9][^']*)'", text)
+    assert pins, "no pinned kaggle client in the workflow"
+    assert len(set(pins)) == 1, f"jobs disagree on the kaggle client: {pins}"
+    assert packaging_version.Version(pins[0]) >= packaging_version.Version("2.2.0"), pins[0]
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "the step is a bash script")
+def test_a_dispatched_commit_is_proven_to_exist_before_the_quota_is_spent(tmp_path):
+    """A 40-character SHA was accepted on shape alone.
+
+    Nothing asked whether unslothai/unsloth HAS that commit, so a mistyped
+    (or force-pushed away, or fork-only) SHA pushed the paid kernels, every
+    payload's `pip install git+...` failed on it, and the import probes
+    reported the pull request RED for a commit that never existed. That is
+    the outcome stand_down exists for, quota and all.
+
+    `git ls-remote` cannot answer it -- it matches refs, and exits 0 with
+    empty output for any SHA -- so the check is a `git fetch` of the object,
+    which is the same reachability pip needs to install it.
+    """
+    steps = _workflow()["jobs"]["t4-smoke"]["steps"]
+    script = next(s for s in steps if s.get("id") == "ref")["run"]
+
+    def drive(unsloth_ref, ls_remote, fetch_exit = 0):
+        work = tmp_path / f"case{abs(hash((unsloth_ref, ls_remote, fetch_exit)))}"
+        stub = work / "bin"
+        stub.mkdir(parents = True)
+        # `git` answers ls-remote from LS_OUT and fetch from GIT_FETCH_EXIT,
+        # and records every fetch so the check cannot be a no-op that passes.
+        (stub / "git").write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  ls-remote) printf "%s" "$LS_OUT" ;;\n'
+            '  fetch) shift; echo "$*" >> "$FETCH_LOG"; exit "$GIT_FETCH_EXIT" ;;\n'
+            "  *) exit 0 ;;\n"
+            "esac\n"
+        )
+        (stub / "sleep").write_text("#!/bin/sh\nexit 0\n")
+        for name in ("git", "sleep"):
+            (stub / name).chmod(0o755)
+        out = work / "github_output"
+        out.write_text("", encoding = "utf-8")
+        log = work / "fetches"
+        log.write_text("", encoding = "utf-8")
+        env = dict(
+            os.environ,
+            PATH = f"{stub}:{os.environ['PATH']}",
+            GITHUB_OUTPUT = str(out),
+            UNSLOTH_REF = unsloth_ref,
+            HEAD_SHA = "headsha",
+            LS_OUT = ls_remote,
+            GIT_FETCH_EXIT = str(fetch_exit),
+            FETCH_LOG = str(log),
+        )
+        done = subprocess.run(["bash", "-c", script], env = env, capture_output = True, text = True)
+        assert done.returncode == 0, done.stderr
+        written = dict(
+            line.split("=", 1) for line in out.read_text().splitlines() if "=" in line
+        )
+        return written, log.read_text(encoding = "utf-8")
+
+    sha = "a" * 40
+    # A commit GitHub does not serve stands the run down instead of paying
+    # for four kernels that cannot install it.
+    written, fetched = drive(sha, "", fetch_exit = 128)
+    assert written == {"stand_down": "true"}
+    assert sha in fetched, "the SHA was accepted without asking GitHub for it"
+
+    # One that it does serve is pinned exactly as before.
+    written, fetched = drive(sha, "")
+    assert written == {"ref": sha}
+    assert sha in fetched
+
+    # The check is not limited to the shape the form supplied: a branch that
+    # ls-remote resolved is proven installable too.
+    branch_sha = "b" * 40
+    written, fetched = drive("main", f"{branch_sha}\trefs/heads/main\n", fetch_exit = 128)
+    assert written == {"stand_down": "true"}
+    assert branch_sha in fetched
+
+    # And nothing is fetched on the path that spends no dispatch input.
+    written, fetched = drive("", "")
+    assert written == {"ref": "headsha"}
+    assert fetched.strip() == ""

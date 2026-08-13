@@ -133,6 +133,13 @@ SOCKET_TIMEOUT_SEC = 120
 # doing the work.
 MAX_CONSECUTIVE_UNKNOWN = 10
 
+# Attempts at deleting ONE kernel, and the first gap between them. Deleting
+# is the budget control, so a refused delete is retried rather than written
+# off -- the refusals worth retrying are the same transient 5xx and reset
+# connections push() already retries against.
+DELETE_ATTEMPTS = 3
+DELETE_BACKOFF_SEC = 5
+
 
 def _log(msg: str) -> None:
     print(f"[launch] {msg}", flush = True)
@@ -203,15 +210,12 @@ def push(
     attempted: list[str] = []
 
     def _discard(slug: str) -> None:
-        """Best effort. The attempt usually created nothing at all."""
-        try:
-            subprocess.run(
-                ["kaggle", "kernels", "delete", slug, "-y"],
-                capture_output = True,
-                text = True,
-                timeout = 180,
-            )
-        except Exception:  # noqa: BLE001
+        """Best effort. The attempt usually created nothing at all.
+
+        release() reconciles whatever this leaves, so the outcome is only
+        logged here -- but it IS read, rather than assumed.
+        """
+        if not delete_kernel(slug):
             _log(f"could not discard the previous push attempt {slug}")
 
     workdir = Path(tempfile.mkdtemp(prefix = "kaggle-t4-ci-"))
@@ -307,6 +311,45 @@ def push(
         shutil.rmtree(workdir, ignore_errors = True)
 
 
+def delete_kernel(slug: str) -> bool:
+    """Delete one kernel, and answer whether Kaggle actually deleted it.
+
+    ``subprocess.run`` does not raise on a nonzero exit, so the caller used
+    to record every slug as released whatever came back -- a refused delete,
+    an expired token, or the case that made this visible: the pinned client
+    had no ``kernels delete`` subcommand at all, so argparse exited 2 before
+    a request was ever sent and the run still reported the kernel released.
+    Cleanup is this workflow's budget control, so a delete whose outcome was
+    not established has to read as STILL BILLING.
+
+    The exit code is the signal Kaggle's client offers, and it means what it
+    says: kaggle/cli.py exits 1 on a failed call, commented "This is so that
+    scripts that pick up on error codes can tell when there was a failure",
+    and 0 once the kernel is gone.
+
+    Returns True only on a confirmed deletion. A slug this refuses is one a
+    human has to look at, which is what the caller's warning is for.
+    """
+    for attempt in range(DELETE_ATTEMPTS):
+        try:
+            proc = subprocess.run(
+                ["kaggle", "kernels", "delete", slug, "-y"],
+                capture_output = True,
+                text = True,
+                timeout = 180,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log(f"delete {slug} did not run: {type(exc).__name__}")
+        else:
+            if proc.returncode == 0:
+                return True
+            detail = " ".join(f"{proc.stdout} {proc.stderr}".split())
+            _log(f"delete {slug} exited {proc.returncode}: {detail[:200]}")
+        if attempt + 1 < DELETE_ATTEMPTS:
+            time.sleep(DELETE_BACKOFF_SEC * (2**attempt))
+    return False
+
+
 def _slugs_filed(entry: dict) -> list[str]:
     """Every slug one kernel entry's push filed, in the order it filed them.
 
@@ -318,9 +361,8 @@ def _slugs_filed(entry: dict) -> list[str]:
       with a 5xx or a reset connection often enough to be a known issue, and
       that entry then carries no ``slug`` at all.
     * An EARLIER attempt of a push that later succeeded. ``_discard()`` runs
-      before each retry, but it is best effort and ``subprocess.run`` does
-      not raise on a nonzero exit, so a refused delete leaves the previous
-      attempt up.
+      before each retry, but it is best effort: a delete Kaggle refuses even
+      after ``delete_kernel``'s retries leaves the previous attempt up.
 
     Either one keeps a session slot and bills GPU quota with nobody reading
     its result. A delete for a slug Kaggle never created is simply refused
@@ -584,26 +626,36 @@ def main() -> int:
         Every slug the push FILED is reconciled, not only the accepted one.
         See ``_slugs_filed`` for the two ways an unaccepted slug can still be
         running.
+
+        A slug is marked released only once Kaggle has CONFIRMED the delete
+        (see delete_kernel). Anything else is a kernel that may still be
+        billing, so it is named in the log, in ``launch_result.json`` and in
+        a workflow annotation rather than quietly counted as cleaned up.
         """
         if args.keep_kernel:
             return
+        leaked: list[str] = []
         for entry in result.get("kernels") or []:
             done = set(entry.get("released_slugs") or [])
             for slug in _slugs_filed(entry):
                 if slug in done:
                     continue
-                try:
-                    subprocess.run(
-                        ["kaggle", "kernels", "delete", slug, "-y"],
-                        capture_output = True,
-                        text = True,
-                        timeout = 180,
-                    )
+                if delete_kernel(slug):
                     done.add(slug)
-                except Exception:  # noqa: BLE001
+                else:
+                    leaked.append(slug)
                     _log(f"could not delete {slug}; it may keep billing")
             entry["released_slugs"] = sorted(done)
             entry["released"] = all(s in done for s in _slugs_filed(entry))
+        result["unreleased"] = leaked
+        if leaked:
+            print(
+                "::warning title=Kaggle kernels may still be running::"
+                + ", ".join(leaked)
+                + " could not be deleted, so they may keep billing accelerator "
+                "quota until they hit their own ceiling. Delete them by hand.",
+                flush = True,
+            )
 
     def finish(code: int = 0) -> int:
         release()

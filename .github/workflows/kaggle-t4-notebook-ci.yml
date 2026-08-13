@@ -270,8 +270,23 @@ jobs:
         with:
           python-version: '3.12'
 
+      # 2.2.4, and the version is load bearing rather than tidy. Everything
+      # this workflow asks the client to do has to EXIST in the pin:
+      #
+      # * `KAGGLE_API_TOKEN` is the only credential this workflow has, and
+      #   1.7.4.5's `authenticate()` refuses it -- it wants a kaggle.json
+      #   that nothing here writes, and raises before a call is made.
+      # * `kaggle kernels delete` landed in 1.7.5.0 (Kaggle/kaggle-cli#762),
+      #   first released in 1.8.0. On 1.7.4.5 argparse answers it with
+      #   `invalid choice: 'delete'` and exit 2, so the cleanup that is this
+      #   workflow's budget control never sent a request at all.
+      # * `quota_view()`, which gate.py reads the remaining accelerator hours
+      #   from, exists only on 2.x.
+      #
+      # The client exits nonzero on a failed call, which is what launch.py
+      # reads to decide whether a kernel is really gone.
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # budget-hours is the worst case ONE invocation can cost, and it is
       # derived from the LAUNCHER's bound rather than from the ceiling passed
@@ -386,8 +401,23 @@ jobs:
         with:
           python-version: '3.12'
 
+      # 2.2.4, and the version is load bearing rather than tidy. Everything
+      # this workflow asks the client to do has to EXIST in the pin:
+      #
+      # * `KAGGLE_API_TOKEN` is the only credential this workflow has, and
+      #   1.7.4.5's `authenticate()` refuses it -- it wants a kaggle.json
+      #   that nothing here writes, and raises before a call is made.
+      # * `kaggle kernels delete` landed in 1.7.5.0 (Kaggle/kaggle-cli#762),
+      #   first released in 1.8.0. On 1.7.4.5 argparse answers it with
+      #   `invalid choice: 'delete'` and exit 2, so the cleanup that is this
+      #   workflow's budget control never sent a request at all.
+      # * `quota_view()`, which gate.py reads the remaining accelerator hours
+      #   from, exists only on 2.x.
+      #
+      # The client exits nonzero on a failed call, which is what launch.py
+      # reads to decide whether a kernel is really gone.
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       # BEFORE anything is built or pushed. The suites are CPU-only and run in
       # under a minute; they parse every generated cell, check the leg wiring,
@@ -406,7 +436,7 @@ jobs:
       # torch from the CPU index and transformers WITHOUT it: the payload
       # modules the suites import need both to import at all, and the CPU
       # wheel is a minute against a session that costs quota. Measured in a
-      # bare venv with exactly these three: 278 passed.
+      # bare venv with exactly these three: 292 passed.
       - name: Test the harness
         run: |
           python -m pip install --quiet pytest transformers
@@ -465,6 +495,44 @@ jobs:
               echo "ls-remote attempt $attempt resolved nothing"
               sleep 10
             done
+          fi
+          # Every branch above ends here, including the 40-character one.
+          # That branch used to be its own exit: a SHA is already immutable,
+          # so it was accepted on shape alone and nothing ever asked whether
+          # unslothai/unsloth HAS that commit. A mistyped -- or force-pushed
+          # away, or fork-only -- SHA is syntactically perfect, so the run
+          # pushed the paid kernels, every payload's `pip install git+...`
+          # failed on it, and the four import probes reported the pull
+          # request red for a commit that never existed. That is the exact
+          # outcome stand_down exists to avoid, spent quota and all.
+          #
+          # `git ls-remote` cannot answer this: it matches REFS, and it exits
+          # 0 with empty output for any SHA, which is why the shape test was
+          # there in the first place. `git fetch` of the object itself can,
+          # it is the same reachability pip needs to install the commit, and
+          # GitHub answers an unreachable one with `upload-pack: not our ref`
+          # and exit 128. --depth=1 keeps it to one commit.
+          #
+          # Applied to the ls-remote result too, not only to the SHA the form
+          # supplied: it costs one more fetch and it means the value written
+          # below has been proven installable however it was arrived at.
+          if ! printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED=''
+          fi
+          if [ -n "$RESOLVED" ]; then
+            EXISTS=''
+            for attempt in 1 2 3; do
+              if git fetch --quiet --depth=1 https://github.com/unslothai/unsloth "$RESOLVED"; then
+                EXISTS=yes
+                break
+              fi
+              echo "fetch attempt $attempt did not find $RESOLVED"
+              sleep 10
+            done
+            if [ -z "$EXISTS" ]; then
+              echo "::warning title=The requested unsloth commit does not exist::unslothai/unsloth does not serve the commit $RESOLVED, so the four legs would each have failed to install it after the session was paid for. Standing down."
+              RESOLVED=''
+            fi
           fi
           if [ -z "$RESOLVED" ]; then
             echo "::warning title=Could not resolve the requested unsloth ref::the dispatched ref names no branch, tag or full commit on unslothai/unsloth, so the four legs could not be pinned to one revision. Standing down rather than letting each of them install whatever it resolves. Give a branch name, a tag, or a full 40-character SHA."

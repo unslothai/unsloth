@@ -1256,3 +1256,52 @@ def test_reports_are_not_ordered_control_first(tmp_path):
     labels = [r["label"] for r in extract_reports(tmp_path)]
     assert labels[0] != "control"
     assert sorted(labels) == ["canary", "control", "frontier", "gptoss"]
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"error": "RuntimeError: is_bf16_supported() failed"},
+        {},
+        {"gpu_name": "Tesla T4"},
+        {"bf16_supported": None},
+        {"bf16_supported": "false"},
+        {"bf16_supported": 0},
+    ],
+)
+def test_gptoss_fails_when_the_cards_bf16_support_is_unreadable(environment):
+    """`is False` alone made the float32 assertion optional.
+
+    main() records `environment = {"error": ...}` for the whole probe when
+    it raises -- a torch build that changed or failed `is_bf16_supported()`
+    is enough -- and the block below it was then skipped entirely. Training,
+    finite losses, an updated adapter, compilation and generation all still
+    pass, so the leg went green without ever establishing the float32 path
+    it uniquely claims to cover.
+
+    Not just the `error` shape: anything that is not a literal True or False
+    is unverifiable, including a plausible-looking string or 0.
+    """
+    from run_gptoss_t4 import failures_for
+
+    result = _gptoss_result(environment = environment)
+    failures = failures_for(result, _gptoss_args())
+    assert failures and any("bf16" in f for f in failures), failures
+
+
+def test_gptoss_still_reads_a_bf16_card_and_a_t4_the_way_it_did():
+    """The two literal readings keep their meanings, so the widening above
+    cannot be satisfied by turning every card into a failure."""
+    from run_gptoss_t4 import failures_for
+
+    assert failures_for(_gptoss_result(), _gptoss_args()) == []
+    assert (
+        failures_for(
+            _gptoss_result(
+                environment = {"bf16_supported": True, "gpu_name": "NVIDIA A100"},
+                precision = {"fp16": False, "bf16": True, "force_float32_env": None},
+            ),
+            _gptoss_args(),
+        )
+        == []
+    )
