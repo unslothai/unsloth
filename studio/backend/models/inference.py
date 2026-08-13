@@ -875,6 +875,9 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
             "separate MTP or DSpark drafter could not be resolved; "
+            "'drafter_no_vram' -> an Auto-mode fit downgrade: the model pins on "
+            "GPU but the drafter's reserve does not, and Auto keeps the context "
+            "rather than shrink it; select the drafter in Settings to force it. "
             "'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
@@ -1711,6 +1714,33 @@ class ChatCountTokensRequest(BaseModel):
         None,
         description = "[x-unsloth] Strip leaked tool-call markup from replayed history",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level the completion would send. Only 'full' changes "
+        "the prompt: it swaps the python/terminal descriptions for the unsandboxed pair and adds a "
+        "sentence to the tool nudge, so a count that omits it prices a prompt the completion will "
+        "not send.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
+        "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
+    )
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
+        """Mirrors ChatCompletionRequest: the prompt builders read only the
+        bypass flag, so 'full' has to reach them the same way here."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            self.permission_mode = "full"
+        return self
 
 
 class ToolConfirmRequest(BaseModel):

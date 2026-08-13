@@ -598,17 +598,20 @@ class TestExtraArgsMtpDetection:
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A SEPARATE drafter offloaded to CPU (--spec-draft-ngl 0 /
         # --spec-draft-device none) consumes no GPU, so it must be dropped from the
-        # budget and get no flat reserve (Finding F2). But an embedded head is on
-        # GPU regardless of those draft-only flags, so the flat reserve is only
-        # suppressed when there is no embedded head (Finding G5).
+        # budget and get no flat reserve (Finding F2). An embedded head is on GPU
+        # regardless of those draft-only flags (Finding G5) -- but only when it is
+        # the head that runs: llama.cpp loads the draft model on has_dft(), so a
+        # separate sidecar wins over one, and an unused head must not keep the
+        # reserve alive. Hence "no embedded head OR a separate drafter was chosen".
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
         assert (
             "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
-        # flat reserve suppressed only for a CPU drafter with no embedded head
-        assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
+        # flat reserve suppressed for a CPU drafter that is the one being launched
+        assert "_draft_cpu_no_embedded=_draft_on_cpuand(" in compact
+        assert "ornotself._nextn_predict_layers)" in compact
         assert "not_draft_cpu_no_embedded" in compact
 
     def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
