@@ -1268,9 +1268,7 @@ def test_an_identifier_is_matched_the_way_python_resolves_it():
         high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
         assert high, f"a normalized identifier must reach the builtin:\n{src}"
 
-    rebound = (
-        f"import builtins as b\nmod = __import__('os')\n{fancy} = load_model()\nb.eval()\n"
-    )
+    rebound = f"import builtins as b\nmod = __import__('os')\n{fancy} = load_model()\nb.eval()\n"
     findings = sp.check_py_file(rebound, "pkg/_infer.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
     assert high == [], f"a normalized rebinding must cancel the alias: {high}"

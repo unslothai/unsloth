@@ -191,7 +191,9 @@ _MAX_WALRUS_VALUE = 32
 # An escape sequence that resolves to a character: `'buil\x74ins'` names the
 # `builtins` module without spelling it, so a file that carries one has to be
 # read even though the plain word never appears in it.
-_RE_STRING_ESCAPE = re.compile(r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{)")
+_RE_STRING_ESCAPE = re.compile(
+    r"\\(?:x[0-9a-fA-F]{2}|[0-7]{1,3}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{)"
+)
 
 
 class _Span:
@@ -1602,9 +1604,7 @@ class _ExecEvalPattern:
                         rebound -= same
                         if not rebound:
                             continue
-                    aliased = _assignment_bindings(stmt, loaders) + _walrus_bindings(
-                        stmt, loaders
-                    )
+                    aliased = _assignment_bindings(stmt, loaders) + _walrus_bindings(stmt, loaders)
                     if aliased:
                         # The statement that makes the name the module is not a
                         # rebinding of it, and it undoes any earlier one:
