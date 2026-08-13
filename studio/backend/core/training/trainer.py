@@ -2596,6 +2596,15 @@ class UnslothTrainer:
         except Exception:  # noqa: BLE001 - never let log tidying stop a run
             pass
 
+        # An Audio column decodes inside load_dataset() below, before the audio branches
+        # that already call this. This worker starts without the shim the API process
+        # installs, so the load raised `datasets`' own "please install 'torchcodec'".
+        # A False here is still reported by those branches, naming FFmpeg.
+        try:
+            ensure_audio_decoding()
+        except Exception:  # noqa: BLE001 - never let a broken librosa stop a text run
+            pass
+
         s3_download = None
         try:
             self.dataset_loaded_from_exact_snapshot = False
