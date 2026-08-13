@@ -477,7 +477,6 @@ def pin_relative_sys_path(
     """
     if syspath is None:
         import sys as _sys
-
         syspath = _sys.path
     if isdir is None:
         isdir = _os.path.isdir
