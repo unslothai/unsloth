@@ -43,29 +43,25 @@ fn generic_failure_message(code: i32) -> String {
 
 /// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
 /// product's verdict arrives as a parse error over the entire file before the installer's first
-/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match
-/// the stable error id, never the localized message text; the id can carry a cmdlet suffix, so
-/// this is a substring test.
+/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match the
+/// stable error id, never the localized message text.
 const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
 const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
 
-/// The id only means a verdict when it is the value of a PowerShell error record's
-/// `FullyQualifiedErrorId` field, which is how the parse error prints it. Requiring the field
-/// name keeps an ordinary line that merely names the id, from a scanner log or a diagnostic,
-/// from attaching antivirus guidance to an unrelated failure. A wrapper that split the record
-/// across writes loses the guidance rather than inventing one, which is the safe direction.
+/// The id only means a verdict when it is the VALUE of a `FullyQualifiedErrorId` field, which is
+/// how the parse error prints it. Otherwise a scanner log or a diagnostic that merely names the id
+/// would attach antivirus guidance to an unrelated failure. A record split across writes loses the
+/// guidance rather than inventing one, which is the safe direction.
 const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
 
 /// "Nothing was changed" only holds for a block on install.ps1 itself, which AMSI rejects before
-/// its first statement. install.ps1 also runs `unsloth studio setup` near the end, and that child
-/// spawns studio/setup.ps1 through the same inherited pipes: a block there arrives after the venv,
-/// PyTorch and the packages are already on disk, so the same reassurance would be a lie. A
-/// `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none at all.
-/// Not "nothing was changed": a diagnostics attempt and its phase log are created before
-/// PowerShell is ever spawned, so the only honest claim is that no installation step ran. And not
-/// "this is a false positive": classification proves the output carries an error id, nothing about
-/// the script's integrity, and install.ps1 can sit in a user-writable directory. Telling someone
-/// to report a correct detection to their vendor is worse than telling them to reinstall first.
+/// its first statement. It also runs `unsloth studio setup`, whose child spawns studio/setup.ps1
+/// through the same pipes: a block there arrives with the venv, PyTorch and the packages already
+/// on disk. A `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none.
+/// Not "nothing was changed": a diagnostics attempt and its phase log are written before
+/// PowerShell is spawned, so the honest claim is that no installation step ran. And not "this is a
+/// false positive": classification proves only that the output carries an error id, and install.ps1
+/// can sit in a user-writable directory.
 const AMSI_MALWARE_GUIDANCE_PRE_START: &str = "Security software blocked the installer before it \
      started, so no installation steps ran; only diagnostic logs may have been written. This is \
      usually a false positive: reinstall from an official Unsloth package, and if an unmodified \
@@ -90,10 +86,8 @@ enum SecurityBlockKind {
 }
 
 impl SecurityBlockKind {
-    /// Resolved at message time, not at observation time: stdout and stderr are read by
-    /// independent threads, so a `[TAURI:STEP]` written before the block can be observed after
-    /// it. Choosing the wording from the final `started` value is the only way the "nothing was
-    /// changed" claim can be trusted.
+    /// Resolved at message time, not observation time: the two streams are read by independent
+    /// threads, so a `[TAURI:STEP]` written before the block can be observed after it.
     fn guidance(self, started: bool) -> &'static str {
         match (self, started) {
             (Self::Malware, false) => AMSI_MALWARE_GUIDANCE_PRE_START,
@@ -104,9 +98,9 @@ impl SecurityBlockKind {
     }
 }
 
-/// True when `id` is the value of the `FullyQualifiedErrorId` field, rather than merely present
-/// on the same line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so the id has
-/// to follow the colon; a line that names the field and the id in prose does not qualify.
+/// True when `id` is the value of the `FullyQualifiedErrorId` field rather than merely present on
+/// the line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so it follows the
+/// colon; prose naming both does not qualify.
 fn is_error_id_value(text: &str, id: &str) -> bool {
     let mut rest = text;
     while let Some(at) = rest.find(POWERSHELL_ERROR_ID_FIELD) {
@@ -245,15 +239,14 @@ impl InstallFailureContext {
     }
 
     fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
-        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198), and
-        // the two are read by independent threads. So a verdict can land between a clear and its
-        // own twin, and treating the twin as a second clear would discard a real block.
+        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198),
+        // read by independent threads, so a verdict can land between a clear and its own twin and
+        // treating the twin as a second clear would discard a real block.
         //
-        // Pair them by message rather than only against the previous one: a reader can lag several
-        // clears behind, so with clears A then B on one stream and A's twin arriving on the other
-        // after the verdict, "is this the message I just saw" answers no and throws the verdict
-        // away. Each logical clear emits exactly two markers, so the first sighting of a message is
-        // the clear and the next sighting pairs with it.
+        // Pair by message, not against the previous clear alone: a reader can lag several clears
+        // behind, so "is this the message I just saw" answers no and throws the verdict away. Each
+        // logical clear emits exactly two markers, so the first sighting is the clear and the next
+        // pairs with it.
         let twin = match self.unpaired_clears.get_mut(message) {
             Some(count) if *count > 0 => {
                 *count -= 1;
@@ -265,9 +258,8 @@ impl InstallFailureContext {
             }
         };
         self.unpaired_clears.retain(|_, count| *count > 0);
-        // Legitimate producers clear with a small fixed set of labels. Anything that grows this
-        // past a sane bound is not a producer we are pairing for, and an unbounded map fed by
-        // child output is a memory sink. Dropping the oldest entries only costs a twin match.
+        // Producers clear with a small fixed set of labels, and an unbounded map fed by child
+        // output is a memory sink. Dropping the oldest entries only costs a twin match.
         if self.unpaired_clears.len() > MAX_UNPAIRED_CLEARS {
             self.unpaired_clears.clear();
         }
