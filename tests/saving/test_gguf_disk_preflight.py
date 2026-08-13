@@ -1300,9 +1300,7 @@ class TestEachFilesystemIsChargedForWhatItHolds:
         monkeypatch.setattr(
             S,
             "free_bytes",
-            lambda path: state["sibling_free"]
-            if str(path).endswith("_gguf")
-            else state["free"],
+            lambda path: state["sibling_free"] if str(path).endswith("_gguf") else state["free"],
         )
         monkeypatch.setattr(S, "estimate_gguf_export_bytes", fake_estimate)
         monkeypatch.setattr(S, "kaggle_tmp_redirect", lambda *a, **k: ("model", None))
