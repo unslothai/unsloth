@@ -118,9 +118,9 @@ def test_warning_handler_gated_on_module_flag():
     # AttributeError aborts the export otherwise, and a revert to ImportError alone still
     # satisfies _catches_import_error above.
     covering = [h for h in handlers if _covers_half_built_zoo(h)]
-    assert covering, (
-        "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
-    )
+    assert (
+        covering
+    ), "the scripts pin must fall back on a half-built unsloth_zoo, not just a missing one"
     handler = covering[0]
     flag_reads = []
     flag_writes = []
