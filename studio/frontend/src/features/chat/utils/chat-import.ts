@@ -35,6 +35,14 @@ const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
 /** Limit concurrent writes for exports that may contain thousands of chats. */
 const WRITE_CONCURRENCY = 6;
 
+/**
+ * Report progress at least this often by bytes as well as by conversations. A
+ * count-only cadence leaves the toast reading "0 so far (0%)" for the entire
+ * read of an export made of a few very large chats, which is the case the
+ * progress toast exists for.
+ */
+const PROGRESS_BYTES = 4 * 1024 * 1024;
+
 export interface ImportProgress {
   /** Conversations written so far. */
   imported: number;
@@ -358,11 +366,16 @@ export async function importConversationsFromSource(
   const inFlight = new Set<Promise<void>>();
   let index = 0;
   let failure: unknown;
+  let reportedBytes = 0;
 
   try {
     for await (const record of streamJsonRecords(source.chunks(), {
       onBytes: (bytes) => {
         progress.bytesRead += bytes;
+        if (progress.bytesRead - reportedBytes >= PROGRESS_BYTES) {
+          reportedBytes = progress.bytesRead;
+          report();
+        }
       },
       // Count a malformed record and continue with the rest of the export.
       onMalformed: () => {
