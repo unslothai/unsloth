@@ -401,7 +401,9 @@ class TestLaunchFinalization:
 
         source = inspect.getsource(lc.LlamaCppBackend.load_model)
         helper = source[source.index("def _budget_priced_placement()") :]
-        helper = helper[: helper.index("# Nothing is committed yet")]
+        # Bounded by the first statement after the nested def, not by a comment:
+        # the comments here get rewritten and the slice should not care.
+        helper = helper[: helper.index("self._vram_fraction_pending")]
         compact = "".join(helper.split())
         assert "ifnotgpusorintent.cpu_fallback:returnNone" in compact
 
@@ -413,6 +415,15 @@ class TestPreLaunchWindow:
 
         import core.inference.llama_cpp as lc
         return "".join(inspect.getsource(lc.LlamaCppBackend.load_model).split())
+
+    def test_the_pending_value_is_armed_before_the_duplicate_check(self):
+        # On an inactive backend, a save landing between the capture and the arming
+        # saw no pending value and no live process, so it was told no reload was
+        # needed while the load went on to launch against the captured fraction.
+        compact = self._compact()
+        armed = compact.index("self._vram_fraction_pending=_vram_frac")
+        dedupe = compact.index("ifself.adopt_load_intent_if_matched(intent,")
+        assert armed < dedupe
 
     def test_the_pending_value_is_armed_before_the_download(self):
         # The download and planning before the spawn take minutes with the old child

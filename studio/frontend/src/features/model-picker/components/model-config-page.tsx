@@ -435,11 +435,8 @@ function VramBudgetRow() {
       flushVramBudgetSave()
         ?.then(setSettings)
         .catch((error: unknown) => {
-          // Re-stage it. The flush cleared the staged value as it sent, so
-          // without this the control keeps showing a fraction the server never
-          // took, and the next Run has nothing to retry or wait for and loads
-          // against the old budget.
-          stageVramBudgetSave(vramPercentToFraction(next));
+          // The client re-stages the failed fraction itself, where the write
+          // generation says whether it is still the newest intent.
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
           );

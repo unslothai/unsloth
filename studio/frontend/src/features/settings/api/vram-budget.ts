@@ -171,9 +171,23 @@ export function updateVramBudgetSettings(
     });
   // The chain must survive a rejection, or one failed save strands all later ones.
   vramBudgetWriteChain = write.catch(() => undefined);
-  return write.then((settings) =>
-    generation === vramBudgetWriteGeneration
-      ? publishVramBudget(settings)
-      : settings,
+  return write.then(
+    (settings) =>
+      generation === vramBudgetWriteGeneration
+        ? publishVramBudget(settings)
+        : settings,
+    (error: unknown) => {
+      // Put a failed edit back so the next flush, or the next Run, carries it.
+      // Only when it is still the newest intent: a later edit may already have
+      // been staged, or already sent past this one on the chain, and resending
+      // this fraction would undo it while the control shows the newer value.
+      if (
+        generation === vramBudgetWriteGeneration &&
+        stagedVramBudgetFraction === null
+      ) {
+        stagedVramBudgetFraction = fraction;
+      }
+      throw error;
+    },
   );
 }

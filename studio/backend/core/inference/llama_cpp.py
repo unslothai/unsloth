@@ -10271,8 +10271,13 @@ class LlamaCppBackend:
                     return None
                 return _vram_frac
 
-            # Nothing is committed yet; the launch site re-arms it after placement.
-            self._vram_fraction_pending = None
+            # Armed here, ahead of the duplicate check, and not merely cleared: on an
+            # inactive backend a save landing between the capture and the arming saw
+            # no pending value and no live process, and was told no reload was
+            # needed, while this load went on to launch a child against the fraction
+            # captured above. The load scope hands it back on every exit, including
+            # the fast path just below.
+            self._vram_fraction_pending = _vram_frac
             # _vram_fraction_launched is committed at the launch site instead: the
             # duplicate-load fast path, a cancellation and every failed preflight
             # return with the previous child still serving, so setting it here would
@@ -10299,14 +10304,10 @@ class LlamaCppBackend:
                     return False
                 return True
 
-            # The download and planning before the spawn can take minutes, and a
-            # save landing there would find no active backend and be told no reload
-            # is needed while the eventual child carries the fraction captured above.
-            # Placement is undecided, so claim budget-priced now and let the spawn
-            # site narrow it: a needless reload prompt beats sizing a child against
-            # a budget the user has already replaced.
-            self._vram_fraction_pending = _vram_frac
-
+            # Still armed from the capture above, and stays that way through the
+            # download and planning, which can take minutes. Placement is undecided
+            # until the spawn site narrows it: a needless reload prompt beats sizing
+            # a child against a budget the user has already replaced.
             self._cancel_event.clear()
             if _load_cancelled():
                 logger.info("Load cancelled before GGUF resolution")

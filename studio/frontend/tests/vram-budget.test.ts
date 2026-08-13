@@ -268,17 +268,29 @@ test("the budget reads as a percentage and steps in tenths", () => {
   assert.match(slider.slice(0, slider.indexOf("</div>")), /step = 1,/);
 });
 
-test("a failed save is re-staged rather than silently dropped", () => {
-  const row = vramBudgetRowSource();
-  const commit = row.slice(row.indexOf("const commit = (next: number) => {"));
-  const timer = commit.slice(commit.indexOf("setTimeout("));
-  const rejection = timer.slice(timer.indexOf(".catch("));
-  // The flush cleared the staged value as it sent, so without re-staging the
-  // control keeps showing a fraction the server never took and the next Run has
-  // nothing to retry or wait for.
-  assert.match(rejection, /stageVramBudgetSave\(vramPercentToFraction\(next\)\)/);
-  assert.ok(
-    rejection.indexOf("stageVramBudgetSave") < rejection.indexOf("toast.error"),
-    "re-stage before reporting, so a Run racing the toast still has the value",
+test("a failed save is re-staged, but never over a newer edit", () => {
+  const client = readFileSync(
+    fileURLToPath(
+      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
+    ),
+    "utf8",
   );
+  // The flush clears the staged value as it sends, so without putting it back the
+  // control shows a fraction the server never took and the next Run has nothing to
+  // retry. It goes back only when it is still the newest intent: a later edit may
+  // already be staged, or already sent past this one on the chain.
+  const update = client.slice(
+    client.indexOf("export function updateVramBudgetSettings"),
+  );
+  // Whitespace-collapsed: the formatter wraps this condition across lines.
+  const rejection = update
+    .slice(update.indexOf("(error: unknown) =>"))
+    .replace(/\s+/g, " ");
+  assert.match(
+    rejection,
+    /generation === vramBudgetWriteGeneration && stagedVramBudgetFraction === null/,
+  );
+  assert.match(rejection, /stagedVramBudgetFraction = fraction;/);
+  // Still rejects, so the caller can report it.
+  assert.match(rejection, /throw error;/);
 });
