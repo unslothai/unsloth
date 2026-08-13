@@ -142,7 +142,6 @@ def test_the_import_succeeds_on_a_driverless_host():
     out = _import_attempt()
     if out.returncode != 0 and _NO_DEVICE in out.stderr:
         import unsloth_zoo
-
         zoo = pathlib.Path(unsloth_zoo.__file__).parent
         if _under(_culprit(out.stderr), zoo):
             pytest.skip(
