@@ -94,45 +94,92 @@ def _step(*idle_owners):
 # ── the TTL setting ─────────────────────────────────────────────────
 
 
-def test_media_ttl_follows_the_chat_ttl(monkeypatch):
-    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
-    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+@pytest.fixture
+def store(monkeypatch):
+    """The app settings map in memory, read back through the real stored readers."""
+    values: dict = {}
+    monkeypatch.setattr(
+        settings, "_cached_setting", lambda key, default = None: values.get(key, default)
+    )
+    for var in (settings.MODEL_IDLE_TTL_ENV_VAR, settings.MEDIA_IDLE_TTL_ENV_VAR):
+        monkeypatch.delenv(var, raising = False)
+    return values
+
+
+def test_the_chat_ttl_alone_does_not_unload_media(store):
+    # The consent line. "Model auto-switch (OpenAI API)" never mentions Images or Video,
+    # so a user who turned that on gets nothing new here on upgrade: the media TTL is its
+    # own setting and its default is off.
+    store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
+    store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    assert settings.get_auto_unload_idle_seconds() == 600
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+
+
+def test_the_media_ttl_unloads_media_without_touching_chat(store):
+    # The other direction: a whole setting, not a modifier on the chat one, so it works
+    # with auto-switch and the chat TTL both off.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    assert settings.get_media_auto_unload_idle_seconds() == 600
+    assert settings.get_auto_unload_idle_seconds() == 0
+    # Floored like the chat one, for a value persisted before the minimum existed.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 5
+    assert settings.get_media_auto_unload_idle_seconds() == settings.MIN_AUTO_UNLOAD_IDLE_SECONDS
+    # And it is not gated on auto-switch: that flag is about serving /v1 requests.
+    store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = False
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
     assert settings.get_media_auto_unload_idle_seconds() == 600
 
 
-def test_media_ttl_env_overrides_and_can_disable(monkeypatch):
-    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+def test_media_ttl_env_behaves_like_the_chat_env(store, monkeypatch):
+    # UNSLOTH_MEDIA_IDLE_TTL stands in the same relationship to the media setting that
+    # UNSLOTH_MODEL_IDLE_TTL has to the chat one: the startup default while nothing is
+    # stored, floored the same way, and outranked by an explicit value.
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
     assert settings.get_media_auto_unload_idle_seconds() == 900
-    # 0 keeps pipelines resident while chat still idle-unloads.
-    monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "0")
-    assert settings.get_media_auto_unload_idle_seconds() == 0
-    # Below the shared minimum is floored, not honoured.
+    assert settings.get_stored_media_auto_unload_idle_seconds() == 900
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "5")
     assert settings.get_media_auto_unload_idle_seconds() == settings.MIN_AUTO_UNLOAD_IDLE_SECONDS
+    monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 0
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    assert settings.get_media_auto_unload_idle_seconds() == 600
+    # The chat env var is not the media one.
+    del store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY]
+    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR)
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "900")
+    assert settings.get_media_auto_unload_idle_seconds() == 0
 
 
-def test_api_only_disables_the_media_ttl(monkeypatch):
+def test_api_only_disables_the_media_ttl(store, monkeypatch):
     # "Only unload models loaded by the API" promises a model the user loaded from
     # Studio stays resident, and nothing but the user ever loads an image or video
     # model: /images/load and /video/load are the only entry points, and
     # /v1/images/generations 503s rather than loading one. So with the setting on
     # there is nothing here the idle unload is allowed to free.
-    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
-    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
-    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     assert settings.get_media_auto_unload_idle_seconds() == 0
-    # The env override is vetoed too, exactly as residency vetoes it.
+    # The env-backed TTL is vetoed too, exactly as residency vetoes it.
+    del store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY]
     monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
     assert settings.get_media_auto_unload_idle_seconds() == 0
-    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+    # The stored seconds survive it, so turning the veto off brings them back.
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = False
     assert settings.get_media_auto_unload_idle_seconds() == 900
 
 
-def test_residency_vetoes_the_media_ttl(monkeypatch):
-    monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
+def test_residency_vetoes_the_media_ttl(store, monkeypatch):
     monkeypatch.setattr(settings, "_residency_vetoes_unload", lambda: True)
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 900
     assert settings.get_media_auto_unload_idle_seconds() == 0
+    assert settings.get_stored_media_auto_unload_idle_seconds() == 900
+    del store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY]
+    monkeypatch.setenv(settings.MEDIA_IDLE_TTL_ENV_VAR, "900")
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    monkeypatch.setattr(settings, "_residency_vetoes_unload", lambda: False)
+    assert settings.get_media_auto_unload_idle_seconds() == 900
 
 
 # ── the idle decision ───────────────────────────────────────────────
@@ -234,19 +281,18 @@ def test_a_different_model_restarts_the_ttl(media, monkeypatch):
     assert engine.unloads == 0
 
 
-def test_api_only_spares_a_model_the_user_loaded(media, monkeypatch):
+def test_api_only_spares_a_model_the_user_loaded(media, store):
     # The whole feature is off while the setting is on, and off means today's behaviour:
     # nothing resolved, nothing unloaded.
-    monkeypatch.delenv(settings.MEDIA_IDLE_TTL_ENV_VAR, raising = False)
-    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 60)
-    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = True
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 0
     assert media[arb.VIDEO].unloads == 0
     # Turned off again, the same idle models are collectable: the setting was the only
     # thing sparing them, so this does not cost the feature anything else.
-    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+    store[settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY] = False
     _step()
     _step(*_BOTH)
     assert media[arb.DIFFUSION].unloads == 1
@@ -287,6 +333,45 @@ def test_disabled_ttl_never_touches_the_backends(media, monkeypatch):
     assert resolved == []
     assert media[arb.DIFFUSION].unloads == 0
     assert arb.current_owner() == arb.VIDEO
+
+
+def test_a_chat_ttl_alone_leaves_the_media_backends_alone(media, store, monkeypatch):
+    # Same consent line as the settings test, one level down: an install that had chat
+    # idle-unload on before this landed must tick exactly as it did before.
+    store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
+    store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    resolved = []
+    for owner in _BOTH:
+        monkeypatch.setitem(mk._ENGINES, owner, lambda o = owner: resolved.append(o))
+    _step(*_BOTH)
+    _step(*_BOTH)
+    assert resolved == []
+    assert media[arb.DIFFUSION].unloads == 0
+    assert media[arb.VIDEO].unloads == 0
+    # Turning the media TTL on is what starts it, and only that.
+    store[settings.MEDIA_AUTO_UNLOAD_IDLE_SETTING_KEY] = 60
+    _step(*_BOTH)
+    assert resolved == list(_BOTH)
+
+
+def test_the_off_tick_does_not_import_the_media_modules(store, monkeypatch):
+    # Off is the default and has to stay free: the tick runs every 15s from startup, so
+    # importing diffusion or video to find out there is nothing loaded would drag torch
+    # into a Studio that never opened either page. No engine fakes here on purpose --
+    # this is the real resolution path.
+    store[settings.OPENAI_AUTO_SWITCH_SETTING_KEY] = True
+    store[settings.AUTO_UNLOAD_IDLE_SETTING_KEY] = 600
+    media_modules = {
+        "core.inference.diffusion",
+        "core.inference.sd_cpp_backend",
+        "core.inference.video",
+    }
+    for module in media_modules:
+        monkeypatch.delitem(sys.modules, module, raising = False)
+    assert settings.get_media_auto_unload_idle_seconds() == 0
+    asyncio.run(mk.idle_unload_step())
+    asyncio.run(mk.idle_unload_step())
+    assert not media_modules & set(sys.modules)
 
 
 def test_a_failing_unload_does_not_stop_the_other_backend(media, monkeypatch):

@@ -6,9 +6,10 @@
 The image and video pipelines are the largest thing Studio holds in VRAM, and until now only
 the chat GGUF was freed when the user walked away: one generation and a navigate-away left
 several GB resident forever. This is the same mechanism rather than a second one -- the same
-TTL setting, the same in-flight bookkeeping (``LlamaKeepWarmMiddleware`` already tracks the
-generate routes), and one step per tick of ``llama_keepwarm.idle_unload_loop``. Inert while
-the TTL is 0, which is the default, so behaviour is unchanged unless it is turned on.
+in-flight bookkeeping (``LlamaKeepWarmMiddleware`` already tracks the generate routes) and one
+step per tick of ``llama_keepwarm.idle_unload_loop``. The TTL is its own setting, off by
+default, so nothing here runs until the user asks for it: the tick returns before it resolves
+a backend, which is also what keeps torch out of a Studio that never opened these pages.
 
 Each backend owns its teardown barrier, so this decides only WHEN: it calls the same
 ``unload()`` the arbiter's evictor calls, resolved through ``get_active_diffusion_engine()``
