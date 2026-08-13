@@ -8720,8 +8720,11 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # The caller's own list when it sent one, or the resolver hands back this
+        # fourth argument unchanged and a --ctx-size the load is about to use would
+        # be missing from the estimate that approves it.
         effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, None
+            request, config, model_identifier, getattr(request, "llama_extra_args", None)
         )
 
         # Apply the same placement policy as /load before the frontend unloads

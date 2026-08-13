@@ -253,6 +253,35 @@ test("the same bad value is reported once, not once per copy", () => {
   );
 });
 
+// --- which stored row a model reads ---------------------------------------------
+// The module itself imports through the "@/" alias, which the node runner does not
+// resolve, so this is pinned the way the sibling tests pin such modules.
+
+const overridesSource = readFileSync(
+  fileURLToPath(
+    new URL(
+      "../src/features/model-picker/api/model-overrides.ts",
+      import.meta.url,
+    ),
+  ),
+  "utf8",
+);
+
+test("only a real quant suffix folds, never a colon inside a path", () => {
+  const fold = overridesSource.slice(
+    overridesSource.indexOf("function foldOverrideKey("),
+  );
+  const body = fold.slice(0, fold.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // "/models/foo:Bar.gguf" and "/models/foo:bar.gguf" are two real files on a
+  // case-sensitive filesystem. Splitting on the last colon folded them onto one key,
+  // and the panel would then hydrate from the wrong row and send that file's
+  // arguments on Load. splitQuantSuffix is the check the backend mirrors.
+  assert.match(body, /splitQuantSuffix\(key\)/);
+  assert.doesNotMatch(body, /lastIndexOf\(":"\)/);
+  // And a POSIX path still does not fold as a whole, only its quant.
+  assert.match(body, /POSIX_PATH\.test\(id\)/);
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 
@@ -335,7 +364,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
   // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /useEffect\(\(\) => \{ setExtraArgsLoadable\(true\); \}, \[configId, target\.ggufVariant\]\)/,
+    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(true\); \}, \[configId, target\.ggufVariant\]\)/,
   );
 });
 
@@ -392,4 +421,27 @@ test("the panel's own Load goes through the runtime, which sends them too", () =
     runtime,
     /isGguf && loadLlamaExtraArgs !== undefined \? \{ llama_extra_args: loadLlamaExtraArgs \?\? \[\] \} : \{\}/,
   );
+});
+
+test("the box follows a config change it did not make", () => {
+  const row = pageSource.slice(pageSource.indexOf("function ExtraArgsRow("));
+  const body = row.slice(0, row.indexOf("\n}\n")).replace(/\s+/g, " ");
+  // Reset and the parent's hydration both replace llamaExtraArgs while this row is
+  // mounted. Without this the textarea keeps its old text and disagrees with what
+  // Load sends; with a plain re-seed on every change it re-quotes a half-typed line.
+  assert.match(body, /if \(external === selfWritten\.current\) \{ return; \}/);
+  assert.match(body, /selfWritten\.current = formatExtraArgs\(/);
+});
+
+test("load waits for the stored arguments to be read", () => {
+  const panel = pageSource.slice(
+    pageSource.indexOf("export function ModelConfigPage("),
+  );
+  const body = panel.replace(/\s+/g, " ");
+  // A click that beats the fetch would launch a cold model without them, and /load
+  // cannot inherit from a process that is not running.
+  assert.match(body, /extraArgsHydrating \|\|/);
+  // But never for good: a failed or hanging overrides read releases the gate.
+  assert.match(body, /\.finally\(\(\) => \{ .*setExtraArgsHydrating\(false\)/);
+  assert.match(body, /setTimeout\(\(\) => setExtraArgsHydrating\(false\), \d+\)/);
 });

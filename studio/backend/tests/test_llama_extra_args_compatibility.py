@@ -223,3 +223,47 @@ def test_trimming_to_the_bounds_never_leaves_a_flag_without_its_value():
     assert "--grammar" in dropped
     # And a log line does not carry the 40 KB value that broke the bound.
     assert all(len(name) < 100 for name in dropped)
+
+
+def test_a_token_that_cannot_be_spawned_is_refused_at_the_boundary():
+    # An unpaired surrogate survives JSON and the browser, passes every other check
+    # here, and then makes subprocess.Popen raise while it encodes argv, after the
+    # load has already begun switching models. A 400 is the honest answer.
+    with pytest.raises(ValueError, match = "surrogate"):
+        _lsa.validate_extra_args(["--chat-template", "\ud800"])
+
+
+def test_a_stored_surrogate_is_dropped_like_any_other_unusable_value():
+    kept, dropped = _lsa.drop_managed_flags(
+        ["--grammar", "\ud800", "--top-k", "20"]
+    )
+
+    assert kept == ["--top-k", "20"]
+    assert _lsa.validate_extra_args(kept) == kept
+    assert "--grammar" in dropped
+
+
+def test_validate_sizes_itself_with_the_arguments_the_caller_sent():
+    # /validate estimates the memory that approves the follow-up /load, and a
+    # --ctx-size in the extras changes that estimate. The resolver hands back its
+    # fourth argument unchanged for an explicit list, so passing None there meant the
+    # preflight approved a different command from the one that runs.
+    import inspect
+
+    import routes.inference as inference_route
+
+    source = inspect.getsource(inference_route)
+    assert "_resolve_inherited_extra_args(\n            request, config, model_identifier, None\n        )" not in source
+    assert 'model_identifier, getattr(request, "llama_extra_args", None)' in source
+
+    class _Request:
+        llama_extra_args = ["--ctx-size", "8192"]
+
+    class _Config:
+        is_gguf = True
+        gguf_variant = ""
+
+    # The helper's own contract: an explicit list is returned as given.
+    assert inference_route._resolve_inherited_extra_args(
+        _Request(), _Config(), "local/x", _Request.llama_extra_args
+    ) == ["--ctx-size", "8192"]

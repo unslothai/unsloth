@@ -1234,6 +1234,20 @@ function ExtraArgsRow({
     formatExtraArgs(config.llamaExtraArgs),
   );
   const adviceId = useId();
+  // What the box last put INTO the config, so an external change can be told apart
+  // from the echo of the user's own typing. Reset and the parent's hydration both
+  // replace llamaExtraArgs while this row is mounted, and a box that kept its old
+  // text would then disagree with what Load sends. Re-seeding on every config
+  // change instead would re-quote a half-typed line on each keystroke.
+  const selfWritten = useRef(formatExtraArgs(config.llamaExtraArgs));
+  const external = formatExtraArgs(config.llamaExtraArgs);
+  useEffect(() => {
+    if (external === selfWritten.current) {
+      return;
+    }
+    selfWritten.current = external;
+    setText(external);
+  }, [external]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1269,6 +1283,9 @@ function ExtraArgsRow({
   const commit = (next: string) => {
     setText(next);
     const { tokens } = parseExtraArgs(next);
+    // Recorded before the update, so the config change this causes reads as the
+    // box's own and does not bounce back through the effect above.
+    selfWritten.current = formatExtraArgs(tokens.length > 0 ? tokens : null);
     // null, not [], so the panel's own "no flags" reads the same as the stored one;
     // toApiOverride turns it into the explicit [] that clears the server's copy.
     update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
@@ -1413,12 +1430,18 @@ export function ModelConfigPage({
   // the panel rather than the row because the row unmounts whenever Advanced
   // settings are collapsed, while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
+  // True until the stored-arguments read below settles. A load started before it
+  // lands sends no llama_extra_args, and /load cannot inherit them from a process
+  // that is not running, so a fast click would launch a cold model without the
+  // arguments that were about to appear on screen.
+  const [extraArgsHydrating, setExtraArgsHydrating] = useState(true);
   // The row does not withdraw its own objection when it unmounts, or collapsing
   // Advanced settings would re-enable Load for arguments the backend refuses. A
   // different model is the one thing that really does retire it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
+    setExtraArgsHydrating(true);
   }, [configId, target.ggufVariant]);
 
   // The one field on this page whose stored value the local config may never have
@@ -1439,9 +1462,14 @@ export function ModelConfigPage({
     // Joined because an array literal is a new value on every render.
     const identity = keys.join("\u0000");
     if (extraArgsHydrated.current === identity) {
+      setExtraArgsHydrating(false);
       return;
     }
     let cancelled = false;
+    // A request that never settles must not hold Load shut: the gate is there to
+    // win a race with a fast click, not to make the button depend on a service
+    // being up. Past this, a load simply behaves as it did before the feature.
+    const release = setTimeout(() => setExtraArgsHydrating(false), 4000);
     fetchModelOverrides()
       .then((overrides) => {
         // Marked here rather than before the request: StrictMode replays the effect
@@ -1469,9 +1497,17 @@ export function ModelConfigPage({
       .catch(() => {
         // Nothing to say: the panel is still usable, and the load would report a
         // real problem with the overrides service far more clearly than this could.
+      })
+      .finally(() => {
+        // Including the failure: an overrides service that is down must not leave
+        // Load disabled for good.
+        if (!cancelled) {
+          setExtraArgsHydrating(false);
+        }
       });
     return () => {
       cancelled = true;
+      clearTimeout(release);
     };
   }, [configId, target.ggufVariant]);
   // Compare against what the backend was asked for, not what it applied: staging a
@@ -2088,6 +2124,7 @@ export function ModelConfigPage({
               stagedMetadataPending ||
               budgetSettling ||
               !extraArgsLoadable ||
+              extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&
                 !rememberChanged &&

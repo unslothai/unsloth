@@ -10,6 +10,7 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
+  splitQuantSuffix,
 } from "../model-config/model-identity";
 import type { PerModelConfig } from "../model-config/per-model-config";
 
@@ -79,15 +80,17 @@ export function modelOverrideKey(
 const POSIX_PATH = /^\//;
 
 function foldOverrideKey(key: string): string {
-  const separator = key.lastIndexOf(":");
-  const id = separator === -1 ? key : key.slice(0, separator);
-  const quant = separator === -1 ? "" : key.slice(separator);
+  // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would
+  // fold it onto the real, different file "/models/foo:bar.gguf" and then send that
+  // file's arguments. This is the check the backend's split_quant_suffix makes.
+  const split = splitQuantSuffix(key);
+  const id = split ? split[0] : key;
+  const quant = split ? `:${split[1].toLowerCase()}` : "";
   // Only the quant folds for a POSIX path: "/models/Foo:Q4_K_M" has to be
   // reachable from the browser's "/models/Foo:q4_k_m" without "/models/foo"
   // matching "/models/Foo".
-  return POSIX_PATH.test(id)
-    ? `${id}${quant.toLowerCase()}`
-    : `${id.toLowerCase()}${quant.toLowerCase()}`;
+  return POSIX_PATH.test(id) ? `${id}${quant}` : `${id.toLowerCase()}${quant}`;
 }
 
 export function resolveStoredExtraArgs(

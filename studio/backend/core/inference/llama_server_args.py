@@ -154,6 +154,15 @@ def _flag_name(token: str) -> Optional[str]:
     return name
 
 
+def _is_spawnable(token: str) -> bool:
+    """Whether execve could carry this token at all (no unpaired surrogates)."""
+    try:
+        token.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _has_control_characters(token: str) -> bool:
     """A NUL, or any C0 control other than tab and newline."""
     return any(ch == "\x00" or (ord(ch) < 32 and ch not in "\t\n") for ch in token)
@@ -175,7 +184,17 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
             )
         # A grammar or JSON schema is a legitimately long single token, so the cap
         # is on the whole list rather than per token.
-        total_bytes += len(token.encode("utf-8", "surrogatepass"))
+        # Strictly, unlike the sizing below: JSON and the browser can both carry an
+        # unpaired surrogate, which survives every check here and then makes
+        # subprocess.Popen raise while it encodes argv, long after the load has begun
+        # switching models. Refused at the boundary, where it is still a 400.
+        try:
+            encoded = token.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError(
+                "extra llama-server args cannot contain unpaired surrogate characters"
+            ) from error
+        total_bytes += len(encoded)
         if total_bytes > MAX_EXTRA_ARGS_BYTES:
             raise ValueError(
                 f"extra llama-server args are too large (limit {MAX_EXTRA_ARGS_BYTES} bytes)"
@@ -251,7 +270,7 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         # NUL never reached it at all (execve refuses). A poisoned VALUE takes its
         # flag with it for the same reason a denied flag takes its value: a flag
         # left expecting one would eat the next token and change what that means.
-        if _has_control_characters(token):
+        if _has_control_characters(token) or not _is_spawnable(token):
             # The name, or a placeholder when the poisoned token is a value: this
             # list is joined into a warning log, and a stored value carrying an ANSI
             # escape would then rewrite whatever is reading that log.
@@ -265,7 +284,10 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         if (
             flag is not None
             and _takes_next(index, token, flag)
-            and _has_control_characters(tokens[index + 1])
+            and (
+                _has_control_characters(tokens[index + 1])
+                or not _is_spawnable(tokens[index + 1])
+            )
         ):
             # Recorded, not just skipped: the value is about to be dropped for its
             # control characters, and a flag that vanished without a word in the log
