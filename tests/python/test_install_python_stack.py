@@ -844,9 +844,7 @@ class TestDuplicateCoreMetadataRepair:
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
         probes = iter(([""], []))
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(
             ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
         )
@@ -866,9 +864,7 @@ class TestDuplicateCoreMetadataRepair:
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
         probes = iter(([""], [], ["2026.8.15"]))
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(
             ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
         )
@@ -890,16 +886,15 @@ class TestDuplicateCoreMetadataRepair:
         probes = iter(([""], [], ["2026.8.15"]))
         seen = []
 
-        monkeypatch.setattr(
-            ips.install_manifest, "installed_versions", lambda _name: next(probes)
-        )
+        monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(
             ips.install_manifest, "invalid_metadata_paths", lambda _name: [malformed]
         )
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(
-            ips, "_stage_replacement",
+            ips,
+            "_stage_replacement",
             lambda _name: seen.append(malformed.exists()) or "/staged",
         )
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)

@@ -3788,8 +3788,7 @@ def _repair_duplicate_core_metadata(
         if unresolved:
             _safe_print(
                 _red(
-                    "   package metadata is inconsistent after reinstall: "
-                    + ", ".join(unresolved)
+                    "   package metadata is inconsistent after reinstall: " + ", ".join(unresolved)
                 ),
                 file = sys.stderr,
             )
