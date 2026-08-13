@@ -33,7 +33,10 @@ import {
   downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
-  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  fileImportSource,
+  type ImportSource,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -234,21 +237,50 @@ export function DataTab() {
   };
 
   const importInputRef = useRef<HTMLInputElement>(null);
-  const handleImport = async (file: File) => {
+  const [importing, setImporting] = useState(false);
+  const handleImport = async (source: ImportSource) => {
+    setImporting(true);
+    // A years-long export is minutes of writes, so the toast counts up rather
+    // than leaving the window looking hung.
+    const toastId = toast.loading(
+      t("settings.chat.importingChats", { count: 0, percent: 0 }),
+    );
     try {
-      const imported = await importConversationsFromFile(file, null);
-      if (imported === 0) {
-        toast.info(t("settings.chat.importNoConversations"));
-      } else {
-        toast.success(
-          imported === 1
+      const { imported, failed } = await importConversationsFromSource(
+        source,
+        null,
+        {
+          onProgress: ({ imported: done, bytesRead, totalBytes }) => {
+            const percent = totalBytes
+              ? Math.min(100, Math.round((bytesRead / totalBytes) * 100))
+              : 0;
+            toast.loading(
+              t("settings.chat.importingChats", { count: done, percent }),
+              { id: toastId },
+            );
+          },
+        },
+      );
+      if (imported === 0 && failed === 0) {
+        toast.info(t("settings.chat.importNoConversations"), { id: toastId });
+        return;
+      }
+      toast.success(
+        failed > 0
+          ? t("settings.chat.importedChatCountPartial", { count: imported, failed })
+          : imported === 1
             ? t("settings.chat.importedOneChat")
             : t("settings.chat.importedChatCount", { count: imported }),
-        );
-        setCount(await countAllChats().catch(() => count));
-      }
-    } catch {
-      toast.error(t("settings.chat.importFailed"));
+        { id: toastId },
+      );
+      setCount(await countAllChats().catch(() => count));
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        id: toastId,
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -262,7 +294,7 @@ export function DataTab() {
       if (!selected) {
         return;
       }
-      await handleImport(new File([selected.content], selected.name));
+      await handleImport(nativeImportSource(selected));
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
@@ -779,19 +811,26 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => void handleImportClick()}
+            // A second pick mid-import would interleave two streams into one
+            // history, and on desktop it retires the running import's handle.
+            disabled={importing}
           >
-            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            {importing ? (
+              <Spinner className="size-3.5 mr-1.5" />
+            ) : (
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
+            )}
             {t("settings.chat.importChatsAction")}
           </Button>
           <input
             ref={importInputRef}
             type="file"
-            accept=".jsonl,.ndjson,.csv"
+            accept=".json,.jsonl,.ndjson,.csv"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
-              if (file) void handleImport(file);
+              if (file) void handleImport(fileImportSource(file));
             }}
           />
         </SettingsRow>
