@@ -458,6 +458,14 @@ export function initializeLocale({
     };
     const timeout = globalThis.setTimeout(
       () => {
+        // Same as the selection path: the load itself is left running, so a
+        // late catalog still commits over the fallback, but its place in the
+        // in-flight map goes. A load that never settles never clears its own
+        // entry, and the saved language is exactly the one the user reaches for
+        // next once English appears, so keeping it would hand that pick this
+        // same dead promise and spend the whole selection bound on it without
+        // ever asking for the catalog again.
+        forgetLocaleLoad(locale, pending);
         commitFallbackLocale(preference, revision);
         finish();
       },

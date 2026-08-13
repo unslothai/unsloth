@@ -690,3 +690,40 @@ test("a timed out catalog is evicted so the next pick asks for it again", async 
     "the retry was handed the timed out load instead of requesting the catalog again",
   );
 });
+
+test("a timed out startup catalog is evicted so the first pick asks for it again", async () => {
+  store.set(localeStore.LOCALE_STORAGE_KEY, "hi");
+
+  // The real in-flight map, with an import that is accepted and then never
+  // settles: a stalled CDN, proxy or service worker.
+  let requests = 0;
+  const stalled = () => {
+    requests += 1;
+    return new Promise<unknown>(() => {});
+  };
+  const loadMessages = (
+    locale: Parameters<typeof messagesModule.loadLocaleMessages>[0],
+  ) => messagesModule.loadLocaleMessages(locale, stalled);
+
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const initialized = localeStore.initializeLocale({ loadMessages });
+    mock.timers.tick(localeStore.LOCALE_INITIALIZATION_TIMEOUT_MS);
+    assert.equal(await initialized, "en");
+
+    // What the user does next: the saved language is on the fallback catalog,
+    // so they pick it again from the menu once the network is back.
+    const picked = localeStore.setLocale("hi", { loadMessages });
+    mock.timers.tick(localeStore.LOCALE_SELECTION_TIMEOUT_MS);
+    assert.equal(await picked, "failed");
+  } finally {
+    mock.timers.reset();
+    messagesModule.forgetLocaleLoad("hi");
+  }
+
+  assert.equal(
+    requests,
+    2,
+    "the pick was handed the timed out startup load instead of requesting the catalog again",
+  );
+});
