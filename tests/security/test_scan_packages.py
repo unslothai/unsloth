@@ -3183,7 +3183,11 @@ def test_a_module_name_split_across_adjacent_literals_still_loads_builtins():
 
     # The join is what is read, not the fact that a literal was split: a run that
     # spells anything else is still an unknown module.
-    for spelling in ("__import__('js' 'on')", "__import__('builtins' 'x')", "__import__(b'built' b'ins')"):
+    for spelling in (
+        "__import__('js' 'on')",
+        "__import__('builtins' 'x')",
+        "__import__(b'built' b'ins')",
+    ):
         payload = f"import marshal\nb = {spelling}\n{tail}"
         assert _high(payload, "pkg/_infer.py") == [], f"{spelling} is not builtins:\n{payload}"
 
@@ -3197,7 +3201,9 @@ def test_a_function_that_assigns_an_alias_shadows_it_over_the_whole_body():
         "from builtins import exec as run\nimport marshal\n"
         "def f():\n    run(marshal.loads(BLOB))\n    run = model\n"
     )
-    assert _high(payload, "pkg/_infer.py") == [], f"the call is unbound, not the builtin:\n{payload}"
+    assert (
+        _high(payload, "pkg/_infer.py") == []
+    ), f"the call is unbound, not the builtin:\n{payload}"
     nested = (
         "from builtins import exec as run\nimport marshal\n"
         "def f():\n    run(marshal.loads(BLOB))\n    if x:\n        run = model\n"

@@ -1458,8 +1458,10 @@ def _is_cancelled(
         if not i:
             continue
         entry = entries[i - 1]
-        if global_scope is not None and at_col > 0 and not (
-            global_scope[0] <= entry[0] < global_scope[1]
+        if (
+            global_scope is not None
+            and at_col > 0
+            and not (global_scope[0] <= entry[0] < global_scope[1])
         ):
             # The call is in a scope that declared the name `global`, so it
             # resolves at module level whatever any *enclosing* function did to
