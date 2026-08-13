@@ -4319,13 +4319,24 @@ function Get-SetupUvExecutableVerdict {
             Write-Output "uv did not answer --version within 20s; installing it unprobed."
             return "unknown"
         }
-        if ($proc.ExitCode -eq 0) { return "ok" }
+        # The timed overload can return before the exit code is cached, which is how
+        # arm64 and the Windows containers reported an EMPTY code and had a working uv
+        # read as broken. The parameterless wait settles it and returns at once, since
+        # the process has already exited. No code at all is still no verdict.
+        try { $proc.WaitForExit() } catch {}
+        $code = $null
+        try { $code = $proc.ExitCode } catch {}
+        if ($null -eq $code -or "$code" -eq "") {
+            Write-Output "uv --version gave no exit code; installing it unprobed."
+            return "unknown"
+        }
+        if ($code -eq 0) { return "ok" }
         $detail = ""
         try {
             $detail = Get-Content -LiteralPath $errFile -Raw -ErrorAction SilentlyContinue
         } catch {}
         if ($detail) { $detail = " " + (($detail.Trim()) -replace '\s+', ' ') }
-        Write-Output "uv --version exited $($proc.ExitCode).$detail"
+        Write-Output "uv --version exited $code.$detail"
         return "failed"
     } catch {
         Write-Output "could not probe uv: $($_.Exception.Message); installing it unprobed."

@@ -709,8 +709,17 @@ class TestPinnedIndexClearsUvEnvParity:
             # does not behave in a Windows container or on arm64 as it does on a desktop. Only
             # the binary answering non-zero may block the install.
             body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
+            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
+            # code is cached, which is how arm64 and the Windows containers reported "exited ."
+            # and had a working uv read as broken.
+            assert "try { $proc.WaitForExit() } catch {}" in body, (
+                f"{path.name} must settle the exit code before reading it"
+            )
+            assert '$null -eq $code -or "$code" -eq ""' in body, (
+                f"{path.name} must treat a missing exit code as inconclusive"
+            )
             assert (
-                body.count('return "unknown"') == 2
+                body.count('return "unknown"') == 3
             ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
             assert (
                 'return "failed"' in body and 'return "ok"' in body
