@@ -108,6 +108,7 @@ export function ResearchMessage(): ReactElement {
         <MarkdownPreview
           markdown={run.report}
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-15p5"
+          defer={true}
         />
         <SourcesGroup sources={sources} allowRemoteIcons={false} />
         <DocumentSourcesGroup sources={documentSources} />

@@ -28,7 +28,12 @@ from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
-from utils.llama_cpp_update import get_update_status, start_update
+from utils.llama_cpp_update import (
+    get_backend_status,
+    get_update_status,
+    start_backend_switch,
+    start_update,
+)
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -36,6 +41,8 @@ router = APIRouter()
 
 class LlamaUpdateJob(BaseModel):
     state: str = Field("idle", description = "idle | running | success | error")
+    operation: Optional[Literal["update", "switch"]] = None
+    requested_backend: Optional[Literal["auto", "cpu", "cuda", "rocm", "vulkan"]] = None
     message: str = ""
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
@@ -157,4 +164,90 @@ async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:
     action = await asyncio.to_thread(start_update)
+    return LlamaUpdateActionResponse(**action)
+
+
+class LlamaBackendOption(BaseModel):
+    backend: str = Field(..., description = "auto | cpu | cuda | rocm | vulkan")
+    available: bool = Field(
+        False, description = "True when a prebuilt for this backend installs on this host."
+    )
+    unavailable_reason: Optional[str] = Field(
+        None, description = "unavailable | no_prebuilt | error, when available is false."
+    )
+    resolved_backend: Optional[str] = Field(
+        None, description = "For 'auto', the backend hardware detection picks right now."
+    )
+    release_tag: Optional[str] = None
+    download_size_bytes: Optional[int] = None
+
+
+class LlamaBackendStatusResponse(BaseModel):
+    supported: bool = Field(
+        False, description = "True when this install's backend can be switched from here."
+    )
+    reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why it cannot: not_installed | local_link | source_build | no_install_dir "
+            "| unresolved (the backend list could not be resolved, e.g. offline)."
+        ),
+    )
+    env_backend: Optional[str] = Field(
+        None,
+        description = (
+            "Backend pinned by UNSLOTH_LLAMA_CPP_BACKEND / UNSLOTH_FORCE_VULKAN. It "
+            "overrides a stored choice, so the picker shows it as read-only."
+        ),
+    )
+    backend: Optional[str] = Field(None, description = "What the install runs on now.")
+    backend_request: str = Field(
+        "auto",
+        description = (
+            "The recorded choice; 'auto' means hardware detection. A name this "
+            "build does not know was written by a newer Studio and is read-only."
+        ),
+    )
+    selection_applied: bool = Field(
+        True,
+        description = (
+            "False when the recorded choice is 'auto' and detection would now "
+            "resolve to a different backend than the installed one."
+        ),
+    )
+    installed_tag: Optional[str] = None
+    options: list[LlamaBackendOption] = Field(default_factory = list)
+    job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
+
+
+class LlamaBackendRequest(BaseModel):
+    backend: Literal["auto", "cpu", "cuda", "rocm", "vulkan"] = Field(
+        ..., description = "Backend to install. 'auto' restores hardware detection."
+    )
+
+
+@router.get("/backend", response_model = LlamaBackendStatusResponse)
+async def llama_backend_status(
+    force_refresh: bool = Query(
+        False, description = "Bypass the 24h resolver cache for an explicit re-check."
+    ),
+    current_subject: str = Depends(get_current_subject),
+) -> LlamaBackendStatusResponse:
+    # Off the event loop: resolving the options runs the installer's probe.
+    status = await asyncio.to_thread(get_backend_status, force_refresh = force_refresh)
+    return LlamaBackendStatusResponse(**status)
+
+
+@router.post("/backend", response_model = LlamaUpdateActionResponse)
+async def llama_backend_switch(
+    request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
+) -> LlamaUpdateActionResponse:
+    """Install the llama.cpp build for another backend and record the choice.
+
+    Shares the update job, so it answers already_running rather than starting a
+    second writer against the same install; callers poll /update-status for
+    progress exactly as they do for an update.
+    """
+    logger.info("llama_backend_switch_requested", backend = request.backend)
+    action = await asyncio.to_thread(start_backend_switch, request.backend)
     return LlamaUpdateActionResponse(**action)

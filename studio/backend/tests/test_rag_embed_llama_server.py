@@ -6,6 +6,7 @@
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import numpy as np
@@ -53,7 +54,7 @@ def _mock_auto(monkeypatch, *, gpus, binary):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: gpus))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: gpus))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: binary))
 
 
@@ -153,6 +154,68 @@ def test_build_env_gpu_inherits_devices(monkeypatch):
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Unsloth's selection
 
 
+def test_build_env_gpu_on_macos_uses_the_dyld_search_path(monkeypatch, tmp_path):
+    # dyld ignores LD_LIBRARY_PATH, and Apple Silicon is routed through the
+    # use_gpu branch, so the embedding server needs the same treatment the chat
+    # server got in #8566.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/opt/inherited")
+    # Pin an inherited value rather than asserting the key is absent: the child
+    # env is a copy of os.environ, so an ambient LD_LIBRARY_PATH would be there
+    # whatever this branch does. What matters is that it is left alone.
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
+    # A host-native directory, not a POSIX literal: _llama_lib_dir resolves the
+    # path, and this test simulates darwin on whatever host runs it, so on a
+    # Windows runner "/opt/llama/bin" comes back drive-anchored as "D:\opt\...".
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+    b = LlamaServerBackend()
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = True)
+    entries = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert entries == [str(bin_dir), "/opt/inherited"]
+    assert env["LD_LIBRARY_PATH"] == "/opt/sentinel"
+
+
+def test_build_env_cpu_on_macos_still_gets_the_dyld_search_path(monkeypatch, tmp_path):
+    # EMBED_DEVICE=cpu, and the CPU retry after a failed GPU start, load the
+    # same sibling dylibs; the loader path cannot be gated on use_gpu.
+    import os
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    # Host-native, for the same reason as the GPU case above.
+    bin_dir = tmp_path / "llama" / "bin"
+    bin_dir.mkdir(parents = True)
+    (bin_dir / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+    b = LlamaServerBackend()
+    env = b._build_env(str(bin_dir / "llama-server"), use_gpu = False)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(bin_dir)
+    assert env["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_build_env_resolves_a_wrapper_entrypoint(monkeypatch, tmp_path):
+    # The managed install puts an entrypoint in front of the real server; the
+    # dylibs sit next to the target, not next to the wrapper.
+    import os
+    import sys as _sys
+
+    real_dir = tmp_path / "llama.cpp" / "build" / "bin"
+    real_dir.mkdir(parents = True)
+    (real_dir / "llama-server").write_text("")
+    wrapper = tmp_path / "llama.cpp" / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.delenv("DYLD_LIBRARY_PATH", raising = False)
+    b = LlamaServerBackend()
+    env = b._build_env(str(wrapper), use_gpu = True)
+    assert env["DYLD_LIBRARY_PATH"].split(os.pathsep)[0] == str(real_dir)
+
+
 def test_use_gpu_explicit_modes(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
@@ -184,11 +247,15 @@ def test_gpu_available_reuses_studio_probe(monkeypatch):
 
     monkeypatch.setattr(uh, "is_apple_silicon", lambda: False)
     # Ample free VRAM -> GPU; nearly full -> CPU; none -> CPU.
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 40000)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 40000)])
+    )
     assert LlamaServerBackend._gpu_available() is True
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 100)]))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: [(0, 100)])
+    )
     assert LlamaServerBackend._gpu_available() is False
-    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: []))
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda **_kw: []))
     assert LlamaServerBackend._gpu_available() is False
 
 
@@ -449,3 +516,58 @@ def test_post_restarts_once_on_read_timeout(monkeypatch):
     out = b._post("/v1/embeddings", {"input": ["x"]})
     assert out["data"][0]["embedding"] == [1.0, 0.0]
     assert restarts["n"] == 1  # timeout self-heals like a transport error
+
+
+class TestTheEmbeddingLoaderChangesAreMacOsOnly:
+    """The RAG server's Linux and Windows launches must be as they were.
+
+    The probe environment and the resolved library directory both started out
+    unconditional, which moved the first LD_LIBRARY_PATH entry for every Linux
+    GPU install whose llama-server is a symlink, and gave the capability probe
+    an environment it never had.
+    """
+
+    def test_the_help_probe_still_inherits_the_environment_off_mac(self, monkeypatch):
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text("/opt/mine/llama-server")
+        assert seen.get("env") is None
+
+    def test_the_help_probe_gets_the_loader_environment_on_mac(self, monkeypatch, tmp_path):
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"\xcf\xfa\xed\xfe")
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stdout = "--embedding", stderr = "")
+
+        monkeypatch.setattr(mod.sys, "platform", "darwin")
+        monkeypatch.setattr(mod.subprocess, "run", fake_run)
+        mod.LlamaServerBackend._help_text.cache_clear()
+        mod.LlamaServerBackend._help_text(str(binary))
+        assert seen.get("env") is not None
+
+    def test_linux_gpu_libs_still_hang_off_the_given_path(self, monkeypatch, tmp_path):
+        real = tmp_path / "build" / "bin" / "llama-server"
+        real.parent.mkdir(parents = True)
+        real.write_bytes(b"\xcf\xfa\xed\xfe")
+        wrapper = tmp_path / "llama-server"
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
+        wrapper.chmod(0o755)
+        seen = {}
+        monkeypatch.setattr(mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            mod.LlamaServerBackend,
+            "_add_linux_cuda_libs",
+            staticmethod(lambda env, d: seen.setdefault("dir", d)),
+        )
+        mod.LlamaServerBackend()._build_env(str(wrapper), use_gpu = True)
+        assert seen["dir"] == str(wrapper.parent)

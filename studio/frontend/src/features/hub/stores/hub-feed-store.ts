@@ -48,11 +48,6 @@ export function isChannelEntryFresh(
   return now - entry.fetchedAt < FEED_TTL_MS[id];
 }
 
-export const selectChannelEntry =
-  (id: ChannelId) =>
-  (state: HubFeedState): ChannelFeedEntry | undefined =>
-    state.channels[id];
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

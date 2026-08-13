@@ -16,7 +16,11 @@ import {
   recoverDroppedDiffusionSplit,
   shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import {
+  externalModelSupportsStudioTools,
+  isExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
@@ -94,7 +98,7 @@ export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
 // Persist only the model-agnostic intents (auto/ngram/off). The model-specific
-// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay session-only:
 // a persisted choice would silently no-op on a model with no MTP head or no
 // DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
@@ -493,7 +497,7 @@ function saveString(key: string, value: string): void {
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
-// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// modes ("auto"/"mtp"/"dspark"/"dflash"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
 // legacy aliases map to their closest UI mode.
 export function normalizeSpeculativeType(
   v: string | null | undefined,
@@ -505,6 +509,7 @@ export function normalizeSpeculativeType(
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
   if (s === "dspark" || s === "draft-dspark") return "dspark";
+  if (s === "dflash" || s === "draft-dflash") return "dflash";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -1071,8 +1076,8 @@ type ChatRuntimeStore = {
    */
   specFallbackReason: string | null;
   /**
-   * Which drafter the loaded model's speculative resolution was about, "mtp" or
-   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * Which drafter the loaded model's speculative resolution was about: "mtp",
+   * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
    * file to fix, since Auto resolves the kind server-side and the requested mode
    * still reads "auto".
    */
@@ -1954,7 +1959,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // stale persisted local id would race the freshly-loaded model. See
       // LAST_EXTERNAL_CHECKPOINT_KEY notes.
       saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
-      if (isExternalModelId(modelId)) {
+      // Only disarm research for a connection that cannot drive it. Gating on
+      // the id prefix alone silently switched it off for capable providers too,
+      // forcing the user to re-enable it after every model switch.
+      if (isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)) {
         saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       }
       // Clear stale per-turn usage on model change; the relaxed external-provider
@@ -1971,18 +1979,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               .getState()
               .providers.find((p) => p.id === parsed.providerId)
           : null;
-        const cap = getExternalMaxOutputTokens(
-          provider?.providerType,
-          parsed?.modelId,
-        );
-        if (nextMaxTokens > cap) {
-          nextMaxTokens = cap;
+        // Only when the connection is known. A checkpoint restored before the
+        // provider store hydrates would otherwise read the 32,768 fallback and lower
+        // a value nothing puts back. No provider means unknown, not 32,768.
+        if (provider) {
+          const cap = getExternalMaxOutputTokens(
+            provider.providerType,
+            parsed?.modelId,
+            provider.maxOutputTokens,
+          );
+          if (nextMaxTokens > cap) {
+            nextMaxTokens = cap;
+          }
         }
       }
       const nextGgufVariant = ggufVariant ?? null;
-      const nextDeepResearchEnabled = isExternalModelId(modelId)
-        ? false
-        : state.deepResearchEnabled;
+      const nextDeepResearchEnabled =
+        isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)
+          ? false
+          : state.deepResearchEnabled;
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         {
           checkpoint: state.params.checkpoint,
@@ -2021,9 +2036,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to an external provider disables Deep Research, which only
-        // applies to the local base model.
-        ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
+        // Switching to a connection whose provider cannot run Studio's tool
+        // loop disables Deep Research; a capable one keeps the user's choice.
+        ...(isExternalModelId(modelId) && !externalModelSupportsStudioTools(modelId)
+          ? { deepResearchEnabled: false }
+          : {}),
       };
     }),
   // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished

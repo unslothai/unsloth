@@ -107,6 +107,7 @@ struct HealthDesktopOwner {
 #[derive(Debug, Deserialize)]
 struct HealthResponse {
     version: Option<String>,
+    native_path_leases_supported: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -757,9 +758,14 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
     let version = health
         .and_then(|h| h.version.as_deref())
         .filter(|v| !v.is_empty());
-    match crate::preflight::backend_version_stale_reason(version) {
-        Some(reason) => OwnedBackendReadiness::Stale { reason },
-        None => OwnedBackendReadiness::Ready,
+    if let Some(reason) = crate::preflight::backend_version_stale_reason(version) {
+        return OwnedBackendReadiness::Stale { reason };
+    }
+    match health.and_then(|health| health.native_path_leases_supported) {
+        Some(true) => OwnedBackendReadiness::Ready,
+        _ => OwnedBackendReadiness::Stale {
+            reason: "native_path_leases_unsupported".to_string(),
+        },
     }
 }
 
@@ -777,13 +783,15 @@ async fn health_ready_status(
                 let Some(version) = authenticated_version else {
                     return Err("desktop_auth_health_unverified".to_string());
                 };
-                return match crate::preflight::backend_version_stale_reason(Some(version)) {
-                    None => Ok(OwnedBackendReadiness::Ready),
-                    Some(reason) if reason == "desktop_backend_version_too_old" => {
+                if let Some(reason) = crate::preflight::backend_version_stale_reason(Some(version))
+                {
+                    return if reason == "desktop_backend_version_too_old" {
                         Ok(OwnedBackendReadiness::Stale { reason })
-                    }
-                    Some(reason) => Err(reason),
-                };
+                    } else {
+                        Err(reason)
+                    };
+                }
+                return Ok(ready_for_use_status(health.as_ref()));
             }
             Ok(ready_for_use_status(health.as_ref()))
         }
@@ -1050,6 +1058,16 @@ async fn probe_verified_owned_backend_at_path_with_expected(
     let owner = BackendOwnerState::from_metadata(path.to_path_buf(), metadata);
     let port = owner.port();
     Ok(probe_owned_backend_state(owner, port, true).await)
+}
+
+/// False only when the pid is provably gone.
+///
+/// A pid we cannot resolve counts as running: on Windows an OpenProcess that
+/// fails for anything but a bad pid usually means the process is there and
+/// owned by somebody else, and every caller here treats "still running" as the
+/// safe answer.
+pub(crate) fn pid_is_not_dead(pid: u32) -> bool {
+    process_liveness(pid) != PreviousAppPidStatus::Dead
 }
 
 fn previous_app_pid_status(pid: u32) -> PreviousAppPidStatus {
@@ -1327,7 +1345,10 @@ mod tests {
     async fn authenticated_health_uses_login_bearer_and_accepts_ready_version() {
         let (port, seen, server) = http_sequence_server(vec![
             ("200 OK", r#"{"access_token":"test-access-token"}"#),
-            ("200 OK", r#"{"version":"2026.8.4"}"#),
+            (
+                "200 OK",
+                r#"{"version":"2026.8.4","native_path_leases_supported":true}"#,
+            ),
         ])
         .await;
 
@@ -1342,6 +1363,31 @@ mod tests {
         assert!(seen[1]
             .to_ascii_lowercase()
             .contains("authorization: bearer test-access-token"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_marks_missing_or_disabled_native_leases_stale() {
+        for health in [
+            r#"{"version":"2026.8.4"}"#,
+            r#"{"version":"2026.8.4","native_path_leases_supported":false}"#,
+        ] {
+            let (port, _, server) = http_sequence_server(vec![
+                ("200 OK", r#"{"access_token":"test-access-token"}"#),
+                ("200 OK", health),
+            ])
+            .await;
+
+            let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+                .await
+                .unwrap();
+            server.await.unwrap();
+
+            assert!(matches!(
+                readiness,
+                OwnedBackendReadiness::Stale { reason }
+                    if reason == "native_path_leases_unsupported"
+            ));
+        }
     }
 
     #[tokio::test]

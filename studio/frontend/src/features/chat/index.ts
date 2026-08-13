@@ -16,14 +16,15 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listLoras,
   listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
-  unloadModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -144,6 +145,20 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
+  PASTED_TEXT_PREVIEW_MAX_CHARS,
+  attachmentContentText,
+  attachmentsPastedText,
+  createPastedTextFile,
+  isPastedTextContent,
+  isPastedTextFile,
+  pasteLongTextAsFile,
+  pastedTextContentBytes,
+  pastedTextContentPreview,
+  pastedTextOf,
+  pastedTextPreview,
+  shouldAttachPastedText,
+} from "./utils/pasted-text";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   isThreadIncognito,
@@ -156,6 +171,12 @@ export {
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
+export {
+  reasoningAutoOpensWhileStreaming,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+} from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -173,8 +194,11 @@ export {
 export {
   clearNewChatDraft,
   composerDraftKey,
+  composerPasteDraftKey,
   readComposerDraft,
+  readPasteDraft,
   writeComposerDraft,
+  writePasteDraft,
 } from "./utils/composer-draft";
 export {
   CONVERSATION_MARKDOWN_FORMAT,
@@ -185,9 +209,17 @@ export {
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
   exportFineTuneJsonl,
-  importConversationsFromFile,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
+export {
+  fileImportSource,
+  importConversationsFromFile,
+  importConversationsFromSource,
+  nativeImportSource,
+  type ImportProgress,
+  type ImportResult,
+  type ImportSource,
+} from "./utils/chat-import";
 export {
   archiveAllChatItems,
   archiveChatItem,
@@ -223,10 +255,12 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,
+  type SttEngine,
 } from "./adapters/studio-model-dictation-adapter";
 export {
   StudioSpeechSynthesisAdapter,

@@ -4,6 +4,7 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { code as codePlugin } from "@streamdown/code";
@@ -18,8 +19,6 @@ const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
-/** Past this the block stays plain monospace: shiki is not worth the main-thread time. */
-const MAX_HIGHLIGHT_CHARS = 20_000;
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
 

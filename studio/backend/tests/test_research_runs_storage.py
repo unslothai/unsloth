@@ -815,10 +815,12 @@ def test_delete_thread_cancels_active_research_run(research_home):
             state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
         )
     )
-    chat_history.delete_threads(
-        chat_history.ChatDeleteRequest(ids = ["thread-1"]),
-        request,
-        current_subject = "alice",
+    asyncio.run(
+        chat_history.delete_threads(
+            chat_history.ChatDeleteRequest(ids = ["thread-1"]),
+            request,
+            current_subject = "alice",
+        )
     )
 
     assert research_db.get_run("run-1") is None
@@ -849,8 +851,10 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
         )
     )
 
-    deleted = chat_history.delete_project(
-        "project-1", request, delete_files = False, current_subject = "alice"
+    deleted = asyncio.run(
+        chat_history.delete_project(
+            "project-1", request, delete_files = False, current_subject = "alice"
+        )
     )
 
     assert deleted.id == "project-1"
@@ -874,7 +878,7 @@ def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home
         )
     )
 
-    chat_history.clear_history(request, current_subject = "alice")
+    asyncio.run(chat_history.clear_history(request, current_subject = "alice"))
 
     assert studio_db.get_chat_thread("thread-1") is None
     assert research_db.get_run("run-1") is None
