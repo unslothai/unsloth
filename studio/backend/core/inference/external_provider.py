@@ -5520,7 +5520,9 @@ class ExternalProviderClient:
                                 # returned a blank answer and no error at all: the whole
                                 # generation ended with zero chunks and nothing to explain it.
                                 # Raising was at least loud; this says what happened.
-                                if isinstance(event.get("error"), (dict, str)):
+                                if isinstance(event, dict) and isinstance(
+                                    event.get("error"), (dict, str)
+                                ):
                                     yield _error_sse_line(
                                         502,
                                         _openai_response_error_message(event),

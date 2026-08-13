@@ -771,3 +771,35 @@ def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeyp
 
     chunks = _drive(run())
     assert not any("502" in str(chunk) for chunk in chunks), chunks
+
+
+@pytest.mark.parametrize("payload", [b"null", b"[]", b'"text"', b"7"])
+def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload):
+    """`data: null` is valid JSON and not a dict. response_event_type rejects it, and the
+    error check that follows must not then call .get() on it: that raised AttributeError
+    and killed the stream, where the whole point of the skip is that it does not."""
+    body = b"data: " + payload + b"\n\nevent: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content = body, headers = {"content-type": "text/event-stream"}
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks
