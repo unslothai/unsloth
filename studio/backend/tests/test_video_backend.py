@@ -531,7 +531,13 @@ def _load_gguf(backend, tmp_path):
     )
 
 
-def _stub_apply_memory_plan(monkeypatch, video_mod, *, policy = "model", vae_tiling = True) -> list:
+def _stub_apply_memory_plan(
+    monkeypatch,
+    video_mod,
+    *,
+    policy = "model",
+    vae_tiling = True,
+) -> list:
     """Stand in for ``apply_memory_plan``, recording the placement kwargs of every call.
 
     The keywords are spelled out rather than collected into ``**kwargs`` on purpose. A
@@ -541,7 +547,14 @@ def _stub_apply_memory_plan(monkeypatch, video_mod, *, policy = "model", vae_til
     """
     calls = []
 
-    def _fake(pipe, plan, *, device = None, placement_device = None, logger = None):
+    def _fake(
+        pipe,
+        plan,
+        *,
+        device = None,
+        placement_device = None,
+        logger = None,
+    ):
         calls.append({"device": device, "placement_device": placement_device})
         return (policy, vae_tiling)
 
