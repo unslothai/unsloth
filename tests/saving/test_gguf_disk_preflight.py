@@ -935,7 +935,9 @@ class TestTorchaoStagingSharesTheRedirectDestination:
             ),
         )
         monkeypatch.setattr(S, "free_bytes", lambda path: scratch if on_tmp(path) else working)
-        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right))
+        monkeypatch.setattr(
+            S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right)
+        )
         assert (
             S._preflight_merge_disk(_FakeModel(), "kaggle/working/model", "torchao_fp8")
             == "kaggle/working/model"
@@ -959,7 +961,9 @@ class TestTorchaoStagingSharesTheRedirectDestination:
             ),
         )
         monkeypatch.setattr(S, "free_bytes", lambda path: 12 * GB if on_tmp(path) else 500 * GB)
-        monkeypatch.setattr(S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right))
+        monkeypatch.setattr(
+            S, "_same_filesystem", lambda left, right: on_tmp(left) == on_tmp(right)
+        )
         assert (
             S._preflight_merge_disk(_FakeModel(), "kaggle/working/model", "torchao_fp8")
             == "kaggle/working/model"
@@ -2537,9 +2541,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
             pass
         return asked
 
-    def test_the_redirect_is_asked_for_the_peak_and_not_the_aggregate(
-        self, phases, monkeypatch
-    ):
+    def test_the_redirect_is_asked_for_the_peak_and_not_the_aggregate(self, phases, monkeypatch):
         """Or Kaggle relocates an export that fits to a /tmp it does not keep.
 
         The refusal below reads the 123GB peak, so the redirect above it has
@@ -2548,9 +2550,7 @@ class TestADisposableMergeIsNotChargedForAllThreeAtOnce:
         """
         assert self._redirect_ask(phases, monkeypatch) == [self.MERGE_PHASE]
 
-    def test_a_merge_that_is_not_disposable_still_asks_the_aggregate(
-        self, phases, monkeypatch
-    ):
+    def test_a_merge_that_is_not_disposable_still_asks_the_aggregate(self, phases, monkeypatch):
         asked = self._redirect_ask(phases, monkeypatch, merge_is_disposable = False)
         assert asked == [self.AGGREGATE]
 
