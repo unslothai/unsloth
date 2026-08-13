@@ -1603,3 +1603,73 @@ def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
         transformer_quant = "fp8",
         memory_mode = "fast",
     )
+
+
+def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypatch):
+    # The H3 planner decides its denoiser partition and memory policy from device capacity, so a
+    # plan sized against the default card stages the wrong weights for the card the load uses.
+    import types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    ranked: list = []
+    monkeypatch.setattr(
+        devmod, "resolve_selected_cuda_ordinal",
+        lambda ids: (ranked.append(list(ids)), 1)[1],
+    )
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+    monkeypatch.setattr(
+        backend, "download_plan",
+        lambda model_path, **kwargs: (seen.update(kwargs), {"entries": [], "total_bytes": 0})[1],
+        raising = False,
+    )
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [0, 1],
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["gpu_ordinal"] == 1
+    # One ranking for the request, shared by the precision preflight and the plan.
+    assert ranked == [[0, 1]]
+
+
+def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
+    import types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+
+    def _refuse(_ids):
+        raise ValueError("Requested GPU [7] but none of them are visible to this process")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _refuse)
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend, "download_plan",
+        lambda *a, **k: pytest.fail("a refused GPU pick must not reach the planner"),
+        raising = False,
+    )
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/LTX-2.3-GGUF",
+            "gguf_filename": "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [7],
+        },
+    )
+    assert resp.status_code == 400
+    assert "visible to this process" in resp.json()["detail"]

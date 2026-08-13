@@ -2254,3 +2254,117 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
+
+
+def _pinned_state(b, *, policy_flags = (), device = "cuda"):
+    """A resident native load whose argv carries the --backend device pin on top of `policy_flags`,
+    exactly as _run_load builds it once a card has been selected."""
+    from core.inference.sd_cpp_args import device_backend_flags
+
+    s = b._state
+    return bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = device,
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = (
+            *policy_flags,
+            *device_backend_flags("CUDA1", list(policy_flags)),
+        ),
+    )
+
+
+def test_a_card_pick_is_not_reported_as_an_offload():
+    # `fast` asks for no offload at all, so its flag list is empty and both status() and the saved
+    # recipe derive "nothing was offloaded" from that emptiness. Pinning the load to a card adds
+    # --backend to the same tuple, which said the user had turned CPU offload on by picking a GPU.
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ())
+    assert b._state.offload_flags, "the fixture must actually carry the pin"
+    status = b.status()
+    assert status["cpu_offload"] is False
+    assert status["offload_policy"] == "none"
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["offload_policy"] == "none"
+
+
+def test_a_real_offload_still_reports_itself_when_a_card_is_pinned():
+    # The other half of the same rule: stripping the pin must not swallow a policy that IS active.
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu", "--diffusion-fa"))
+    assert b.status()["cpu_offload"] is True
+    assert b.status()["offload_policy"] == "active"
+
+
+def test_the_cpu_backend_restart_drops_the_device_pin(monkeypatch):
+    # sd.cpp CONCATENATES repeated --backend values into one spec (the option is declared with
+    # concat = ',') and an explicit per-module entry outranks the bare `cpu` default, so restarting
+    # with the pin still in the argv leaves the denoiser on the card that just aborted and the
+    # recovery becomes a silent no-op: the same GGML_ABORT, immediately.
+    started: dict = {}
+
+    class _FakeServer:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def start(self, files, **kwargs):
+            started.update(kwargs)
+
+        def stop(self):
+            pass
+
+    b = _loaded_backend()
+    b._state = _pinned_state(b, policy_flags = ("--offload-to-cpu", "--clip-on-cpu"))
+    object.__setattr__(b._state, "server", _FakeServer("/bin/sd-server"))
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/bin/sd-server")
+    monkeypatch.setattr(bk, "SdCppServer", _FakeServer)
+
+    server = b._restart_server_on_cpu_backend(
+        b._state, "ggml_metal_op_encode_impl: unsupported op 'MUL_MAT' -> ggml_abort", threading.Event()
+    )
+    assert server is not None
+    argv = [*started["offload"], *started["extra_args"]]
+    # One --backend value survives, and it is the CPU one.
+    backends = [argv[i + 1] for i, flag in enumerate(argv) if flag == "--backend"]
+    assert backends == ["cpu"]
+    # The policy the load committed to is untouched.
+    assert "--offload-to-cpu" in argv and "--clip-on-cpu" in argv
+
+
+def test_the_native_engine_resolves_a_bare_gpu_selection_itself(monkeypatch):
+    # The routes rank the selection and hand over the winner, but a direct caller (an MCP client,
+    # a plugin) passes gpu_ids alone. The diffusers and video backends re-rank in that case; the
+    # native one used to drop the pick on the floor.
+    import core.inference.sd_cpp_backend as backend_module
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        backend_module, "resolve_diffusion_device_target",
+        lambda **kw: types.SimpleNamespace(device = "cuda"),
+    )
+    monkeypatch.setattr(
+        backend_module, "resolve_selected_cuda_ordinal",
+        lambda ids: (seen.update(ids = list(ids)), 1)[1],
+    )
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_start_load_thread", lambda *a, **k: None, raising = False)
+    captured: dict = {}
+
+    def _fake_thread(target = None, kwargs = None, **_):
+        captured.update(kwargs or {})
+        return types.SimpleNamespace(start = lambda: None, join = lambda *a, **k: None)
+
+    monkeypatch.setattr(backend_module.threading, "Thread", _fake_thread)
+    b.begin_load(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        gpu_ids = [3],
+    )
+    assert seen["ids"] == [3]
+    assert captured["gpu_ordinal"] == 1

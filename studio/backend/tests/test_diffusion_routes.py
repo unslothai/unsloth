@@ -2223,3 +2223,118 @@ def test_layerwise_fp8_does_not_need_torchao(monkeypatch):
     backend.assert_precision_available(
         types.SimpleNamespace(name = "qwen-image"), model_kind = "gguf", text_encoder_quant = "fp8"
     )
+
+
+def test_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypatch):
+    # The plan preflights precision and picks the dense/prequant file set against a card's
+    # capability and free VRAM, so a plan built for the default GPU can stage the wrong files for
+    # the load that follows. One ranking per request, reused by both.
+    import types as _types
+
+    from core.inference import diffusion_device as devmod
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cuda")
+    )
+    ranked: list = []
+
+    def _resolve(ids):
+        ranked.append(list(ids))
+        return 1
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _resolve)
+    backend = diffusion_module.get_diffusion_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [0, 1],
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["gpu_ordinal"] == 1
+    assert backend.last_precision_kwargs["gpu_ordinal"] == 1
+    # ONE ranking: the preflight's smoke probe allocates on the card it tests, so a second one
+    # could legitimately answer with a different card than the plan was sized for.
+    assert ranked == [[0, 1]]
+
+
+def test_download_plan_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
+    # A bad pick is the user's 400, not a 500: the plan route has its own try/except, and this call
+    # sits inside it.
+    import types as _types
+
+    from core.inference import diffusion_device as devmod
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cuda")
+    )
+
+    def _refuse(_ids):
+        raise ValueError("Requested GPU [7] but none of them are visible to this process")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _refuse)
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [7],
+        },
+    )
+    assert resp.status_code == 400
+    assert "visible to this process" in resp.json()["detail"]
+
+
+def test_download_plan_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
+    # Same contract the load route applies: physical ids have no applicator on XPU / MPS / CPU, so
+    # they are dropped rather than refused.
+    import types as _types
+
+    from core.inference import diffusion_device as devmod
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "mps")
+    )
+
+    def _never(_ids):
+        raise AssertionError("the CUDA resolver must not run off a CUDA target")
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", _never)
+    backend = diffusion_module.get_diffusion_backend()
+    seen: dict = {}
+    monkeypatch.setattr(
+        backend, "download_plan",
+        lambda model_path, **kwargs: (seen.update(kwargs), {"entries": [], "total_bytes": 0})[1],
+        raising = False,
+    )
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+            "gpu_ids": [1],
+        },
+    )
+    assert resp.status_code == 200
+    assert seen["gpu_ordinal"] is None

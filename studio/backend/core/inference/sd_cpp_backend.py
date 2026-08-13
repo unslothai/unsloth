@@ -68,6 +68,7 @@ from core.inference.sd_cpp_args import (
     device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
@@ -1143,6 +1144,17 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        # Same fallback the diffusers and video backends take: the route ranks the selection and
+        # passes the winner, but a direct caller (an MCP client, a test, a plugin) hands over
+        # gpu_ids alone, and without this the native engine is the one engine that would drop the
+        # pick silently. Re-ranked only when nobody has, so a route-resolved winner is never
+        # second-guessed against free VRAM that has moved since.
+        if gpu_ordinal is None:
+            gpu_ordinal = (
+                resolve_selected_cuda_ordinal(gpu_ids)
+                if gpu_ids and resolve_diffusion_device_target().device == "cuda"
+                else None
+            )
         if not gguf_filename:
             raise ValueError(
                 "gguf_filename is required: the native engine loads single-file GGUF checkpoints only."
@@ -2135,7 +2147,11 @@ class SdCppDiffusionBackend:
                     "transformer_quant": None,
                     "text_encoder_quant": None,
                     "memory_mode": None,
-                    "offload_policy": "active" if state.offload_flags else "none",
+                    # The POLICY flags only: a --backend pin says which card ran the graph, not
+                    # that anything was offloaded, and a `fast` load carries no policy flags at all.
+                    "offload_policy": (
+                        "active" if without_device_backend_flags(state.offload_flags) else "none"
+                    ),
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -2306,7 +2322,11 @@ class SdCppDiffusionBackend:
             server.start(
                 state.files,
                 vae_format = state.vae_format,
-                offload = list(state.offload_flags),
+                # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec
+                # instead of replacing, and an explicit diffusion=CUDA0 outranks the bare `cpu`
+                # default, so leaving the pin on would restart the server onto the very backend
+                # that just aborted.
+                offload = without_device_backend_flags(state.offload_flags),
                 native_speed = state.native_speed,
                 threads = state.threads,
                 extra_args = list(CPU_BACKEND_FLAGS),
@@ -2559,9 +2579,12 @@ class SdCppDiffusionBackend:
             "gguf_variant": extract_quant_token(state.gguf_filename)
             if state.gguf_filename
             else None,
-            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
-            "cpu_offload": bool(state.offload_flags),
-            "offload_policy": "active" if state.offload_flags else "none",
+            # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none"), minus
+            # the --backend device pin, which is a card choice rather than an offload decision.
+            "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
+            "offload_policy": (
+                "active" if without_device_backend_flags(state.offload_flags) else "none"
+            ),
             "vae_tiling": False,
             "memory_mode": None,
             "speed_mode": state.native_speed,

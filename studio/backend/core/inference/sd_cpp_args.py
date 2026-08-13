@@ -13,6 +13,7 @@ one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -193,6 +194,35 @@ def device_backend_flags(
     te = "cpu" if "--clip-on-cpu" in flags else device_name
     vae = "cpu" if "--vae-on-cpu" in flags else device_name
     return ["--backend", f"diffusion={device_name},te={te},vae={vae}"]
+
+
+def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
+    """``flags`` with every ``--backend <spec>`` pair removed.
+
+    Two callers, for two different reasons, and both are wrong if they read the pin.
+
+    The status and the saved recipe derive "was anything offloaded?" from whether these flags are
+    empty, so a pin on a `fast` load (whose policy is deliberately no flags at all) would report
+    an offload that never happened, purely because a card was selected.
+
+    And sd.cpp CONCATENATES repeated ``--backend`` values into one spec rather than replacing
+    (``examples/common/common.cpp`` declares the option with ``concat = ','``), while an explicit
+    per-module entry always beats the bare default (``ggml_extend_backend.cpp``). So appending
+    ``--backend cpu`` to a spec that already says ``diffusion=CUDA0`` leaves the denoiser on CUDA:
+    the CPU-backend restart, which exists to survive a ggml op the device cannot run, becomes a
+    silent no-op. The pin has to come off first.
+    """
+    out: list[str] = []
+    skip = False
+    for flag in flags:
+        if skip:
+            skip = False
+            continue
+        if flag == "--backend":
+            skip = True
+            continue
+        out.append(flag)
+    return out
 
 
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The SIGABRT takes sd-server down mid-generation.
