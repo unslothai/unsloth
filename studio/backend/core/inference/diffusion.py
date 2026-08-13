@@ -2059,7 +2059,10 @@ class DiffusionBackend:
                 return None
             if mm is None and kwargs.get("cpu_offload"):
                 return None
-            target = self._resolve_device_target(fam)
+            # The card this load will land on: a hosted quant the selected card can take is not
+            # the same set the default card can, so planning on the wrong one either omits the
+            # artifact the load then fetches inline, or stages one it never opens.
+            target = self._target_for_ordinal(fam, kwargs.get("gpu_ordinal"))
             # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
             # those bytes never land. Only a cached one, or an explicit request, counts.
             if (

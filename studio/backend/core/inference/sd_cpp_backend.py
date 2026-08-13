@@ -1137,6 +1137,8 @@ class SdCppDiffusionBackend:
         # Parity with the diffusers load-time LoRA bake; native applies LoRA per generation, so a load-time selection is ignored.
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ids: Optional[list[int]] = None,
+        # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
+        gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
@@ -1219,7 +1221,7 @@ class SdCppDiffusionBackend:
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
-                gpu_ids = gpu_ids,
+                gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -1238,7 +1240,7 @@ class SdCppDiffusionBackend:
         cpu_offload: bool = False,
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
-        gpu_ids: Optional[list[int]] = None,
+        gpu_ordinal: Optional[int] = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -1349,7 +1351,7 @@ class SdCppDiffusionBackend:
             # deferred accelerator install, the post-download re-resolve, or a server start that
             # falls back to one-shot, and the ggml device names come from whichever build ends up
             # running. It is added at each point the flags are handed to a binary instead.
-            gpu_ordinal = resolve_selected_cuda_ordinal(gpu_ids) if device == "cuda" else None
+            gpu_ordinal = gpu_ordinal if device == "cuda" else None
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation started during

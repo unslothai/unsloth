@@ -1271,6 +1271,29 @@ def test_load_ignores_a_gpu_selection_off_cuda(client, monkeypatch):
     assert resp.status_code == 200
 
 
+def test_native_load_accepts_the_resolved_ordinal(client, monkeypatch):
+    # The route passes gpu_ordinal to whichever engine it activated, so the native backend has to
+    # take it: an unexpected-keyword TypeError here 500s every native GGUF load.
+    import inspect
+
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    assert "gpu_ordinal" in inspect.signature(SdCppDiffusionBackend.begin_load).parameters
+
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cuda")
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(devmod, "resolve_selected_cuda_ordinal", lambda ids: max(ids))
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf", "gpu_ids": [1]},
+    )
+    assert resp.status_code == 200
+
+
 def test_images_info_lists_every_family(client):
     # The pure info endpoint is hardware-independent: one entry per auto-policy family with the quant estimates the UI shows.
     from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB

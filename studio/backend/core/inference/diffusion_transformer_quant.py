@@ -352,6 +352,18 @@ def _strip_paths(text: str) -> str:
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
 _SMOKE_CACHE: dict[tuple[str, str], bool] = {}
 
+
+def _smoke_cache_device_key(device: str) -> str:
+    """``device`` qualified with the current CUDA index, so each card is validated on its own."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+
+        return f"cuda:{torch.cuda.current_device()}"
+    except Exception:  # noqa: BLE001 -- an unreadable index falls back to the un-indexed key
+        return device
+
 # Data-center GPU tokens (un-nerfed FP32 accumulate). Matched as whole tokens of get_device_name() so "A4000" is not mistaken for "A40"; anything else is consumer-class.
 _DATACENTER_GPU_TOKENS = frozenset(
     {
@@ -568,7 +580,10 @@ def _smoke_probe(
     ``new_zeros`` out to 226 or 512, so the tail rows reaching the DiT are exactly zero.
     Measured on B200, 4096-wide Linear: 412 of 512 rows non-finite without the floor, 0 of 512
     with it. Failing here costs one ladder step down to int8 instead."""
-    key = (scheme, device)
+    # Keyed by the CARD, not just "cuda": the probe runs on whichever device is current, so on a
+    # heterogeneous host a pass on one selected GPU would otherwise stand in for an untested one,
+    # and a failure on an older card would reject the scheme on a capable one.
+    key = (scheme, _smoke_cache_device_key(device))
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
     ok = False

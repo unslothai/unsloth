@@ -1380,7 +1380,9 @@ class VideoBackend:
             )
             kwargs["base_repo"] = base
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
-            te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
+            te_sources = self._te_prequant_sources(
+                fam, kwargs.get("text_encoder_quant"), kwargs.get("gpu_ordinal")
+            )
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
             # the conditioner below and like the plan: this flag both REMOVES 66 GB from the pull
@@ -1903,14 +1905,22 @@ class VideoBackend:
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
-    def _te_prequant_sources(fam: Any, text_encoder_quant: Optional[str]) -> dict[str, Any]:
+    def _te_prequant_sources(
+        fam: Any, text_encoder_quant: Optional[str], gpu_ordinal: Optional[int] = None
+    ) -> dict[str, Any]:
         """``{component: source}`` for the text encoders this load will take PRE-CAST from a
         hosted checkpoint instead of the base repo's dense weights (``{}`` when none)."""
         from .diffusion_te_prequant import te_prequant_sources
         return te_prequant_sources(
             fam,
             te_quant_mode = text_encoder_quant,
-            target = resolve_diffusion_device_target(),
+            # The selected card: an fp8 encoder the default card cannot take is still hosted
+            # pre-cast for the one this load lands on, and vice versa.
+            target = (
+                resolve_diffusion_device_target()
+                if gpu_ordinal is None
+                else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+            ),
         )
 
     @staticmethod
@@ -2082,7 +2092,14 @@ class VideoBackend:
                 return None
             import torch
 
-            target = self._device_target(gpu_ordinal)
+            # SCOPED, not pinned: the plan route reaches this on a pooled asyncio.to_thread
+            # thread, which must not be handed back to the pool set to this request's card.
+            with diffusion_device_scope(gpu_ordinal):
+                target = (
+                    resolve_diffusion_device_target()
+                    if gpu_ordinal is None
+                    else resolve_diffusion_device_target(ordinal = gpu_ordinal)
+                )
             dtype = target.dtype
             if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
                 dtype = torch.float32
@@ -2636,7 +2653,9 @@ class VideoBackend:
                         revision = getattr(extras_info, "sha", None),
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
-            te_sources = self._te_prequant_sources(fam, text_encoder_quant)
+            te_sources = self._te_prequant_sources(
+                fam, text_encoder_quant, load_kwargs.get("gpu_ordinal")
+            )
             te_files = self._te_prequant_hub_files(te_sources, api)
             for component, files in te_files.items():
                 total += add(te_sources[component].location, files)

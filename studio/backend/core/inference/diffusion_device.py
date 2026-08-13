@@ -220,12 +220,23 @@ def diffusion_device_scope(ordinal: Optional[int]):
     if ordinal is None:
         yield
         return
+    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to
+    # travel untouched, or a yield-after-throw replaces the caller's real refusal with
+    # "generator didn't stop after throw()".
     try:
         import torch
-        with torch.cuda.device(ordinal):
-            yield
-    except Exception:  # noqa: BLE001 -- an unusable index must not fail the probe it wraps
+        scope = torch.cuda.device(ordinal)
+        scope.__enter__()
+    except Exception:  # noqa: BLE001 -- an unreadable index still runs the probe, unpinned
         yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            scope.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001 -- restoring is best effort; never mask the body
+            pass
 
 
 def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:

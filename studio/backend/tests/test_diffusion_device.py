@@ -859,3 +859,40 @@ def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
     _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
     assert dd.resolve_diffusion_device_target(ordinal = 1).dtype == BF16
     assert scoped == [1]
+
+
+def test_the_device_scope_lets_the_body_exception_through(monkeypatch):
+    # Catching around the yield made contextlib raise "generator didn't stop after throw()",
+    # replacing a precision refusal with a meaningless error the route maps to the wrong status.
+    torch = _make_torch(cuda_available = True, device_count = 2)
+
+    class _Scope:
+        def __init__(self, index):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    torch.cuda.device = _Scope
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    with pytest.raises(RuntimeError, match = "the real refusal"):
+        with dd.diffusion_device_scope(1):
+            raise RuntimeError("the real refusal")
+
+
+def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
+    # Entering may fail on a stale index; the probe then runs unpinned rather than not at all.
+    torch = _make_torch(cuda_available = True, device_count = 2)
+
+    def _boom(_index):
+        raise RuntimeError("invalid device ordinal")
+
+    torch.cuda.device = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    ran = []
+    with dd.diffusion_device_scope(9):
+        ran.append(True)
+    assert ran == [True]
