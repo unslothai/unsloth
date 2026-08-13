@@ -11,14 +11,66 @@ mapping", which names a column-mapping problem rather than the read that failed.
 
 from __future__ import annotations
 
+import importlib
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS
-from core.training.trainer import UnslothTrainer
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper, and the same reason, as in test_trainer_stdout_quiet.py,
+    test_training_preflight.py and test_training_progress_callback.py:
+    core.training.trainer imports unsloth (and through it unsloth_zoo) and trl at module
+    scope, while the pytest matrix in studio-backend-ci.yml installs studio.txt plus torch
+    and transformers and stops there. The heavier repo-cpu-tests job beside it is the one
+    that installs unsloth_zoo, and it runs the REPO-ROOT tests/, not this tree. Unstubbed,
+    this module fails COLLECTION, which takes down the whole job on all four interpreters
+    rather than failing one test. Real installs are left alone, so a developer box still
+    exercises the genuine import. __spec__ = None keeps the trainer's own
+    _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+from core.training.trainer import _AUDIO_SNIFF_ROWS as _SNIFF_ROWS  # noqa: E402
+from core.training.trainer import UnslothTrainer  # noqa: E402
+
+import transformers  # noqa: E402
+
+# transformers 5 rebuilds sys.modules["transformers"] as a fresh lazy facade the first time an
+# attribute resolves through a submodule import, so the object an earlier `import transformers`
+# bound is no longer the one `from transformers import AutoProcessor` reads. A stub written onto
+# the stale object is invisible to the trainer, which then makes the real network call the
+# no-outbound-network fixture blocks. Resolving both names once, here, settles the replacement
+# before any test patches them. It shows up only with unsloth stubbed out: a real `import
+# unsloth` resolves them long before collection reaches this module.
+transformers.AutoProcessor  # noqa: B018
+transformers.AutoTokenizer  # noqa: B018
+transformers = sys.modules["transformers"]
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _load_and_format_dataset = UnslothTrainer.load_and_format_dataset
@@ -230,8 +282,6 @@ def test_a_transient_probe_failure_is_rechecked_after_the_tokenizer_loads(monkey
         def from_pretrained(cls, *a, **kw):
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoProcessor", _Proc, raising = False)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
 
@@ -255,8 +305,6 @@ def test_a_probe_that_stays_inconclusive_is_not_overwritten(monkeypatch):
         @classmethod
         def from_pretrained(cls, *a, **kw):
             return object()
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Proc, raising = False)
 
@@ -322,8 +370,6 @@ def test_the_retry_reloads_the_processor_when_it_discovers_whisper(monkeypatch):
             loaded.append("tokenizer")
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoProcessor", _Processor, raising = False)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
@@ -351,8 +397,6 @@ def test_the_retry_does_not_reload_when_the_answer_is_unchanged(monkeypatch):
         def from_pretrained(cls, *a, **kw):
             loaded.append("tokenizer")
             return object()
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
@@ -415,8 +459,6 @@ def test_the_first_tokenizer_load_failing_still_reaches_the_retry(monkeypatch):
                 raise OSError("Can't load tokenizer for 'org/spark'")
             return object()
 
-    import transformers
-
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
     trainer = UnslothTrainer()
@@ -440,8 +482,6 @@ def test_a_load_failure_with_a_definitive_type_is_not_swallowed(monkeypatch):
         @classmethod
         def from_pretrained(cls, *a, **kw):
             raise OSError("Can't load tokenizer for 'org/broken'")
-
-    import transformers
 
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
 
