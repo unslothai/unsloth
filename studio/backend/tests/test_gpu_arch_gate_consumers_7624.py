@@ -3,21 +3,16 @@
 
 """Consumer-side pins for the #7624 / #7669 ROCm arch gate.
 
-``test_gpu_arch_gate_7624.py`` pins the gate itself. This file pins the routing
-decision around it: WHICH callers of ``_get_gpu_memory`` /
-``_get_gpu_free_memory`` opt in, and what the ones that stay unfiltered are
-guaranteed to keep doing.
-
-Three claims are load-bearing and none of them is obvious from the call sites:
+``test_gpu_arch_gate_7624.py`` pins the gate itself; this file pins the routing
+around it -- which callers of ``_get_gpu_memory`` / ``_get_gpu_free_memory`` opt
+in, and what the unfiltered ones keep doing. Three load-bearing claims, none
+obvious from the call sites:
 
 * the gate is INERT on a Vulkan build, which is what lets the Vulkan-ordinal
-  preflight and the route-level ordinal checks stay unfiltered without an
-  explicit ``for_llama_server = False``;
-* placement opts in for AUTOMATIC selection only, so an explicit pin on a
-  device the prebuilt has no kernels for still reaches that device (and its own
-  crash message) instead of being quietly relocated or dropped;
-* ``_wait_for_vram_settle`` stays unfiltered -- it measures driver reclaim, it
-  does not place work.
+  preflight and the route-level ordinal checks stay unfiltered;
+* placement opts in for AUTOMATIC selection only, so an explicit pin still
+  reaches its device (and its own crash message) rather than being relocated;
+* ``_wait_for_vram_settle`` stays unfiltered: it measures driver reclaim.
 
 Mock-based throughout: there is no AMD hardware or ROCm CI here.
 """
@@ -87,11 +82,10 @@ def vulkan_probe(monkeypatch):
 
 
 class TestGateIsInertOnVulkanBuilds:
-    """The Vulkan branch returns before ``for_llama_server`` is ever read, so
-    the preflight at load_model and the ordinal checks in routes/inference.py
-    are unaffected by the flag they do not pass. Verified rather than assumed:
-    the whole justification for leaving those three sites unfiltered rests on
-    it."""
+    """The Vulkan branch returns before ``for_llama_server`` is read, so the
+    preflight at load_model and the ordinal checks in routes/inference.py are
+    unaffected by the flag they do not pass. Verified, not assumed: the case for
+    leaving those three sites unfiltered rests on it."""
 
     def test_flag_changes_nothing_on_a_vulkan_build(self, vulkan_probe):
         gated = LlamaCppBackend._get_gpu_memory("/fake/llama-server", for_llama_server = True)
@@ -130,13 +124,10 @@ def _backend(
     *,
     gated_out = frozenset(),
 ):
-    """Placement harness whose GPU probe HONORS ``for_llama_server``.
-
-    ``gated_out`` stands in for the devices whose gfx arch is absent from the
-    installed prebuilt's mapped_targets, so the test observes the gate's real
-    consequence for placement rather than only the argument it was called with.
-    Every call is recorded in ``backend._probe_calls``.
-    """
+    """Placement harness whose GPU probe HONORS ``for_llama_server``. ``gated_out``
+    stands in for devices absent from the prebuilt's mapped_targets, so the test sees
+    the gate's real consequence for placement, not just the argument it was called
+    with. Every call is recorded in ``backend._probe_calls``."""
     backend = LlamaCppBackend()
     calls: list[bool] = []
     backend._probe_calls = calls
@@ -211,11 +202,10 @@ class TestPlacementOptsInForAutoOnly:
         assert not any(backend._probe_calls), "an explicit pin was silently arch-gated"
 
     def test_explicit_pin_on_an_uncovered_gpu_still_reaches_that_gpu(self, tmp_path):
-        # GPU 1 is the device the installed prebuilt has no kernels for. The
-        # user pinned it anyway. It must be the device the child is given, so
-        # llama-server produces its own "device kernel image is invalid" and
-        # the user learns which card is wrong -- not be relocated onto GPU 0
-        # nor dropped to CPU behind their back.
+        # GPU 1 is the device the prebuilt has no kernels for, and the user pinned
+        # it anyway. The child must still get it, so llama-server produces its own
+        # "device kernel image is invalid" and the user learns which card is wrong,
+        # rather than being relocated onto GPU 0 or dropped to CPU behind their back.
         backend, gguf = _backend(
             tmp_path, [(0, 12049, 16384), (1, 40000, 65536)], gated_out = frozenset({1})
         )
@@ -244,10 +234,10 @@ class TestPlacementOptsInForAutoOnly:
 
 
 class TestWaitForVramSettleStaysUnfiltered:
-    """The settle poll measures the driver reclaiming a dead child's
-    allocations. It places nothing, so it must not pay for a marker read and an
-    arch enumeration on every sample -- and narrowing its device list would
-    change the ``len(curr) != len(prev)`` short-circuit it relies on."""
+    """The settle poll measures the driver reclaiming a dead child's allocations.
+    It places nothing, so it must not pay for a marker read and an arch enumeration
+    per sample -- and narrowing its device list would change the
+    ``len(curr) != len(prev)`` short-circuit it relies on."""
 
     def test_probe_is_never_gated(self, monkeypatch):
         import time as _time
@@ -269,10 +259,9 @@ class TestWaitForVramSettleStaysUnfiltered:
 
 
 class TestRagAutoStaysUnfiltered:
-    """``core/rag/embeddings.py::_resolve_auto`` picks between
-    sentence-transformers (PyTorch) and llama-server. The PyTorch winner runs
-    on devices the llama.cpp prebuilt knows nothing about, so gating this probe
-    would push bulk embedding indexing to the CPU for no reason."""
+    """``core/rag/embeddings.py::_resolve_auto`` picks between sentence-transformers
+    (PyTorch) and llama-server. The PyTorch winner runs on devices the prebuilt knows
+    nothing about, so gating this probe would push bulk indexing to the CPU."""
 
     def test_resolve_auto_never_gates(self, monkeypatch):
         from core.rag import embeddings
@@ -413,16 +402,12 @@ class TestArchCrashRetryEdgeCases:
         ), f"retry would respawn the identical selection {sorted(set(selected))}"
 
     def test_the_decision_is_stateless_and_so_must_not_be_looped(self, monkeypatch):
-        """Pinned deliberately, as a hazard note rather than a bug.
-
-        ``_arch_crash_retry_gpu_ids`` has no memory of what already failed, so
-        the "prefer the never-selected devices" branch is symmetric: on a
-        two-GPU host it maps [0] to [1] and [1] back to [0]. That is safe today
-        only because the launch path applies it exactly once, in a straight-line
-        ``if`` (see TestArchCrashRetryFiresAtMostOnce). Wrapping it in a retry
-        loop without threading through the already-tried set would ping-pong
-        forever, so make that consequence visible here.
-        """
+        """Pinned as a hazard note, not a bug. ``_arch_crash_retry_gpu_ids`` has no
+        memory of what already failed, so the "prefer the never-selected devices"
+        branch is symmetric: on a two-GPU host [0] maps to [1] and [1] back to [0].
+        Safe today only because the launch path applies it exactly once, in a
+        straight-line ``if`` (see TestArchCrashRetryFiresAtMostOnce); a retry loop
+        that did not thread the already-tried set through would ping-pong forever."""
         _unified(monkeypatch, set())
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([0], [0, 1]) == [1]
         assert LlamaCppBackend._arch_crash_retry_gpu_ids([1], [0, 1]) == [0]
@@ -460,10 +445,9 @@ class TestKernelImageInvalidDoesNotFalsePositive:
             "ROCm error: device kernel image is invalid",
             "ggml-cuda.cu:76: ROCm error\n  device kernel image is invalid\n  current device: 1",
             "DEVICE KERNEL IMAGE IS INVALID".lower(),
-            # hipErrorNoBinaryForGpu: HIP's other code for the same mismatch,
-            # and the one whose documented cause is code compiled for a
-            # different GPU arch. Neither field log happened to show it, but a
-            # different ROCm or ggml build raises it for the same iGPU pick.
+            # hipErrorNoBinaryForGpu: HIP's other code for the same mismatch, and
+            # the one documented as code compiled for a different arch. Neither field
+            # log showed it, but another ROCm or ggml build raises it for this pick.
             "ROCm error: no kernel image is available for execution on the device",
             "ggml-cuda.cu:76: ROCm error\n"
             "  no kernel image is available for execution on the device\n"
@@ -492,10 +476,9 @@ class TestKernelImageInvalidDoesNotFalsePositive:
         ],
     )
     def test_matching_is_case_insensitive(self, output):
-        # hipGetErrorString is lowercase, but the layers that reprint it are not
-        # consistent about that, and a missed match costs the whole recovery.
-        # Safe because the markers are specific enough that folding case cannot
-        # pull an unrelated failure in: the corpus above runs unchanged.
+        # hipGetErrorString is lowercase but the layers reprinting it are not
+        # consistent, and a missed match costs the whole recovery. Safe because the
+        # markers are specific enough that folding case pulls nothing unrelated in.
         assert LlamaCppBackend._kernel_image_invalid(output)
 
     def test_non_string_input_is_not_a_match(self):
@@ -526,11 +509,10 @@ class TestArchCrashRetryFiresAtMostOnce:
 
 
 class TestArchRetryDropsTensorSplit:
-    """``--tensor-split`` weights are positional over the child's VISIBLE
-    devices (llama.cpp parses them into ``params.tensor_split[i]`` by position,
-    then copies the first ``n_devices()``). The arch-crash retry masks a device
-    out, which re-indexes the survivors, so the crashed set's shares would land
-    on the wrong cards and could overcommit one. The retry drops the flag."""
+    """``--tensor-split`` weights are positional over the child's VISIBLE devices
+    (parsed into ``params.tensor_split[i]``, first ``n_devices()`` kept). The
+    arch-crash retry masks a device out and re-indexes the survivors, so the crashed
+    set's shares would land on the wrong cards. The retry drops the flag."""
 
     def test_the_two_token_form_goes_with_its_value(self):
         cmd = ["llama-server", "-m", "x.gguf", "--tensor-split", "10,20,30", "-ngl", "-1"]
@@ -560,14 +542,13 @@ class TestArchRetryDropsTensorSplit:
     def test_a_command_without_a_split_reports_nothing_to_do(self):
         cmd = ["llama-server", "-m", "x.gguf", "--split-mode", "tensor", "-ngl", "-1"]
         assert LlamaCppBackend._without_tensor_split(cmd) is None
-        # Known limitation, pinned rather than fixed: the scan is positional, so
-        # a VALUE spelled exactly like the flag is removed as if it were one --
-        # and the two-token form would then swallow the argument after it. No
-        # Studio-built argv can reach this (the only free-text values are the
-        # model path and the HF-derived --alias, and llama.cpp's own value
-        # tokens are numbers or enum words), so the cost of teaching the scanner
-        # every flag's arity is not worth paying. If a caller-supplied value can
-        # ever be "-ts" or "--split-mode", this is where it breaks.
+        # Known limitation, pinned not fixed: the scan is positional, so a VALUE
+        # spelled exactly like the flag is removed as if it were one and the
+        # two-token form then swallows the argument after it. No Studio-built argv
+        # can reach this -- the only free-text values are the model path and the
+        # HF-derived --alias, llama.cpp's own value tokens being numbers or enum
+        # words -- so teaching the scanner every flag's arity is not worth it. If a
+        # caller-supplied value can ever be "-ts" or "--split-mode", it breaks here.
         assert LlamaCppBackend._without_tensor_split(["s", "--alias", "-ts"]) == ["s", "--alias"]
 
     def test_only_the_split_is_removed(self):
@@ -613,11 +594,10 @@ class TestArchRetryDropsTensorSplit:
 
 
 class TestArchRetryRestoresTheMemoryPolicy:
-    """_spawn_and_wait's --fit retry appends a page-lock to its OWN argv and
-    writes the Model Memory record back. The arch-crash respawn starts from
-    `cmd`, which never carried that lock, so without a restore the backend
-    reports page-locking as active on an unlocked child and the duplicate-load
-    comparator then declines the reload that would apply it."""
+    """_spawn_and_wait's --fit retry appends a page-lock to its OWN argv and writes
+    the Model Memory record back. The arch-crash respawn starts from `cmd`, which
+    never carried that lock, so without a restore the backend reports page-locking on
+    an unlocked child and the duplicate-load comparator declines the reload."""
 
     @staticmethod
     def _source():
@@ -627,9 +607,8 @@ class TestArchRetryRestoresTheMemoryPolicy:
     def test_the_launch_snapshots_what_cmd_means(self):
         text = self._source()
         # Snapshotted at the launch, not re-derived at the retry: re-probing
-        # residency for the SURVIVING devices would mark an APU survivor
-        # mlock-applicable against a lock-free argv, which turns every later
-        # duplicate load into a reload on a path that is quiet today.
+        # residency for the SURVIVORS would mark an APU survivor mlock-applicable
+        # against a lock-free argv, turning every later duplicate load into a reload.
         assert "_mem_policy_for_cmd = (" in text
         _snap = [
             _line.strip().rstrip(",")
@@ -652,10 +631,10 @@ class TestArchRetryRestoresTheMemoryPolicy:
             for _line in block.split(") = _mem_policy_for_cmd")[0].split("(")[-1].splitlines()
             if _line.strip()
         ]
-        # Exact names, in the snapshot's order -- a tuple unpack cannot report a
+        # Exact names, in the snapshot's order: a tuple unpack cannot report a
         # mismatch, so a renamed or reordered target restores the wrong field.
-        # _mem_host_resident is in it, or the respawn's own --fit retry reads the
-        # crashed launch's re-armed lock as already held and skips re-arming.
+        # _mem_host_resident is included, or the respawn's own --fit retry reads the
+        # crashed launch's re-armed lock as held and skips re-arming.
         assert _restored == [
             "_mem_host_resident",
             "self._memory_state",
@@ -665,11 +644,10 @@ class TestArchRetryRestoresTheMemoryPolicy:
 
 
 class TestEmbedLlamaServerPinsTheGatedGpus:
-    """Knowing a supported GPU EXISTS is not the same as launching on it. The
-    embed child enumerates every ROCm agent, and that HSA enumeration is what
-    dies on an arch the prebuilt has no kernels for -- so on a mixed host
-    (unsupported iGPU + supported dGPU) the gate passes and the server still
-    crashes unless the surviving ids are carried into the launch env."""
+    """Knowing a supported GPU EXISTS is not the same as launching on it: the embed
+    child enumerates every ROCm agent, and that HSA enumeration is what dies on an
+    uncovered arch. On a mixed host the gate passes and the server still crashes
+    unless the surviving ids are carried into the launch env."""
 
     @staticmethod
     def _probes(
@@ -770,19 +748,18 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert calls == [], f"an unnarrowed host was masked anyway: {calls}"
 
     def test_a_uuid_mask_leaves_the_inherited_mask_in_place(self, monkeypatch):
-        """A ROCr mask may name UUIDs, not indices ("a list of device indices or
-        UUIDs", e.g. ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEFDEADBEEF"). The gate's
-        ids are then torch ordinals with no known physical mapping, and pinning
-        them would replace that mask with numbers ROCr resolves against the
-        whole host -- exposing cards the parent hid, the dropped one included."""
+        """A ROCr mask may name UUIDs rather than indices
+        (ROCR_VISIBLE_DEVICES="0,GPU-DEADBEEF..."). The gate's ids are then torch
+        ordinals with no physical mapping, and pinning them would replace the mask
+        with numbers ROCr resolves against the whole host, exposing cards the parent
+        hid -- the dropped one included."""
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
-        # A torch module has to be importable, not just _torch_is_rocm patched:
+        # torch must be importable, not just _torch_is_rocm patched:
         # _active_gpu_visibility_mask reads the ROCr mask only inside its `import
-        # torch` try, so on a host without torch it answers from
-        # CUDA_VISIBLE_DEVICES instead and an unmappable ROCr mask reads back as
-        # "no mask". Without this the test silently checks the wrong branch and
-        # fails on any runner whose dependency set omits torch.
+        # torch` try, so without torch it answers from CUDA_VISIBLE_DEVICES and an
+        # unmappable ROCr mask reads back as "no mask" -- the wrong branch, failing
+        # on any runner whose dependency set omits torch.
         monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace())
         monkeypatch.setattr(LlamaCppBackend, "_torch_is_rocm", staticmethod(lambda _t: True))
         monkeypatch.setattr(sys, "platform", "linux")
@@ -796,10 +773,10 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
         assert env["ROCR_VISIBLE_DEVICES"] == "GPU-DEADBEEFDEADBEEF"
 
     def test_the_cpu_path_hides_devices_at_both_layers(self, monkeypatch):
-        """CPU has to mean CPU on ROCm too. HIP consults CUDA_VISIBLE_DEVICES
-        only when HIP_VISIBLE_DEVICES is unset, so a blank CUDA mask alone leaves
-        an inherited HIP pin in charge and the child keeps a device (and the
-        VRAM its context costs) on a load that chose the CPU."""
+        """CPU has to mean CPU on ROCm too. HIP consults CUDA_VISIBLE_DEVICES only
+        when HIP_VISIBLE_DEVICES is unset, so a blank CUDA mask alone leaves an
+        inherited HIP pin in charge and the child keeps a device, and the VRAM its
+        context costs, on a load that chose the CPU."""
         self._probes(monkeypatch, gated = [(1, 24000)], everything = [(0, 60000), (1, 24000)])
         calls = self._spy_visibility(monkeypatch)
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
@@ -816,12 +793,11 @@ class TestEmbedLlamaServerPinsTheGatedGpus:
 
 
 class TestTheGateNeverRewritesAnUnmappableMask:
-    """ROCr and CUDA both accept UUID device tokens, and CUDA also MIG ids.
-    ``_resolve_visible_physical_ids`` answers None for those, so the probe's
-    ids fall back to torch ordinals -- fine for RANKING (the arch map falls
-    back the same way), unusable as a PIN: the runtime would resolve those
-    numbers against the whole host. The survivor pin fails open there, so the
-    inherited mask (and the launch it describes) is exactly what it was."""
+    """ROCr and CUDA both accept UUID device tokens, CUDA also MIG ids, and
+    ``_resolve_visible_physical_ids`` answers None for those -- so the probe's ids
+    fall back to torch ordinals. Fine for RANKING (the arch map falls back the same
+    way), unusable as a PIN, since the runtime resolves those numbers against the
+    whole host. The survivor pin fails open, leaving the inherited mask as it was."""
 
     @staticmethod
     def _rocm_host(monkeypatch, *, gated, everything):
@@ -887,15 +863,12 @@ class TestTheGateNeverRewritesAnUnmappableMask:
 
 
 class TestCpuSentinelDropsAnInheritedDevicePick:
-    """llama.cpp reads LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU as the env spelling
-    of --device / --main-gpu (common/arg.cpp set_env), and neither the chat
-    forced-CPU launch nor the embedding CPU launch passes those flags. Masking
-    every device away while leaving an inherited pick in place is the one
+    """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU are the env spelling of --device /
+    --main-gpu (common/arg.cpp set_env), and neither CPU launch passes those flags.
+    Masking every device away while leaving an inherited pick in place is the one
     combination llama.cpp cannot serve: it rejects a device name that no longer
-    enumerates, so the child exits instead of running on the CPU we chose. The
-    file already treats an inherited LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_FIT as
-    live input, so this is the same rule, not a new one.
-    """
+    enumerates, so the child exits instead of running on the CPU we chose. Same rule
+    the file already applies to an inherited LLAMA_ARG_SPLIT_MODE / LLAMA_ARG_FIT."""
 
     def test_the_cpu_sentinel_clears_the_pick(self):
         env = {"LLAMA_ARG_DEVICE": "HIP0", "LLAMA_ARG_MAIN_GPU": "1", "PATH": "/usr/bin"}
@@ -938,13 +911,11 @@ class TestCpuSentinelDropsAnInheritedDevicePick:
 
 
 class TestArchForcedCpuHoldsNoVram:
-    """An arch-gated launch is a zero-VRAM launch that arrived through an
-    AUTOMATIC request, which is exactly what routes/inference.py:8206 means by
-    "recovery may turn an automatic GPU request into a zero-VRAM load". Without
-    it in holds_no_vram the CPU-only server keeps the CHAT claim, blocks an
-    image/video pipeline from coexisting, and can be unloaded mid-load by an
-    owner it never competed with.
-    """
+    """An arch-gated launch is a zero-VRAM launch arriving through an AUTOMATIC
+    request, exactly what routes/inference.py:8206 means by "recovery may turn an
+    automatic GPU request into a zero-VRAM load". Without it in holds_no_vram the
+    CPU-only server keeps the CHAT claim, blocks an image/video pipeline, and can be
+    unloaded mid-load by an owner it never competed with."""
 
     def _backend(self):
         backend = LlamaCppBackend()
@@ -1024,12 +995,10 @@ def _post_gate_backend(dropped, *, live_split = None):
 
 
 class TestGatedSplitStillDeduplicates:
-    """The gate drops a ratio sized for GPUs the installed build has no kernels
-    for. The UI re-sends that same ratio on every Apply, and
-    ``_runtime_matches_intent`` compares it against the live ``_tensor_split``,
-    so without the recorded drop each identical request reads as new and
-    respawns the same already-normalized server -- a multi-second teardown and
-    reload of a multi-GB model, on every Apply, forever."""
+    """The gate drops a ratio sized for GPUs the build has no kernels for, but the
+    UI re-sends it on every Apply and ``_runtime_matches_intent`` compares it against
+    the live ``_tensor_split`` -- so without the recorded drop each identical request
+    reads as new and tears down and reloads a multi-GB model, forever."""
 
     def test_identical_repeat_request_matches(self):
         backend = _post_gate_backend((0.5, 0.5))

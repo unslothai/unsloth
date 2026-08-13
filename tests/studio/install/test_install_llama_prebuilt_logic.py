@@ -1958,15 +1958,12 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
 
 
 def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
-    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624).
-
-    The pair is recorded for the runtime GPU arch gate, not to describe the
-    payload: the same asset with the same sha256 is the same install whether or
-    not the marker names its built archs. If they leaked into the fingerprint,
-    every existing ROCm install on earth would go stale the moment this code
-    shipped and re-download its bundle on next launch. The inverse of the
-    cudart-pair test below, which pins a field that MUST invalidate.
-    """
+    """gfx_target/mapped_targets must be invisible to the fingerprint (#7624). The
+    pair is recorded for the runtime arch gate, not to describe the payload: the same
+    asset with the same sha256 is the same install whether or not the marker names its
+    built archs. Leaking them into the fingerprint would stale every existing ROCm
+    install the moment this shipped. Inverse of the cudart-pair test below, which pins
+    a field that MUST invalidate."""
     choice_kwargs = dict(
         repo = "unslothai/llama.cpp",
         tag = "release-1",
@@ -2034,13 +2031,11 @@ def test_arch_fields_do_not_change_the_install_fingerprint(tmp_path: Path):
 
 
 def test_non_rocm_bundles_record_no_mapped_targets(tmp_path: Path):
-    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624).
-
-    Only published_rocm_choice_for_host sets them, so every other choice keeps
-    the None default and the marker records []. That empty list is what makes
-    the runtime gate fail open on a non-ROCm bundle; a non-empty list here would
-    gate GPUs against archs the bundle was never built for.
-    """
+    """CPU/CUDA/Vulkan/macOS choices never populate the arch fields (#7624). Only
+    published_rocm_choice_for_host sets them, so every other choice keeps the None
+    default and the marker records [] -- the empty list that makes the runtime gate
+    fail open on a non-ROCm bundle. A non-empty one would gate GPUs against archs the
+    bundle was never built for."""
     checksums = ApprovedReleaseChecksums(
         repo = "unslothai/llama.cpp",
         release_tag = "release-1",
@@ -2108,13 +2103,9 @@ def _rocm_choice(**overrides):
 
 def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
     """An install made before mapped_targets existed must gain it on reuse.
-
-    write_prebuilt_metadata only runs on a real install and the field is
-    deliberately outside the install fingerprint, so without this backfill the
-    #7624 arch gate keeps failing open on an up-to-date install: the marker
-    only gains coverage when an unrelated llama.cpp release forces a real
-    reinstall.
-    """
+    write_prebuilt_metadata only runs on a real install and the field sits outside the
+    fingerprint, so without this backfill the #7624 gate keeps failing open on an
+    up-to-date install until an unrelated llama.cpp release forces a reinstall."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -2133,10 +2124,9 @@ def test_reused_install_backfills_the_arch_coverage(tmp_path: Path):
 
 
 def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
-    """A manifest that corrects mapped_targets for an unchanged asset must
-    reach the marker. Stale coverage is worse than none: too narrow forces a
-    supported GPU to CPU, too wide leaves an unsupported one visible to crash.
-    """
+    """A manifest that corrects mapped_targets for an unchanged asset must reach the
+    marker. Stale coverage is worse than none: too narrow forces a supported GPU to
+    CPU, too wide leaves an unsupported one visible to crash."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -2160,10 +2150,9 @@ def test_reused_install_refreshes_corrected_arch_coverage(tmp_path: Path):
 
 @pytest.mark.parametrize("targets", [None, [], ["", "   "]])
 def test_a_bundle_that_declares_no_arch_leaves_the_marker_alone(tmp_path: Path, targets):
-    """CUDA, Vulkan, CPU and source builds declare no targets. Absent means
-    "this bundle has none", not "clear what is there": reuse requires the
-    fingerprint to match, so the asset is the one the marker already describes.
-    """
+    """CUDA, Vulkan, CPU and source builds declare no targets. Absent means "this
+    bundle has none", not "clear what is there": reuse requires a fingerprint match,
+    so the asset is the one the marker already describes."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -2198,10 +2187,9 @@ def test_arch_coverage_sync_survives_a_missing_or_broken_marker(tmp_path: Path):
 
 
 def test_every_reuse_path_syncs_the_arch_coverage():
-    """The three reuse paths each skip write_prebuilt_metadata, so each has to
-    call the backfill. Source-level, because reaching them needs a full install
-    run: pinned beside sync_marker_rocm_gfx, which has exactly the same reach.
-    """
+    """The three reuse paths each skip write_prebuilt_metadata, so each has to call
+    the backfill. Source-level because reaching them needs a full install run; pinned
+    beside sync_marker_rocm_gfx, which has the same reach."""
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert (
         source.count("sync_marker_arch_coverage(install_dir,")
@@ -2211,12 +2199,10 @@ def test_every_reuse_path_syncs_the_arch_coverage():
 
 
 def test_marker_rewrite_preserves_arch_fields(tmp_path: Path):
-    """The reuse-path syncs must not drop the arch fields (#7624).
-
-    sync_marker_* read the marker, set one key and write the whole dict back.
-    A rebuild-from-known-keys implementation would silently strip mapped_targets
-    on any reused install, turning the gate off without anyone noticing.
-    """
+    """The reuse-path syncs must not drop the arch fields (#7624). sync_marker_* read
+    the marker, set one key and write the whole dict back; a rebuild-from-known-keys
+    implementation would strip mapped_targets on any reused install, turning the gate
+    off unnoticed."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"

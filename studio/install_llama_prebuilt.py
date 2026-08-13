@@ -5975,10 +5975,10 @@ def write_prebuilt_metadata(
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
-        # ROCm bundles: concrete built archs, so runtime GPU selection can
-        # gate devices the binary has no kernels for (#7624). Deliberately
-        # NOT in the install fingerprint: existing installs stay valid and
-        # simply fail open until their next refresh.
+        # ROCm bundles: concrete built archs, so runtime GPU selection can gate
+        # devices the binary has no kernels for (#7624). Deliberately NOT in the
+        # install fingerprint, so existing installs stay valid and fail open until
+        # their next refresh.
         "gfx_target": choice.gfx_target,
         "mapped_targets": list(choice.mapped_targets or []),
         "install_fingerprint": fingerprint,
@@ -6126,19 +6126,16 @@ def sync_marker_rocm_gfx(install_dir: Path, rocm_gfx: str | None) -> None:
 def sync_marker_arch_coverage(install_dir: Path, choice: AssetChoice) -> None:
     """Backfill the ROCm bundle's built-arch list when the bundle is reused.
 
-    Same shape as the ggml_tree backfill, and needed for the same reason:
-    write_prebuilt_metadata only runs on a real install, and mapped_targets is
-    deliberately outside the install fingerprint (so recording it never forces
-    an existing install to reinstall). Without this the runtime arch gate
-    (#7624) reads whatever the marker happened to hold forever -- an install
-    made before the field existed never gains it, so the gate keeps failing
-    open on exactly the mixed iGPU + dGPU hosts it was written for until an
-    unrelated llama.cpp release happens to trigger a real reinstall.
+    Same shape as the ggml_tree backfill, for the same reason: write_prebuilt_metadata
+    only runs on a real install, and mapped_targets sits outside the install
+    fingerprint so recording it never forces a reinstall. Without this the arch gate
+    (#7624) reads whatever the marker happened to hold forever -- an install predating
+    the field never gains it, so the gate keeps failing open on exactly the mixed
+    iGPU + dGPU hosts it was written for.
 
-    Absent targets mean "this bundle declares none" (CUDA, Vulkan, CPU, a
-    source build), not "clear it": reuse requires the fingerprint to match, so
-    the asset is the same one the marker already describes.
-    """
+    Absent targets mean "this bundle declares none" (CUDA, Vulkan, CPU, source build),
+    not "clear it": reuse requires a fingerprint match, so the asset is the one the
+    marker already describes."""
     targets = [str(t).strip() for t in (choice.mapped_targets or []) if str(t).strip()]
     if not targets:
         return

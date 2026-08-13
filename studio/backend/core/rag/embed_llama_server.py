@@ -219,9 +219,9 @@ class LlamaServerBackend:
     def _gpu_available() -> bool:
         """Apple Metal, or an NVIDIA/ROCm GPU with enough free VRAM. Reuses
         llama_cpp's static probe (nvidia-smi first, so the common path needs no
-        torch). This backend IS llama-server, so it opts into the ROCm arch gate:
-        a device the installed prebuilt has no kernels for would crash the
-        embedding server the same way it crashes a chat load (#7624)."""
+        torch). This backend IS llama-server, so it opts into the ROCm arch gate: an
+        uncovered device crashes the embedding server as it does a chat load
+        (#7624)."""
         from utils.hardware import is_apple_silicon
 
         if is_apple_silicon():
@@ -236,15 +236,13 @@ class LlamaServerBackend:
     def _arch_gated_gpu_ids(binary: str) -> list[int]:
         """GPU ids to pin the embedding child to, or [] when it needs no mask.
 
-        Knowing a supported device exists is not enough: the child enumerates
-        every ROCm agent, and the HSA enumeration itself is what dies on a GPU
-        the prebuilt has no kernels for (#7624) -- so on a mixed host the gate
-        would pass on the dGPU and the server would still crash on the iGPU.
-        Pin the survivors instead. Empty (no mask, byte-identical behaviour)
-        unless the arch gate is both known and actually narrowing: NVIDIA, CPU,
-        Vulkan and macOS have no mapped_targets marker, and a build covering
-        every installed card needs no pin. Same helper the chat launch uses when
-        the fit leaves it unpinned, so both llama-server children agree."""
+        Knowing a supported device exists is not enough: the child enumerates every
+        ROCm agent, and the HSA enumeration is what dies on an uncovered GPU (#7624),
+        so on a mixed host the gate passes on the dGPU and the server still crashes
+        on the iGPU. Pin the survivors instead. Empty (no mask, byte-identical
+        behaviour) unless the gate is both known and actually narrowing: NVIDIA, CPU,
+        Vulkan and macOS have no mapped_targets marker, and a build covering every
+        card needs no pin. Same helper the chat launch uses, so both children agree."""
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._arch_gate_survivors(binary)
 
@@ -287,20 +285,18 @@ class LlamaServerBackend:
         else:
             # Blank devices so a CUDA build stays on CPU and reserves no VRAM.
             env["CUDA_VISIBLE_DEVICES"] = ""
-            # HIP reads CUDA_VISIBLE_DEVICES only when HIP_VISIBLE_DEVICES is
-            # unset, so on ROCm an inherited HIP mask would keep a device (and
-            # the ~0.5 GB context it costs) visible to a child we just decided to
-            # run on the CPU. Same "-1" sentinel the chat forced-CPU path uses.
-            # An inherited ROCR mask is deliberately left alone: it hides agents
-            # at the driver layer, below HIP, so clearing it would expose MORE of
-            # them to the HSA enumeration that dies on an uncovered arch (#7624).
+            # HIP reads CUDA_VISIBLE_DEVICES only when HIP_VISIBLE_DEVICES is unset,
+            # so an inherited HIP mask would keep a device (and the ~0.5 GB context it
+            # costs) visible to a child we just put on the CPU. Same "-1" sentinel the
+            # chat forced-CPU path uses. An inherited ROCR mask is left alone: it hides
+            # agents below HIP, so clearing it would expose MORE of them to the HSA
+            # enumeration that dies on an uncovered arch (#7624).
             env["HIP_VISIBLE_DEVICES"] = "-1"
-            # An inherited LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU is the env
-            # spelling of --device / --main-gpu, which this command line does not
-            # pass. Hiding every device while leaving that pick in place is the
-            # one combination llama.cpp cannot serve: it rejects a device name
-            # that no longer enumerates and the child exits instead of running on
-            # the CPU. Same clear the chat forced-CPU sentinel makes.
+            # LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU are the env spelling of --device
+            # / --main-gpu, which this command line does not pass. Hiding every device
+            # while leaving that pick in place is the one combination llama.cpp cannot
+            # serve: it rejects a device name that no longer enumerates and exits
+            # instead of running on the CPU. Same clear the chat sentinel makes.
             from core.inference.llama_cpp import LlamaCppBackend
 
             LlamaCppBackend._clear_device_placement_env(env)

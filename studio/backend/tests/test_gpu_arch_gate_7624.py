@@ -1,20 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Regression tests for #7624 / #7669: multi-GPU auto-selection on ROCm must not
+"""Regression tests for #7624 / #7669: multi-GPU auto-selection on ROCm must not
 pick a device the installed llama.cpp prebuilt has no kernels for.
 
-Covers the pieces of the fix: _installed_llama_gfx_archs (mapped_targets from
-the UNSLOTH_PREBUILT_INFO.json install marker, via llama_cpp_freshness),
+Covers _installed_llama_gfx_archs (mapped_targets from the
+UNSLOTH_PREBUILT_INFO.json marker, via llama_cpp_freshness),
 _rocm_arch_by_physical_id, the opt-in per-device gate in _get_gpu_memory's torch
-fallback, the "device kernel image is invalid" crash marker, and the retry set
-that crash falls back to.
+fallback, the "device kernel image is invalid" crash marker, and the retry set.
 
-Also pins the two things the gate must NOT do: filter the probe for torch
-callers (the RAG sentence-transformers pick runs under PyTorch, where an
-unsupported-by-llama.cpp device is usually still fine), and displace the
-unified-memory APU accounting that shares this loop.
+Also pins the two things the gate must NOT do: filter the probe for torch callers
+(the RAG sentence-transformers pick runs under PyTorch, where a device llama.cpp
+lacks kernels for is usually still fine), and displace the unified-memory APU
+accounting that shares this loop.
 """
 
 import json
@@ -77,11 +75,10 @@ class TestInstalledLlamaGfxArchs:
         assert LlamaCppBackend._installed_llama_gfx_archs(str(tmp_path / "llama-server")) is None
 
 
-# Every shape the install marker can arrive in, as (label, marker file contents).
-# The marker is written by the installer but read back after arbitrary upgrades,
-# partial writes, disk damage and hand-editing, so the reader is treated as
-# parsing untrusted input. A callable receives the marker path and lays out
-# something other than a plain JSON file.
+# Every shape the install marker can arrive in, as (label, contents). It is written
+# by the installer but read back after arbitrary upgrades, partial writes, disk
+# damage and hand-editing, so the reader parses untrusted input. A callable receives
+# the marker path and lays out something other than a plain JSON file.
 _MARKER_CORPUS = [
     ("absent_file", None),
     ("empty_file", ""),
@@ -119,14 +116,11 @@ _MARKER_CORPUS = [
 
 
 class TestInstalledLlamaGfxArchsCorpus:
-    """The gate must degrade to "unknown" on every malformed marker.
-
-    Two failure directions matter and only one of them is obvious. Raising is
-    fatal because this runs inside the GPU probe. Returning a non-None set that
-    no device can match is just as fatal and much quieter: _get_gpu_memory then
-    drops every GPU and llama-server silently runs on the CPU. So the contract
-    is None (fail open) or a set of concrete archs, never anything in between.
-    """
+    """The gate must degrade to "unknown" on every malformed marker. Raising is
+    fatal because this runs inside the GPU probe; returning a non-None set no device
+    can match is just as fatal and much quieter, since _get_gpu_memory then drops
+    every GPU and llama-server silently runs on the CPU. The contract is None (fail
+    open) or a set of concrete archs, never anything between."""
 
     @pytest.mark.parametrize("label,payload", _MARKER_CORPUS, ids = [c[0] for c in _MARKER_CORPUS])
     def test_never_raises_and_never_fails_closed(self, label, payload, tmp_path):
@@ -163,12 +157,11 @@ class TestInstalledLlamaGfxArchsCorpus:
         assert LlamaCppBackend._installed_llama_gfx_archs(binary) is None
 
     def test_non_list_targets_are_rejected_before_iteration(self, tmp_path, monkeypatch):
-        # Pins the isinstance(targets, list) guard on its own. Every non-list
-        # json.loads can produce is ALSO caught downstream (a bare "gfx1030"
-        # iterates into single characters, none of which is a concrete arch), so
-        # the corpus above cannot tell the guard apart from its absence. A tuple
-        # is not JSON-reachable, which is the point: it isolates the guard from
-        # the token check, so relaxing one cannot quietly disarm the other.
+        # Pins the isinstance(targets, list) guard alone. Every non-list json.loads
+        # can produce is ALSO caught downstream (a bare "gfx1030" iterates into single
+        # characters, none a concrete arch), so the corpus above cannot tell the guard
+        # from its absence. A tuple is not JSON-reachable, which is the point: it
+        # isolates the guard from the token check.
         import utils.llama_cpp_freshness as freshness
         monkeypatch.setattr(
             freshness, "read_install_marker", lambda _b: {"mapped_targets": ("gfx1030",)}
@@ -186,15 +179,12 @@ class TestInstalledLlamaGfxArchsCorpus:
 
 
 class TestForwardsCompatibleArchTokens:
-    """A future release manifest may record a target that is not a concrete
-    per-device arch. ROCm 6.3+ ships generic code objects (gfx11-generic,
-    gfx10-3-generic) that run across a whole family, and this repo's own
-    manifest already carries umbrella family labels (gfx110X, gfx120X) in the
-    sibling gfx_target field. rocminfo/torch still report the CONCRETE arch for
-    a device, so exact-set membership against a generic token matches nothing
-    and would drop every GPU on the host. Fail open on any token we cannot
-    interpret instead.
-    """
+    """A future manifest may record a target that is not a concrete per-device arch:
+    ROCm 6.3+ ships generic code objects (gfx11-generic) covering a family, and this
+    repo's manifest already carries umbrella labels (gfx110X, gfx120X) in the sibling
+    gfx_target field. rocminfo/torch still report the CONCRETE arch, so exact-set
+    membership against a generic token matches nothing and would drop every GPU. Fail
+    open on any token we cannot interpret."""
 
     @pytest.mark.parametrize(
         "token",
@@ -233,8 +223,8 @@ class TestForwardsCompatibleArchTokens:
     def test_every_published_mapped_target_is_accepted(self, tmp_path):
         # Verbatim from llama-prebuilt-manifest.json of the unslothai/llama.cpp
         # release (b10360-mix-87da1a2): the union of every ROCm bundle's
-        # mapped_targets. A pattern that rejected any of these would silently
-        # turn the gate off for real installs.
+        # mapped_targets. A pattern rejecting any of these turns the gate off for
+        # real installs.
         published = [
             "gfx908", "gfx90a",
             "gfx1030", "gfx1031", "gfx1032", "gfx1034",
@@ -412,13 +402,10 @@ class TestGpuArchGate:
 
 class TestTorchCallersStayUnfiltered:
     """The gate answers "what can llama-server run on", not "what GPUs exist".
-
-    _get_gpu_memory is also the torch-free GPU check behind the RAG backend
-    pick, which resolves to sentence-transformers (PyTorch). A device the
-    installed llama.cpp prebuilt has no kernels for is usually still a perfectly
-    good torch device, so gating that probe would silently move embeddings to
-    the CPU -- a working path broken by the fix.
-    """
+    _get_gpu_memory is also the torch-free check behind the RAG backend pick, which
+    resolves to sentence-transformers (PyTorch), and a device the prebuilt lacks
+    kernels for is usually still a good torch device -- so gating that probe would
+    move embeddings to the CPU, a working path broken by the fix."""
 
     def test_probe_is_unfiltered_by_default(self, tmp_path, monkeypatch, rocm_probe_env):
         _binary_with_marker(tmp_path, {"mapped_targets": ["gfx1101"]})
@@ -520,14 +507,11 @@ class TestArchCrashRetrySet:
 
     def test_single_gpu_host_has_no_retry(self, monkeypatch):
         """#7624: the one selected GPU IS the whole host, so there is nothing to
-        retry on and the unified-memory narrowing must be skipped outright.
-
-        The spy counts instead of raising because the narrowing branch runs under
-        ``except Exception: return []``: a raising spy has its AssertionError
-        swallowed there, and the returned [] then matches what the guard was
-        supposed to produce, so the test passes whether or not the guard exists.
-        Counting is what actually observes the branch being skipped.
-        """
+        retry on and the unified-memory narrowing must be skipped outright. The spy
+        counts rather than raises because the branch runs under
+        ``except Exception: return []``, which swallows an AssertionError and returns
+        the very [] the guard should produce -- passing either way. Counting is what
+        observes the branch being skipped."""
         calls = []
 
         def _spy():
