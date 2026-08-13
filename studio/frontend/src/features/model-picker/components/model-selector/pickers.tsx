@@ -5011,7 +5011,8 @@ export function HubModelPicker({
           {/* The local twin of Search Hub, and shown for the same reason: this row is where a
               search that found nothing ends, so both "look elsewhere" answers belong on it. On
               Device only, since a file off the disk is not something the Hub sections list.
-              Icon-only, like the picker's other disk actions, so the field keeps its width. */}
+              Labelled, not icon-only: an unlabelled glyph here reads as search chrome. Its width
+              matches Search Hub, which is the second control --picker-panel-w already budgets. */}
           {section === "downloaded" && onPickLocalModel ? (
             <Tooltip>
               <TooltipTrigger asChild={true}>
@@ -5019,9 +5020,10 @@ export function HubModelPicker({
                   type="button"
                   onClick={onPickLocalModel}
                   aria-label={pickLocalModelLabel}
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-h) shrink-0 items-center justify-center rounded-full border-0 text-foreground transition-colors"
+                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon icon={FolderSearchIcon} className="size-4" />
+                  From disk
                 </button>
               </TooltipTrigger>
               <TooltipContent>{pickLocalModelLabel}</TooltipContent>
