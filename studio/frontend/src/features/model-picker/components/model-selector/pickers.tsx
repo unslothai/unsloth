@@ -3035,6 +3035,15 @@ export function HubModelPicker({
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, task]);
 
+  /** The catalog's own fit verdict for a curated artifact, or undefined where it has none.
+   *  Every list that judges a row against the device goes through this, so a badge and the
+   *  filters around it cannot end up telling the user two different things. */
+  const catalogFit = useCallback(
+    (id: string, budget: DeviceBudget) =>
+      catalog ? curatedArtifactFitsDevice(id, catalog, budget) : undefined,
+    [catalog],
+  );
+
   const isUnslothOwned = useCallback(
     (id: string) => id.toLowerCase().startsWith("unsloth/"),
     [],
@@ -3092,10 +3101,14 @@ export function HubModelPicker({
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
+    const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
-      hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
+      // The catalog's own verdict where it has one, so this list and the OOM badge on its rows
+      // cannot disagree: hfModelFitsDevice counts RAM toward a load that never leaves the card.
+      (catalogFit(r.id, pipelineBudget) ??
+        hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu));
     const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -3128,6 +3141,7 @@ export function HubModelPicker({
     isChatSupported,
     task,
     catalog,
+    catalogFit,
     communityRecommendedEnabled,
     communityBrowse.results,
     isLoadableCommunityRepo,
@@ -3209,9 +3223,7 @@ export function HubModelPicker({
       // A curated pipeline is judged by the catalog, which knows its resident size and any
       // measured offload tier. The QLoRA estimator below reads a diffusion pipeline as a
       // language model it can 4-bit quantize: Wan 2.2 TI2V is 30 GB, and 5B params says 5.9.
-      const curatedFits = catalog
-        ? curatedArtifactFitsDevice(r.id, catalog, pipelineBudget)
-        : undefined;
+      const curatedFits = catalogFit(r.id, pipelineBudget);
       if (curatedFits !== undefined) {
         const curatedBytes = catalog
           ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
@@ -3236,6 +3248,7 @@ export function HubModelPicker({
     communityBrowse.results,
     catalogSeedRows,
     catalog,
+    catalogFit,
     task,
     isKnownGgufRepo,
     gpu,
@@ -3934,6 +3947,7 @@ export function HubModelPicker({
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
     }) =>
+      catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task)))) ??
       searchRowFitsDevice(
         {
           ...row,
@@ -3958,6 +3972,7 @@ export function HubModelPicker({
       ),
     [
       catalog,
+      catalogFit,
       gpu,
       inferenceGpu,
       isKnownGgufRepo,
@@ -4297,9 +4312,7 @@ export function HubModelPicker({
       // Same verdict the unfiltered list gives this row: searching for a model must not change
       // what it says about the device. paramsFromId reads "5B" out of the Wan id on its own, so
       // the estimator answers here even where the catalog is the only real source of a size.
-      const curatedFits = catalog
-        ? curatedArtifactFitsDevice(id, catalog, pipelineBudget)
-        : undefined;
+      const curatedFits = catalogFit(id, pipelineBudget);
       if (catalog && curatedFits !== undefined) {
         const curatedBytes = curatedSizeBytesFor(id, catalog);
         // The catalog is the only source of a count for a curated repo the listing never
@@ -4327,6 +4340,7 @@ export function HubModelPicker({
     recommendedParamCountById,
     isKnownGgufRepo,
     catalog,
+    catalogFit,
     task,
     gpu,
   ]);

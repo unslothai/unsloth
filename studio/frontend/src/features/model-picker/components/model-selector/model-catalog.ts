@@ -985,10 +985,12 @@ export function curatedArtifactFitsDevice(
   if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(artifact, budget);
   if (artifact.approxSizeGb === undefined) return undefined;
   // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
-  // there. An image, video or TTS load rejects CPU offload, so those get the card alone.
+  // there -- but the WHOLE model goes to whichever device it lands on, never split across both,
+  // so it is the larger of the two and not their sum. An image, video or TTS load rejects CPU
+  // offload, so those get the card alone.
   const deviceGb =
     group.task === "stt"
-      ? budget.gpuGb + budget.systemRamGb
+      ? Math.max(budget.gpuGb, budget.systemRamGb)
       : budget.gpuGb > 0
         ? budget.gpuGb
         : budget.systemRamGb;

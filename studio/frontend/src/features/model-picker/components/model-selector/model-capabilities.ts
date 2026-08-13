@@ -41,10 +41,12 @@ const IMAGE_GEN_TAGS = new Set([
   "image-text-to-image",
   "inpainting",
 ]);
+// Every tag here must be one the Video page can run, or a row draws a glyph promising something
+// no page in Studio delivers. video-to-video is deliberately absent: the backend takes a prompt
+// and reference IMAGES (routes/video.py), never a source video, so such a model has nowhere to go.
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",
-  "video-to-video",
   // What MiniMax-H3 is tagged with on the Hub: a frame plus a prompt in, video out.
   "image-text-to-video",
 ]);

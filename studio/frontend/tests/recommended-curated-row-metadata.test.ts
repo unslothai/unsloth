@@ -277,7 +277,7 @@ for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
     // The catalog knows the resident size and any measured offload tier. estimateLoadingVram
     // assumes a language model it can 4-bit quantize, and reads the 30 GB Wan 2.2 TI2V
     // pipeline as 5.9 GB, so it must not be what answers for these rows.
-    const curatedAt = text.indexOf("curatedArtifactFitsDevice");
+    const curatedAt = text.indexOf("catalogFit(");
     const estimatorAt = text.indexOf("estimateLoadingVram");
     assert.ok(curatedAt >= 0, `${declaration} ignores the curated fit`);
     assert.ok(estimatorAt >= 0, `${declaration} no longer estimates VRAM at all`);
@@ -287,6 +287,23 @@ for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
     assert.match(text, /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)/);
   });
 }
+
+test("every list that judges a row against the device asks the same helper", () => {
+  // One verdict, four readers: the unfiltered Recommended list, its device filter, the two
+  // search lists, and the badge. Splitting them is how a row ends up kept by a filter that
+  // calls it a fit and painted with the OOM badge at the same time.
+  assert.match(
+    declarationText("catalogFit"),
+    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+  );
+  for (const declaration of ["recommendedRows", "searchRowFits"]) {
+    assert.match(
+      declarationText(declaration),
+      /catalogFit\(/,
+      `${declaration} judges rows without the catalog's verdict`,
+    );
+  }
+});
 
 test("GGUF rows keep the inference backend's budget", () => {
   // They load through llama.cpp, so its inventory is the right one for them.

@@ -368,6 +368,22 @@ assert.equal(
   }),
   false,
 );
+// The whole model goes to whichever device takes it, so the budget is the LARGER of the two and
+// never their sum: 3 GB of card and 3 GB of RAM hold a 4 GB checkpoint on neither.
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 3,
+    systemRamGb: 3,
+  }),
+  false,
+);
+assert.equal(
+  curatedArtifactFitsDevice("unsloth/whisper-large-v3", AUDIO_CATALOG, {
+    gpuGb: 0,
+    systemRamGb: 8,
+  }),
+  true,
+);
 assert.equal(
   curatedArtifactFitsDevice("unsloth/orpheus-3b-0.1-ft", AUDIO_CATALOG, {
     gpuGb: 4,
