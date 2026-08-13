@@ -711,11 +711,8 @@ def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
 
 
 def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
-    """Skipping a frame we cannot type is right for a Chat Completions chunk arriving on
-    the Responses path, but an OpenAI-compatible proxy emits its errors as a bare
-    ``{"error": {...}}`` with no ``type`` and no SSE event name either. Skipping that ended
-    the generation with zero chunks and nothing to explain it: a blank answer where the
-    endpoint had said "rate limited". Before the skip existed this at least raised."""
+    """An OpenAI-compatible proxy emits its errors as a bare ``{"error": {...}}`` with no
+    ``type`` and no SSE event name, so skipping it returned zero chunks and no error."""
     body = b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -775,9 +772,8 @@ def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeyp
 
 @pytest.mark.parametrize("payload", [b"null", b"[]", b'"text"', b"7"])
 def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload):
-    """`data: null` is valid JSON and not a dict. response_event_type rejects it, and the
-    error check that follows must not then call .get() on it: that raised AttributeError
-    and killed the stream, where the whole point of the skip is that it does not."""
+    """`data: null` and `data: []` are valid JSON but not dicts, so the error check must
+    not call .get() on them: that raised AttributeError and killed the stream."""
     body = (
         b"data: "
         + payload

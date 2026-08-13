@@ -5513,13 +5513,9 @@ class ExternalProviderClient:
                                 # a Responses request with Chat Completions frames, so skipping
                                 # an unrecognisable frame beats failing the whole completion.
                                 # The ChatGPT path stays strict, where the shape is guaranteed.
-                                #
-                                # An error payload is the exception. The bare
-                                # {"error": {...}} an OpenAI-compatible proxy emits mid-stream
-                                # carries no type and no event name either, so skipping it
-                                # returned a blank answer and no error at all: the whole
-                                # generation ended with zero chunks and nothing to explain it.
-                                # Raising was at least loud; this says what happened.
+                                # An error payload is the exception: the bare {"error": ...} an
+                                # OpenAI-compatible proxy emits has no type and no event name
+                                # either, so skipping it returned zero chunks and no error.
                                 if isinstance(event, dict) and isinstance(
                                     event.get("error"), (dict, str)
                                 ):
