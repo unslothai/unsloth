@@ -248,8 +248,12 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
     env = dict(os.environ)
     # The two pins short-circuit the whole selector, and a mirror override would
     # rewrite the base out from under the assertions.
-    for _v in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY",
-               "UNSLOTH_PYTORCH_MIRROR", "UNSLOTH_AMD_ROCM_MIRROR"):
+    for _v in (
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_PYTORCH_MIRROR",
+        "UNSLOTH_AMD_ROCM_MIRROR",
+    ):
         env.pop(_v, None)
     env["UNSLOTH_ROCM_GFX_ARCH"] = arch
     env["_STUB_ROCM_TAG"] = rocm_tag
@@ -277,10 +281,12 @@ class TestInstallShIndexSelectorRuns:
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
     def test_no_unsupported_arch_leaves_the_cpu_index(self, arch):
         url, err = _run_sh_get_torch_index_url(arch)
-        assert url.endswith("/cpu"), f"UNSLOTH_ROCM_GFX_ARCH={arch} selected {url!r}, not the CPU index"
-        assert "repo.amd.com" not in (url + err), (
-            f"UNSLOTH_ROCM_GFX_ARCH={arch} reaches an AMD wheel index: {url!r}"
-        )
+        assert url.endswith(
+            "/cpu"
+        ), f"UNSLOTH_ROCM_GFX_ARCH={arch} selected {url!r}, not the CPU index"
+        assert "repo.amd.com" not in (
+            url + err
+        ), f"UNSLOTH_ROCM_GFX_ARCH={arch} reaches an AMD wheel index: {url!r}"
 
     def test_a_covered_arch_is_recognised_by_the_selector(self):
         """First positive control: the selector really does tell the two apart. A
@@ -290,14 +296,14 @@ class TestInstallShIndexSelectorRuns:
         makes the bans above pass."""
         covered, covered_err = _run_sh_get_torch_index_url("gfx1030")
         assert covered.endswith("/cpu"), f"gfx1030 selected {covered!r}"
-        assert "AMD per-arch wheels" in covered_err, (
-            "gfx1030 no longer reaches the per-arch handoff, so the bans above prove nothing"
-        )
+        assert (
+            "AMD per-arch wheels" in covered_err
+        ), "gfx1030 no longer reaches the per-arch handoff, so the bans above prove nothing"
         for arch in _UNSUPPORTED_ARCHES:
             _url, err = _run_sh_get_torch_index_url(arch)
-            assert "AMD per-arch wheels" not in err, (
-                f"{arch} reaches the per-arch handoff, which reroutes to repo.amd.com"
-            )
+            assert (
+                "AMD per-arch wheels" not in err
+            ), f"{arch} reaches the per-arch handoff, which reroutes to repo.amd.com"
 
     def test_the_selector_still_reaches_its_amd_branch(self):
         """Second positive control: on the same stubbed host with a readable ROCm
@@ -332,8 +338,7 @@ def test_setup_sh_never_feeds_the_unsupported_lookup_into_a_routed_variable():
     captures = [
         line.strip()
         for line in code
-        if any(h in line for h in _SETUP_SH_UNSUPPORTED_HELPERS)
-        and _SH_ASSIGN_TARGET.search(line)
+        if any(h in line for h in _SETUP_SH_UNSUPPORTED_HELPERS) and _SH_ASSIGN_TARGET.search(line)
     ]
     # Positive control: the report-only capture is still there to be checked.
     assert captures, "studio/setup.sh no longer captures the unsupported lookup at all"
@@ -349,9 +354,13 @@ def test_setup_sh_never_feeds_the_unsupported_lookup_into_a_routed_variable():
     relayed = [
         line.strip()
         for line in code
-        if re.search(r"(?:^|[;&|(]|\s)(?:" + "|".join(_ROUTED_SETUP_VARS) + r")=[^\n]*_setup_unsup", line)
+        if re.search(
+            r"(?:^|[;&|(]|\s)(?:" + "|".join(_ROUTED_SETUP_VARS) + r")=[^\n]*_setup_unsup", line
+        )
     ]
-    assert not relayed, f"studio/setup.sh relays the unsupported lookup into a routed variable: {relayed}"
+    assert (
+        not relayed
+    ), f"studio/setup.sh relays the unsupported lookup into a routed variable: {relayed}"
     forwards = [line for line in code if "--rocm-gfx" in line and "_setup_gfx" in line]
     assert forwards, "studio/setup.sh no longer forwards --rocm-gfx from $_setup_gfx (renamed?)"
 
@@ -364,8 +373,7 @@ def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch)
     hits = [
         line.strip()
         for line in src.splitlines()
-        if not line.lstrip().startswith("#")
-        and re.search(r"_setup_gfx=[^\n]*" + arch, line)
+        if not line.lstrip().startswith("#") and re.search(r"_setup_gfx=[^\n]*" + arch, line)
     ]
     assert not hits, f"studio/setup.sh routes {arch} into --rocm-gfx: {hits}"
 
@@ -478,9 +486,9 @@ class TestPowerShellRoutingTables:
         )
         # Positive control: the map is still consulted below the declaration, so the
         # region searched above is the one a late addition would have to live in.
-        assert "$archFamilyMap.ContainsKey" in rest, (
-            f"{path.name}: nothing reads $archFamilyMap any more (renamed or removed?)"
-        )
+        assert (
+            "$archFamilyMap.ContainsKey" in rest
+        ), f"{path.name}: nothing reads $archFamilyMap any more (renamed or removed?)"
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not available")
@@ -497,7 +505,7 @@ class TestPowerShellMapEvaluated:
         script = (
             f"{block}\n"
             f"foreach ($a in @({probes})) {{\n"
-            f"    if ($archFamilyMap.ContainsKey($a)) {{ \"ROUTED:$a\" }}\n"
+            f'    if ($archFamilyMap.ContainsKey($a)) {{ "ROUTED:$a" }}\n'
             f"}}\n"
             f"if ($archFamilyMap.ContainsKey('gfx1030')) {{ 'CONTROL_OK' }}\n"
         )
@@ -525,7 +533,7 @@ class TestPowerShellMapEvaluated:
         script = (
             f"{block}\n"
             f"foreach ($a in @({probes})) {{\n"
-            f"    if ($_rocmWheelArches -contains $a) {{ \"ROUTED:$a\" }}\n"
+            f'    if ($_rocmWheelArches -contains $a) {{ "ROUTED:$a" }}\n'
             f"}}\n"
             f"if ($_rocmWheelArches -contains 'gfx1030') {{ 'CONTROL_OK' }}\n"
         )

@@ -1051,9 +1051,15 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # No name here is guessed.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
-    (r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700", "gfx1010"),  # RDNA 1 (Navi 10)
+    (
+        r"RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700",
+        "gfx1010",
+    ),  # RDNA 1 (Navi 10)
     (r"RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300", "gfx1012"),  # RDNA 1 (Navi 14)
-    (r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100", "gfx803"),  # Polaris 10/20/30
+    (
+        r"RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100",
+        "gfx803",
+    ),  # Polaris 10/20/30
 ]
 
 
