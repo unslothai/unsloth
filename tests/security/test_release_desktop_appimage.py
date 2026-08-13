@@ -161,6 +161,8 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
         assert host_library in tool_script
     assert "GIO_MODULE_DIR" in tool_script
 
+    assert "unset GIO_EXTRA_MODULES" in tool_script
+
     assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
 
@@ -177,7 +179,10 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     apprun.chmod(0o755)
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
     hook.parent.mkdir()
-    hook.write_text('export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n', encoding = "utf-8")
+    hook.write_text(
+        'unset GIO_EXTRA_MODULES\nexport GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n',
+        encoding = "utf-8",
+    )
     runtime = appdir / "usr/lib"
     runtime.mkdir(parents = True)
     for name in (
@@ -207,6 +212,17 @@ def test_complete_appimage_verifier_accepts_a_coherent_runtime(tmp_path):
         text = True,
     )
     assert "Verified complete x86_64 AppImage runtime" in result.stdout
+
+
+def test_complete_appimage_verifier_rejects_additive_host_gio_modules(tmp_path):
+    appdir = _fake_complete_appdir(tmp_path)
+    hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
+    hook.write_text('export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n', encoding = "utf-8")
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "host GIO_EXTRA_MODULES" in result.stderr
 
 
 def test_complete_appimage_verifier_requires_webkit_and_rejects_host_abi_libraries(tmp_path):
@@ -254,6 +270,9 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert "starts_with(&appdir)" in process_source
     assert 'cmd.env_remove("PYTHONHOME")' in process_source
     assert 'cmd.env_remove("PYTHONPATH")' in process_source
+
+    assert process_source.count('cmd.env_remove("GIO_MODULE_DIR")') == 2
+    assert process_source.count('cmd.env_remove("GIO_EXTRA_MODULES")') == 2
     for source_path, (call, expected) in child_process_calls.items():
         assert source_path.read_text(encoding = "utf-8").count(call) == expected
 

@@ -34,6 +34,12 @@ if ! grep -Rqs 'GIO_MODULE_DIR=' \
   echo "Complete AppImage does not isolate bundled GIO modules" >&2
   exit 1
 fi
+
+if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
+  "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
+  echo "Complete AppImage does not reject host GIO_EXTRA_MODULES" >&2
+  exit 1
+fi
 binary="$(find "$appdir/usr/bin" -maxdepth 1 -type f -name 'unsloth*' -perm -111 -print -quit 2>/dev/null)"
 [[ -n "$binary" ]] || { echo "Complete AppImage has no Unsloth executable" >&2; exit 1; }
 

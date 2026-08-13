@@ -54,8 +54,9 @@ rm -f \
   "$APPDIR"/usr/lib/libstdc++.so* \
   "$APPDIR"/usr/lib/libgcc_s.so*
 
-# GIO_EXTRA_MODULES is additive. Pin the default module directory too, otherwise
-# host proxy and dconf modules are loaded into the bundled GLib process.
+# GIO_EXTRA_MODULES is additive, so inherited host entries must be removed.
+# Pin the default module directory to the bundled modules; otherwise host proxy
+# and dconf modules can be loaded into the bundled GLib process.
 gio_module_dir="$(find "$APPDIR"/usr/lib -type d -path '*/gio/modules' -print -quit)"
 if [[ -z "$gio_module_dir" ]]; then
   echo "Complete AppImage has no bundled GIO module directory" >&2
@@ -63,6 +64,7 @@ if [[ -z "$gio_module_dir" ]]; then
 fi
 gio_module_rel="${gio_module_dir#"$APPDIR"/}"
 cat >> "$HOOKFILE" <<EOF
+unset GIO_EXTRA_MODULES
 export GIO_MODULE_DIR="\$APPDIR/$gio_module_rel"
 EOF
 SH
