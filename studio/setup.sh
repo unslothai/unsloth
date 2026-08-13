@@ -1507,8 +1507,13 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 LATEST_VER=""
 LATEST_REQ_PY=""
 _PYPI_JSON=""
+# True only when the version-check gate ran: the post-update probe needs the venv
+# python and must stay off in installer-driven/local/Colab runs, but it must not
+# depend on the PyPI fetch succeeding -- a missing package is missing on any index.
+_VERIFY_UPDATE=false
 if [ "$_SKIP_VERSION_CHECK" != true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ] && [ "${STUDIO_LOCAL_INSTALL:-0}" != "1" ]; then
     # Only check when NOT called from install.sh (which just installed the package)
+    _VERIFY_UPDATE=true
     INSTALLED_VER=$("$VENV_DIR/bin/python" -c "
 import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
@@ -1659,7 +1664,7 @@ if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     # check below still runs: a pass that leaves nothing installed is broken on
     # any index.
     _CUSTOM_INDEX="${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}${PIP_FIND_LINKS:-}${UV_INDEX_URL:-}${UV_EXTRA_INDEX_URL:-}${UV_FIND_LINKS:-}${UV_DEFAULT_INDEX:-}${UV_INDEX:-}"
-    if [ -n "${LATEST_VER:-}" ]; then
+    if [ "$_VERIFY_UPDATE" = true ]; then
         # __MISSING__ only when the metadata positively reports no such package: a
         # probe that merely crashed must not read as "not installed" and fail setup
         POST_VER=$("$VENV_DIR/bin/python" -c "
@@ -1671,9 +1676,9 @@ except PackageNotFoundError:
     print('__MISSING__')
 " "$_PKG_NAME" 2>/dev/null || echo "")
         _UPDATE_OK=false
-        if [ "$POST_VER" = "$LATEST_VER" ]; then
+        if [ -n "$LATEST_VER" ] && [ "$POST_VER" = "$LATEST_VER" ]; then
             _UPDATE_OK=true
-        elif [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && "$VENV_DIR/bin/python" -c "
 import re, sys
 def nums(v):
     m = re.match(r'\d+(\.\d+)*', v)
@@ -1689,7 +1694,7 @@ sys.exit(0 if ok else 1)
             # newer than announced is fine (a release can land mid-update); PEP 440
             # ordering so an installed pre/post/dev build never passes as the release
             _UPDATE_OK=true
-        elif [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
+        elif [ -n "$LATEST_VER" ] && [ -n "$POST_VER" ] && [ "$POST_VER" != "__MISSING__" ] && [ -n "${_PYPI_JSON:-}" ] && printf '%s' "$_PYPI_JSON" | "$VENV_DIR/bin/python" -c "
 import json, sys
 raw = sys.stdin.read()
 try:
@@ -1749,10 +1754,12 @@ sys.exit(0 if best is not None and best < latest and post >= best else 1)
         elif [ "$POST_VER" = "__MISSING__" ]; then
             # the one unambiguous failure: a "successful" pass with no package left
             # behind (no-op pass, stale dist-info) -- the case this check exists for
-            step "python" "update ran but $_PKG_NAME is not installed (expected $LATEST_VER)" "$C_ERR"
-            setup_fail 1 "update ran but $_PKG_NAME is not installed (expected $LATEST_VER)"
+            step "python" "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}" "$C_ERR"
+            setup_fail 1 "update ran but $_PKG_NAME is not installed${LATEST_VER:+ (expected $LATEST_VER)}"
         elif [ -z "$POST_VER" ]; then
-            step "python" "could not verify $_PKG_NAME version after update (expected $LATEST_VER)" "$C_WARN"
+            step "python" "could not verify $_PKG_NAME version after update${LATEST_VER:+ (expected $LATEST_VER)}" "$C_WARN"
+        elif [ -z "$LATEST_VER" ]; then
+            substep "$_PKG_NAME $POST_VER present (PyPI unreachable; compare skipped)"
         elif [ -n "$_CUSTOM_INDEX" ]; then
             substep "$_PKG_NAME $POST_VER present (custom package index; PyPI compare skipped)"
         else

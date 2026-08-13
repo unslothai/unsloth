@@ -4078,9 +4078,14 @@ $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "u
 $SkipPythonDeps = $false
 $LatestVer = ""
 $LatestReqPy = ""
+# True only when the version-check gate ran: the post-update probe must stay off in
+# installer-driven/local runs, but it must not depend on the PyPI fetch succeeding --
+# a missing package is missing on any index.
+$_verifyUpdate = $false
 
 if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     # Only check when NOT called from install.ps1 (which just installed the package)
+    $_verifyUpdate = $true
     $InstalledVer = try { (& python -c "from importlib.metadata import version; print(version('$_PkgName'))" 2>$null | Out-String).Trim() } catch { "" }
     try {
         $pypiJson = Invoke-RestMethod -Uri "https://pypi.org/pypi/$_PkgName/json" -TimeoutSec 5 -ErrorAction Stop
@@ -4783,14 +4788,14 @@ if ($stackExit -ne 0) {
 # comparisons are muted when a custom index is active. The missing-package check
 # below still runs: a pass that leaves nothing installed is broken on any index.
 $_customIndex = "$env:PIP_INDEX_URL$env:PIP_EXTRA_INDEX_URL$env:PIP_FIND_LINKS$env:UV_INDEX_URL$env:UV_EXTRA_INDEX_URL$env:UV_FIND_LINKS$env:UV_DEFAULT_INDEX$env:UV_INDEX"
-if ($LatestVer) {
+if ($_verifyUpdate) {
     # __MISSING__ only when the metadata positively reports no such package: a probe
     # that merely crashed must not read as "not installed" and fail setup. Names are
     # PEP 503-normalized on both sides, matching importlib.metadata's own lookup.
     $_postProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m, re; _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower()); _v = next((d.version for d in m.distributions() if _norm(d.metadata['Name']) == _norm('$_PkgName')), ''); print('POSTVER=' + (_v if _v else '__MISSING__'))"
     $PostVer = if ($_postProbe.Ok -and $_postProbe.Output -match '(?m)^POSTVER=(\S+)\s*$') { $Matches[1] } else { "" }
-    $_updateOk = ($PostVer -eq $LatestVer)
-    if (-not $_updateOk -and $PostVer -and $PostVer -ne "__MISSING__") {
+    $_updateOk = [bool]($LatestVer -and ($PostVer -eq $LatestVer))
+    if (-not $_updateOk -and $LatestVer -and $PostVer -and $PostVer -ne "__MISSING__") {
         # newer than announced is fine (a release can land mid-update); PEP 440
         # ordering so an installed pre/post/dev build never passes as the release
         $_pepProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "from packaging.version import Version; print('PEPCMP=' + ('ge' if Version('$PostVer') >= Version('$LatestVer') else 'lt'))"
@@ -4885,10 +4890,14 @@ print('VERIFYVER=' + ('ok' if best is not None and best < latest and post >= bes
     } elseif ($PostVer -eq "__MISSING__") {
         # the one unambiguous failure: a "successful" pass with no package left
         # behind (no-op pass, stale dist-info) -- the case this check exists for
-        Write-StudioLine "[FAILED] update ran but $_PkgName is not installed (expected $LatestVer)" -ForegroundColor Red
-        Exit-SetupFailure "update ran but $_PkgName is not installed (expected $LatestVer)"
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        Write-StudioLine "[FAILED] update ran but $_PkgName is not installed$_expected" -ForegroundColor Red
+        Exit-SetupFailure "update ran but $_PkgName is not installed$_expected"
     } elseif (-not $PostVer) {
-        substep "[WARN] could not verify $_PkgName version after update (expected $LatestVer)" "Yellow"
+        $_expected = if ($LatestVer) { " (expected $LatestVer)" } else { "" }
+        substep "[WARN] could not verify $_PkgName version after update$_expected" "Yellow"
+    } elseif (-not $LatestVer) {
+        substep "$_PkgName $PostVer present (PyPI unreachable; compare skipped)"
     } elseif ($_customIndex) {
         substep "$_PkgName $PostVer present (custom package index; PyPI compare skipped)"
     } else {
