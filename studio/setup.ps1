@@ -4426,8 +4426,11 @@ function Install-UvFromPinnedRelease {
                     Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
                     $backups[$dst] = $backup
                 } catch {
-                    if ($exe -eq "uv.exe") { $haveUv = $false; break }
-                    continue
+                    # No backup, no safe replace. A companion fails the placement too:
+                    # skipping it leaves a stale uvx beside the new uv, the mismatched
+                    # set the rollback exists to prevent.
+                    $haveUv = $false
+                    break
                 }
             }
             # -ErrorAction Stop inside a try: bare, the Continue preference here would keep a

@@ -725,6 +725,15 @@ class TestPinnedIndexClearsUvEnvParity:
             assert (
                 "$backups.Remove($dst)" in restore
             ), f"{path.name} must keep a backup whose restore failed"
+            # A companion that cannot be backed up fails the placement too: skipping it
+            # would leave a stale uvx beside the new uv.
+            backup_catch = text.split("$dst.unsloth-old", 1)[1]
+            backup_catch = backup_catch.split(
+                "Copy-Item -LiteralPath $src", 1
+            )[0]
+            assert "continue" not in backup_catch, (
+                f"{path.name} must not skip a companion it could not back up"
+            )
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin

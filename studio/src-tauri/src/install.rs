@@ -131,10 +131,19 @@ fn security_block_kind(text: &str) -> Option<SecurityBlockKind> {
     None
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum InstallOutputStream {
     Stdout,
     Stderr,
+}
+
+impl InstallOutputStream {
+    fn other(self) -> Self {
+        match self {
+            Self::Stdout => Self::Stderr,
+            Self::Stderr => Self::Stdout,
+        }
+    }
 }
 
 struct InstallOutputLine {
@@ -148,7 +157,7 @@ struct InstallFailureContext {
     explicit_error_stream: Option<InstallOutputStream>,
     default_error: Option<String>,
     security_block: Option<SecurityBlockKind>,
-    unpaired_clears: HashMap<String, usize>,
+    unpaired_clears: HashMap<(String, InstallOutputStream), usize>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
 }
@@ -247,13 +256,22 @@ impl InstallFailureContext {
         // behind, so "is this the message I just saw" answers no and throws the verdict away. Each
         // logical clear emits exactly two markers, so the first sighting is the clear and the next
         // pairs with it.
-        let twin = match self.unpaired_clears.get_mut(message) {
+        //
+        // Keyed by stream as well as message: the same label can be cleared twice for real (an
+        // install and then a repair both emit "install PyTorch recovered"), and a reader that got
+        // ahead would otherwise pair those two same-stream clears with each other. Only the
+        // opposite stream's copy can consume a pending marker.
+        let other = stream.other();
+        let twin = match self.unpaired_clears.get_mut(&(message.to_owned(), other)) {
             Some(count) if *count > 0 => {
                 *count -= 1;
                 true
             }
             _ => {
-                *self.unpaired_clears.entry(message.to_owned()).or_insert(0) += 1;
+                *self
+                    .unpaired_clears
+                    .entry((message.to_owned(), stream))
+                    .or_insert(0) += 1;
                 false
             }
         };
@@ -1534,6 +1552,26 @@ mod tests {
         }
         // the twin of the same clear, arriving late on the other stream
         context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
+        let message = context.message(1);
+        assert!(message.contains("blocked part of the installer"), "{message}");
+    }
+
+    #[test]
+    fn two_real_clears_of_one_label_on_one_stream_are_not_twins() {
+        // The same label can be cleared twice for real: _install_torch_default_index emits its
+        // recovery during the install and again during the ROCm repair. Pairing by message alone
+        // treated the second as the twin of the first, so the block that landed between them was
+        // then erased by the genuinely later clear arriving on the other stream.
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] installing PyTorch");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        // Both twins arrive late on the other stream and consume the two pending clears.
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
+        context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
     }

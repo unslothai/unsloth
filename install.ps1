@@ -2659,9 +2659,11 @@ exit 0
                         Copy-Item -LiteralPath $dst -Destination $backup -Force -ErrorAction Stop
                         $backups[$dst] = $backup
                     } catch {
-                        # No backup, no safe replace: leave the incumbent alone.
-                        if ($exe -eq "uv.exe") { $ok = $false; break }
-                        continue
+                        # No backup, no safe replace. A companion fails the placement too:
+                        # skipping it leaves a stale uvx beside the new uv, the mismatched
+                        # set the rollback exists to prevent.
+                        $ok = $false
+                        break
                     }
                 }
                 # -ErrorAction Stop inside a try: a bare call throws past the rollback under the
