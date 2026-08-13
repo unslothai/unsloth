@@ -1994,6 +1994,14 @@ class TestAnInstallFromBeforeThisPr:
 
     def test_the_probe_keeps_every_device(self, tmp_path, monkeypatch, probe_env):
         _apply_os(monkeypatch, "linux", is_rocm = True)
+        # The APU's usable figure is its shared pool minus a host reserve, and the
+        # pool is capped by the REAL free system RAM unless this is stubbed. Without
+        # it the expected 11152 silently assumes the machine has >12176MiB free, so
+        # the test passes on a large runner and fails on a small one (measured: it
+        # failed inside a WSL VM at 7340->6316MiB). Same stub as the sibling below.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+        )
         (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
             json.dumps(self.OLD_MARKER), encoding = "utf-8"
         )
