@@ -83,7 +83,9 @@ function loadProjects(
         if (!isExpectedBackgroundChatStorageError(error)) throw error;
         nextProjects = null;
       }
-    } while (projectsRefreshPending);
+      // A session reset lets the next account start its own request, so a superseded one
+      // must leave the shared follow-up marker to whichever request still owns it.
+    } while (projectsRefreshPending && epoch === getAuthSessionEpoch());
     // A request that straddles a logout describes the account it started under.
     if (epoch !== getAuthSessionEpoch()) return NO_PROJECTS;
     if (nextProjects !== null) publishProjects(nextProjects);
