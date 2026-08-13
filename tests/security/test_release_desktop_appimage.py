@@ -1,21 +1,25 @@
-"""Contracts for the host-integrated Linux AppImage release path.
+"""Contracts for the Linux AppImage release path.
 
-The release ships exactly one AppImage and it is the THIN one, per #7953.
+The release ships TWO AppImages from the same deb, and which one carries the
+plain name is the contract these tests hold:
 
-The portable bundle carries the whole GTK/WebKit closure, which is what an
-immutable distro needs (SteamOS has no libwebkit2gtk-4.1 and no apt), but it is
-not ready to be the only AppImage: AppRun puts the bundle first on
-LD_LIBRARY_PATH, so host libraries loaded afterwards resolve their own
-dependencies out of the 22.04 bundle. Measured on ubuntu-24.04, which is Linux
-Mint 22 Wilma's base, against the real artifact:
+    ...-Linux.AppImage            thin, host-integrated -- the default download
+    ...-Linux-portable.AppImage   the whole GTK/WebKit closure, for immutable distros
 
-    host libcurl-gnutls.so.4 -> undefined symbol:
-        nghttp2_option_set_no_rfc9113_leading_and_trailing_ws_validation
-    host libGLX_mesa.so.0    -> libstdc++.so.6: version `GLIBCXX_3.4.32' not found
-        (required by libLLVM.so.20.1)
+The thin one keeps the canonical name, per #7953. The portable bundle is what an
+immutable distro needs (SteamOS has no libwebkit2gtk-4.1 and no apt, so the thin
+AppRun prints a command that cannot be run there), but it still renders nothing on
+ubuntu-24.04 -- Linux Mint 22 Wilma's base -- where it stays alive and aborts the
+renderer with EGL_BAD_PARAMETER. "Starts, then does not render" is a worse default
+than "does not start, here is the apt command", so the plainly-named download stays
+the bundle measured to render everywhere the app is supported.
 
-The first is #7953 verbatim. build-portable-appimage.sh stays in the tree with
-its own tests; nothing in the release path calls it.
+Only the thin AppImage is signed and listed in the updater feed; the portable one is
+a plain download, and its AppRun sets UNSLOTH_PORTABLE_APPIMAGE so
+desktop_update_policy.rs will not swap it for the thin build in place.
+
+So the assertions below identify each packager by the output path it is handed
+rather than by its presence: with both invoked, presence proves nothing.
 """
 
 import os
