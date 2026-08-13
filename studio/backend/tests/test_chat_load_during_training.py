@@ -1184,8 +1184,7 @@ class TestRemoteGgufComputeReserve(unittest.TestCase):
 
         The total is spelled out absolutely rather than compared against a neighbouring call: the
         reserve is linear in slot count, so any two samples are one buffer apart under both the
-        old formula and the new one, and only an absolute anchor sees the floor. Constants come
-        from the module, so retuning a safety factor moves this test with the code.
+        old formula and the new one, and only an absolute anchor sees the floor.
         """
         from core.inference.llama_cpp import LlamaCppBackend
 
