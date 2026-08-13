@@ -13809,6 +13809,16 @@ class LlamaCppBackend:
                     extra_args or []
                 )
                 self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
+                # What `cmd` itself means, snapshotted before any respawn edits it.
+                # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
+                # and write the policy back; the arch-crash retry (#7624) respawns
+                # `cmd`, which never carried that lock, so it restores these.
+                _mem_policy_for_cmd = (
+                    _mem_host_resident,
+                    self._memory_state,
+                    self._memory_policy_active,
+                    self._memory_mlock_applicable,
+                )
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -14547,6 +14557,23 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
+                        # This respawn starts from `cmd`, but the crashed launch
+                        # may have gone through _spawn_and_wait's --fit retry,
+                        # which appends a page-lock to its OWN argv and records
+                        # it. `cmd` never carried that lock, so leaving the record
+                        # alone reports page-locking as active on a child that has
+                        # none: with keep-resident on, memory_state_satisfies_settings
+                        # then reads the launch as satisfied and the reload that
+                        # would actually apply the policy is deduplicated away.
+                        # Restore what `cmd` means, which is a no-op when no retry
+                        # arm fired. _mem_host_resident too, so the respawn's own
+                        # retry can re-arm the lock instead of reading it as held.
+                        (
+                            _mem_host_resident,
+                            self._memory_state,
+                            self._memory_policy_active,
+                            self._memory_mlock_applicable,
+                        ) = _mem_policy_for_cmd
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU

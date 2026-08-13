@@ -612,6 +612,58 @@ class TestArchRetryDropsTensorSplit:
         assert "self._tensor_split = None" in block  # /status must not report a dropped split
 
 
+class TestArchRetryRestoresTheMemoryPolicy:
+    """_spawn_and_wait's --fit retry appends a page-lock to its OWN argv and
+    writes the Model Memory record back. The arch-crash respawn starts from
+    `cmd`, which never carried that lock, so without a restore the backend
+    reports page-locking as active on an unlocked child and the duplicate-load
+    comparator then declines the reload that would apply it."""
+
+    @staticmethod
+    def _source():
+        path = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        return path.read_text(encoding = "utf-8")
+
+    def test_the_launch_snapshots_what_cmd_means(self):
+        text = self._source()
+        # Snapshotted at the launch, not re-derived at the retry: re-probing
+        # residency for the SURVIVING devices would mark an APU survivor
+        # mlock-applicable against a lock-free argv, which turns every later
+        # duplicate load into a reload on a path that is quiet today.
+        assert "_mem_policy_for_cmd = (" in text
+        _snap = [
+            _line.strip().rstrip(",")
+            for _line in text.split("_mem_policy_for_cmd = (")[1].split(")")[0].splitlines()
+            if _line.strip()
+        ]
+        assert _snap == [
+            "_mem_host_resident",
+            "self._memory_state",
+            "self._memory_policy_active",
+            "self._memory_mlock_applicable",
+        ]
+
+    def test_the_retry_call_site_restores_it_before_respawning(self):
+        text = self._source()
+        block = text.split("_arch_crash_retry_gpu_ids(\n")[-1].split('label = "-archfallback"')[0]
+        assert "= _mem_policy_for_cmd" in block
+        _restored = [
+            _line.strip().rstrip(",")
+            for _line in block.split(") = _mem_policy_for_cmd")[0].split("(")[-1].splitlines()
+            if _line.strip()
+        ]
+        # Exact names, in the snapshot's order -- a tuple unpack cannot report a
+        # mismatch, so a renamed or reordered target restores the wrong field.
+        # _mem_host_resident is in it, or the respawn's own --fit retry reads the
+        # crashed launch's re-armed lock as already held and skips re-arming.
+        assert _restored == [
+            "_mem_host_resident",
+            "self._memory_state",
+            "self._memory_policy_active",
+            "self._memory_mlock_applicable",
+        ]
+
+
 class TestEmbedLlamaServerPinsTheGatedGpus:
     """Knowing a supported GPU EXISTS is not the same as launching on it. The
     embed child enumerates every ROCm agent, and that HSA enumeration is what
