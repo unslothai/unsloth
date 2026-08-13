@@ -739,6 +739,7 @@ export function curatedDisplayNameFor(
 // anything else stays in the name, since it is the only thing telling two rows of one group apart.
 const LABEL_PART_SEPARATOR = " - ";
 const OFFICIAL_SUFFIX_RE = /\s*\(official\)$/i;
+const GGUF_SUFFIX_RE = /-gguf$/i;
 const RESOLUTION_RE = /^\d{3,4}p$/i;
 
 /**
@@ -753,6 +754,12 @@ export function curatedRowLabelFor(
 ): { name: string; tags: string[] } | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
+  // GGUF reads like a text model's row: the repo name already ends in -GGUF, so show the repo
+  // name and let it say so. A chip would only repeat the suffix.
+  if (hit.artifact.format === "gguf") {
+    const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
+    return { name: GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`, tags: [] };
+  }
   // A group with one artifact has nothing to distinguish, so it stays bare, exactly as before.
   if (hit.group.artifacts.length <= 1) return { name: hit.group.displayName, tags: [] };
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);

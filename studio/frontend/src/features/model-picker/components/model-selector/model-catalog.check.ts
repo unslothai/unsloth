@@ -250,11 +250,26 @@ assert.deepEqual(curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG), {
   name: "MiniMax H3",
   tags: ["BF16"],
 });
-// "(official)" said which BF16 build it was when there was only one BF16 row; as a chip it is noise.
+// GGUF is spelled by the repo name, like a text model's row, so no chip repeats it.
 assert.deepEqual(curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG), {
-  name: "MiniMax H3",
-  tags: ["GGUF"],
+  name: "MiniMax-H3-GGUF",
+  tags: [],
 });
+assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG), {
+  name: "Z-Image-Turbo-GGUF",
+  tags: [],
+});
+// Every GGUF row ends in the suffix, whoever published it.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (artifact.format !== "gguf") continue;
+      const row = curatedRowLabelFor(artifact.repoId, catalog);
+      assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
+      assert.deepEqual(row?.tags, []);
+    }
+  }
+}
 // A label part that is not a format or a resolution names the variant, so it stays in the name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG),
