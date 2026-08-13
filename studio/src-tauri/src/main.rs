@@ -39,12 +39,22 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
-/// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and a
+/// Windows/Linux close button when close-to-tray is disabled), the Unix signal listener, and
+/// `RunEvent::Exit`.
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
+
+struct CloseToTrayState(AtomicBool);
+
+fn new_close_to_tray_state() -> CloseToTrayState {
+    // Closing keeps its historical quit behavior until the user explicitly opts in.
+    CloseToTrayState(AtomicBool::new(false))
+}
 
 /// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
 static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
@@ -132,6 +142,103 @@ fn was_launched_hidden(app: tauri::AppHandle) -> bool {
 #[tauri::command]
 fn reveal_main_window(app: tauri::AppHandle) {
     show_main_window(&app);
+}
+
+fn close_to_tray_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(CLOSE_TO_TRAY_PREFERENCE_FILE)
+}
+
+fn read_close_to_tray_preference(config_dir: &Path) -> bool {
+    let path = close_to_tray_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid close-to-tray preference {}: {error}",
+                    path.display()
+                );
+                false
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            warn!(
+                "Could not read close-to-tray preference {}: {error}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
+fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = close_to_tray_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save close-to-tray preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn initialize_close_to_tray(app: &tauri::AppHandle) {
+    let enabled = app
+        .path()
+        .app_config_dir()
+        .map(|dir| read_close_to_tray_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            false
+        });
+    app.state::<CloseToTrayState>()
+        .0
+        .store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn get_close_to_tray(state: tauri::State<'_, CloseToTrayState>) -> Option<bool> {
+    cfg!(any(target_os = "windows", target_os = "linux")).then(|| state.0.load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+fn set_close_to_tray(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, CloseToTrayState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !cfg!(any(target_os = "windows", target_os = "linux")) {
+        return Err("Close to system tray is only configurable on Windows and Linux".to_string());
+    }
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
+    write_close_to_tray_preference(&config_dir, enabled)?;
+    state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MainWindowCloseAction {
+    Hide,
+    Quit,
+}
+
+fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
+    if cfg!(target_os = "macos")
+        || (cfg!(any(target_os = "windows", target_os = "linux")) && close_to_tray)
+    {
+        MainWindowCloseAction::Hide
+    } else {
+        MainWindowCloseAction::Quit
+    }
 }
 
 #[tauri::command]
@@ -1180,9 +1287,9 @@ where
                     },
                     || {
                         quit_raises_the_overlay(
-                            // Windows only. macOS never reaches here from the close button,
-                            // which hides to the tray, and on Linux the button already quit
-                            // without an overlay: the freeze this covers was reported on
+                            // Windows only. macOS and an enabled Windows/Linux close-to-tray
+                            // preference bypass request_quit; Linux quits and tray quits do not use
+                            // the overlay. The freeze this covers was reported on
                             // Windows, where stop_backend spends its liveness, shutdown and
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
@@ -1519,6 +1626,8 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(new_close_to_tray_state())
+        .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
             set_renderer_activity,
@@ -1537,6 +1646,7 @@ fn main() {
             commands::open_models_dir,
             commands::start_backend_update,
             commands::start_managed_repair,
+            commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
@@ -1551,6 +1661,7 @@ fn main() {
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
@@ -1569,6 +1680,8 @@ fn main() {
             mark_in_app_relaunch,
             clear_in_app_relaunch,
             reveal_main_window,
+            get_close_to_tray,
+            set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
         ])
@@ -1581,6 +1694,8 @@ fn main() {
             if launched_hidden {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
+
+            initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
@@ -1618,13 +1733,13 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
-                if cfg!(target_os = "macos") {
-                    // Closing a window leaves the app in the Dock; Reopen restores it.
-                    let _ = window.hide();
-                } else {
-                    // Elsewhere the close button means quit, not hiding what the user
-                    // believes they just closed.
-                    request_quit(window.app_handle());
+                let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
+                match main_window_close_action(close_to_tray) {
+                    MainWindowCloseAction::Hide => {
+                        // The tray's Open action and a second app launch restore the window.
+                        let _ = window.hide();
+                    }
+                    MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }
             }
         })
@@ -1728,12 +1843,52 @@ mod tests {
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
     }
 
+    #[test]
+    fn close_to_tray_preference_defaults_off_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), false).unwrap();
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), true).unwrap();
+        assert!(read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_close_to_tray_preference_falls_back_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn enabled_close_to_tray_hides_the_main_window_on_supported_desktops() {
+        let expected = if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(true), expected);
+
+        let disabled_expected = if cfg!(target_os = "macos") {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(false), disabled_expected);
+    }
+
     #[cfg(target_os = "linux")]
     const BID: &str = "ai.unsloth.studio";
 
-    // Only XDG_DATA_HOME is swapped, and nothing else in the crate reads it, so the
-    // tests running beside these stay clear. HOME is left alone for the same reason:
-    // `dirs::home_dir` is all over this crate.
+    // Only XDG_DATA_HOME is swapped, and it is read elsewhere now (a relocated CLI
+    // child pins it), so the swap holds the crate-wide env lock and readers take it
+    // too. HOME is left alone: `dirs::home_dir` is all over this crate.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
         // The crate-wide lock, not one of this module's own: the path policy
@@ -1982,9 +2137,8 @@ mod tests {
         assert_eq!(
             events.into_inner(),
             ["reap"],
-            "macOS closes to the tray and Linux quit without an overlay before this \
-             existed, so neither may see the event at all, and neither may a tray quit \
-             with no window on screen"
+            "window-close and tray paths can bypass the overlay entirely, and a tray quit with no \
+             window on screen must not emit it"
         );
     }
 

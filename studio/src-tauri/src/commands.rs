@@ -153,6 +153,11 @@ pub async fn check_install_status() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
+    if let Err(error) = process::apply_managed_cli_context_tokio(&mut cmd) {
+        warn!("Install check: no usable working directory: {}", error);
+        return false;
+    }
+
     #[cfg(windows)]
     {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
@@ -614,6 +619,24 @@ pub async fn start_backend_update(
 }
 
 /// Repair a stale managed Unsloth install.
+/// Whether a native path lease this app signs can actually be verified.
+///
+/// The key is per process, so only a backend THIS process spawned holds it. An
+/// adopted survivor and an attached terminal-started backend both advertise
+/// `native_path_leases_supported` with a key that is not ours, and the boolean
+/// cannot tell them apart, so answer from the positive fact instead. Restarting
+/// them would also work, but adoption exists so a possibly mid-training backend
+/// is not killed, and the UI's only restart path runs a network update.
+#[tauri::command]
+pub async fn native_path_leases_usable(
+    backend_state: tauri::State<'_, BackendState>,
+) -> Result<bool, String> {
+    Ok(
+        matches!(process::owned_backend_snapshot(backend_state.inner())?,
+            Some(snapshot) if !snapshot.is_adopted),
+    )
+}
+
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -813,8 +836,15 @@ mod tests {
         } else {
             String::new()
         };
+        // Only an owned backend can advertise lease support; ready_health(false)
+        // stands in for a terminal-started server, which never can.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{ROOT_ID}"{owner}}}"#
         )
     }
 

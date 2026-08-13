@@ -58,10 +58,6 @@
     "copyright": "© 2026 Unsloth AI. All rights reserved.",
     "license": "AGPL-3.0-only",
     "targets": ["app", "deb", "dmg", "nsis"],
-    "resources": {
-      "../../install.sh": "install.sh",
-      "../../install.ps1": "install.ps1"
-    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -27,6 +27,7 @@ import logging
 import textwrap
 import warnings
 import sys
+import threading
 import functools
 import inspect
 
@@ -802,6 +803,204 @@ def patch_datasets():
             f"#### Unsloth: Using `datasets = {str(datasets_version)}` will cause recursion errors.\n"
             "Please downgrade datasets to `datasets==4.3.0"
         )
+
+
+# psutil divides the pmgr "voltage-statesN-sram" IORegistry tables by 1e6 to
+# reach MHz, but Apple switched them from Hz to kHz on M4, so psutil <= 7.2.2
+# reads a 4.5 GHz M4 Pro back as 4 MHz (unslothai/unsloth#8519). Upstream fix is
+# giampaolo/psutil#2824, merged and unreleased; its heuristics are mirrored here.
+#
+# Studio's backend keeps the same correction in
+# studio/backend/utils/hardware/hardware.py, since the API server never imports
+# unsloth. Keep both in sync; delete both once a fixed psutil is our floor.
+#
+# Apple clocks are 0.6-4.6 GHz, so a raw Hz entry sits above 1e8 and kHz below.
+_APPLE_CPU_FREQ_UNIT_THRESHOLD = 100_000_000
+_APPLE_MIN_PLAUSIBLE_CPU_MHZ = 500
+_APPLE_MAX_PLAUSIBLE_CPU_MHZ = 20000
+# Below this a table is a GPU/NPU rail: above every Apple GPU peak so far, under
+# the slowest CPU cluster shipped (M1 E-core, 2064 MHz).
+_APPLE_CPU_CLUSTER_MIN_PEAK_MHZ = 2000
+_APPLE_VOLTAGE_STATES_KEY = re.compile(r"^voltage-states\d+-sram$")
+# Fixed for the life of the host, so probe once. The sentinel separates "not
+# probed yet" from "probed, unavailable".
+_apple_cpu_freq_range = "unprobed"
+# At import, not on first use: two threads reaching a lazy initialiser build a
+# lock each and then exclude nothing.
+_apple_cpu_freq_lock = threading.Lock()
+
+
+def _apple_voltage_state_freqs_mhz(blob):
+    """Plausible MHz from one voltage-statesN-sram blob.
+
+    Entries are 8 bytes: little-endian uint32 frequency, then uint32 voltage.
+    """
+    freqs = []
+    for offset in range(0, len(blob) - 7, 8):
+        raw = int.from_bytes(blob[offset : offset + 4], "little")
+        if raw == 0:
+            continue
+        mhz = raw / 1e6 if raw > _APPLE_CPU_FREQ_UNIT_THRESHOLD else raw / 1e3
+        if _APPLE_MIN_PLAUSIBLE_CPU_MHZ <= mhz <= _APPLE_MAX_PLAUSIBLE_CPU_MHZ:
+            freqs.append(mhz)
+    return freqs
+
+
+def _apple_cpu_freq_range_from_ioreg_entries(entries):
+    """(min_mhz, max_mhz) across the CPU-cluster tables, or None."""
+    lows, peaks = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if not isinstance(value, (bytes, bytearray)):
+                continue
+            if not _APPLE_VOLTAGE_STATES_KEY.match(str(key)):
+                continue
+            freqs = _apple_voltage_state_freqs_mhz(bytes(value))
+            # M5 renumbered the indexes, so classify by peak, not by index.
+            if freqs and max(freqs) >= _APPLE_CPU_CLUSTER_MIN_PEAK_MHZ:
+                lows.append(min(freqs))
+                peaks.append(max(freqs))
+    if not peaks:
+        return None
+    return (min(lows), max(peaks))
+
+
+def _apple_cpu_freq_range_mhz():
+    """Read (min, max) CPU MHz from the pmgr IORegistry node, cached."""
+    global _apple_cpu_freq_range
+    if _apple_cpu_freq_range != "unprobed":
+        return _apple_cpu_freq_range
+
+    # Unlocked, every thread spawns its own ioreg and a slow failing probe landing
+    # last overwrites a good reading with None.
+    with _apple_cpu_freq_lock:
+        if _apple_cpu_freq_range != "unprobed":
+            return _apple_cpu_freq_range
+
+        freq_range = None
+        try:
+            import plistlib
+            import subprocess
+
+            result = subprocess.run(
+                ["ioreg", "-a", "-r", "-c", "AppleARMIODevice", "-d", "1"],
+                capture_output = True,
+                timeout = 2,
+            )
+            entries = plistlib.loads(result.stdout) if result.stdout else []
+            if isinstance(entries, dict):
+                entries = [entries]
+            freq_range = _apple_cpu_freq_range_from_ioreg_entries(entries)
+        except Exception as exception:
+            logger.info("Unsloth: could not read Apple CPU frequencies from ioreg (%s)", exception)
+
+        _apple_cpu_freq_range = freq_range
+        return freq_range
+
+
+def _corrected_apple_cpu_freq(sample):
+    """Rescale one psutil scpufreq sample that was read in the wrong unit."""
+    current = getattr(sample, "current", None)
+    usable = isinstance(current, (int, float)) and current == current and current > 0
+    if usable and current >= _APPLE_MIN_PLAUSIBLE_CPU_MHZ:
+        return sample  # already plausible: a fixed psutil, or not an affected chip
+
+    freq_range = _apple_cpu_freq_range_mhz()
+    if freq_range is not None:
+        low, peak = freq_range
+        # macOS has no per-instant clock, so psutil reports the peak as `current`.
+        return sample._replace(current = peak, min = low, max = peak)
+    if not usable:
+        return sample  # 0, negative or NaN and no tables: nothing to say
+    # No tables: recover the magnitude instead. psutil truncates in integer
+    # arithmetic, so this lands on the GHz step (4 -> 4000 MHz), not the peak.
+    return sample._replace(
+        current = current * 1000,
+        min = getattr(sample, "min", 0.0) * 1000,
+        max = getattr(sample, "max", 0.0) * 1000,
+    )
+
+
+def patch_psutil_cpu_freq():
+    """Fix psutil.cpu_freq() reporting kHz-derived MHz on Apple Silicon M4+."""
+    if sys.platform != "darwin":
+        return
+    import platform as _platform
+
+    if _platform.machine() != "arm64":
+        return  # Rosetta / Intel Macs read a different, unaffected code path
+    if importlib.util.find_spec("psutil") is None:
+        return
+    try:
+        import psutil
+    except Exception:
+        return
+
+    original_cpu_freq = getattr(psutil, "cpu_freq", None)
+    if original_cpu_freq is None or getattr(original_cpu_freq, "__unsloth_patched__", False):
+        return
+
+    def _percpu_requested(args, kwargs):
+        return bool(args[0]) if args else bool(kwargs.get("percpu", False))
+
+    def _scpufreq_type():
+        # psutil 7.x keeps the namedtuple in _ntuples, older releases in _common.
+        for module_name in ("_ntuples", "_common"):
+            namedtuple_type = getattr(getattr(psutil, module_name, None), "scpufreq", None)
+            if namedtuple_type is not None:
+                return namedtuple_type
+        return None
+
+    def _from_tables(percpu):
+        """The IORegistry reading in psutil's own return shape, or None.
+
+        macOS has no per-core clock, so psutil's percpu answer is a one-element
+        list of the same sample; matching that keeps percpu callers whole.
+        """
+        namedtuple_type = _scpufreq_type()
+        if namedtuple_type is None:
+            return None
+        freq_range = _apple_cpu_freq_range_mhz()
+        if freq_range is None:
+            return None
+        low, peak = freq_range
+        sample = namedtuple_type(peak, low, peak)
+        return [sample] if percpu else sample
+
+    @functools.wraps(original_cpu_freq)
+    def cpu_freq(*args, **kwargs):
+        try:
+            result = original_cpu_freq(*args, **kwargs)
+        except TypeError:
+            # Arguments psutil does not take are the caller's mistake, not psutil
+            # declining to answer. This function replaces psutil's globally, so
+            # swallowing that would hide the error everywhere, not just here.
+            raise
+        except Exception:
+            # psutil raises on M5, whose renumbered tables are not at the indexes
+            # it hardcodes. With no tables either, its error is the honest answer.
+            stand_in = _from_tables(_percpu_requested(args, kwargs))
+            if stand_in is None:
+                raise
+            return stand_in
+        try:
+            # percpu = True returns a list of samples, otherwise a single one.
+            if isinstance(result, list):
+                # Empty is giampaolo/psutil#2382's "undeterminable".
+                if not result:
+                    return _from_tables(percpu = True) or result
+                return [_corrected_apple_cpu_freq(sample) for sample in result]
+            if result is None:
+                stand_in = _from_tables(percpu = False)
+                return result if stand_in is None else stand_in
+            return _corrected_apple_cpu_freq(result)
+        except Exception:
+            return result  # never let a cosmetic fix break a caller
+
+    cpu_freq.__unsloth_patched__ = True
+    psutil.cpu_freq = cpu_freq
 
 
 def check_fbgemm_gpu_version():
@@ -2092,6 +2291,100 @@ def disable_torchcodec_if_broken():
         ]:
             sys.modules.pop(_stale, None)
         sys.modules["torchcodec"] = None
+
+
+def disable_torchaudio_if_cuda_mismatched():
+    """Make a CUDA-mismatched torchaudio behave as if uninstalled.
+
+    `torchaudio._extension.utils._check_cuda_version` compares the CUDA
+    version torchaudio was BUILT against with torch's, and raises on any
+    difference:
+
+        RuntimeError: Detected that PyTorch and TorchAudio were compiled with
+        different CUDA versions.
+
+    That check runs at extension init, so it takes down the whole import --
+    including for callers that only ever wanted CPU-side audio I/O, and
+    including callers that never asked for torchaudio at all and merely
+    imported something that does. Measured on a Kaggle 2xT4 session running
+    `Kaggle-Muse_Glimmer_(30B)-GRPO`, a text model: it died at cell 4 on this,
+    having never reached anything to do with audio.
+
+    Same shape as `disable_torchcodec_if_broken` and for the same reason: the
+    package is present, `find_spec` says so, and the failure is at native
+    init rather than at resolution, so downstream `except ImportError`
+    handlers never get their chance. Seating the sentinel gives them one.
+
+    What this deliberately does NOT do is patch out `_check_cuda_version`.
+    The check is right -- torchaudio's CUDA ops really are unusable against a
+    different runtime -- and silencing it in place would leave those ops
+    reachable and wrong. Making the package absent is the honest version of
+    the same repair, and it is loud: the warning names both versions and the
+    wheel that would fix it.
+    """
+    try:
+        import importlib.util
+        if importlib.util.find_spec("torchaudio") is None:
+            return
+        import torchaudio  # noqa: F401
+    except ImportError:
+        return
+    except (RuntimeError, OSError) as exc:
+        if "different CUDA versions" not in str(exc) and "torchaudio" not in str(exc).lower():
+            # Some other failure. Not this function's business, and swallowing
+            # it would hide a real one behind a message about CUDA versions.
+            raise
+        try:
+            import warnings
+            warnings.warn(
+                f"Unsloth: torchaudio cannot initialise against this torch and has been "
+                f"disabled for this process, so anything that needs it will report it as "
+                f"missing rather than crash at import. Install the matching wheel to "
+                f"restore it. Original error: {exc}",
+                stacklevel = 2,
+            )
+        except Exception:
+            # Warning filters promoted to errors must not abort the repair.
+            pass
+
+        try:
+            import transformers.utils.import_utils as tf_import_utils
+            try:
+                tf_import_utils._torchaudio_available = False
+            except AttributeError:
+                pass
+            # `speech` is transformers' composite backend and it is nothing but
+            # torchaudio (`is_speech_available` returns `is_torchaudio_available()`).
+            # On 4.x both read one module global, so setting the flag above covers
+            # them. On 5.x each is separately `@lru_cache`d, so a `speech` answer
+            # computed before this repair stays True and `requires_backends(...,
+            # "speech")` waves callers on into a torchaudio that is now a None
+            # sentinel -- a raw crash instead of the unavailable-backend path this
+            # whole function exists to restore. Clear both caches.
+            for _name in ("is_torchaudio_available", "is_speech_available"):
+                is_avail = getattr(tf_import_utils, _name, None)
+                if is_avail is None:
+                    continue
+                try:
+                    is_avail.cache_clear()
+                except AttributeError:
+                    pass
+                setattr(tf_import_utils, _name, lambda: False)
+        except ImportError:
+            pass
+
+        try:
+            import datasets.config as datasets_config
+            if hasattr(datasets_config, "TORCHAUDIO_AVAILABLE"):
+                datasets_config.TORCHAUDIO_AVAILABLE = False
+        except ImportError:
+            pass
+
+        for _stale in [
+            n for n in list(sys.modules) if n == "torchaudio" or n.startswith("torchaudio.")
+        ]:
+            sys.modules.pop(_stale, None)
+        sys.modules["torchaudio"] = None
 
 
 def disable_broken_wandb():
