@@ -293,7 +293,20 @@ del fix_peft_stale_torchao_import_error
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 is the documented way to import on a host that has a
+    # CUDA-built torch and no usable device (driverless container, CI runner, a
+    # laptop with the runtime and no card). get_device_type() deliberately keeps
+    # DEVICE_TYPE at "cuda" there, so this branch is entered with nothing to
+    # query and torch.cuda.get_device_capability() raises out of _lazy_init().
+    # Ask whether a device is present before asking what it can do.
+    #
+    # No device means no capability to report, so claim the conservative answer.
+    # SUPPORTS_BFLOAT16 = False only costs float32; True would fail at the first
+    # cast. is_bf16_supported() is stubbed to match rather than left to raise.
+    SUPPORTS_BFLOAT16 = False
+    torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     SUPPORTS_BFLOAT16 = major_version >= 8
 
