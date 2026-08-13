@@ -3266,3 +3266,20 @@ def test_external_stream_is_tracked_but_not_counted_as_local():
         assert active_generations.cancel_thread("T") == 1
         assert event.is_set()
     assert "cancel-1" not in _CANCEL_REGISTRY
+
+
+def test_explicit_tool_opt_out_does_not_trip_the_confirm_guard():
+    # tool_choice="none" and a zero budget empty the catalog on a provider that could
+    # run the loop, so no call can happen and the request is an ordinary completion.
+    from routes.inference import _local_tool_loop_opted_out
+
+    def req(**kw):
+        return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **kw)
+
+    assert _local_tool_loop_opted_out(req(tool_choice = "none"), "vllm") is True
+    assert _local_tool_loop_opted_out(req(max_tool_calls_per_message = 0), "ollama") is True
+    # a provider that cannot run the loop is still rejected by the guard.
+    assert _local_tool_loop_opted_out(req(tool_choice = "none"), "openai") is False
+    # a request that did not opt out is unaffected.
+    assert _local_tool_loop_opted_out(req(), "vllm") is False
+    assert _local_tool_loop_opted_out(req(tool_choice = "auto"), "vllm") is False

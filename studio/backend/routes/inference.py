@@ -2780,6 +2780,24 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
+def _local_tool_loop_opted_out(payload, provider_type: str) -> bool:
+    """Whether a self-hosted request disabled the local loop rather than lacking it.
+
+    ``tool_choice="none"`` and a zero call budget both empty the catalog on a provider
+    that could otherwise run it. No call can happen, so the confirm-gate guard has
+    nothing to reject and the request should proceed as an ordinary completion.
+    """
+    from core.inference.external_tool_loop import local_tool_loop_supported
+
+    if not local_tool_loop_supported(provider_type):
+        return False
+    if isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none":
+        return True
+    return (
+        payload.max_tool_calls_per_message is not None and payload.max_tool_calls_per_message <= 0
+    )
+
+
 def _external_loop_permission_mode(payload) -> Optional[str]:
     """Permission mode for the external local tool loop.
 
@@ -11374,6 +11392,7 @@ async def _proxy_to_external_provider(
         and not payload.bypass_permissions
         and not codex_studio_tool_loop
         and not local_tools
+        and not _local_tool_loop_opted_out(payload, provider_type)
         and (
             payload.enable_tools is True
             or bool(payload.enabled_tools)
