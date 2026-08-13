@@ -48,11 +48,15 @@ _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 # PowerShell cannot parse a bare VAR=value: it resolves it as a command name (verified
 # with pwsh), so a Windows user who pastes it sets nothing, re-runs the installer and
 # gets the same CPU bundle -- the #8458 failure mode, reintroduced by the fix for it.
+# Two needles, not one. The bare assignment is what a PowerShell source must never
+# print, so the ban below has to keep naming it; folding the two together let a .ps1
+# emit the bare form and still pass (a mutant that added one survived the whole file).
+_POSIX_ASSIGNMENT = "UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
 # `export`, not a bare assignment: a POSIX assignment without it is a shell variable,
 # invisible to the installer the next line tells the user to run, so they get the CPU
 # bundle again and conclude the advice was wrong (the #8458 mistake). The README block
 # has always used export; these messages have to agree with it.
-_POSIX_SETTER = "export UNSLOTH_LLAMA_CPP_BACKEND=vulkan"
+_POSIX_SETTER = f"export {_POSIX_ASSIGNMENT}"
 _PWSH_SETTER = '$env:UNSLOTH_LLAMA_CPP_BACKEND = "vulkan"'
 _SETTER = {
     "install.sh": _POSIX_SETTER,
@@ -949,7 +953,7 @@ class TestVulkanAdvice:
         offenders = [
             line.strip()
             for line in _normalised(path).splitlines()
-            if _POSIX_SETTER in line
+            if _POSIX_ASSIGNMENT in line
             and any(e in line for e in ("substep", "_safe_print", "step ", "Write-StudioLine"))
             and not line.lstrip().startswith("#")
         ]
@@ -1084,7 +1088,7 @@ class TestVulkanAdvice:
         _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert _PWSH_SETTER in out, f"the printed advice is not pasteable into PowerShell:\n{out}"
         assert (
-            _POSIX_SETTER not in out
+            _POSIX_ASSIGNMENT not in out
         ), f"the printed advice gives a POSIX assignment PowerShell cannot parse:\n{out}"
 
     def test_the_printed_advice_says_when_to_set_it(self):
