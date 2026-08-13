@@ -198,10 +198,16 @@ export function recordLastLocalModelLoad(input: {
       if (!res.ok) {
         return;
       }
-      // Clear only this record's pending marker: a newer load may have
-      // replaced the shadow while the PUT was in flight.
+      // Clear only this write's pending marker: a newer load may have replaced
+      // the shadow while the PUT was in flight -- including a reload of the
+      // same model, which identity alone cannot distinguish, so the timestamp
+      // must match too or a slow older response would demote the newer shadow.
       const legacy = readLegacyEntry();
-      if (legacy?.pendingSync && sameRecord(legacy.record, record)) {
+      if (
+        legacy?.pendingSync &&
+        sameRecord(legacy.record, record) &&
+        legacy.loadedAt === loadedAt
+      ) {
         writeLegacyRecord(record, false, loadedAt);
       }
     })
