@@ -232,6 +232,27 @@ test("a control character is an error, as it is at the backend", () => {
 });
 
 // --- the panel wiring, asserted on source ------------------------------------
+test("a repeated numeric flag is checked at every occurrence", () => {
+  // llama.cpp reads the last one, and so does the backend's parse_gpu_layers_override,
+  // so a check that stopped at the first occurrence left Load enabled for a request
+  // that comes back 400.
+  const out = diagnoseExtraArgs("-ngl 20 -ngl many", CATALOG);
+  assert.ok(
+    out.some(
+      (d) => d.level === "error" && d.message.includes('"many" is not one'),
+    ),
+    JSON.stringify(out),
+  );
+});
+
+test("the same bad value is reported once, not once per copy", () => {
+  const out = diagnoseExtraArgs("-ngl many -ngl many", CATALOG);
+  assert.equal(
+    out.filter((d) => d.message.includes('"many" is not one')).length,
+    1,
+  );
+});
+
 // The harness has no DOM renderer, so the row's contract is pinned the way the
 // sibling model-config tests do it.
 

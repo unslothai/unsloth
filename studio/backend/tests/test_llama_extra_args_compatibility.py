@@ -99,6 +99,19 @@ def test_a_bound_breaking_stored_list_is_also_dropped_to_something_loadable():
     assert len(dropped) > 0
 
 
+def test_a_poisoned_value_is_never_echoed_into_the_dropped_list():
+    # Every caller joins this list into a warning log. A stored value carrying ANSI
+    # escapes would then rewrite whatever is reading that log, and the value itself
+    # is not the operator's business either: the flag name is what identifies it.
+    kept, dropped = _lsa.drop_managed_flags(
+        ["--grammar", "\x1b[2Jroot ::= [0-9]", "--top-k", "20"]
+    )
+
+    assert kept == ["--top-k", "20"]
+    assert dropped == ["--grammar", "<value>"]
+    assert not any("\x1b" in name for name in dropped)
+
+
 def test_a_control_character_in_a_stored_value_is_dropped_too():
     kept, _ = _lsa.drop_managed_flags(["--chat-template", "a\x00b", "--top-k", "20"])
 

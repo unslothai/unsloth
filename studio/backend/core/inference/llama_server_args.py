@@ -252,16 +252,25 @@ def drop_managed_flags(args: Optional[Iterable[str]]) -> tuple[list[str], list[s
         # flag with it for the same reason a denied flag takes its value: a flag
         # left expecting one would eat the next token and change what that means.
         if _has_control_characters(token):
-            dropped.append(flag or token)
-            if flag is None and kept and _flag_name(kept[-1]) is not None:
-                dropped.append(_flag_name(kept[-1]) or kept[-1])
-                kept.pop()
+            # The name, or a placeholder when the poisoned token is a value: this
+            # list is joined into a warning log, and a stored value carrying an ANSI
+            # escape would then rewrite whatever is reading that log.
+            dropped.append(flag or "<value>")
+            if flag is None and kept:
+                owner = _flag_name(kept[-1])
+                if owner is not None:
+                    dropped.append(owner)
+                    kept.pop()
             continue
         if (
             flag is not None
             and _takes_next(index, token, flag)
             and _has_control_characters(tokens[index + 1])
         ):
+            # Recorded, not just skipped: the value is about to be dropped for its
+            # control characters, and a flag that vanished without a word in the log
+            # is the harder half of that to explain afterwards.
+            dropped.append(flag)
             continue
         kept.append(token)
 

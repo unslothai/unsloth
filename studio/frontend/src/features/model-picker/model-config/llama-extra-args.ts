@@ -74,10 +74,13 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
         started = true;
         continue;
       }
-      // A backslash-newline is a line continuation, so pasting a wrapped command works.
+      // A backslash-newline is a line continuation, so pasting a wrapped command
+      // works. It contributes nothing, so `started` is left as it was: setting it
+      // would make the indentation on the next line close an empty token, and a
+      // wrapped command indented under its first line (the usual shape) would send
+      // an empty positional argument that llama-server reads as a model path.
       if (next === "\n") {
         i += 1;
-        started = true;
         continue;
       }
       current += next;
@@ -318,9 +321,27 @@ export function diagnoseExtraArgs(
   const unknown: string[] = [];
   const shadowed: string[] = [];
   const stripped: string[] = [];
+  const reportedValues = new Set<string>();
   for (const [index, token] of tokens.entries()) {
     const flag = extraArgFlagName(token);
-    if (flag === null || seen.has(flag)) {
+    if (flag === null) {
+      continue;
+    }
+    // Before the de-duplication below, because llama.cpp reads the LAST occurrence:
+    // in `-ngl 20 -ngl many` it is the second one the backend parses and refuses, so
+    // checking only the first would leave Load enabled for a request that 400s.
+    if (INTEGER_VALUE_FLAGS.has(flag)) {
+      const value =
+        flag === token.trim() ? tokens[index + 1] : token.split("=")[1];
+      if (value !== undefined && value !== "" && !INTEGER.test(value.trim())) {
+        const message = `${flag} takes a number, and "${value}" is not one.`;
+        if (!reportedValues.has(message)) {
+          reportedValues.add(message);
+          out.push({ level: "error", message });
+        }
+      }
+    }
+    if (seen.has(flag)) {
       continue;
     }
     seen.add(flag);
@@ -338,18 +359,6 @@ export function diagnoseExtraArgs(
     if (gpuSelectionActive && GPU_SELECTION_STRIPPED_FLAGS[flag]) {
       stripped.push(flag);
       continue;
-    }
-    // Mirrors parse_ctx_override and friends, which raise before the load starts.
-    if (INTEGER_VALUE_FLAGS.has(flag)) {
-      const value =
-        flag === token.trim() ? tokens[index + 1] : token.split("=")[1];
-      if (value !== undefined && value !== "" && !INTEGER.test(value.trim())) {
-        out.push({
-          level: "error",
-          message: `${flag} takes a number, and "${value}" is not one.`,
-        });
-        continue;
-      }
     }
     const control = CONTROL_OWNED_FLAGS[flag];
     if (control) {

@@ -106,6 +106,18 @@ test("a trailing backslash-newline continues the line", () => {
   assert.deepEqual(parseExtraArgs("--top-k \\\n20").tokens, ["--top-k", "20"]);
   // Inside single quotes it is literal, as in a shell.
   assert.deepEqual(parseExtraArgs("--x 'a\\\nb'").tokens, ["--x", "a\\\nb"]);
+  // The shape a wrapped command actually has when it is pasted: every line after
+  // the first is indented. The continuation contributes nothing, so that indentation
+  // is ordinary whitespace between tokens. Treating it as the start of one produced
+  // an empty token, which llama-server reads as a positional model path.
+  assert.deepEqual(parseExtraArgs("--foo value \\\n  --bar other").tokens, [
+    "--foo",
+    "value",
+    "--bar",
+    "other",
+  ]);
+  // And it still joins what it is between: no space either side means one token.
+  assert.deepEqual(parseExtraArgs("--x=a\\\nb").tokens, ["--x=ab"]);
 });
 
 test("a trailing lone backslash is kept, not treated as an error", () => {
