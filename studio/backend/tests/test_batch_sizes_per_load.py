@@ -794,13 +794,9 @@ def test_the_remote_reserve_tracks_what_the_cached_path_charges():
     backend._vocab_size, backend._embedding_length = 151936, 5120
 
     def cached_flat_gb(n_parallel, embedding):
-        with patch.object(
-            type(backend), "is_embedding_gguf", property(lambda self: embedding)
-        ):
+        with patch.object(type(backend), "is_embedding_gguf", property(lambda self: embedding)):
             return (
-                backend._estimate_compute_buffer_bytes(
-                    n_ubatch = 512, n_parallel = n_parallel
-                )
+                backend._estimate_compute_buffer_bytes(n_ubatch = 512, n_parallel = n_parallel)
                 / 1024**3
             )
 
@@ -815,7 +811,5 @@ def test_the_remote_reserve_tracks_what_the_cached_path_charges():
     # that answers 409. Above one slot the gap widens legitimately, since the vocab ceiling
     # is wider than any real model's.
     one_ceiling_buffer = (route._ASSUMED_MAX_VOCAB * 512 * 4) / 1024**3
-    gap_at_one_slot = route._remote_gguf_compute_reserve_gb(n_parallel = 1) - cached_flat_gb(
-        1, False
-    )
+    gap_at_one_slot = route._remote_gguf_compute_reserve_gb(n_parallel = 1) - cached_flat_gb(1, False)
     assert 0 <= gap_at_one_slot < one_ceiling_buffer / 4, gap_at_one_slot
