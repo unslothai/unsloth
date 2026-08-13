@@ -14,6 +14,7 @@ export interface YoutubeTranscript {
   languageCode: string;
   isGenerated: boolean;
   text: string;
+  truncated: boolean;
 }
 
 /** Fetch a video's captions as plain text. `languages` is preference order. */

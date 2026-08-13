@@ -3,20 +3,32 @@
 
 """Tests for ``core.youtube_transcript``, which backs the composer's transcript offer.
 
-Covers the three parts that decide what the model ends up reading: which URLs count
-as YouTube videos, which caption track is picked when several languages exist, and
-how json3 cues flatten into text. All offline; the network hops are not exercised."""
+Covers the parts that decide what the model ends up reading: which URLs count as
+YouTube videos, which caption track is picked when several languages exist, how json3
+cues flatten into text, and the bounds on the caption fetch itself. All offline; the
+caption hop runs against an httpx MockTransport rather than YouTube."""
 
+import asyncio
+import json
+
+import httpx
 import pytest
 
 from core.youtube_transcript import (
+    _MAX_CAPTION_BYTES,
+    _MAX_TRANSCRIPT_CHARS,
+    TranscriptUnavailable,
+    _caption_url,
     _default_track_index,
+    _fetch_track_text,
     _flatten_events,
     _select_track,
+    _truncate_transcript,
     extract_video_id,
 )
 
 VIDEO_ID = "dQw4w9WgXcQ"
+CAPTION_URL = f"https://www.youtube.com/api/timedtext?v={VIDEO_ID}&lang=en"
 
 
 @pytest.mark.parametrize(
@@ -132,3 +144,92 @@ def test_flatten_events_drops_rolling_window_padding():
 
 def test_flatten_events_handles_an_empty_track():
     assert _flatten_events([]) == ""
+
+
+def test_caption_url_keeps_blank_valued_parameters():
+    # parse_qs drops blank values by default, which would silently strip any key=
+    # parameter YouTube signs the timedtext URL with.
+    url = _caption_url(
+        "https://www.youtube.com/api/timedtext"
+        f"?v={VIDEO_ID}&opi=&caps=&exp=xbt&signature=XYZ&lang=en"
+    )
+    query = url.split("?", 1)[1].split("&")
+    assert "opi=" in query
+    assert "caps=" in query
+    assert "signature=XYZ" in query
+    assert "fmt=json3" in query
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        f"http://www.youtube.com/api/timedtext?v={VIDEO_ID}",
+        f"https://evil.com/api/timedtext?v={VIDEO_ID}",
+        f"https://youtube.com.evil.com/api/timedtext?v={VIDEO_ID}",
+        f"https://169.254.169.254/api/timedtext?v={VIDEO_ID}",
+    ],
+)
+def test_caption_url_rejects_hosts_outside_the_allowlist(base_url):
+    with pytest.raises(TranscriptUnavailable):
+        _caption_url(base_url)
+
+
+def test_truncate_transcript_caps_a_long_video_on_a_line_boundary():
+    short = "one\ntwo\nthree"
+    assert _truncate_transcript(short) == (short, False)
+
+    text = "\n".join("a line of caption text" * 4 for _ in range(20_000))
+    capped, truncated = _truncate_transcript(text)
+    assert truncated is True
+    assert len(capped) <= _MAX_TRANSCRIPT_CHARS
+    assert text.startswith(capped)
+    # A cut mid-sentence would hand the model a mangled final line.
+    assert capped.endswith("a line of caption text")
+
+
+def _fetch_captions(handler):
+    async def run():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport = transport, follow_redirects = True) as client:
+            return await _fetch_track_text(client, CAPTION_URL)
+
+    return asyncio.run(run())
+
+
+def test_fetch_track_text_refuses_a_redirect_off_the_allowlist():
+    # The client follows redirects for the player hop, so the caption hop has to
+    # re-check the host itself or a 302 would stream a loopback body back.
+    def handler(request):
+        return httpx.Response(302, headers = {"location": "http://169.254.169.254/latest/meta-data"})
+
+    with pytest.raises(TranscriptUnavailable, match = "unexpected host"):
+        _fetch_captions(handler)
+
+
+def test_fetch_track_text_follows_a_redirect_that_stays_on_youtube():
+    events = {"events": [{"segs": [{"utf8": "hello"}]}]}
+
+    def handler(request):
+        if request.url.path == "/api/timedtext":
+            return httpx.Response(302, headers = {"location": "/api/timedtext/v2?fmt=json3"})
+        return httpx.Response(200, json = events)
+
+    assert _fetch_captions(handler) == "hello"
+
+
+def test_fetch_track_text_stops_a_redirect_loop():
+    def handler(request):
+        return httpx.Response(302, headers = {"location": "https://www.youtube.com/api/timedtext"})
+
+    with pytest.raises(TranscriptUnavailable, match = "too many times"):
+        _fetch_captions(handler)
+
+
+def test_fetch_track_text_caps_an_oversized_caption_body():
+    body = json.dumps({"events": [{"segs": [{"utf8": "x" * (_MAX_CAPTION_BYTES + 1024)}]}]})
+
+    def handler(request):
+        return httpx.Response(200, content = body)
+
+    with pytest.raises(TranscriptUnavailable, match = "too large"):
+        _fetch_captions(handler)

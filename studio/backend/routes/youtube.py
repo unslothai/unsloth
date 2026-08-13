@@ -45,6 +45,7 @@ class TranscriptResponse(BaseModel):
     languageCode: str
     isGenerated: bool
     text: str
+    truncated: bool
 
 
 @router.post("/transcript", response_model = TranscriptResponse)
@@ -76,4 +77,5 @@ async def get_transcript(
         languageCode = transcript.language_code,
         isGenerated = transcript.is_generated,
         text = transcript.text,
+        truncated = transcript.truncated,
     )

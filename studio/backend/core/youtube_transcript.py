@@ -19,7 +19,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
-from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -40,6 +40,12 @@ _CAPTION_HOSTS = frozenset({"youtube.com", "www.youtube.com"})
 _TIMEOUT = httpx.Timeout(20.0)
 # Captions are text; a 4 MB track is already an outlier for a very long video.
 _MAX_CAPTION_BYTES = 4 * 1024 * 1024
+_MAX_PLAYER_BYTES = 4 * 1024 * 1024
+# Roughly 25k tokens. A three hour video's captions run past 200k characters, which
+# would swallow the model's context window on its own.
+_MAX_TRANSCRIPT_CHARS = 100_000
+# Timedtext normally answers 200, but a hop is re-validated rather than refused.
+_MAX_CAPTION_REDIRECTS = 3
 
 
 class TranscriptUnavailable(Exception):
@@ -56,6 +62,7 @@ class Transcript:
     language_code: str
     is_generated: bool
     text: str
+    truncated: bool
 
 
 def extract_video_id(url: str) -> Optional[str]:
@@ -121,6 +128,7 @@ async def fetch_transcript(video_id: str, languages: Sequence[str] = ()) -> Tran
 
     if not text:
         raise TranscriptUnavailable("This video's captions are empty.")
+    text, truncated = _truncate_transcript(text)
 
     details = player.get("videoDetails") or {}
     return Transcript(
@@ -132,11 +140,20 @@ async def fetch_transcript(video_id: str, languages: Sequence[str] = ()) -> Tran
         language_code = str(track.get("languageCode") or ""),
         is_generated = track.get("kind") == "asr",
         text = text,
+        truncated = truncated,
     )
 
 
+def _truncate_transcript(text: str) -> tuple[str, bool]:
+    """Bound the transcript so a long video cannot swallow the model's context."""
+    if len(text) <= _MAX_TRANSCRIPT_CHARS:
+        return text, False
+    return text[:_MAX_TRANSCRIPT_CHARS].rsplit("\n", 1)[0].rstrip(), True
+
+
 async def _fetch_player(client: httpx.AsyncClient, video_id: str) -> dict[str, Any]:
-    response = await client.post(
+    async with client.stream(
+        "POST",
         _PLAYER_URL,
         headers = {
             "Content-Type": "application/json",
@@ -160,11 +177,14 @@ async def _fetch_player(client: httpx.AsyncClient, video_id: str) -> dict[str, A
             "contentCheckOk": True,
             "racyCheckOk": True,
         },
-    )
-    response.raise_for_status()
+    ) as response:
+        response.raise_for_status()
+        body = await _read_capped(
+            response, _MAX_PLAYER_BYTES, "YouTube returned an unexpectedly large response."
+        )
     try:
-        player = response.json()
-    except ValueError as error:
+        player = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
         raise TranscriptUnavailable("YouTube returned an unreadable response.") from error
     if not isinstance(player, dict):
         raise TranscriptUnavailable("YouTube returned an unreadable response.")
@@ -208,26 +228,57 @@ def _default_track_index(tracks: list[dict[str, Any]], tracklist: dict[str, Any]
     return 0
 
 
-async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
-    parsed = urlsplit(base_url)
+def _validated_caption_url(url: str) -> SplitResult:
+    parsed = urlsplit(url)
     if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _CAPTION_HOSTS:
         raise TranscriptUnavailable("YouTube returned a caption URL from an unexpected host.")
-    query = parse_qs(parsed.query)
-    query["fmt"] = ["json3"]
-    url = urlunsplit(parsed._replace(query = urlencode(query, doseq = True)))
+    return parsed
 
+
+def _caption_url(base_url: str) -> str:
+    """Ask a caption baseUrl for json3, keeping the blank-valued params YouTube sends."""
+    parsed = _validated_caption_url(base_url)
+    query = parse_qs(parsed.query, keep_blank_values = True)
+    query["fmt"] = ["json3"]
+    return urlunsplit(parsed._replace(query = urlencode(query, doseq = True)))
+
+
+async def _read_capped(response: httpx.Response, limit: int, message: str) -> bytes:
     body = bytearray()
-    async with client.stream("GET", url, headers = {"User-Agent": _USER_AGENT}) as response:
-        response.raise_for_status()
-        async for chunk in response.aiter_bytes():
-            body.extend(chunk)
-            if len(body) > _MAX_CAPTION_BYTES:
-                raise TranscriptUnavailable("This video's captions are too large to attach.")
+    async for chunk in response.aiter_bytes():
+        body.extend(chunk)
+        if len(body) > limit:
+            raise TranscriptUnavailable(message)
+    return bytes(body)
+
+
+async def _fetch_track_text(client: httpx.AsyncClient, base_url: str) -> str:
+    url = _caption_url(base_url)
+
+    body = b""
+    for _ in range(_MAX_CAPTION_REDIRECTS + 1):
+        # Redirects are followed by hand so the host allowlist covers every hop, not
+        # just the URL the player response handed us.
+        async with client.stream(
+            "GET", url, headers = {"User-Agent": _USER_AGENT}, follow_redirects = False
+        ) as response:
+            location = response.headers.get("location")
+            if response.is_redirect and location:
+                url = urljoin(url, location)
+                _validated_caption_url(url)
+                continue
+            response.raise_for_status()
+            body = await _read_capped(
+                response, _MAX_CAPTION_BYTES, "This video's captions are too large to attach."
+            )
+        break
+    else:
+        raise TranscriptUnavailable("YouTube redirected the caption request too many times.")
     if not body:
         raise TranscriptUnavailable("YouTube returned no caption text for this video.")
 
     try:
-        payload = json.loads(bytes(body).decode("utf-8"))
+        payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise TranscriptUnavailable("YouTube returned unreadable caption data.") from error
     events = payload.get("events") if isinstance(payload, dict) else None

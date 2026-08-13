@@ -52,8 +52,20 @@ function transcriptFileText(transcript: YoutubeTranscript): string {
       : null,
     `URL: ${transcript.url}`,
     transcript.language ? `Captions: ${transcript.language}` : null,
+    transcript.truncated
+      ? "Note: this transcript was truncated and stops before the video ends."
+      : null,
   ].filter((line): line is string => line !== null);
   return `${header.join("\n")}\n\n${transcript.text}\n`;
+}
+
+type Composer = ReturnType<ReturnType<typeof useAui>["composer"]>;
+
+async function detachFile(composer: Composer, file: File): Promise<void> {
+  const added = composer
+    .getState()
+    .attachments.find((attachment) => attachment.file === file);
+  if (added) await composer.attachment({ id: added.id }).remove();
 }
 
 /**
@@ -80,20 +92,26 @@ export function YoutubeTranscriptPrompt({
     const controller = new AbortController();
     abortRef.current = controller;
     setFetching(true);
+    const composer = aui.composer();
     try {
       const transcript = await fetchYoutubeTranscript(
         url,
         preferredCaptionLanguages(),
         controller.signal,
       );
-      if (controller.signal.aborted) return;
       const file = new File(
         [transcriptFileText(transcript)],
         transcriptFileName(transcript),
         { type: "text/plain" },
       );
-      await aui.composer().addAttachment(file);
       if (controller.signal.aborted) return;
+      await composer.addAttachment(file);
+      // A send lands while addAttachment is still pending, and abort cannot recall it,
+      // so drop the file rather than let it ride along on the next message.
+      if (controller.signal.aborted) {
+        await detachFile(composer, file);
+        return;
+      }
       onClose();
     } catch (error) {
       if (controller.signal.aborted) return;
