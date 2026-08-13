@@ -265,9 +265,7 @@ def _get_generation_preset_settings(kind, schema):
         state = {
             key: value for key, value in _readable(schema, stored).items() if key != "customPresets"
         }
-        response = _validated_without_invalid_fields(
-            schema, {**state, "customPresets": readable}
-        )
+        response = _validated_without_invalid_fields(schema, {**state, "customPresets": readable})
     response.saved = bool(stored)
     return response
 
