@@ -51,7 +51,11 @@ def _trainer(*, audio_type, known, dataset_audio):
     return trainer
 
 
-def _run(trainer, monkeypatch, dataset = None):
+def _run(
+    trainer,
+    monkeypatch,
+    dataset = None,
+):
     from hub.utils import dataset_cache
 
     monkeypatch.setattr(
@@ -133,13 +137,11 @@ class _TypedDataset(_Dataset):
 
 def _audio_features():
     from datasets import Audio, Value
-
     return {"audio": Audio(sampling_rate = 16000), "text": Value("string")}
 
 
 def _text_features():
     from datasets import Value
-
     return {"audio": Value("string"), "text": Value("string")}
 
 
