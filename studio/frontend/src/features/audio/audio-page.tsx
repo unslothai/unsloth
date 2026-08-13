@@ -735,7 +735,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             },
           },
         );
-        if (!isCurrent()) return;
+        // A superseded or backgrounded load owns no outcome, but it still owns its
+        // toast: returning without dismissing left the spinner up for the life of
+        // the tab, which reads as a load that never finishes.
+        if (!isCurrent()) {
+          toast.dismiss(toastId);
+          return;
+        }
         if (res.is_audio && isTtsAudioType(res.audio_type)) {
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
@@ -943,6 +949,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // the previous resident model, so leaving Transcribe then unloaded another surface's
       // model. A failure leaves the previous value alone, which is what it should be.
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
+      // Every path out of this attempt must retire the spinner, and there are several:
+      // a success or failure while current replaces it, and each ownership early return
+      // leaves it with no other owner. Tracking whether a terminal toast was shown lets
+      // the finally dismiss exactly the leaks, without racing a replacement.
+      let toastSettled = false;
       try {
         try {
           await loadSttModel(sidecarKey, engine, controller.signal);
@@ -992,8 +1003,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           await loadSttModel(sidecarKey, engine, controller.signal);
           sttLoadedByThisPage.current = sidecarKey;
         }
-        if (isCurrent())
+        if (isCurrent()) {
           toast.success("Transcription model ready", { id: toastId });
+          toastSettled = true;
+        }
       } catch (error) {
         if (isCurrent()) {
           toast.error(
@@ -1002,8 +1015,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
               : "Transcription model failed.",
             { id: toastId },
           );
+          toastSettled = true;
         }
       } finally {
+        if (!toastSettled) toast.dismiss(toastId);
         if (sttLoadingGeneration.current === generation) {
           sttLoadingGeneration.current = null;
           await refreshSttStatus();
@@ -1013,8 +1028,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           ) {
             setBusy(null);
           }
-        } else {
-          toast.dismiss(toastId);
         }
         if (sttLoadAbort.current === controller) sttLoadAbort.current = null;
       }
