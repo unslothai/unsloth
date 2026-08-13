@@ -8908,9 +8908,7 @@ _EDIT_FILE_DIFF_LINES = 40
 
 
 def _edit_file_resolve(
-    raw_path: str,
-    session_id: "str | None",
-    disable_sandbox: bool,
+    raw_path: str, session_id: "str | None", disable_sandbox: bool
 ) -> "tuple[str | None, str]":
     """Resolve the model's path the way python/terminal resolve theirs.
 
@@ -9085,10 +9083,7 @@ def _edit_file(
         with open(target, "rb") as fh:
             data = fh.read()
     except FileNotFoundError:
-        return (
-            f"Error: '{name}' does not exist. Pass an empty 'old_string' to "
-            "create it."
-        )
+        return f"Error: '{name}' does not exist. Pass an empty 'old_string' to create it."
     except IsADirectoryError:
         return f"Error: '{name}' is a directory."
     except OSError as exc:
@@ -9455,8 +9450,7 @@ EDIT_FILE_TOOL_FULL_ACCESS = {
     "type": "function",
     "function": {
         **EDIT_FILE_TOOL["function"],
-        "description": EDIT_FILE_TOOL["function"]["description"]
-        + _EDIT_FILE_FULL_ACCESS_CLAUSE,
+        "description": EDIT_FILE_TOOL["function"]["description"] + _EDIT_FILE_FULL_ACCESS_CLAUSE,
     },
 }
 

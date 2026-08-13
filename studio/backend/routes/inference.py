@@ -3208,11 +3208,7 @@ def _full_access_tip(code_tools: list[str]) -> str:
         subject = f"The {code_tools[0]} tool runs"
     else:
         # Three names now, so only the last pair takes the "and".
-        subject = (
-            "The "
-            + ", ".join(code_tools[:-1])
-            + f" and {code_tools[-1]} tools run"
-        )
+        subject = "The " + ", ".join(code_tools[:-1]) + f" and {code_tools[-1]} tools run"
     return (
         subject + " where Unsloth Studio is running, with the code sandbox and the "
         "approval prompts disabled, so you can inspect and change whatever that "

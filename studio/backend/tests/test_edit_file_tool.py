@@ -79,9 +79,7 @@ class TestReplacement:
     def test_replace_all_takes_every_occurrence(self, workdir):
         target = workdir / "a.py"
         target.write_text("v = 1\nv = 1\n")
-        result = _edit(
-            path = "a.py", old_string = "v = 1", new_string = "v = 2", replace_all = True
-        )
+        result = _edit(path = "a.py", old_string = "v = 1", new_string = "v = 2", replace_all = True)
         assert target.read_text() == "v = 2\nv = 2\n"
         assert "2 replacements" in result
 
@@ -162,9 +160,7 @@ class TestFileShapeSurvives:
     def test_a_binary_file_is_refused(self, workdir):
         target = workdir / "blob.bin"
         target.write_bytes(b"\x00\x01\x02binary")
-        assert _edit(path = "blob.bin", old_string = "binary", new_string = "x").startswith(
-            "Error:"
-        )
+        assert _edit(path = "blob.bin", old_string = "binary", new_string = "x").startswith("Error:")
         assert target.read_bytes() == b"\x00\x01\x02binary"
 
 
@@ -172,9 +168,7 @@ class TestPathContainment:
     def test_a_traversal_path_is_refused(self, workdir):
         outside = workdir.parent / "outside.txt"
         outside.write_text("secret\n")
-        result = _edit(
-            path = "../outside.txt", old_string = "secret", new_string = "pwned"
-        )
+        result = _edit(path = "../outside.txt", old_string = "secret", new_string = "pwned")
         assert result.startswith("Error:")
         assert outside.read_text() == "secret\n"
 
