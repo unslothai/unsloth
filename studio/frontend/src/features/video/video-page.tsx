@@ -1868,8 +1868,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // is gone. Also clears the state that only means anything while one is resident (the
   // Reapply target, a replacement load's tracking), as the indicator eject does.
   const resyncAfterGenerateRefusal = useCallback(async () => {
+    // A model picked while this read is in flight makes the answer stale rather than wrong:
+    // /video/status reports committed state, so it says loaded: false for the load that has
+    // just started. Acting on it would dismiss that load's toast and poll, and -- while its
+    // start request is still out -- the cancel it counts as sends the compensating unload
+    // that tears it down. The load counter is the fence handleLoad already bumps.
+    const startLoad = loadSeq.current;
     const next = await refreshStatus();
     if (!isMounted.current || next === null || next.loaded) return;
+    if (startLoad !== loadSeq.current) return;
     dropResidentState();
     setQuant(null);
   }, [refreshStatus, dropResidentState]);

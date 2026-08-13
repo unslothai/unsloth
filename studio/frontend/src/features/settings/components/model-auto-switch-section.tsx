@@ -323,32 +323,32 @@ export function ModelAutoSwitchSection() {
         error={mediaError}
       />
       {settings?.idleUnloadActive ? (
-        <>
-          <SettingsRow
-            label={t("settings.general.modelAutoSwitch.keepKv")}
-            description={t(
-              "settings.general.modelAutoSwitch.keepKvDescription",
-            )}
-          >
-            <Switch
-              checked={settings.autoUnloadKeepKv}
-              disabled={isSaving}
-              onCheckedChange={handleKeepKvToggle}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label={t("settings.general.modelAutoSwitch.apiOnly")}
-            description={t(
-              "settings.general.modelAutoSwitch.apiOnlyDescription",
-            )}
-          >
-            <Switch
-              checked={settings.autoUnloadApiOnly}
-              disabled={isSaving}
-              onCheckedChange={handleApiOnlyToggle}
-            />
-          </SettingsRow>
-        </>
+        <SettingsRow
+          label={t("settings.general.modelAutoSwitch.keepKv")}
+          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
+        >
+          <Switch
+            checked={settings.autoUnloadKeepKv}
+            disabled={isSaving}
+            onCheckedChange={handleKeepKvToggle}
+          />
+        </SettingsRow>
+      ) : null}
+      {/* Also whenever a media TTL is saved: this switch vetoes that TTL, and hiding it
+          behind the chat one leaves the media row stuck on "paused" with the only way out
+          being to re-enable chat unloading first. */}
+      {settings &&
+      (settings.idleUnloadActive || settings.mediaAutoUnloadIdleSeconds > 0) ? (
+        <SettingsRow
+          label={t("settings.general.modelAutoSwitch.apiOnly")}
+          description={t("settings.general.modelAutoSwitch.apiOnlyDescription")}
+        >
+          <Switch
+            checked={settings.autoUnloadApiOnly}
+            disabled={isSaving}
+            onCheckedChange={handleApiOnlyToggle}
+          />
+        </SettingsRow>
       ) : null}
     </SettingsSection>
   );

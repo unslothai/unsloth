@@ -54,6 +54,22 @@ test("a failed or superseded re-read changes nothing", () => {
   assert.match(RESYNC, /if \(!isMounted\.current \|\| next === null \|\| next\.loaded\) return;/);
 });
 
+test("a load started while the re-read was in flight is left alone", () => {
+  // /video/status reports committed state, so it answers loaded: false for a load that has
+  // just started -- a true answer that means the opposite of what this continuation reads
+  // into it. Acting on it dismisses the new load's toast and stops its progress poll, and
+  // while its start request is still out the cancel it counts as sends the compensating
+  // unload that tears the whole multi-gigabyte load down. handleLoad already bumps the
+  // counter that says so, so the fence is to snapshot it across the await.
+  assert.match(RESYNC, /const startLoad = loadSeq\.current;\s*const next = await refreshStatus\(\);/);
+  assert.match(RESYNC, /if \(startLoad !== loadSeq\.current\) return;/);
+  // And the fence has to come before the teardown, not after it.
+  assert.ok(
+    RESYNC.indexOf("if (startLoad !== loadSeq.current) return;") <
+      RESYNC.indexOf("dropResidentState();"),
+  );
+});
+
 test("the images page already corrects itself on every generate exit", () => {
   // It has the same dead-button shape, but its finally re-reads status on success,
   // failure and cancel alike, so there is nothing to fix there.
