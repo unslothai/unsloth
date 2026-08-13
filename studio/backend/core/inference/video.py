@@ -1241,6 +1241,16 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
         )
+        # Resolved out here so the companion claim can be published in the SAME locked section that
+        # publishes _loading. The worker cannot do it early enough: begin_load returns as soon as
+        # the thread is scheduled, and a delete arriving in that gap reads loading_repo_ids() with
+        # repo_id and base_repo only, passes the guard, and starts removing a companion repo the
+        # load is about to pull from. Claiming afterwards does not revoke a delete already admitted.
+        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO, is_h3_native
+
+        h3_native = is_h3_native(fam, resolve_video_model_kind(gguf_filename, model_kind))
+        claimed_assets = (H3_GGUF_REPO, H3_COMPONENT_REPO) if h3_native else ()
+
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A video load is already in progress.")
@@ -1250,7 +1260,11 @@ class VideoBackend:
             # drops _loading, so the next begin_load would clear the object that worker watches. A fresh object leaves it set.
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
-            self._loading = _VideoLoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+            self._loading = _VideoLoadingState(
+                repo_id = repo_id,
+                base_repo = fam.base_repo,
+                asset_repos = claimed_assets,
+            )
 
         threading.Thread(
             target = self._run_load,
@@ -1505,6 +1519,11 @@ class VideoBackend:
         # Claiming only after it left that whole window open, and a delete admitted inside it is
         # not revoked by claiming the repos afterwards. expected_bytes stays below, where the sizes
         # are known.
+        #
+        # begin_load publishes the same claim when it constructs _VideoLoadingState, which is what
+        # covers the gap between that publication and this thread being scheduled. This one is for
+        # load_pipeline, which reaches here without going through begin_load, and is a no-op repeat
+        # otherwise.
         with self._lock:
             if self._load_token == token and self._loading is not None:
                 self._loading.base_repo = fam.base_repo

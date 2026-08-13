@@ -3150,6 +3150,58 @@ def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypa
     assert seen == [(H3_GGUF_REPO, H3_COMPONENT_REPO)]
 
 
+def test_begin_load_publishes_the_h3_companion_claim_with_the_loading_state(
+    fake_runtime, monkeypatch
+):
+    # begin_load returns as soon as the worker thread is scheduled, so a claim made in the worker
+    # still leaves a window where the delete-cached guard reads loading_repo_ids() and sees only
+    # repo_id and base_repo. It would admit a delete of a companion repo, and admitting it is the
+    # irreversible part: claiming afterwards does not call the deletion back. The claim therefore
+    # has to be published in the same locked section that publishes _loading.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    # Never started: this stands in for the load thread not having been scheduled yet, which is
+    # exactly the window under test.
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO in claimed
+    assert H3_COMPONENT_REPO in claimed
+
+
+def test_begin_load_claims_no_companion_repos_for_a_non_h3_family(fake_runtime, monkeypatch):
+    # The claim is H3-native only. A pipeline load that named the H3 companions would block a
+    # delete of repos it never reads.
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    monkeypatch.setattr(
+        threading, "Thread", lambda *a, **k: SimpleNamespace(start = lambda: None, daemon = True)
+    )
+
+    backend.begin_load("Wan-AI/Wan2.2-TI2V-5B-Diffusers", family_override = "wan2.2-ti2v-5b")
+
+    claimed = backend.loading_repo_ids()
+    assert H3_GGUF_REPO not in claimed
+    assert H3_COMPONENT_REPO not in claimed
+
+
 def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch, tmp_path):
     from core.inference import video as video_mod
     from core.inference import sd_cpp_backend, sd_cpp_engine
