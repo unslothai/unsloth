@@ -274,9 +274,7 @@ def test_a_poisoned_flag_takes_its_value_with_it():
     # The control characters are in the FLAG here. Dropping only that token leaves
     # "root ::= ..." as a bare positional, which validate_extra_args accepts and
     # llama-server reads as the model path.
-    kept, dropped = _lsa.drop_managed_flags(
-        ["--grammar\x1b[2J", "root ::= [0-9]", "--top-k", "20"]
-    )
+    kept, dropped = _lsa.drop_managed_flags(["--grammar\x1b[2J", "root ::= [0-9]", "--top-k", "20"])
 
     assert kept == ["--top-k", "20"]
     assert _lsa.validate_extra_args(kept) == kept
