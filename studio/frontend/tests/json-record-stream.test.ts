@@ -309,3 +309,34 @@ test("a pretty-printed record following a single-line one survives every chunk b
     assert.deepEqual(malformed, [], `chunk size ${size}`);
   }
 });
+
+test("a broken first row is recovered while the file streams, not held until the end", async () => {
+  // With nothing emitted yet there is no proven framing, and waiting for end of
+  // input to recover would buffer the whole export.
+  const rows = `{"id":1\n${Array.from({ length: 60 }, (_, i) => `{"id":${i + 2}}`).join("\n")}\n`;
+  let pulled = 0;
+  async function* counted(): AsyncGenerator<TextChunk> {
+    for (let at = 0; at < rows.length; at += 16) {
+      pulled++;
+      const slice = rows.slice(at, at + 16);
+      yield { text: slice, bytes: Buffer.byteLength(slice) };
+    }
+  }
+
+  const out: unknown[] = [];
+  const malformed: string[] = [];
+  let pulledAtFirstRecord = Number.POSITIVE_INFINITY;
+  for await (const record of streamJsonRecords(counted(), {
+    onMalformed: (bad) => malformed.push(bad),
+  })) {
+    if (out.length === 0) pulledAtFirstRecord = pulled;
+    out.push(record);
+  }
+
+  assert.equal(out.length, 60);
+  assert.deepEqual(malformed, ['{"id":1']);
+  assert.ok(
+    pulledAtFirstRecord < pulled,
+    `first record arrived only after ${pulledAtFirstRecord} of ${pulled} chunks`,
+  );
+});

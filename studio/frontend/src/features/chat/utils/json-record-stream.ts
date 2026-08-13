@@ -208,11 +208,12 @@ export async function* streamJsonRecords(
       // A pending record is damaged once a later line starts a record of its
       // own at column 0. The indented continuation lines of a pretty-printed
       // record never look like that, so where the chunk boundary fell does not
-      // decide whether it survives.
-      if (lineFramed && !sawArrayStart && start >= 0) {
+      // decide whether it survives. Recovering here rather than only at end of
+      // input also keeps a file whose first row is broken from buffering whole.
+      if (!sawArrayStart && start >= 0) {
         const lastNewline = buffer.lastIndexOf("\n");
         if (lastNewline > start && /\n[[{]/.test(buffer.slice(start, lastNewline))) {
-          const salvaged = salvageLines(buffer.slice(start, lastNewline), true);
+          const salvaged = salvageLines(buffer.slice(start, lastNewline), lineFramed);
           for (const text of salvaged.damaged) options.onMalformed?.(text);
           yield* salvaged.records;
           buffer = buffer.slice(lastNewline + 1);

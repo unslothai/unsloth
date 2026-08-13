@@ -9,6 +9,7 @@
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import type { MessageRecord, ParsedConversation, ThreadRecord } from "../types";
 import {
+  deleteStoredChatThreads,
   saveStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
@@ -55,6 +56,7 @@ export interface ImportResult {
 export { fileImportSource, type ImportSource };
 
 async function* nativeBytes(handle: {
+  name: string;
   size: number;
   token: string;
 }): AsyncGenerator<Uint8Array> {
@@ -66,7 +68,13 @@ async function* nativeBytes(handle: {
       offset,
       NATIVE_CHUNK_BYTES,
     );
-    if (bytes.byteLength === 0) break;
+    // The picker recorded the size, so a short read means the file shrank since
+    // then. Stopping quietly would pass a partial export off as the whole one.
+    if (bytes.byteLength === 0) {
+      throw new Error(
+        `${handle.name} ended after ${offset} of ${handle.size} bytes; it changed after it was picked.`,
+      );
+    }
     offset += bytes.byteLength;
     yield bytes;
   }
@@ -310,7 +318,14 @@ async function writeConversation(
     createdAt: messages[0]?.createdAt ?? conversation.createdAt ?? Date.now(),
   };
   await saveStoredChatThread(thread);
-  await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
+  try {
+    await syncStoredChatMessages(threadId, messages, { pruneMissing: false });
+  } catch (error) {
+    // The thread row is already in the sidebar. Left behind it is a blank chat
+    // the user has to delete by hand, and a retry adds another one.
+    await deleteStoredChatThreads([threadId]).catch(() => {});
+    throw error;
+  }
 }
 
 export async function importConversationsFromSource(

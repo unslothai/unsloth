@@ -499,3 +499,62 @@ test("a legacy flat chat drops repeated ids without rescanning what it already c
   assert.equal(conversation.messages.length, 19_000);
   assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
 });
+
+test("a prompt keeps the whitespace it was written with", () => {
+  // Leading indentation is a markdown code block, so trimming rewrites the prompt.
+  const indented = "    const x = 1;\n    const y = 2;\n";
+  const conversation = openWebUIRecordToConversation(
+    chatRecord({
+      history: historyOf(
+        [{ id: "u", parentId: null, role: "user", content: indented, timestamp: 1 }],
+        "u",
+      ),
+    }),
+    "fallback",
+  );
+  assert.ok(conversation);
+  assert.deepEqual(parts(conversation, 0), [{ type: "text", text: indented }]);
+});
+
+test("a legacy chat with no chat-level date is dated from its earliest message", () => {
+  const bare = {
+    title: "legacy",
+    history: historyOf(
+      [
+        { id: "m1", parentId: null, role: "user", content: "q", timestamp: 1_600_000_000 },
+        { id: "m2", parentId: "m1", role: "assistant", content: "a", timestamp: 1_600_000_060 },
+      ],
+      "m2",
+    ),
+  };
+
+  const conversation = openWebUIRecordToConversation(bare, "fallback");
+  assert.ok(conversation);
+  assert.equal(conversation.createdAt, 1_600_000_000_000);
+  assert.equal(conversation.messages[0].createdAt, 1_600_000_000_000);
+  assert.equal(conversation.messages[1].createdAt, 1_600_000_060_000);
+});
+
+test("the assistant answer survives next to a tool result no call in this turn matched", () => {
+  const record = chatRecord({
+    history: historyOf(
+      [
+        {
+          id: "a",
+          parentId: null,
+          role: "assistant",
+          timestamp: 1,
+          content: "It is sunny in Lisbon.",
+          // The call itself was recorded on the previous turn.
+          output: [{ type: "function_call_output", call_id: "call_earlier", output: "sunny, 21C" }],
+        },
+      ],
+      "a",
+    ),
+  });
+
+  const conversation = openWebUIRecordToConversation(record, "fallback");
+  assert.ok(conversation);
+  assert.ok(text(conversation, 0).includes("sunny, 21C"));
+  assert.ok(text(conversation, 0).includes("It is sunny in Lisbon."));
+});

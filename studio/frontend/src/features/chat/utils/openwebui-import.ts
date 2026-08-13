@@ -196,9 +196,11 @@ function contentWithDetailsToParts(content: string): unknown[] {
 }
 
 /** Modern assistant turns: Responses-API items stored on `message.output`. */
-function outputItemsToParts(output: unknown[]): unknown[] {
+function outputItemsToParts(output: unknown[]): { parts: unknown[]; sawMessage: boolean } {
   const parts: unknown[] = [];
   const toolCallIndex = new Map<string, Dict>();
+  // Whether an output message item carried the assistant's own answer.
+  let sawMessage = false;
 
   for (const item of output) {
     if (!isDict(item)) continue;
@@ -225,6 +227,7 @@ function outputItemsToParts(output: unknown[]): unknown[] {
             : "",
         )
         .join("");
+      if (text.trim()) sawMessage = true;
       pushText(parts, text);
       continue;
     }
@@ -274,7 +277,7 @@ function outputItemsToParts(output: unknown[]): unknown[] {
     }
   }
 
-  return parts;
+  return { parts, sawMessage };
 }
 
 /**
@@ -313,20 +316,24 @@ function messageParts(
   role: MessageRecord["role"],
 ): { content: unknown[]; attachments: unknown[] } {
   const parts: unknown[] = [];
+  let sawMessage = false;
 
   if (Array.isArray(message.output)) {
-    parts.push(...outputItemsToParts(message.output));
+    const converted = outputItemsToParts(message.output);
+    parts.push(...converted.parts);
+    sawMessage = converted.sawMessage;
   }
 
   const content = typeof message.content === "string" ? message.content : "";
-  const hasText = parts.some((part) => isDict(part) && part.type === "text");
-  // `content` mirrors the final assistant text that `output` already carries, so
-  // it is only used when the items produced none.
-  if (content && !hasText) {
+  // `content` mirrors the answer an output message item already carries, so it
+  // is used whenever no such item produced text. A tool result left over from
+  // an earlier turn is not that answer.
+  if (content && !sawMessage) {
     // Open WebUI writes those details blocks into its own assistant output. The
     // same markup in a prompt is text the user typed, not reasoning or a call.
     if (role === "assistant") parts.push(...contentWithDetailsToParts(content));
-    else pushText(parts, content);
+    // Literal prompt text: leading whitespace can be a markdown code block.
+    else if (content.trim()) parts.push({ type: "text", text: content });
   }
 
   const { parts: fileParts, attachments } = filesToParts(message.files);
@@ -431,6 +438,16 @@ function collectNodes(chat: Dict): Node[] {
   return ordered;
 }
 
+/** A legacy chat can carry per-message times and no chat-level date at all. */
+function earliestTimestamp(nodes: Node[]): number | null {
+  let earliest: number | null = null;
+  for (const node of nodes) {
+    const ts = epochMs(node.raw.timestamp);
+    if (ts !== null && (earliest === null || ts < earliest)) earliest = ts;
+  }
+  return earliest;
+}
+
 function roleOf(raw: Dict): MessageRecord["role"] {
   const role = typeof raw.role === "string" ? raw.role : "";
   if (role === "user") return "user";
@@ -451,8 +468,13 @@ export function openWebUIRecordToConversation(
   const outer = isDict(record) ? record : {};
 
   const threadId = crypto.randomUUID();
+  const nodes = collectNodes(chat);
   const createdAt =
-    epochMs(outer.created_at) ?? epochMs(chat.timestamp) ?? epochMs(outer.updated_at) ?? Date.now();
+    epochMs(outer.created_at) ??
+    epochMs(chat.timestamp) ??
+    epochMs(outer.updated_at) ??
+    earliestTimestamp(nodes) ??
+    Date.now();
 
   const messages: MessageRecord[] = [];
   // Studio sorts stored messages by createdAt, so the timeline has to be
@@ -461,7 +483,7 @@ export function openWebUIRecordToConversation(
   let previousTs = createdAt - 1;
   const keptIdByOriginal = new Map<string, string>();
 
-  for (const node of collectNodes(chat)) {
+  for (const node of nodes) {
     const role = roleOf(node.raw);
     const { content, attachments } = messageParts(node.raw, role);
     // A message that renders to nothing (a failed turn holding only an error)
