@@ -214,6 +214,7 @@ def _plan_tuple(
     imports_as_rocm = False,
     version = "2.11.0+cpu",
     importable = None,
+    runtime_cuda = "",
     **state,
 ):
     # Unset means "the version string alone decides": a blank one is what an
@@ -270,7 +271,9 @@ def _plan_tuple(
     monkeypatch.setattr(
         stack, "_installed_rocm_wheel_family", lambda: defaults["installed_rocm_family"]
     )
-    monkeypatch.setattr(stack, "_probe_rocm_torch", lambda: (imports_as_rocm, version, importable))
+    monkeypatch.setattr(
+        stack, "_probe_rocm_torch", lambda: (imports_as_rocm, version, importable, runtime_cuda)
+    )
     monkeypatch.setattr(
         stack, "_detect_amd_gfx_codes", lambda **_kwargs: list(defaults["gfx_devices"])
     )
@@ -567,6 +570,8 @@ def test_fast_path_checks_the_active_torch_import_with_a_timeout():
     block = source[start:end]
     assert "import torch" in block
     assert "timeout = 90" in block
+    # The untagged-PyPI-wheel evidence has to come from the same single probe.
+    assert "torch.version,'cuda'" in block
 
 
 def test_fast_path_and_repair_use_the_same_plan():
@@ -703,15 +708,27 @@ def _probe_with(
 
 
 def test_probe_reports_a_healthy_rocm_torch_as_importable(monkeypatch):
-    assert _probe_with(monkeypatch, stdout = b"6.3.42131|2.7.0+rocm6.3\n") == (
+    assert _probe_with(monkeypatch, stdout = b"6.3.42131|2.7.0+rocm6.3|\n") == (
         True,
         "2.7.0+rocm6.3",
         True,
+        "",
     )
 
 
 def test_probe_reports_a_cpu_wheel_as_importable_but_not_rocm(monkeypatch):
-    assert _probe_with(monkeypatch, stdout = b"|2.9.0+cpu\n") == (False, "2.9.0+cpu", True)
+    assert _probe_with(monkeypatch, stdout = b"|2.9.0+cpu|\n") == (False, "2.9.0+cpu", True, "")
+
+
+def test_probe_reports_the_cuda_runtime_of_an_untagged_pypi_wheel(monkeypatch):
+    """`pip install torch` yields "2.9.1" with no local tag but a full CUDA stack.
+    torch.version.cuda is the only evidence that the wheel is a CUDA build."""
+    assert _probe_with(monkeypatch, stdout = b"|2.9.1|12.8\n") == (False, "2.9.1", True, "12.8")
+
+
+def test_probe_reports_no_cuda_runtime_for_an_unrunnable_torch(monkeypatch):
+    """A runtime read from a torch that never imported would be fabricated evidence."""
+    assert _probe_with(monkeypatch, returncode = 1, stdout = b"|2.9.1|12.8\n")[3] == ""
 
 
 @pytest.mark.parametrize(
@@ -1004,6 +1021,70 @@ def test_a_hidden_nvidia_gpu_keeps_a_working_cuda_torch(monkeypatch):
         )
         is None
     )
+
+
+def test_a_hidden_nvidia_gpu_keeps_an_untagged_pypi_cuda_torch(monkeypatch):
+    """PyPI forbids local versions, so a stock `pip install torch` is a CUDA build
+    reporting a bare "2.9.1". Classifying on the +cuXXX tag alone reads it as
+    replaceable and destroys a working CUDA venv on an AMD host with a hidden card."""
+    plan, torch_ready, _ = _plan_tuple(
+        monkeypatch,
+        version = "2.9.1",
+        runtime_cuda = "12.8",
+        cvd_hides_nvidia = True,
+        physical_nvidia = True,
+    )
+    assert plan is None
+    assert torch_ready is False
+
+
+def test_the_preserved_wheel_message_names_the_probed_cuda_runtime(monkeypatch):
+    """ "torch 2.9.1 is a working CUDA build" asserts what the version cannot show."""
+    monkeypatch.setattr(stack, "_cvd_hides_nvidia", lambda: True)
+    monkeypatch.setattr(stack, "_has_physical_nvidia_gpu", lambda: True)
+    message = stack._rocm_cuda_wheel_preserved("2.9.1", False, True, "12.8")
+    assert message is not None
+    assert "torch 2.9.1 (CUDA 12.8)" in message
+
+
+def test_an_untagged_wheel_with_no_cuda_runtime_is_still_repaired(monkeypatch):
+    """The untagged case widens the guard only as far as the probe justifies: a plain
+    CPU-ish wheel reporting no runtime is still the wrong wheel for an AMD host."""
+    assert (
+        _plan(
+            monkeypatch,
+            version = "2.9.1",
+            runtime_cuda = "",
+            cvd_hides_nvidia = True,
+            physical_nvidia = True,
+        )
+        is not None
+    )
+
+
+def test_a_rocm_build_is_never_preserved_as_a_cuda_wheel(monkeypatch):
+    """HIP can report a CUDA-shaped torch.version.cuda. Preserving a ROCm wheel as a
+    CUDA one would suppress the very reconciliation this file exists to perform."""
+    monkeypatch.setattr(stack, "_cvd_hides_nvidia", lambda: True)
+    monkeypatch.setattr(stack, "_has_physical_nvidia_gpu", lambda: True)
+    assert stack._rocm_cuda_wheel_preserved("2.11.0+rocm7.2.0", True, True, "12.8") is None
+    plan, torch_ready, _ = _plan_tuple(
+        monkeypatch,
+        imports_as_rocm = True,
+        version = "2.11.0+rocm7.2.0",
+        runtime_cuda = "12.8",
+        cvd_hides_nvidia = True,
+        physical_nvidia = True,
+    )
+    assert plan is None
+    assert torch_ready is True
+
+
+def test_an_unimportable_torch_reporting_a_cuda_runtime_is_not_preserved(monkeypatch):
+    """A runtime string from a torch that did not import is not evidence of anything."""
+    monkeypatch.setattr(stack, "_cvd_hides_nvidia", lambda: True)
+    monkeypatch.setattr(stack, "_has_physical_nvidia_gpu", lambda: True)
+    assert stack._rocm_cuda_wheel_preserved("2.9.1", False, False, "12.8") is None
 
 
 def test_a_preserved_cuda_wheel_is_not_reported_as_rocm_ready(monkeypatch):

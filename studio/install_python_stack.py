@@ -2986,12 +2986,17 @@ class _LinuxRocmTorchPlan:
     blocked: bool = False
 
 
-def _probe_rocm_torch() -> tuple[bool, str, bool]:
-    """Return (imports as ROCm, version, importable), with a hard Python timeout.
+def _probe_rocm_torch() -> tuple[bool, str, bool, str]:
+    """Return (imports as ROCm, version, importable, CUDA runtime), hard Python timeout.
 
     The third value separates "torch is the wrong wheel" from "torch could not be
     probed at all" (segfault, missing runtime library, hang). Collapsing the two
     reads a broken torch as a wrong one and reinstalls gigabytes that cannot fix it.
+
+    The fourth is torch.version.cuda, the only CUDA clue an untagged wheel gives:
+    PyPI forbids the local +cuXXX version, so a stock `pip install torch` is a CUDA
+    build whose version string says nothing about CUDA. _ensure_cuda_torch already
+    reads the same field for the same reason.
     """
     try:
         probe = subprocess.run(
@@ -3002,8 +3007,9 @@ def _probe_rocm_torch() -> tuple[bool, str, bool]:
                     "import torch; "
                     "hip=getattr(torch.version,'hip','') or ''; "
                     "ver=getattr(torch,'__version__','').lower(); "
+                    "cu=getattr(torch.version,'cuda','') or ''; "
                     "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
-                    "print(marker + '|' + ver)"
+                    "print(marker + '|' + ver + '|' + cu)"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -3011,7 +3017,7 @@ def _probe_rocm_torch() -> tuple[bool, str, bool]:
             timeout = 90,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False, "", False
+        return False, "", False, ""
     lines = (
         [
             line.strip()
@@ -3021,8 +3027,10 @@ def _probe_rocm_torch() -> tuple[bool, str, bool]:
         if probe.returncode == 0
         else []
     )
-    marker, separator, version = lines[-1].partition("|") if lines else ("", "", "")
-    return bool(separator and marker), version, bool(separator)
+    last = lines[-1] if lines else ""
+    marker, version, runtime_cuda = (last.split("|") + ["", ""])[:3]
+    printed = "|" in last
+    return bool(printed and marker), version, printed, runtime_cuda if printed else ""
 
 
 def _rocm_repair_key(index_url: str, installed_version: str, torch_importable: bool) -> str:
@@ -3040,7 +3048,11 @@ def _rocm_repair_key(index_url: str, installed_version: str, torch_importable: b
 
 
 def _rocm_reinstall_blocked(
-    installed_version: str, torch_importable: bool, repair_key: str
+    installed_version: str,
+    torch_importable: bool,
+    repair_key: str,
+    has_rocm_torch: bool = False,
+    runtime_cuda: str = "",
 ) -> "str | None":
     """Why this ROCm reinstall must not run, or None to proceed.
 
@@ -3055,26 +3067,48 @@ def _rocm_reinstall_blocked(
        is a working CUDA build. The mask picks a card; it is not consent to replace
        the wheels.
     """
-    return _rocm_cuda_wheel_preserved(installed_version) or _rocm_repair_already_attempted(
-        repair_key, installed_version, torch_importable
-    )
+    return _rocm_cuda_wheel_preserved(
+        installed_version, has_rocm_torch, torch_importable, runtime_cuda
+    ) or _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
 
 
-def _rocm_cuda_wheel_preserved(installed_version: str) -> "str | None":
+def _rocm_cuda_wheel_preserved(
+    installed_version: str,
+    has_rocm_torch: bool = False,
+    torch_importable: bool = False,
+    runtime_cuda: str = "",
+) -> "str | None":
     """Why a working CUDA wheel is kept instead of replaced, or None.
 
     Split out for the same reason as _rocm_repair_already_attempted: the caller has to
     tell the two suppressions apart. This one leaves a CUDA venv in place, which is not
     a ROCm-ready one, so the AMD bitsandbytes wheel must not be paired with it.
+
+    A CUDA build is recognised two ways because only one of them is always present.
+    The +cuXXX local tag is authoritative when it exists, but PyPI forbids local
+    versions, so `pip install torch` yields a plain "2.9.1" that nonetheless pulls the
+    whole CUDA stack. For those the probed torch.version.cuda is the only evidence,
+    and it is trustworthy only from a torch that actually imported.
     """
     if not (_cvd_hides_nvidia() and _has_physical_nvidia_gpu()):
         return None
+    # A ROCm build can report a CUDA-shaped runtime through HIP's compatibility layer,
+    # so the hip marker settles the question before either CUDA clue is consulted.
+    if has_rocm_torch:
+        return None
     # A CUDA local tag is only readable from a torch that imported, so this also
     # excludes the broken-torch case without a separate importability term.
-    if not _is_cuda_family_leaf(_installed_torch_local_tag(installed_version)):
+    tagged_cuda = _is_cuda_family_leaf(_installed_torch_local_tag(installed_version))
+    probed_cuda = bool(torch_importable and runtime_cuda.strip())
+    if not (tagged_cuda or probed_cuda):
         return None
+    # An untagged version names no backend, so the probed runtime is what makes the
+    # message evidence rather than an assertion.
+    described = f"torch {installed_version}"
+    if runtime_cuda.strip():
+        described = f"{described} (CUDA {runtime_cuda.strip()})"
     return (
-        f"   torch {installed_version} is a working CUDA build and this host has an "
+        f"   {described} is a working CUDA build and this host has an "
         "NVIDIA GPU hidden by CUDA_VISIBLE_DEVICES -- leaving it alone.\n"
         "   Unset CUDA_VISIBLE_DEVICES, or set UNSLOTH_TORCH_INDEX_URL, to choose "
         "the ROCm wheels deliberately."
@@ -3149,7 +3183,7 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
             return None, False, False
         rocm_version = (0, 0)
 
-    has_rocm_torch, installed_version, torch_importable = _probe_rocm_torch()
+    has_rocm_torch, installed_version, torch_importable, runtime_cuda = _probe_rocm_torch()
     gfx_devices = _detect_amd_gfx_codes(dedup = False)
     gfx_probe = _LAST_AMD_GFX_PROBE
     gfx_override = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower()
@@ -3223,7 +3257,9 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
     repair_blocked = False
     cuda_wheel_kept = False
     if reinstall and pin is None:
-        blocked = _rocm_reinstall_blocked(installed_version, torch_importable, repair_key)
+        blocked = _rocm_reinstall_blocked(
+            installed_version, torch_importable, repair_key, has_rocm_torch, runtime_cuda
+        )
         if blocked is not None:
             _safe_print(blocked)
             reinstall = False
@@ -3231,7 +3267,12 @@ def _linux_rocm_torch_plan() -> "tuple[_LinuxRocmTorchPlan | None, bool, bool]":
                 _rocm_repair_already_attempted(repair_key, installed_version, torch_importable)
                 is not None
             )
-            cuda_wheel_kept = _rocm_cuda_wheel_preserved(installed_version) is not None
+            cuda_wheel_kept = (
+                _rocm_cuda_wheel_preserved(
+                    installed_version, has_rocm_torch, torch_importable, runtime_cuda
+                )
+                is not None
+            )
 
     if repair_blocked:
         # Suppressed, not satisfied. Reported as an explicit no-op plan so the caller
