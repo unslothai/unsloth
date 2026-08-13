@@ -50,7 +50,14 @@ function toRecord(input: {
   return { id, kind: input.kind, ggufVariant };
 }
 
-function writeLegacyRecord(record: LastLocalModelLoad): void {
+function sameRecord(a: LastLocalModelLoad, b: LastLocalModelLoad): boolean {
+  return a.id === b.id && a.kind === b.kind && a.ggufVariant === b.ggufVariant;
+}
+
+function writeLegacyRecord(
+  record: LastLocalModelLoad,
+  pendingSync: boolean,
+): void {
   try {
     localStorage.setItem(
       LEGACY_STORAGE_KEY,
@@ -58,6 +65,12 @@ function writeLegacyRecord(record: LastLocalModelLoad): void {
         id: record.id,
         kind: record.kind,
         ggufVariant: record.ggufVariant,
+        // The pre-backend v1 reader rejects entries without a numeric loadedAt,
+        // and an older bundle or still-open tab shares this key.
+        loadedAt: Date.now(),
+        // True until the backend PUT for this record confirms: a differing
+        // pending shadow is newer than whatever the GET returns.
+        pendingSync,
       }),
     );
   } catch {
@@ -65,13 +78,20 @@ function writeLegacyRecord(record: LastLocalModelLoad): void {
   }
 }
 
-function readLegacyRecord(): LastLocalModelLoad | null {
+type LegacyEntry = { record: LastLocalModelLoad; pendingSync: boolean };
+
+function readLegacyEntry(): LegacyEntry | null {
   try {
     const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) {
       return null;
     }
-    return toRecord(JSON.parse(raw) as Record<string, unknown>);
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const record = toRecord(parsed);
+    if (!record) {
+      return null;
+    }
+    return { record, pendingSync: parsed.pendingSync === true };
   } catch {
     return null;
   }
@@ -95,6 +115,17 @@ export async function readLastLocalModelLoad(
         ggufVariant: data.gguf_variant,
       });
       if (record) {
+        const legacy = readLegacyEntry();
+        if (legacy?.pendingSync && !sameRecord(legacy.record, record)) {
+          // A load whose PUT was dropped at teardown: the shadow is newer
+          // than the backend copy. Prefer it and re-sync the backend.
+          recordLastLocalModelLoad(legacy.record);
+          return legacy.record;
+        }
+        if (legacy?.pendingSync) {
+          // Backend caught up (the PUT landed but its callback was dropped).
+          writeLegacyRecord(record, false);
+        }
         return record;
       }
     }
@@ -104,7 +135,7 @@ export async function readLastLocalModelLoad(
     }
     // Unreachable settings API: fall back to the legacy record.
   }
-  return readLegacyRecord();
+  return readLegacyEntry()?.record ?? null;
 }
 
 export function recordLastLocalModelLoad(input: {
@@ -120,7 +151,7 @@ export function recordLastLocalModelLoad(input: {
   // teardown is dropped without running either callback, and the pre-backend
   // record was this surface's only memory of the load. It also covers the
   // pre-route backend that answers 404 without rejecting.
-  writeLegacyRecord(record);
+  writeLegacyRecord(record, true);
   authFetch(API_PATH, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -130,7 +161,19 @@ export function recordLastLocalModelLoad(input: {
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_variant: record.ggufVariant,
     }),
-  }).catch(() => {
-    // Best effort; the read path falls back to the legacy record.
-  });
+  })
+    .then((res) => {
+      if (!res.ok) {
+        return;
+      }
+      // Clear only this record's pending marker: a newer load may have
+      // replaced the shadow while the PUT was in flight.
+      const legacy = readLegacyEntry();
+      if (legacy?.pendingSync && sameRecord(legacy.record, record)) {
+        writeLegacyRecord(record, false);
+      }
+    })
+    .catch(() => {
+      // Best effort; the read path reconciles the pending shadow next launch.
+    });
 }
