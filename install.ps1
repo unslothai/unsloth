@@ -3344,7 +3344,7 @@ exit 0
             #    (gfx120X/110X/1151/1150/103X); unknown names fall back to CPU.
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
-                    @{ P = "9070|9080";                                           A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080)
+                    @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
                     @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: RX 9060 XT / 9060)
                     @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
                     @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
