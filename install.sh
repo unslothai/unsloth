@@ -2531,10 +2531,19 @@ _uv_install_pinned() {
 https://github.com/astral-sh/uv/releases/download/$UV_PINNED_VERSION"
     fi
     for _uip_base in $_uip_bases; do
-        if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset"; then continue; fi
+        # 2>/dev/null: download() uses curl -sS, which prints its own errors, and these
+        # attempts are speculative with a fallback behind them. A mirror being unreachable
+        # is not something the user needs on the console when the install still succeeds.
+        if ! download "$_uip_base/$_uip_asset" "$_uip_work/$_uip_asset" 2>/dev/null; then continue; fi
         _uip_got=$(_uv_sha256 "$_uip_work/$_uip_asset")
         if [ "$_uip_got" != "$_uip_want" ]; then
-            tauri_log "WARN" "uv archive digest mismatch from $_uip_base"
+            # Not tauri_log: [TAURI:WARN] is a marker level install.sh has never emitted, and
+            # the app forwards unknown markers to its progress UI verbatim, so it would surface
+            # as raw text in the desktop window. Verbose only: the next mirror or the fallback
+            # still runs, so a default install must stay as quiet as it was before.
+            if _is_verbose; then
+                echo "uv archive digest mismatch from $_uip_base, trying the next source" >&2
+            fi
             continue
         fi
         # The POSIX archives hold uv and uvx under a uv-<triple>/ directory.
