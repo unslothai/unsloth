@@ -20,6 +20,28 @@ import re
 
 REDACTED = "<redacted>"
 
+# Terminal control sequences, stripped BEFORE anything is matched. A colorized
+# writer puts an escape between the key and its value (structlog's
+# ConsoleRenderer renders "\x1b[36mapi_key\x1b[0m=\x1b[35m<secret>\x1b[0m", and
+# its `colors` default is on whether or not the sink is a terminal), and every
+# rule here is anchored: the "m" that ends "\x1b[36m" is a word character, so
+# _KEY_START's lookbehind and the \b in front of \bhf_ both stop matching and
+# the credential goes out untouched. The viewer's own pane strips these before
+# it renders, so the escapes are never what the reader sees anyway.
+#
+# Order matters: OSC (\x1b]) is listed before the single-character Fe class,
+# which covers 0x5C-0x5F and would otherwise swallow the "]" and leave the
+# payload behind. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
+_ANSI_RE = re.compile(
+    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"  # OSC ... BEL / ST
+    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"  # DCS / PM / APC / SOS ... ST
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"  # CSI (colors, cursor moves)
+    r"|\x1b[@-Z\\-_]"  # other two-character Fe escapes
+    r"|\x9b[0-?]*[ -/]*[@-~]"  # 8-bit CSI
+    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"  # 8-bit OSC / DCS / SOS / PM / APC
+)
+_ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
+
 # Key names whose VALUE is a secret. "token" alone is absent on purpose, so
 # n_tokens = 4096 and token_id=128009 survive.
 _SECRET_KEYS = (
@@ -72,10 +94,31 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 # key = value / "key": "value" / --api-key value
+#
+# The value has two branches and the QUOTED one wins whenever an opening quote
+# is there, so a credential the writer quoted is consumed to its CLOSING quote
+# instead of stopping at the first space. A value that stopped at whitespace
+# turned password="correct horse battery staple" into
+# password="<redacted> horse battery staple", which reads as masked while
+# leaking all but the first word, and left --api-key "abc defgh" untouched
+# because the value class rejected the leading quote outright. Passphrases with
+# spaces are the realistic shape here; a partially masked one is worse than an
+# unmasked one, because it invites the user to paste the line into a bug report.
+#
+# "[^\"'\\\n]|\\." rather than a lazy ".*?" so an escaped quote inside the value
+# does not end it early, and \n is excluded so an unterminated quote cannot run
+# the mask past the end of its own line.
+_QUOTED_VALUE = r"(?:[^\"'\\\n]|\\.){6,}"
 _KV_RE = re.compile(
-    r"(?i)" + _KEY_START + r"(" + _SECRET_KEYS + r")\b([\"']?\s*[:=]\s*[\"']?)([^\"'\s,}\]]{6,})"
+    r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
+    r"(?P<sep>[\"']?\s*[:=]\s*(?P<q>[\"'])?)"
+    r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\"'\s,}\]]{6,}))"
 )
-_FLAG_RE = re.compile(r"(?i)(--(?:" + _SECRET_KEYS + r"))(\s+)([^\s\"']{6,})")
+_FLAG_RE = re.compile(
+    r"(?i)(?P<key>--(?:" + _SECRET_KEYS + r"))"
+    r"(?P<sep>\s+(?P<q>[\"'])?)"
+    r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\s\"']{6,}))"
+)
 
 # An Authorization value, whatever the scheme. The key/value rule alone cannot
 # reach it: for "Authorization: Basic dXNlcjpwdw==" the value it captures is
@@ -120,15 +163,23 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
-    value = match.group(3)
+    # Named groups: the quoted/unquoted branch adds a group of its own, so the
+    # positional numbering these three used to carry is no longer stable.
+    value = match.group("val")
     # A numeric value is a count or an id, never a credential.
-    if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group(1)):
+    if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group("key")):
         return match.group(0)
     # "Authorization: Bearer <redacted>": the scheme word is not the secret, and
     # blanking it too would read as if the header itself were the credential.
-    if value.lower() in _SCHEMES:
-        return match.group(0)
-    return f"{match.group(1)}{match.group(2)}{REDACTED}"
+    # Quoting puts the scheme INSIDE the value ('authorization': 'Basic abc'),
+    # so the scheme is stepped over rather than the whole match abandoned: the
+    # rest of the value is still the credential.
+    scheme, sep, rest = value.partition(" ")
+    if scheme.lower() in _SCHEMES:
+        if not sep or not rest.strip():
+            return match.group(0)
+        return f"{match.group('key')}{match.group('sep')}{scheme}{sep}{REDACTED}"
+    return f"{match.group('key')}{match.group('sep')}{REDACTED}"
 
 
 def _redact_shaped(match: re.Match[str]) -> str:
@@ -154,6 +205,11 @@ def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
         return text
+    # Nothing anchored below survives an escape sequence sitting between a key
+    # and its value, so normalize first. Guarded by one scan for an introducer:
+    # ordinary log content carries none and is left exactly as it was.
+    if _ANSI_INTRODUCER_RE.search(text):
+        text = _ANSI_RE.sub("", text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     # Before the key/value rules: for "Authorization: Basic dXNlcjpwdw==" the

@@ -72,6 +72,17 @@ SECRETS = [
     # A numeric password is still a password, whatever the general rule says
     # about numbers being counts and ids.
     ("password=1234567890123", "1234567890123"),
+    # A quoted value that contains spaces. A passphrase is the everyday shape
+    # here, and a value that stopped at the first space left every word but the
+    # first in the clear while still printing <redacted>, which reads as safe.
+    (
+        '{"event":"login_failed","password":"correct horse battery staple"}',
+        "horse battery staple",
+    ),
+    ("password='correct horse battery staple'", "horse battery staple"),
+    # The flag rule's value class rejected a leading quote outright, so this
+    # whole line survived untouched.
+    ('llama-server --api-key "abcdef ghijklmnop" --port 8080', "abcdef ghijklmnop"),
 ]
 
 # Real log lines. Each one must come back byte for byte.
@@ -127,6 +138,41 @@ def test_redaction_is_idempotent(line):
     assert redact_log_text(once) == once
 
 
+QUOTED = [
+    # (line, what the whole line must come back as)
+    ('password="correct horse battery staple"', 'password="<redacted>"'),
+    ("password='correct horse battery staple'", "password='<redacted>'"),
+    ('llama-server --api-key "abcdef ghijklmnop"', 'llama-server --api-key "<redacted>"'),
+    # The value ends at its own closing quote, so the fields after it survive.
+    (
+        '{"password": "correct horse battery staple", "model": "gpt-4o"}',
+        '{"password": "<redacted>", "model": "gpt-4o"}',
+    ),
+    # An escaped quote inside the value does not end it early.
+    ('password="corr\\"ect horse staple"', 'password="<redacted>"'),
+    # Quoting puts the scheme word inside the value; it stays readable, and the
+    # credential behind it does not.
+    ('password: "Basic dXNlcjpwdw=="', 'password: "Basic <redacted>"'),
+]
+
+
+@pytest.mark.parametrize("line,expected", QUOTED, ids = [q[0][:24] for q in QUOTED])
+def test_a_quoted_credential_is_masked_whole(line, expected):
+    """The value patterns used to stop at whitespace, so a quoted credential
+    containing spaces was masked only up to its first space and the rest of the
+    secret was printed next to the <redacted> marker."""
+    assert redact_log_text(line) == expected
+
+
+def test_an_unterminated_quote_does_not_mask_the_next_line():
+    """\\n is outside the quoted value class, so a writer that opened a quote
+    and never closed it cannot blank the log lines that follow it."""
+    text = 'password="correct horse battery\nloading model from /models/x.gguf\n'
+    out = redact_log_text(text)
+    assert "loading model from /models/x.gguf" in out
+    assert "correct horse battery" not in out
+
+
 def test_an_empty_line_is_safe():
     assert redact_log_text("") == ""
 
@@ -155,3 +201,47 @@ def test_a_cookie_diagnosis_is_not_mistaken_for_a_cookie(line):
 )
 def test_a_real_cookie_pair_is_still_masked(line, secret):
     assert secret not in redact_log_text(line)
+
+
+# A colorized writer puts an escape sequence between the key and its value.
+# Every rule here is anchored on a word boundary or a lookbehind, and the "m"
+# that ends "\x1b[36m" is a word character, so the anchor stopped matching and
+# the credential went out in the clear -- and the viewer's pane strips the
+# escapes before rendering, so the reader saw a clean, unmasked token.
+ANSI_SECRETS = [
+    # structlog's ConsoleRenderer, verbatim: colors are on by default whether or
+    # not the sink is a terminal, so this is what lands in the session log.
+    (
+        "\x1b[36mapi_key\x1b[0m=\x1b[35msk_live_abcdef123456\x1b[0m",
+        "sk_live_abcdef123456",
+    ),
+    (
+        "\x1b[36mhf_token\x1b[0m=\x1b[35mhf_AbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m",
+        "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    ),
+    (
+        "\x1b[31mAuthorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg\x1b[0m",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcdefg",
+    ),
+    # An escape INSIDE the token, and the 8-bit CSI form.
+    ("hf_\x1b[31mAbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m", "AbCdEfGhIjKlMnOpQrStUvWxYz012345"),
+    ("\x9b36mapi_key\x9b0m=abcdef123456", "abcdef123456"),
+]
+
+
+@pytest.mark.parametrize("line,secret", ANSI_SECRETS, ids = ["kv", "hf", "auth", "mid", "c1"])
+def test_a_colorized_credential_is_still_masked(line, secret):
+    assert secret not in redact_log_text(line)
+
+
+def test_ordinary_colorized_content_keeps_its_text():
+    """Stripping the control sequences must not eat the log line with them."""
+    out = redact_log_text("\x1b[32mmodel loaded\x1b[0m from /models/qwen3-4b.gguf")
+    assert out == "model loaded from /models/qwen3-4b.gguf"
+
+
+def test_a_hyperlink_escape_does_not_swallow_the_line():
+    """OSC is matched before the two-character Fe class, which covers "]" and
+    would otherwise consume only the introducer and leave the payload behind."""
+    out = redact_log_text("open \x1b]8;;https://example.com\x07docs\x1b]8;;\x07 for help")
+    assert out == "open docs for help"

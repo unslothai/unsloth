@@ -229,3 +229,52 @@ def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
     assert second.lines == [f"appended{i}" for i in range(2000, 3000)]
     assert second.more_pending is False
     assert read_since(path, second.cursor).lines == []
+
+
+def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_path):
+    """A single record bigger than the bounded read (a native dump, a \\r-only
+    progress run, a giant JSON line) filled the whole window, so dropping the
+    partial head left nothing: the viewer rendered an EMPTY pane on a log that
+    was megabytes long, and the cursor advanced past the record anyway."""
+    path = tmp_path / "a.log"
+    body = "Z" * (MAX_TAIL_BYTES + 100_000)
+    path.write_text("older line\n" + body + " END\n", encoding = "utf-8")
+
+    result = read_tail(path)
+    assert result.lines, "a non-empty log must never read as no lines at all"
+    assert result.lines[-1].endswith(" END")
+    assert result.truncated_head is True
+    # Still bounded: the tail of the record, not the whole record.
+    assert sum(len(line) for line in result.lines) <= MAX_TAIL_BYTES
+
+
+def test_an_unterminated_record_larger_than_the_window_still_shows(tmp_path):
+    path = tmp_path / "a.log"
+    path.write_text("older line\n" + "Z" * (MAX_TAIL_BYTES + 100_000) + " LIVE", encoding = "utf-8")
+    result = read_tail(path)
+    assert result.lines and result.lines[-1].endswith(" LIVE")
+
+
+def test_an_oversized_append_with_no_newline_is_not_swallowed(tmp_path):
+    path = tmp_path / "a.log"
+    path.write_text("start\n")
+    cursor = read_tail(path).cursor
+    with open(path, "a", encoding = "utf-8") as handle:
+        handle.write("Q" * (MAX_APPEND_BYTES + 50_000) + " END\n")
+
+    result = read_since(path, cursor)
+    assert result.lines, "the append must not vanish while the cursor moves past it"
+    assert result.lines[-1].endswith(" END")
+    assert result.dropped_bytes > 0
+    assert read_since(path, result.cursor).lines == []
+
+
+def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path):
+    """The pane strips ANSI before rendering, so an escape between the key and
+    its value used to defeat the redaction anchors and show a clean token."""
+    path = tmp_path / "a.log"
+    path.write_text(
+        "\x1b[36mhf_token\x1b[0m=\x1b[35mhf_AbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m\n",
+        encoding = "utf-8",
+    )
+    assert "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345" not in "\n".join(read_tail(path).lines)

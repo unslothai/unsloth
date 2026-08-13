@@ -85,9 +85,18 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     truncated_head = False
     if drop_partial_head:
         first = data.find(b"\n")
-        if first == -1:
-            return [], True
-        data = data[first + 1 :]
+        remainder = b"" if first == -1 else data[first + 1 :]
+        if not remainder:
+            # The whole bounded window sits inside ONE record: either it has no
+            # line break at all, or its only one is the terminator at the very
+            # end. Dropping the partial head then left nothing, so a single
+            # record bigger than the window (a native dump, a \r-only progress
+            # run, a giant JSON line) rendered an EMPTY pane on a log that was
+            # megabytes long, and the cursor still advanced past it. Keep the
+            # record's tail instead; that is the end everyone is reading for.
+            body = data if first == -1 else data[:first]
+            remainder = body[-MAX_LINE_BYTES:]
+        data = remainder
         truncated_head = True
     text = data.decode("utf-8", errors = "replace")
     raw = text.split("\n")
