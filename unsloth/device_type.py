@@ -58,12 +58,15 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
+    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here
+    # would NameError in get_device_count. Matches unsloth/__init__.py and
+    # unsloth_zoo.device_type, which both pick MLX ahead of the CPU fallback.
+    if _IS_MLX:
+        return "mlx"
     # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda"
     # branch behaves identically. Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
-    if _IS_MLX:
-        return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"

@@ -27,7 +27,10 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 from .import_fixes import (
     fix_message_factory_issue,
     fix_torch_check_is_size,
+    fix_torchao_torch_symbol_skew,
+    propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
+    check_transformers_dependency_versions,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
@@ -74,6 +77,14 @@ disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
+fix_torchao_torch_symbol_skew()
+# The above fixes THIS process only; vLLM's model-architecture inspector
+# is a subprocess that imports torchao itself and hits the same ImportError.
+propagate_torchao_fix_to_subprocesses()
+# Warn, do not raise: this only adds the correct remedy just before transformers
+# prints its misleading one, without turning a metadata-derived floor into a hard
+# import failure of our own.
+check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
@@ -84,7 +95,10 @@ del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
 del fix_torch_check_is_size
+del fix_torchao_torch_symbol_skew
+del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
+del check_transformers_dependency_versions
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -169,9 +183,11 @@ from unsloth_zoo.device_type import (
 
 # Fix other issues
 from .import_fixes import (
+    fix_transformers5_bare_annotation_configs,
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
+    fix_torchao_nf4tensor_move,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -182,6 +198,7 @@ from .import_fixes import (
     patch_ipykernel_hf_xet,
     patch_trackio,
     patch_datasets,
+    patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
@@ -195,12 +212,18 @@ from .import_fixes import (
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    fix_peft_stale_torchao_import_error,
     patch_accelerate_recursively_apply,
 )
 
+# Must run first: guards PretrainedConfig before vLLM defines its config classes.
+fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
+# torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) still imports the
+# old path. Lazy alias, so it costs nothing unless asked for.
+fix_torchao_nf4tensor_move()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
@@ -216,6 +239,8 @@ ignore_logger_messages()
 patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
+# Apple Silicon M4+ only: psutil <= 7.2.2 reads the clock 1000x too small.
+patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
@@ -231,11 +256,16 @@ disable_broken_wandb()
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+# After peft is importable, so the already-bound `is_torchao_available` in
+# peft.tuners.lora.torchao is replaced too, not just import_utils'.
+fix_peft_stale_torchao_import_error()
 patch_accelerate_recursively_apply()
 
+del fix_transformers5_bare_annotation_configs
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
+del fix_torchao_nf4tensor_move
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
@@ -247,6 +277,7 @@ del ignore_logger_messages
 del patch_ipykernel_hf_xet
 del patch_trackio
 del patch_datasets
+del patch_psutil_cpu_freq
 del patch_enable_input_require_grads
 del fix_openenv_no_vllm
 del patch_openspiel_env_async
@@ -258,6 +289,7 @@ del disable_broken_wandb
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del fix_peft_stale_torchao_import_error
 del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation

@@ -1,5 +1,6 @@
 mod backend;
 mod managed;
+mod pid_records;
 mod types;
 mod version;
 
@@ -7,15 +8,16 @@ use crate::desktop_backend_owner::{
     OwnedBackendProbe, OwnedBackendReadiness, VerifiedOwnedBackend,
 };
 use backend::probe_existing_backends;
-use log::warn;
+use log::{info, warn};
 pub use managed::managed_install_ready;
 use managed::probe_managed_install;
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
+#[cfg(test)]
+pub(crate) use version::DESKTOP_MANAGEABILITY_VERSION;
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
-    DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]
@@ -23,7 +25,10 @@ use backend::{backend_desktop_auth_status, backend_health};
 #[cfg(test)]
 use managed::probe_managed_bin;
 #[cfg(test)]
-use version::{backend_version_compatible, MIN_DESKTOP_BACKEND_VERSION};
+use version::{
+    backend_version_compatible, backend_version_outdated_reason, expected_backend_version,
+    managed_backend_version_stale_reason, MIN_DESKTOP_BACKEND_VERSION,
+};
 
 fn release_auto_repair() -> bool {
     !cfg!(debug_assertions)
@@ -159,11 +164,30 @@ fn choose_ownerless_spawned_preflight(
     }
 }
 
-fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
+fn mutation_blocker_from_probe(
+    probe: BackendProbe,
+    live_local_backend: &dyn Fn(u16) -> Option<u32>,
+) -> Option<ExternalBackendConflict> {
     match probe {
         BackendProbe::ExternalConflict { port, reason } => {
             Some(ExternalBackendConflict { port, reason })
         }
+        // An id-less backend may be this install serving from a terminal, in
+        // which case rewriting the venv underneath it would break it. It may
+        // equally be a remote Studio behind a port forward, and refusing on
+        // that leaves a stale install with no way to repair itself, since
+        // repair is what the app runs automatically. The local per-port record
+        // is what tells the two apart, so it, not the port, decides.
+        BackendProbe::Unrelated { port, reason } => match live_local_backend(port) {
+            Some(pid) => {
+                info!("Desktop preflight: mutation blocked by local backend {pid} on port {port}");
+                Some(ExternalBackendConflict { port, reason })
+            }
+            None => {
+                info!("Desktop preflight: mutation may proceed past port {port} ({reason}): no live backend of this install is recorded there");
+                None
+            }
+        },
         BackendProbe::Ready { port } => Some(ExternalBackendConflict {
             port,
             reason: "same_root_external_backend_active".to_string(),
@@ -175,7 +199,12 @@ fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendCon
 pub async fn mutation_blocking_backend_ignoring(
     ignored_ports: &[u16],
 ) -> Option<ExternalBackendConflict> {
-    mutation_blocker_from_probe(probe_existing_backends(ignored_ports).await)
+    backend::probe_backend_ports(ignored_ports)
+        .await
+        .into_iter()
+        .find_map(|probe| {
+            mutation_blocker_from_probe(probe, &pid_records::live_backend_pid_on_port)
+        })
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
@@ -194,8 +223,8 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
-            // TAURI_PORT is emitted only after uvicorn lifespan completes; keep
-            // this ownerless path on full health so auth/bootstrap are ready.
+            // Defensive fallback for legacy ownerless handles. Wait for full
+            // health so auth and bootstrap are ready.
 
             let probe = match snapshot.port {
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,
@@ -421,7 +450,7 @@ mod tests {
     #[test]
     fn mutation_blocker_blocks_ready_external_backends() {
         assert_eq!(
-            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }),
+            mutation_blocker_from_probe(BackendProbe::Ready { port: 8890 }, &|_| None),
             Some(ExternalBackendConflict {
                 port: 8890,
                 reason: "same_root_external_backend_active".to_string(),
@@ -433,23 +462,22 @@ mod tests {
     fn backend_version_gate_classifies_core_cases() {
         for version in [
             MIN_DESKTOP_BACKEND_VERSION,
-            "2026.5.4",
+            "2026.8.5",
             "2027.1.0",
-            "2026.5.3.post1",
-            "2026.5.3+local",
-            "2026.5.3.post1",
+            "2026.8.4.post1",
+            "2026.8.4+local",
         ] {
             assert!(backend_version_compatible(Some(version)), "{version}");
         }
         for (version, reason) in [
             (None, "desktop_backend_version_missing"),
             (Some("not-a-version"), "desktop_backend_version_invalid"),
-            (Some("2026.5.3.1"), "desktop_backend_version_invalid"),
-            (Some("2026.5.3foo"), "desktop_backend_version_invalid"),
-            (Some("2026.5.3.devx"), "desktop_backend_version_invalid"),
+            (Some("2026.8.4.1"), "desktop_backend_version_invalid"),
+            (Some("2026.8.4foo"), "desktop_backend_version_invalid"),
+            (Some("2026.8.4.devx"), "desktop_backend_version_invalid"),
             (Some("2026.5.2"), "desktop_backend_version_too_old"),
-            (Some("2026.5.3rc1"), "desktop_backend_version_too_old"),
-            (Some("2026.5.3.dev1"), "desktop_backend_version_too_old"),
+            (Some("2026.8.4rc1"), "desktop_backend_version_too_old"),
+            (Some("2026.8.4.dev1"), "desktop_backend_version_too_old"),
         ] {
             assert_eq!(
                 backend_version_stale_reason(version).as_deref(),
@@ -459,6 +487,45 @@ mod tests {
         assert_eq!(
             backend_version_compatible(Some("dev")),
             cfg!(debug_assertions)
+        );
+    }
+
+    #[test]
+    fn managed_venv_behind_the_shipped_backend_is_outdated() {
+        // Above the floor but below what this build shipped: the exact case the
+        // standalone installer leaves behind in the shared venv.
+        assert_eq!(
+            backend_version_outdated_reason(Some("2026.8.4"), "2026.8.5").as_deref(),
+            Some("desktop_backend_version_outdated")
+        );
+        for version in ["2026.8.5", "2026.8.6", "2027.1.0"] {
+            assert_eq!(
+                backend_version_outdated_reason(Some(version), "2026.8.5"),
+                None,
+                "{version}"
+            );
+        }
+        // The floor still speaks first, so its reasons keep reaching the UI.
+        for (version, reason) in [
+            (None, "desktop_backend_version_missing"),
+            (Some("not-a-version"), "desktop_backend_version_invalid"),
+            (Some("2026.5.2"), "desktop_backend_version_too_old"),
+        ] {
+            assert_eq!(
+                backend_version_outdated_reason(version, "2026.8.5").as_deref(),
+                Some(reason)
+            );
+        }
+        // Unstamped builds fall back to the floor, so the managed gate reduces
+        // to the shared one for dev and CI.
+        assert_eq!(expected_backend_version(), MIN_DESKTOP_BACKEND_VERSION);
+        assert_eq!(
+            managed_backend_version_stale_reason(Some(MIN_DESKTOP_BACKEND_VERSION)),
+            None
+        );
+        assert_eq!(
+            managed_backend_version_stale_reason(Some("2026.5.2")).as_deref(),
+            Some("desktop_backend_version_too_old")
         );
     }
 
@@ -578,7 +645,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.5.3"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
   exit 0
 fi
 exit 1
@@ -590,7 +657,7 @@ exit 1
                 r#"#!/bin/sh
 if [ "$1" = "-h" ]; then exit 0; fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_install_ok":true,"version":"2026.5.3"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_install_ok":true,"version":"2026.8.4"}'
   exit 0
 fi
 if [ "$1" = "studio" ] && [ "$2" = "provision-desktop-auth" ] && [ "$3" = "--help" ]; then exit 0; fi
@@ -643,7 +710,7 @@ if [ "$1" = "-h" ]; then
 fi
 if [ "$1" = "studio" ] && [ "$2" = "desktop-capabilities" ] && [ "$3" = "--json" ]; then
   if [ -f "$modecap" ]; then exit 42; fi
-  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.5.3"}'
+  printf '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
   exit 0
 fi
 exit 1
@@ -712,8 +779,16 @@ exit 1
 
     fn desktop_ready_health_with_owner(root_id: &str, include_owner: bool) -> String {
         let owner = desktop_owner_json(include_owner);
+        // Tied to the owner on purpose: the secret comes from the desktop spawn,
+        // so an ownerless (terminal-started) backend can never report it. Both at
+        // once describes a backend that cannot exist.
+        let leases = if include_owner {
+            r#""native_path_leases_supported":true,"#
+        } else {
+            ""
+        };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{root_id}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,{leases}"studio_root_id":"{root_id}"{owner}}}"#
         )
     }
 
@@ -773,7 +848,7 @@ exit 1
     async fn backend_with_auth_support_but_missing_protocol_is_old() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -799,7 +874,7 @@ exit 1
         // protocol-compatible backend into a conflict the user has to kill.
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -813,7 +888,7 @@ exit 1
     async fn backend_without_any_manageability_field_is_old() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",
@@ -835,6 +910,76 @@ exit 1
         .await;
 
         assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn terminal_started_backend_without_native_path_leases_stays_adoptable() {
+        // What EVERY terminal-started server looks like, not an edge case.
+        // Refusing it would drop the attach use-tauri-backend.ts supports on
+        // purpose, to grey out one button that use-linked-folders.ts already
+        // greys out from the same capability.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn backend_predating_the_lease_capability_field_stays_adoptable() {
+        // Absent, not false: a backend predating the field reports nothing, and
+        // Option<bool> makes that indistinguishable from `false` untested.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(probe, BackendProbe::Ready { .. }));
+    }
+
+    #[tokio::test]
+    async fn owned_backend_without_native_path_leases_is_stale_not_a_conflict() {
+        // A defect in our own spawn, and ours to restart, so Stale (repairable)
+        // rather than a conflict the user has to resolve by hand.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                desktop_owner_json(true)
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::Old { reason, .. } if reason == "native_path_leases_unsupported"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_is_still_reported_as_a_version_problem() {
+        // Ordering guard: the lease check used to run first, so a backend that
+        // really needed an update reported the wrong cause to diagnostics.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"native_path_leases_supported":false,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_backend_version_too_old"
+        ));
     }
 
     #[tokio::test]
@@ -871,7 +1016,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_missing_root_id_is_external_conflict_before_auth_probe() {
+    async fn backend_missing_root_id_is_unrelated_before_auth_probe() {
         let probe = probe_test_backend(
             r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
             "401 Unauthorized",
@@ -880,7 +1025,7 @@ exit 1
 
         assert!(matches!(
             probe,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
@@ -888,7 +1033,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
+    async fn backend_expected_root_id_missing_is_unrelated_before_auth_probe() {
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
@@ -896,11 +1041,87 @@ exit 1
 
         assert!(matches!(
             backend_desktop_auth_status(&client, port, &health, None).await,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
         ));
+    }
+
+    /// The report this came from: an id-less Studio answered on a candidate
+    /// port, and a perfectly healthy install refused to launch at all.
+    #[test]
+    fn an_unrelated_backend_does_not_block_a_launch() {
+        let result = choose_preflight(
+            ManagedProbe::Ready {
+                bin: PathBuf::from("/bin/unsloth"),
+            },
+            BackendProbe::Unrelated {
+                port: 8888,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.disposition,
+            DesktopPreflightDisposition::ManagedReady
+        );
+        assert_eq!(result.port, None);
+    }
+
+    /// ...and a venv rewrite is still refused while a local backend of this
+    /// install is recorded on the port, because it would break that backend.
+    #[test]
+    fn an_unrelated_backend_blocks_mutations_when_it_is_recorded_locally() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8899,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|port| (port == 8899).then_some(4242)
+            ),
+            Some(ExternalBackendConflict {
+                port: 8899,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            })
+        );
+    }
+
+    /// The follow-up report: a stale install auto-runs a repair, and an id-less
+    /// backend reached over a port forward left it erroring on every attempt
+    /// with nothing the user could stop locally.
+    #[test]
+    fn an_unrecorded_unrelated_backend_does_not_block_a_repair() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::Unrelated {
+                    port: 8888,
+                    reason: "ambiguous_root_external_backend_active".to_string(),
+                },
+                &|_| None
+            ),
+            None
+        );
+    }
+
+    /// A local record is only consulted for the unattributable case: a backend
+    /// that identified itself as a conflict blocks either way.
+    #[test]
+    fn an_external_conflict_blocks_mutations_without_a_local_record() {
+        assert_eq!(
+            mutation_blocker_from_probe(
+                BackendProbe::ExternalConflict {
+                    port: 8890,
+                    reason: "desktop_backend_version_too_old".to_string(),
+                },
+                &|_| None
+            ),
+            Some(ExternalBackendConflict {
+                port: 8890,
+                reason: "desktop_backend_version_too_old".to_string(),
+            })
+        );
     }
 
     #[tokio::test]
@@ -921,7 +1142,7 @@ exit 1
     async fn backend_capability_false_is_old_even_when_route_401() {
         let probe = probe_test_backend(
             format!(
-                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":false,"supports_desktop_backend_ownership":true,"desktop_auth_stale_reason":"cap_false","studio_root_id":"{EXPECTED_ROOT_ID}"{}}}"#,
                 desktop_owner_json(true)
             ),
             "401 Unauthorized",

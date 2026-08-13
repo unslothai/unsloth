@@ -769,6 +769,21 @@ class TestListGgufVariantsOffline:
         assert len(variants) == 1
         assert variants[0].quant == "UD-Q4_K_XL"
 
+    @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+    def test_offline_cache_miss_does_not_call_api(
+        self, hf_cache, clean_offline_env, monkeypatch, offline_variable
+    ):
+        monkeypatch.setenv(offline_variable, "yes")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("API must not be called on an offline cache miss")
+
+        with patch("huggingface_hub.model_info", boom):
+            variants, has_vision = list_gguf_variants("unsloth/not-cached")
+
+        assert variants == []
+        assert has_vision is False
+
     def test_api_exception_falls_back_to_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
@@ -858,6 +873,18 @@ class TestDetectGgufModelRemoteOffline:
 
         with patch("huggingface_hub.model_info", boom):
             assert detect_gguf_model_remote("unsloth/a") == "a-Q4_K_M.gguf"
+
+    @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+    def test_offline_cache_miss_does_not_call_api(
+        self, hf_cache, clean_offline_env, monkeypatch, offline_variable
+    ):
+        monkeypatch.setenv(offline_variable, "on")
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("API must not be called on an offline cache miss")
+
+        with patch("huggingface_hub.model_info", boom):
+            assert detect_gguf_model_remote("unsloth/not-cached") is None
 
     def test_api_3x_failure_then_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
@@ -2094,6 +2121,21 @@ class TestListLocalGgufVariantsSubdir:
         config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "Q4_K_M")
         assert config is not None
         assert config.gguf_file == str(target.resolve())
+
+    def test_model_config_direct_split_gguf_keeps_file_when_variant_is_echoed(self, tmp_path):
+        """A settings reload sends status.gguf_variant with the direct file path."""
+        from utils.models.model_config import ModelConfig
+
+        first = tmp_path / "Model-UD-Q3_K_M-00001-of-00002.gguf"
+        second = tmp_path / "Model-UD-Q3_K_M-00002-of-00002.gguf"
+        first.write_bytes(b"a")
+        second.write_bytes(b"b")
+
+        config = ModelConfig.from_identifier(str(first), gguf_variant = "UD-Q3_K_M")
+
+        assert config is not None
+        assert config.is_gguf is True
+        assert config.gguf_file == str(first.resolve())
 
     def test_local_variant_listing_keeps_subdir_be_model_name_token(self, tmp_path):
         from utils.models.model_config import list_local_gguf_variants

@@ -123,6 +123,29 @@ def _stored_cache_home() -> Optional[Path]:
         return None
 
 
+def configured_cache_key() -> str:
+    """The configured cache location, for keying caches and in-flight work.
+
+    Deliberately unresolved: resolve() can block on the very volume a caller is
+    trying to move off. Only equality matters here, not the real path.
+    """
+    explicit = (
+        _EXPLICIT_CACHE_ENV.get("HF_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HUGGINGFACE_HUB_CACHE")
+        or _EXPLICIT_CACHE_ENV.get("HF_HOME")
+    )
+    if explicit:
+        return "env:" + explicit
+    try:
+        from storage.studio_db import get_app_setting
+        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+    except Exception:
+        return "default"
+    if isinstance(value, str) and value.strip():
+        return "studio:" + value.strip()
+    return "default"
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:

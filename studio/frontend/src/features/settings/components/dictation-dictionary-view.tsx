@@ -84,7 +84,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                 commitDictionaryEntry(index);
               }}
               className="h-8 flex-1 text-sm"
-              aria-label={`Dictionary entry ${index + 1}`}
+              aria-label={t("settings.voice.dictionary.entryAria", {
+                index: index + 1,
+              })}
             />
             <Button
               variant="ghost"
@@ -95,7 +97,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
               // commit-splice this row and make onClick delete the next one.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
-              aria-label={`Remove dictionary entry ${index + 1}`}
+              aria-label={t("settings.voice.dictionary.removeEntryAria", {
+                index: index + 1,
+              })}
             >
               <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
             </Button>
@@ -111,9 +115,9 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                 handleAddEntry();
               }
             }}
-            placeholder="Jane Doe"
+            placeholder={t("settings.voice.dictionary.entryPlaceholder")}
             className="h-8 flex-1 text-sm"
-            aria-label="New dictionary entry"
+            aria-label={t("settings.voice.dictionary.newEntryAria")}
           />
           <Button
             variant="outline"

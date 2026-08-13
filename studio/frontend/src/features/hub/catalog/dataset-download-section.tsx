@@ -179,6 +179,7 @@ export function DatasetDownloadSection({
           loading={downloadAction.starting}
           isPartial={downloadAction.isPartial}
           partialTransport={downloadAction.partialTransport}
+          stopMode={downloadAction.stopMode}
           progressPercent={downloadAction.progressPercent}
           disabled={downloadAction.disabled}
           onClick={downloadAction.onClick}

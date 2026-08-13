@@ -144,19 +144,46 @@ def _tuning_available() -> bool:
     not _tuning_available(),
     reason = "the installed unsloth_zoo predates hf_xet_tuning, so there are no caps to apply",
 )
-def test_xet_worker_gets_ram_caps(monkeypatch):
+def test_xet_worker_is_sized_from_the_machine(monkeypatch):
+    """The budget scales with the host, so pin the invariant rather than a number: what hf_xet can
+    hold (buffer + files * per-file) must fit the limit the same call set."""
     env = _spawn_env(monkeypatch, use_xet = True)
     limit = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"])
-    # Stock hf_xet allows 8GB here (64GB under high-performance mode).
-    assert 0 < limit <= 4_000_000_000
+    worst = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) + int(
+        env["HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS"]
+    ) * int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"])
+    assert 0 < worst <= limit
     assert env["HF_HUB_DISABLE_XET"] == "0"
 
 
-def test_high_performance_is_cleared_not_merely_defaulted(monkeypatch):
-    """xet-core applies the high-performance preset AFTER reading the environment, so an inherited
-    "1" would discard every cap above rather than compete with it. setdefault is not enough."""
-    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
-    assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
+def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
+    """Studio used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
+    worker ended up with a 24GB laptop's buffer, 3.4x slower than the machine's own setting."""
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _apply(env, cache_dir = None):
+        seen.update(env)
+        seen["cache_dir"] = cache_dir
+        env["HF_XET_SENTINEL"] = "sized-by-the-zoo"
+        return {"HF_XET_SENTINEL": "sized-by-the-zoo"}
+
+    monkeypatch.setattr(shim, "apply_xet_env", _apply)
+    env = _spawn_env(
+        monkeypatch,
+        use_xet = True,
+        parent_env = {
+            "HF_XET_HIGH_PERFORMANCE": "1",
+            "HF_HUB_CACHE": "/moved/volume/hub",
+        },
+    )
+    assert env["HF_XET_SENTINEL"] == "sized-by-the-zoo"
+    # The worker's own env is what gets sized, and the flag is left exactly as the zoo left it.
+    assert seen["HF_HUB_DISABLE_XET"] == "0"
+    # Sized against the cache the worker will write to, not whichever one this process started with.
+    assert seen["cache_dir"] == "/moved/volume/hub"
+    assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
 
 
 def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
@@ -165,13 +192,18 @@ def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch)
     would hand the worker a 64GB buffer ceiling on the installs Studio alone cannot fix."""
     import utils.hf_xet_fallback as shim
 
-    monkeypatch.setattr(shim, "xet_env_overrides", lambda *a, **k: {})
+    monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
     assert env["HF_XET_HP"] == "0"
 
 
-def test_user_can_opt_back_into_high_performance(monkeypatch):
+def test_the_legacy_opt_in_still_works_without_the_tuning_module(monkeypatch):
+    """Newer zoos honour the flag on their own, but this is the escape hatch on installs that
+    cannot, so it has to keep working there."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
@@ -324,10 +356,12 @@ def test_recording_a_failure_never_raises(monkeypatch):
 
 def test_capabilities_report_what_auto_resolves_to(monkeypatch):
     fake = _types.ModuleType("utils.hf_xet_fallback")
-    fake.xet_health = lambda **kw: _types.SimpleNamespace(
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(
         use_xet = False,
         reason = "Xet failed 2 times in a row on this machine",
     )
+
+    fake.xet_health = fake.cached_xet_health
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
     caps = download_registry.get_download_transport_capabilities()
     if not caps.xet.available:
@@ -341,6 +375,8 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
 
     def _boom(**kw):
         raise RuntimeError("no")
+
+    fake.cached_xet_health = _boom
 
     fake.xet_health = _boom
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
@@ -403,40 +439,62 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
     shim.record_xet_outcome(False, "x")
 
 
-def test_capabilities_probe_is_opt_in(monkeypatch):
-    """The UI polls this endpoint on render, so it must stay cheap by default. The download-start
-    path opts in: a host with an unreachable CAS and no recorded failure yet would otherwise learn
-    by stalling."""
+def test_capabilities_read_does_not_load_zoo(monkeypatch):
+    """Opening Hub asks for capabilities; that read must not initialize optional GPU consumers."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "_optional_modules", {})
+
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        shim,
+        "_load_optional",
+        lambda module_name: loaded.append(module_name),
+    )
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", shim)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities()
+
+    assert caps.xet.available is True
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert loaded == [], "a read-only capability request imported Unsloth Zoo"
+
+
+def test_download_start_probe_loads_health_after_cached_browse(monkeypatch):
+    """Auto's probe resolves the submitted xet/http mode, so it must load fresh health."""
     from hub.utils import download_registry
 
-    seen: list[bool] = []
+    seen: list[tuple[str, bool]] = []
 
     class _Health:
         use_xet = False
         reason = "probed: CAS unreachable"
 
-    def _fake_health(*, probe = True):
-        seen.append(probe)
+    def _cached_health(*, probe = True):
+        seen.append(("cached", probe))
+        return None
+
+    def _loading_health(*, probe = True):
+        seen.append(("loading", probe))
         return _Health()
 
-    # Patch the sys.modules entry, not an imported alias: the endpoint does a local
-    # `from utils.hf_xet_fallback import xet_health`, and test_hf_xet_fallback.py swaps that
-    # sys.modules entry in and out, so an alias captured here can be a different module object.
+    # Patch sys.modules because the endpoint imports both helpers locally.
     import sys
     import types
 
     stub = types.ModuleType("utils.hf_xet_fallback")
-    stub.xet_health = _fake_health
+    stub.cached_xet_health = _cached_health
+    stub.xet_health = _loading_health
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", stub)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
 
-    caps = download_registry.get_download_transport_capabilities()
-    if not caps.xet.available:
-        # The health lookup sits behind an hf_xet availability check, so with no hf_xet installed
-        # neither call reaches it.
-        pytest.skip("hf_xet is not installed in this environment")
-    download_registry.get_download_transport_capabilities(probe = True)
+    browse = download_registry.get_download_transport_capabilities()
+    download = download_registry.get_download_transport_capabilities(probe = True)
 
-    assert seen == [False, True]
+    assert browse.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert download.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert seen == [("cached", False), ("loading", True)]
 
 
 def test_gpu_init_override_is_serialized(monkeypatch):
@@ -486,3 +544,14 @@ def test_both_loaders_share_one_env_lock():
         assert (
             "with _load_lock:" in source
         ), f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"
+
+
+def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
+    """End to end against whichever unsloth_zoo is installed, with nothing stubbed. Which of the
+    two the zoo picks is its call and changes with the version; what must never happen either way
+    is both at once, because xet-core applies the preset after reading the environment, so it
+    voids the limit while still honouring the smaller per-file and concurrency numbers."""
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    flag_on = env.get("HF_XET_HIGH_PERFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
+    sized = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE" in env
+    assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"

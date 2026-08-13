@@ -66,6 +66,7 @@ export function ModelAutoSwitchSection() {
     syncDraft = true,
     keepKv?: boolean,
     autoDownload?: boolean,
+    apiOnly?: boolean,
   ) => {
     setIsSaving(true);
     setError(null);
@@ -75,6 +76,7 @@ export function ModelAutoSwitchSection() {
         idleSeconds,
         keepKv,
         autoDownload,
+        apiOnly,
       );
       setSettings(saved);
       if (syncDraft) {
@@ -124,6 +126,18 @@ export function ModelAutoSwitchSection() {
     void persist(settings.enabled, undefined, false, undefined, autoDownload);
   };
 
+  const handleApiOnlyToggle = (apiOnly: boolean) => {
+    if (!settings) return;
+    void persist(
+      settings.enabled,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      apiOnly,
+    );
+  };
+
   return (
     <SettingsSection title={t("settings.general.modelAutoSwitch.sectionTitle")}>
       <SettingsRow
@@ -162,7 +176,9 @@ export function ModelAutoSwitchSection() {
                 min={0}
                 step={1}
                 value={draftIdleSeconds}
-                aria-label="Idle auto-unload seconds"
+                aria-label={t(
+                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+                )}
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
                 className="h-8 w-24"
@@ -196,16 +212,32 @@ export function ModelAutoSwitchSection() {
         </div>
       </SettingsRow>
       {settings?.idleUnloadActive ? (
-        <SettingsRow
-          label={t("settings.general.modelAutoSwitch.keepKv")}
-          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
-        >
-          <Switch
-            checked={settings.autoUnloadKeepKv}
-            disabled={isSaving}
-            onCheckedChange={handleKeepKvToggle}
-          />
-        </SettingsRow>
+        <>
+          <SettingsRow
+            label={t("settings.general.modelAutoSwitch.keepKv")}
+            description={t(
+              "settings.general.modelAutoSwitch.keepKvDescription",
+            )}
+          >
+            <Switch
+              checked={settings.autoUnloadKeepKv}
+              disabled={isSaving}
+              onCheckedChange={handleKeepKvToggle}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label={t("settings.general.modelAutoSwitch.apiOnly")}
+            description={t(
+              "settings.general.modelAutoSwitch.apiOnlyDescription",
+            )}
+          >
+            <Switch
+              checked={settings.autoUnloadApiOnly}
+              disabled={isSaving}
+              onCheckedChange={handleApiOnlyToggle}
+            />
+          </SettingsRow>
+        </>
       ) : null}
     </SettingsSection>
   );

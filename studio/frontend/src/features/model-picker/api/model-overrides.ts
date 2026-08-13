@@ -26,11 +26,17 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_kv_bits?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  n_batch?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  n_ubatch?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -90,6 +96,11 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.kvCacheDtype) {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
+  // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX
+  // model at full precision.
+  if (config.mlxKvBits != null) {
+    payload.mlx_kv_bits = config.mlxKvBits;
+  }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;
   }
@@ -99,6 +110,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  // blank follows the llama.cpp defaults (2048 / 512)
+  if (config.nBatch && config.nBatch > 0) {
+    payload.n_batch = config.nBatch;
+  }
+  if (config.nUbatch && config.nUbatch > 0) {
+    payload.n_ubatch = config.nUbatch;
   }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;

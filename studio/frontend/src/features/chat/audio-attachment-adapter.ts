@@ -3,8 +3,8 @@
 
 import {
   AUDIO_ACCEPT,
-  MAX_AUDIO_SIZE,
   fileToBase64,
+  getAudioSizeError,
 } from "@/lib/audio-utils";
 import type {
   Attachment,
@@ -13,6 +13,7 @@ import type {
   PendingAttachment,
 } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { externalModelLabel } from "./lib/external-model-label";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
@@ -44,15 +45,21 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
         ? "The last model failed to load. Check the server logs, then load a model before adding audio files."
         : "Load a model before adding audio files.";
     } else if (!activeModel?.hasAudioInput) {
-      const label = activeModel?.name || checkpoint || "Current model";
+      // A connected provider's model has no row in `models`, so without the parse this
+      // named it by its raw `external::…` id (#8405).
+      const label =
+        activeModel?.name ||
+        externalModelLabel(checkpoint) ||
+        checkpoint ||
+        "Current model";
       unavailableReason = `${label} cannot accept audio. Load an audio-input model before attaching audio files.`;
     }
     if (unavailableReason) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
-    if (file.size > MAX_AUDIO_SIZE) {
-      const sizeReason = "Audio size exceeds 50MB limit";
+    const sizeReason = getAudioSizeError(file.size);
+    if (sizeReason) {
       toast.error(sizeReason);
       throw new Error(sizeReason);
     }

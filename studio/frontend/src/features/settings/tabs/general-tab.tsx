@@ -12,10 +12,18 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
-import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-import { emitTrainingRunsChanged } from "@/features/training";
+import {
+  LOADED_MODELS_PREFERENCE_KEYS,
+  setShowLoadedModels,
+  useShowLoadedModels,
+} from "@/features/loaded-models";
+
+import { useHfTokenStore } from "@/features/hub";
+import {
+  emitTrainingRunsChanged,
+  TRAINING_UI_PREFERENCE_KEYS,
+} from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
@@ -25,7 +33,6 @@ import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -53,19 +60,22 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import {
+  DesktopUpdateControl,
+  DesktopUpdateNote,
+} from "../components/desktop-update-control";
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 
-// Keys cleared by "Reset all local preferences".
-// NEVER include auth/session keys here — clearing them would log the user out
-// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
-// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
-// unsloth_onboarding_done.
+// Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
+// would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
+// unsloth_auth_must_change_password are excluded).
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -78,11 +88,11 @@ const PREFS_KEYS: string[] = [
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
   "unsloth_settings_active_tab",
+  SETTINGS_PANEL_PREFS_STORAGE_KEY,
   // Chat runtime prefs
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
-  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
-  // a reset would restore the old level instead of the fresh default.
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
@@ -110,6 +120,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
+  ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
   // Guided tour flags
@@ -117,12 +128,18 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  LOADED_MODELS_PREFERENCE_KEYS.show,
+  LOADED_MODELS_PREFERENCE_KEYS.collapsed,
+  LOADED_MODELS_PREFERENCE_KEYS.position,
+  LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
+  // Retired keys. The onboarding wizard is gone, but installs that ran it still
+  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the
-// in-memory draft, else cleanup would re-persist the just-cleared HF token.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -139,24 +156,14 @@ function resetAllPrefs() {
 
 export function GeneralTab() {
   const t = useT();
-  const navigate = useNavigate();
-  const closeDialog = useSettingsDialogStore((s) => s.closeDialog);
-  const { pathname, search } = useRouterState({
-    select: (s) => ({
-      pathname: s.location.pathname,
-      search:
-        "searchStr" in s.location
-          ? ((s.location as { searchStr?: string }).searchStr ?? "")
-          : typeof window !== "undefined"
-            ? window.location.search
-            : "",
-    }),
-  });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
-  const chatOnly = usePlatformStore((s) => s.chatOnly);
+
+  const hfTokenPersistenceError = useHfTokenStore(
+    (s) => s.persistenceError,
+  );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
-  const redirectTo = `${pathname}${search}`;
+  const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
   const [showToken, setShowToken] = useState(false);
@@ -183,6 +190,11 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);
+  const [launchAtLoginError, setLaunchAtLoginError] = useState<string | null>(
+    null,
+  );
+  const [isSavingLaunchAtLogin, setIsSavingLaunchAtLogin] = useState(false);
   const [embeddingModel, setEmbeddingModel] =
     useState<EmbeddingModelSettings | null>(null);
   const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
@@ -199,8 +211,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch). Skip during reset-prefs
-  // flow so we don't re-persist the draft after localStorage was cleared.
+  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
       if (resetInProgress) return;
@@ -224,9 +235,8 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick for the currently displayed token after the
-  // authenticated validation endpoint has confirmed it. A saved token alone
-  // may still be malformed, expired, or revoked.
+  // Only show the success tick after the authenticated validation endpoint confirms this token:
+  // a saved token alone may still be malformed, expired, or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -316,6 +326,44 @@ export function GeneralTab() {
     };
   }, [t]);
 
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    void loadLaunchAtLogin()
+      .then((enabled) => {
+        if (cancelled) return;
+        setLaunchAtLogin(enabled);
+        setLaunchAtLoginError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setLaunchAtLoginError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.startup.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveLaunchAtLogin = async (enabled: boolean) => {
+    setIsSavingLaunchAtLogin(true);
+    setLaunchAtLoginError(null);
+    try {
+      setLaunchAtLogin(await updateLaunchAtLogin(enabled));
+    } catch (error) {
+      setLaunchAtLoginError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.startup.saveError"),
+      );
+    } finally {
+      setIsSavingLaunchAtLogin(false);
+    }
+  };
+
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -339,8 +387,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
-      // refresh the history grid (hide/show the Copy preview link buttons).
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -357,8 +404,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid still holds is
-      // now stale. Refresh so copied links use freshly minted signatures.
+      // The secret rotated, so any preview_sig the history grid holds is stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -464,7 +510,16 @@ export function GeneralTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* Desktop-only, and self-gating: outside the desktop app both render
+          nothing and the section keeps just the version rows. */}
+      <StudioVersionSection>
+        {isTauri ? (
+          <div data-settings-label={t("settings.about.updates")}>
+            <DesktopUpdateControl />
+            <DesktopUpdateNote />
+          </div>
+        ) : null}
+      </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -489,8 +544,7 @@ export function GeneralTab() {
                   )}
                 />
                 {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input
-                  // underneath so the field still focuses anywhere.
+                  // Decorative: pointer-events-none lets clicks reach the input underneath.
                   <span
                     className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                     role="img"
@@ -525,11 +579,17 @@ export function GeneralTab() {
                 disabled={!draftToken && !hfToken}
                 onClick={clearHfToken}
               >
-                Clear
+                {t("settings.general.clearToken")}
               </Button>
             </div>
-            {tokenValidation.isChecking ? (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+            {hfTokenPersistenceError ? (
+              <p className="max-w-[330px] text-right text-xs text-destructive">
+                {hfTokenPersistenceError}
+              </p>
+            ) : tokenValidation.isChecking ? (
+              <p className="text-xs text-muted-foreground">
+                {t("settings.general.checkingToken")}
+              </p>
             ) : tokenValidation.error ? (
               <p className="max-w-[330px] text-right text-xs text-destructive">
                 {tokenValidation.error}
@@ -538,8 +598,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
         {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so there is no user-entered password to change here (and
-            changing it would clear the desktop secret). Web only. */}
+            secret, so this password only governs remote browsers and is managed
+            in Remote access instead. Web only. */}
         {isTauri ? null : (
           <SettingsRow
             label={t("settings.general.password")}
@@ -568,7 +628,40 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={launchAtLogin ?? false}
+                disabled={launchAtLogin === null || isSavingLaunchAtLogin}
+                onCheckedChange={(enabled) => void saveLaunchAtLogin(enabled)}
+              />
+              {launchAtLoginError ? (
+                <span className="max-w-[260px] text-right text-xs text-destructive">
+                  {launchAtLoginError}
+                </span>
+              ) : null}
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(
@@ -706,7 +799,7 @@ export function GeneralTab() {
                   max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
                   step={1}
                   value={draftUploadLimit}
-                  aria-label="Training dataset upload cap in MB"
+                  aria-label={t("settings.general.uploads.maxUploadSize")}
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
                   className="h-8 w-24"
                 />
@@ -732,26 +825,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {!chatOnly && (
-        <SettingsSection title={t("settings.general.gettingStarted")}>
-          <SettingsRow
-            label={t("settings.general.startOnboarding")}
-            description={t("settings.general.startOnboardingDescription")}
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                resetOnboardingDone();
-                closeDialog();
-                navigate({ to: "/onboarding", search: { redirectTo } });
-              }}
-            >
-              {t("settings.general.startOnboardingAction")}
-            </Button>
-          </SettingsRow>
-        </SettingsSection>
-      )}
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow

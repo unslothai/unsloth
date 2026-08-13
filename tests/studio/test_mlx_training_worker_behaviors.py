@@ -64,22 +64,18 @@ def test_slice_uses_inclusive_end_and_handles_zero():
 
 
 def test_poll_stop_returns_on_broken_pipe():
-    src = WORKER.read_text(encoding = "utf-8")
-    assert "except (EOFError, OSError)" in src
-    lines = src.splitlines()
-    for i, line in enumerate(lines):
-        if "except (EOFError, OSError)" in line:
-            for j in range(i + 1, min(i + 6, len(lines))):
-                stripped = lines[j].strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                assert stripped.startswith(
-                    "return"
-                ), f"expected return after EOFError/OSError, got {stripped!r}"
-                break
-            break
-    else:
-        raise AssertionError("EOFError/OSError handler not found in worker.py")
+    tree = ast.parse(WORKER.read_text(encoding = "utf-8"))
+    fn = _find_func(tree, "_start_worker_stop_poller")
+    assert fn is not None
+    handlers = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.ExceptHandler) or not isinstance(node.type, ast.Tuple):
+            continue
+        exception_names = {item.id for item in node.type.elts if isinstance(item, ast.Name)}
+        if {"EOFError", "OSError"}.issubset(exception_names):
+            handlers.append(node)
+    assert handlers
+    assert any(handler.body and isinstance(handler.body[0], ast.Return) for handler in handlers)
 
 
 def test_unsloth_zoo_mlx_imports_have_friendly_error():

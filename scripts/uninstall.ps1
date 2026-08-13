@@ -10,6 +10,11 @@
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
+    # Reset at entry: `irm ... | iex` defines this function in the caller's session, so a
+    # second run in the same window would otherwise inherit the first run's flags.
+    $script:RemoveFailed = $false
+    $script:StudioDbRemoved = $false
+
     function _Usage {
         Write-Host @'
 Unsloth Studio uninstaller (Windows PowerShell).
@@ -62,6 +67,8 @@ Environment:
             } catch {
                 if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                # The closing summary must not promise the data is gone.
+                $script:RemoveFailed = $true
                 return
             }
             # Remove-Item -Recurse can report success yet leave a transiently-locked
@@ -73,6 +80,65 @@ Environment:
             }
             if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
             _Substep "still present (files held open): $Path" "Yellow"
+            $script:RemoveFailed = $true
+        }
+    }
+
+    # LOCALAPPDATA / APPDATA are dropped in service and CI contexts, so fall back to the known
+    # folder; $null only if that fails too, which callers treat as incomplete cleanup.
+    function _AppDataRoot {
+        param([string]$Var, [string]$Folder)
+        if (-not [string]::IsNullOrWhiteSpace($Var)) { return $Var }
+        $p = try { [Environment]::GetFolderPath($Folder) } catch { $null }
+        if ([string]::IsNullOrWhiteSpace($p)) { return $null }
+        return $p
+    }
+
+    # Remove an install root and record whether its studio.db really went with it. That file
+    # holds chat_threads/chat_messages (backend/storage/studio_db.py), not the provider API
+    # keys, which providers_db.py keeps in the browser's localStorage only. It sits under the
+    # install root, so an env-mode install keeps it in a custom root a bare run cannot find.
+    # The check runs on the RESOLVED target: a relocated install (junction or symlink to
+    # another disk) passes the before-check through the link, but the delete unlinks only the
+    # reparse point, and afterwards the path stops resolving and reads as absent either way.
+    # Verifying rather than chasing the link is deliberate: following a reparse point out of
+    # the expected location to delete its target is what the deny list exists to stop.
+    function _RemoveRootRecordingDb {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        # Anchor a relative reparse-point target to the link's own parent, or Join-Path
+        # resolves it from the uninstaller's working directory and the db test reads false.
+        $resolveTarget = {
+            param($Item, $Fallback)
+            if (-not $Item -or -not $Item.Target) { return $Fallback }
+            $t = @($Item.Target)[0]
+            if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
+            if (-not [System.IO.Path]::IsPathRooted($t)) {
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
+            }
+            return $t
+        }
+        $real = $Path
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            $real = & $resolveTarget $item $Path
+        } catch { }
+        # The db itself can be a reparse point out of the tree: the target survives the delete.
+        $dbPath = Join-Path $real "studio.db"
+        $hadDb = Test-Path -LiteralPath $dbPath -PathType Leaf
+        if ($hadDb) {
+            try {
+                $dbItem = Get-Item -LiteralPath $dbPath -Force -ErrorAction SilentlyContinue
+                $dbPath = & $resolveTarget $dbItem $dbPath
+            } catch { }
+        }
+        _RemovePath $Path
+        if ($hadDb) {
+            if (Test-Path -LiteralPath $dbPath -PathType Leaf) {
+                $script:RemoveFailed = $true
+            } else {
+                $script:StudioDbRemoved = $true
+            }
         }
     }
 
@@ -323,6 +389,57 @@ Environment:
         } catch { }
     }
 
+    # The Studio-managed subtrees underneath the reparse-point TARGET of each Studio home, for the
+    # stop scan only.
+    #
+    # A junction or directory symlink Studio home runs its native binaries out of the PHYSICAL
+    # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
+    # and launching sd-server there, while _CustomStudioRoots only normalizes the string --
+    # System.IO.Path.GetFullPath is lexical and never touches the filesystem, so it leaves a
+    # reparse point untouched. The prefix scan below reads Win32_Process.ExecutablePath, the real
+    # image path, so without the target the running server never matches and survives an uninstall
+    # that took its tree.
+    #
+    # The SUBTREES, never the bare target. The delete unlinks only the reparse point and leaves the
+    # target standing, so anything there that is not ours is neither locking nor being removed --
+    # a home relocated onto a directory that holds other software must not have those force-stopped.
+    # Homes only, for the same reason: the component dirs ($defaultNode, $defaultLlamaCpp, ...) can
+    # themselves be links onto a shared runtime, and resolving those would put every process out of
+    # it in scope.
+    #
+    # Stop scan only, deliberately. _RemoveRootRecordingDb and the deletes still refuse to chase a
+    # link out of the expected location -- following one to delete its target is exactly what the
+    # deny list exists to prevent. Ending our own process under the target is not destructive.
+    function _ManagedPathsUnderReparseTargets {
+        param([string[]]$Roots)
+        # Everything setup.ps1 / the prebuilt installers place inside a Studio home.
+        $managed = @(
+            "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "node",
+            "stable-diffusion.cpp", ".cache", ".venv_t5_510", ".venv_t5_530", ".venv_t5_550"
+        )
+        $out = @()
+        foreach ($r in @($Roots | Where-Object { $_ })) {
+            try {
+                $item = Get-Item -LiteralPath $r -Force -ErrorAction SilentlyContinue
+                if (-not $item -or -not $item.Target) { continue }
+                $t = @($item.Target)[0]
+                if ([string]::IsNullOrWhiteSpace($t)) { continue }
+                # A symlink target may be relative; a junction's never is. Anchor it on the link's
+                # own parent, or GetFullPath would read it from the uninstaller's working directory.
+                if (-not [System.IO.Path]::IsPathRooted($t)) {
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                }
+                $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
+                if (-not $t) { continue }
+                foreach ($sub in $managed) {
+                    $p = (Join-Path $t $sub).TrimEnd('\', '/')
+                    if ($out -notcontains $p) { $out += $p }
+                }
+            } catch { }
+        }
+        return $out
+    }
+
     # Stop processes that would block deleting the paths we remove. Unlike
     # _StopStudioProcesses (venv exe only), this also catches llama-server/llama-cli,
     # the unsloth.exe shim, and orphaned mp workers under SYSTEM python holding a
@@ -349,7 +466,7 @@ Environment:
         # 2. A loaded module under a target root (orphaned mp-fork python holding a
         #    venv DLL). Scoped to names that load our DLLs to keep the scan fast.
         try {
-            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli, sd-cli, sd-server -ErrorAction SilentlyContinue
             foreach ($proc in $cands) {
                 $hit = $false
                 try {
@@ -369,6 +486,10 @@ Environment:
     # with it). A user-set UNSLOTH_LLAMA_CPP_PATH is left alone.
     $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
     $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
+    # Default-mode native diffusion build (install_sd_cpp_prebuilt.default_install_dir()),
+    # a sibling of studio like llama.cpp. No-op in env/custom mode and when absent. A
+    # user-set UNSLOTH_SD_CPP_PATH is left alone.
+    $defaultSdCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "stable-diffusion.cpp" } else { $null }
     $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
     # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
     # default mode. No-op in env/custom mode (nested under the custom root) and absent.
@@ -398,30 +519,137 @@ Environment:
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # The app and the WebView2 helpers holding its profile open must both exit before the
+    # EBWebView delete below. Same resolver as that removal, or the sweep misses the profile
+    # we then try to delete and the helpers keep holding locks.
+    $localAppRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'
+    $webviewProfile = if ($localAppRoot) { Join-Path $localAppRoot "ai.unsloth.studio" } else { $null }
+    # Account-scoped, like every other kill here. installMode is currentUser, so the profile is
+    # this account's and shared by all its sessions: a second console or RDS session must die
+    # too or it re-creates the profile mid-delete, while another user's Studio must not be
+    # touched. SIDs, so domain and locale do not matter; an unreadable owner is skipped.
+    $meSid = try { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { $null }
+    $studioPids = @()
+    if ($meSid) {
+        try {
+            # Unsloth.exe too: older releases used the product name as MAINBINARYNAME, and this
+            # script is always fetched fresh from main, so it meets those installs. A missed
+            # process re-creates the profile. The owner-SID filter keeps the broader name safe.
+            $filter = "Name = 'unsloth-studio.exe' OR Name = 'Unsloth.exe'"
+            foreach ($sp in (Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue)) {
+                $spSid = try { (Invoke-CimMethod -InputObject $sp -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid } catch { $null }
+                if ($spSid -eq $meSid) { $studioPids += [int]$sp.ProcessId }
+            }
+        } catch { }
+    }
+    if ($webviewProfile) {
+        # Escape "[", a wildcard class, or we miss our profile and match others. Trailing \
+        # spares "<bid>2\EBWebView".
+        $pattern = "*" + [System.Management.Automation.WildcardPattern]::Escape($webviewProfile) + "\*"
+        try {
+            $wvProcs = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)
+            # Parent lookup for the ancestor walk; WebView2 procs are all the chain passes through.
+            $parentOf = @{}
+            foreach ($p in $wvProcs) { $parentOf[[int]$p.ProcessId] = [int]$p.ParentProcessId }
+            # Chromium process model: the renderer, GPU and utility helpers are children of the
+            # browser process, not of unsloth-studio.exe, so an immediate-parent check misses
+            # them all and they keep EBWebView locked (Stop-Process is not recursive).
+            # Depth-capped so a PID-reuse cycle cannot spin here.
+            $isOurs = {
+                param($StartPid)
+                $cur = $StartPid
+                for ($hop = 0; $hop -lt 12; $hop++) {
+                    if (-not $parentOf.ContainsKey($cur)) { return $false }
+                    $parent = $parentOf[$cur]
+                    if ($studioPids -contains $parent) { return $true }
+                    if ($parent -eq $cur -or $parent -le 0) { return $false }
+                    $cur = $parent
+                }
+                return $false
+            }
+            foreach ($proc in $wvProcs) {
+                # CommandLine is null across an elevation boundary: fall back to the parent chain.
+                $mine = if ($proc.CommandLine) { $proc.CommandLine -ilike $pattern }
+                        else { & $isOurs ([int]$proc.ProcessId) }
+                if ($mine) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+            }
+        } catch { }
+    }
+    if ($studioPids) {
+        try { Stop-Process -Id $studioPids -Force -ErrorAction SilentlyContinue } catch { }
+        # WebView2 releases the profile only once its browser processes have exited.
+        Wait-Process -Id $studioPids -Timeout 10 -ErrorAction SilentlyContinue
+    }
+    # Only stop the default sd.cpp dir when it carries our owner marker, so stop matches the
+    # marker-gated delete and a user's own sd-server at this default path is left running.
+    $defaultSdCppToStop = $null
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        $defaultSdCppToStop = $defaultSdCpp
+    }
+    # A custom/env-mode sd.cpp build now sits UNDER its root at <root>\stable-diffusion.cpp, which
+    # the $knownRoots prefix match below already covers. Older builds put it BESIDE the root at
+    # <parent>\stable-diffusion.cpp, outside $knownRoots. We delete those marker-owned dirs below,
+    # so add them to the handle scan too, gated on the same owner marker.
+    $customSdCppToStop = @()
+    foreach ($r in $customRoots) {
+        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
+            $customSdCppToStop += $sdc
+        }
+    }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp))
+    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
     foreach ($r in $customRoots) {
         if (_IsUnsafeRoot $r) {
             _Substep "refusing to remove unsafe path: $r" "Yellow"
+            # install.ps1 accepts any writable root, so a real install can sit under a deny-listed
+            # path. Nothing is deleted and it holds studio.db, so say so. Mirrors uninstall.sh.
+            if (Test-Path -LiteralPath $r) { $script:RemoveFailed = $true }
             continue
         }
         if (-not (_IsStudioRoot $r)) {
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
-        _RemovePath $r
+        _RemoveRootRecordingDb $r
+        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
+        # <root>\stable-diffusion.cpp, so the removal above already took it. Older builds put it
+        # BESIDE the root at <parent>\stable-diffusion.cpp (find_sd_cpp_binary derived it from
+        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
+        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
+        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
+        # unowned checkout. Guard the derived parent path the same way.
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if (_IsUnsafeRoot $customSdCpp) {
+            _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
+        } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+            _Substep "keeping sd.cpp without Studio owner marker: $customSdCpp" "Yellow"
+        } else {
+            _RemovePath $customSdCpp
+        }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
+    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
+    # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces,
+    # so a user may keep their own checkout (or point UNSLOTH_SD_CPP_PATH) at this default path;
+    # require our owner marker (written by install_sd_cpp_prebuilt) before rm, mirroring the
+    # custom-root guard above, so a user's own checkout or a pre-marker Studio build is kept.
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        _Substep "keeping sd.cpp without Studio owner marker: $defaultSdCpp" "Yellow"
+    } elseif ($defaultSdCpp) {
+        _RemovePath $defaultSdCpp
+    }
     if ($defaultCache) { _RemovePath $defaultCache }
     # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
     # custom mode (nested under the custom root, removed with it) and when absent.
@@ -455,6 +683,24 @@ Environment:
     if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
         -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
         _RemovePath $defaultUnslothHome
+    }
+
+    # Runtime data, created at first launch rather than by install.ps1: LOCALAPPDATA holds the
+    # EBWebView profile (a leftover copy serves a stale frontend), APPDATA the app config dir.
+    _Step "Removing WebView caches and app data (ai.unsloth.studio)..."
+    # Count an unresolvable root as incomplete cleanup: skipping it silently would leave the
+    # profile on disk while the summary reports the session as gone.
+    foreach ($known in @(
+        @{ Var = $env:LOCALAPPDATA; Folder = 'LocalApplicationData' },
+        @{ Var = $env:APPDATA;      Folder = 'ApplicationData' }
+    )) {
+        $base = _AppDataRoot $known.Var $known.Folder
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            _Substep "could not resolve $($known.Folder); WebView data may remain" "Yellow"
+            $script:RemoveFailed = $true
+            continue
+        }
+        _RemovePath (Join-Path $base "ai.unsloth.studio")
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
@@ -541,6 +787,27 @@ Environment:
 
     Write-Host ""
     Write-Host "Unsloth Studio uninstalled."
+    if ($script:RemoveFailed) {
+        Write-Host "Note: some paths could not be removed (see 'could not remove:' above), so the"
+        Write-Host "      signed-in session and local chat history may still be on disk. Remove"
+        Write-Host "      those paths by hand to clear them."
+    } elseif ($script:StudioDbRemoved) {
+        # Scoped to what was removed: a bare run never discovers a coexisting env-mode root.
+        Write-Host "Note: this also removed the app's WebView data and the studio.db it found, so"
+        Write-Host "      the desktop app's session and the chat history in the install(s) removed"
+        Write-Host "      above are gone."
+    } else {
+        # No studio.db was deleted, so only the WebView-local data is accounted for: an env-mode
+        # install this run never discovered still has its keys and history.
+        Write-Host "Note: this also removed the app's WebView data, so the desktop app's session"
+        Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
+        Write-Host "      localStorage as the API keys below."
+        Write-Host "      No studio.db was found, so any chat history in an install root this run"
+        Write-Host "      did not see is still on disk."
+    }
+    Write-Host "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
+    Write-Host "      Unless you ran Studio as the desktop app, clear site data for the"
+    Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {

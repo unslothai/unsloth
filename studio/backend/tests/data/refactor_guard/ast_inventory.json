@@ -1,0 +1,1766 @@
+{
+  "core.inference.inference": {
+    "symbols": {
+      "HarmonyTextStreamer": {
+        "kind": "class"
+      },
+      "InferenceBackend": {
+        "kind": "class"
+      },
+      "ReasoningTextIteratorStreamer": {
+        "kind": "class"
+      },
+      "_GenerationThreadError": {
+        "kind": "class"
+      },
+      "get_inference_backend": {
+        "kind": "def"
+      },
+      "inference_backend": {
+        "kind": "assign"
+      },
+      "logger": {
+        "kind": "assign"
+      }
+    }
+  },
+  "core.inference.llama_cpp": {
+    "symbols": {
+      "CountAborted": {
+        "kind": "class"
+      },
+      "GgufLoadIntent": {
+        "kind": "class"
+      },
+      "LLAMA_SERVER_NOT_FOUND_DETAIL": {
+        "kind": "assign"
+      },
+      "LlamaCppBackend": {
+        "kind": "class"
+      },
+      "LlamaServerNotFoundError": {
+        "kind": "class"
+      },
+      "ParavirtualPlacement": {
+        "kind": "class"
+      },
+      "_ANSWER_PIVOT": {
+        "kind": "assign"
+      },
+      "_APPLE_UNIFIED_MEMORY_FRACTION": {
+        "kind": "assign"
+      },
+      "_BIG_ENDIAN_GGUF_FILENAME_RE": {
+        "kind": "assign"
+      },
+      "_BOOTSTRAP_SWA_DEFAULTS": {
+        "kind": "assign"
+      },
+      "_CANONICAL_SPEC_MODES": {
+        "kind": "assign"
+      },
+      "_CHAT_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_CPU_DEVICE_VALUES": {
+        "kind": "assign"
+      },
+      "_CPU_MOE_COUNT_FLAGS": {
+        "kind": "assign"
+      },
+      "_CPU_PLACEMENT_FLAGS": {
+        "kind": "assign"
+      },
+      "_CPU_PLACEMENT_PRESENCE_FLAGS": {
+        "kind": "assign"
+      },
+      "_CPU_RUNTIME_OWNER_FILE": {
+        "kind": "assign"
+      },
+      "_CTX_FIT_VRAM_FRACTION": {
+        "kind": "assign"
+      },
+      "_CpuFallbackRuntime": {
+        "kind": "class"
+      },
+      "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": {
+        "kind": "assign"
+      },
+      "_DEFAULT_LLAMA_N_BATCH": {
+        "kind": "assign"
+      },
+      "_DEFAULT_LLAMA_N_UBATCH": {
+        "kind": "assign"
+      },
+      "_DEFAULT_MAX_TOKENS_FLOOR": {
+        "kind": "assign"
+      },
+      "_DEFAULT_STREAM_STALL_TIMEOUT_S": {
+        "kind": "assign"
+      },
+      "_DEVICE_ROW_RE": {
+        "kind": "assign"
+      },
+      "_DRAFTER_DIR_KINDS": {
+        "kind": "assign"
+      },
+      "_DRAFTER_DISPLAY_LABELS": {
+        "kind": "assign"
+      },
+      "_DRAFTER_KINDS": {
+        "kind": "assign"
+      },
+      "_FINAL_ANSWER_SIGNAL": {
+        "kind": "assign"
+      },
+      "_FORCED_PLAN_INTENT": {
+        "kind": "assign"
+      },
+      "_GEMMA_MTP_FAMILY_RE": {
+        "kind": "assign"
+      },
+      "_GGML_GPU_BACKEND_RE": {
+        "kind": "assign"
+      },
+      "_GGUF_AUDIO_READ_TIMEOUT": {
+        "kind": "assign"
+      },
+      "_GGUF_KNOWN_QUANT_RE": {
+        "kind": "assign"
+      },
+      "_GGUF_REHEARSAL_ARGS_RE": {
+        "kind": "assign"
+      },
+      "_GPU_DEVICE_PREFIXES": {
+        "kind": "assign"
+      },
+      "_GPU_OFFLOAD_MARKERS": {
+        "kind": "assign"
+      },
+      "_GPU_OFFLOAD_OVERRIDE_FLAGS": {
+        "kind": "assign"
+      },
+      "_IGPU_HOST_RESERVE_MIB": {
+        "kind": "assign"
+      },
+      "_INKLING_REASONING_EFFORT": {
+        "kind": "assign"
+      },
+      "_LEGACY_SPEC_MODE_MAP": {
+        "kind": "assign"
+      },
+      "_LLAMA_ARG_AUTO_VALUES": {
+        "kind": "assign"
+      },
+      "_LLAMA_ARG_FALSE_VALUES": {
+        "kind": "assign"
+      },
+      "_LLAMA_ARG_TRUE_FALSE_AUTO_VALUES": {
+        "kind": "assign"
+      },
+      "_LLAMA_ARG_TRUE_OR_AUTO_VALUES": {
+        "kind": "assign"
+      },
+      "_LLAMA_ARG_TRUE_VALUES": {
+        "kind": "assign"
+      },
+      "_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_LOADS_IN_FLIGHT_LOCK": {
+        "kind": "assign"
+      },
+      "_LlamaStreamCancelled": {
+        "kind": "class"
+      },
+      "_MAX_TOOL_CALLS_PER_TURN": {
+        "kind": "assign"
+      },
+      "_MTP_MIN_SIZE_B": {
+        "kind": "assign"
+      },
+      "_MTP_VRAM_RESERVE_FRAC": {
+        "kind": "assign"
+      },
+      "_OFFLOADED_LAYERS_RE": {
+        "kind": "assign"
+      },
+      "_OVERRIDE_TENSOR_FLAGS": {
+        "kind": "assign"
+      },
+      "_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR": {
+        "kind": "assign"
+      },
+      "_PERMANENT_HUB_ERRORS": {
+        "kind": "assign"
+      },
+      "_PROVISIONAL_ARGS_MIN_CHARS": {
+        "kind": "assign"
+      },
+      "_REASONING_EFFORT_SCALE": {
+        "kind": "assign"
+      },
+      "_RESPAWN_REAP_GRACE_S": {
+        "kind": "assign"
+      },
+      "_SHARD_FULL_RE": {
+        "kind": "assign"
+      },
+      "_SHARD_RE": {
+        "kind": "assign"
+      },
+      "_SPEC_ENV_VARS": {
+        "kind": "assign"
+      },
+      "_SPEC_KIND_CAPABILITY": {
+        "kind": "assign"
+      },
+      "_SWA_CACHE": {
+        "kind": "assign"
+      },
+      "_SWA_CACHE_LOCK": {
+        "kind": "assign"
+      },
+      "_SWA_PATTERN_SOURCE_RE": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_GEMMA_RE": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_NAME_RE": {
+        "kind": "assign"
+      },
+      "_TEXT_TOOL_REHEARSAL_RE": {
+        "kind": "assign"
+      },
+      "_THREAD_OVERRIDE_FLAGS": {
+        "kind": "assign"
+      },
+      "_TOOL_TEMPLATE_MARKERS": {
+        "kind": "assign"
+      },
+      "_UNRECOVERABLE_LOCAL_ERRNOS": {
+        "kind": "assign"
+      },
+      "_VULKAN_DIFFUSION_GPU_IDS_ERROR": {
+        "kind": "assign"
+      },
+      "_accumulated_spec_types": {
+        "kind": "def"
+      },
+      "_apply_igpu_host_reserve_mib": {
+        "kind": "def"
+      },
+      "_arch_aliases": {
+        "kind": "def"
+      },
+      "_args_place_tensors_on_cpu": {
+        "kind": "def"
+      },
+      "_auto_mode_drops_mtp": {
+        "kind": "def"
+      },
+      "_backfill_usage_from_timings": {
+        "kind": "def"
+      },
+      "_build_ngram_mod_flags": {
+        "kind": "def"
+      },
+      "_bundled_hip_present": {
+        "kind": "def"
+      },
+      "_cached_candidate_matches_revision_size": {
+        "kind": "def"
+      },
+      "_cached_colocated_split_main": {
+        "kind": "def"
+      },
+      "_cached_complete_candidate": {
+        "kind": "def"
+      },
+      "_cached_hf_snapshot_file": {
+        "kind": "def"
+      },
+      "_cached_variant_candidates": {
+        "kind": "def"
+      },
+      "_cached_variant_resolution": {
+        "kind": "def"
+      },
+      "_canonicalize_spec_mode": {
+        "kind": "def"
+      },
+      "_child_spec_env": {
+        "kind": "def"
+      },
+      "_coerce_reasoning_effort": {
+        "kind": "def"
+      },
+      "_companion_snapshot_sibling": {
+        "kind": "def"
+      },
+      "_cpu_runtime_owner_alive": {
+        "kind": "def"
+      },
+      "_device_selection_is_cpu": {
+        "kind": "def"
+      },
+      "_diffusion_manual_ngl": {
+        "kind": "def"
+      },
+      "_drafter_path_kind": {
+        "kind": "def"
+      },
+      "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_effective_main_cache_types": {
+        "kind": "def"
+      },
+      "_effective_spec_type": {
+        "kind": "def"
+      },
+      "_emitted_n_batch": {
+        "kind": "def"
+      },
+      "_env_main_cache_type_for_budget": {
+        "kind": "def"
+      },
+      "_env_places_tensors_on_cpu": {
+        "kind": "def"
+      },
+      "_extra_args_device": {
+        "kind": "def"
+      },
+      "_extra_args_draft_cache_types": {
+        "kind": "def"
+      },
+      "_extra_args_draft_device": {
+        "kind": "def"
+      },
+      "_extra_args_draft_device_pin": {
+        "kind": "def"
+      },
+      "_extra_args_draft_offloaded_to_cpu": {
+        "kind": "def"
+      },
+      "_extra_args_main_cache_type_for_budget": {
+        "kind": "def"
+      },
+      "_extra_args_main_device": {
+        "kind": "def"
+      },
+      "_extra_args_mtp_draft_path": {
+        "kind": "def"
+      },
+      "_extra_args_n_ubatch": {
+        "kind": "def"
+      },
+      "_extra_args_requests_dflash": {
+        "kind": "def"
+      },
+      "_extra_args_requests_dspark": {
+        "kind": "def"
+      },
+      "_extra_args_requests_mtp": {
+        "kind": "def"
+      },
+      "_extra_args_requests_separate_draft": {
+        "kind": "def"
+      },
+      "_extra_args_set_any_flag": {
+        "kind": "def"
+      },
+      "_extra_args_set_spec_type": {
+        "kind": "def"
+      },
+      "_extra_args_spec_draft_n_max": {
+        "kind": "def"
+      },
+      "_extract_model_size_b": {
+        "kind": "def"
+      },
+      "_extract_reasoning_effort_levels": {
+        "kind": "def"
+      },
+      "_fetch_swa_entry_from_hf": {
+        "kind": "def"
+      },
+      "_finalize_reasoning_only_cumulative": {
+        "kind": "def"
+      },
+      "_flash_attn_enabled_from_args": {
+        "kind": "def"
+      },
+      "_gguf_active_tool_names": {
+        "kind": "def"
+      },
+      "_gguf_extra_shards": {
+        "kind": "def"
+      },
+      "_gguf_files_for_variant": {
+        "kind": "def"
+      },
+      "_gguf_has_genuine_tool_signal": {
+        "kind": "def"
+      },
+      "_gguf_rehearsal_signal_pos": {
+        "kind": "def"
+      },
+      "_gguf_snapshot_files": {
+        "kind": "def"
+      },
+      "_held_rehearsal_tail_len": {
+        "kind": "def"
+      },
+      "_hf_endpoint_host": {
+        "kind": "def"
+      },
+      "_hf_env_offline": {
+        "kind": "def"
+      },
+      "_hf_offline_if_unreachable": {
+        "kind": "def"
+      },
+      "_hf_offline_if_unreachable_for": {
+        "kind": "def"
+      },
+      "_hf_repo_from_url": {
+        "kind": "def"
+      },
+      "_hf_unreachable": {
+        "kind": "def"
+      },
+      "_hub_cache_dir_for_snapshot_path": {
+        "kind": "def"
+      },
+      "_hub_download_blocks_gguf_load": {
+        "kind": "def"
+      },
+      "_hub_download_in_flight": {
+        "kind": "def"
+      },
+      "_is_big_endian_gguf_path": {
+        "kind": "def"
+      },
+      "_is_companion_gguf_path": {
+        "kind": "def"
+      },
+      "_is_dflash_drafter_path": {
+        "kind": "def"
+      },
+      "_is_dspark_drafter_path": {
+        "kind": "def"
+      },
+      "_is_external_link": {
+        "kind": "def"
+      },
+      "_is_gemma_mtp_family": {
+        "kind": "def"
+      },
+      "_is_gemma_mtp_name": {
+        "kind": "def"
+      },
+      "_is_mtp_model_name": {
+        "kind": "def"
+      },
+      "_is_mtp_only_drafter_path": {
+        "kind": "def"
+      },
+      "_is_positive_int": {
+        "kind": "def"
+      },
+      "_is_rehearsal_prefix": {
+        "kind": "def"
+      },
+      "_is_root_dflash_drafter_path": {
+        "kind": "def"
+      },
+      "_kv_bytes_per_elem": {
+        "kind": "def"
+      },
+      "_kv_cache_cell_layout": {
+        "kind": "def"
+      },
+      "_kv_offload_from_args": {
+        "kind": "def"
+      },
+      "_kv_unified_from_args": {
+        "kind": "def"
+      },
+      "_lib_dir_has_ggml_backend": {
+        "kind": "def"
+      },
+      "_llama_lib_dir": {
+        "kind": "def"
+      },
+      "_load_swa_cache": {
+        "kind": "def"
+      },
+      "_metal_device_is_paravirtual": {
+        "kind": "def"
+      },
+      "_mla_mtp_auto_enabled": {
+        "kind": "def"
+      },
+      "_native_linux_system_rocm_lib_dirs": {
+        "kind": "def"
+      },
+      "_pad_kv_cells": {
+        "kind": "def"
+      },
+      "_paravirtual_draft_ngl_flag": {
+        "kind": "def"
+      },
+      "_paravirtual_mmproj_pinnable": {
+        "kind": "def"
+      },
+      "_paravirtual_probe_answered": {
+        "kind": "def"
+      },
+      "_paravirtual_split_mode_pin": {
+        "kind": "def"
+      },
+      "_paravirtual_strip_gpu_overrides": {
+        "kind": "def"
+      },
+      "_period_from_layer_types": {
+        "kind": "def"
+      },
+      "_pick_mmproj": {
+        "kind": "def"
+      },
+      "_pipeline_parallel_disabled_by_args": {
+        "kind": "def"
+      },
+      "_planned_main_cache_types": {
+        "kind": "def"
+      },
+      "_probe_dns_dead": {
+        "kind": "def"
+      },
+      "_quant_label_for_endian": {
+        "kind": "def"
+      },
+      "_resolve_llama_binary": {
+        "kind": "def"
+      },
+      "_resolve_repo_id_casing": {
+        "kind": "def"
+      },
+      "_resolve_swa_entry_from_transformers": {
+        "kind": "def"
+      },
+      "_resolve_swa_pattern": {
+        "kind": "def"
+      },
+      "_save_swa_cache": {
+        "kind": "def"
+      },
+      "_scale_diffusion_required_gb": {
+        "kind": "def"
+      },
+      "_shim_supports_ngl": {
+        "kind": "def"
+      },
+      "_should_suppress_forced_no_tool_output": {
+        "kind": "def"
+      },
+      "_snapshot_dir_of": {
+        "kind": "def"
+      },
+      "_snapshot_has_all_shards": {
+        "kind": "def"
+      },
+      "_sniff_text_tool_name": {
+        "kind": "def"
+      },
+      "_source_declares_option": {
+        "kind": "def"
+      },
+      "_strip_flag_pairs": {
+        "kind": "def"
+      },
+      "_swa_cache_path": {
+        "kind": "def"
+      },
+      "_swa_entry_from_config_obj": {
+        "kind": "def"
+      },
+      "_swa_entry_from_layer_types": {
+        "kind": "def"
+      },
+      "_swa_full_from_args_or_env": {
+        "kind": "def"
+      },
+      "_sweep_abandoned_cpu_runtimes": {
+        "kind": "def"
+      },
+      "_with_gguf_load_marker": {
+        "kind": "def"
+      },
+      "_without_subsequence": {
+        "kind": "def"
+      },
+      "_wsl_system_rocm_lib_dirs": {
+        "kind": "def"
+      },
+      "cached_gguf_for_load": {
+        "kind": "def"
+      },
+      "chat_load_active": {
+        "kind": "def"
+      },
+      "chat_load_in_flight": {
+        "kind": "def"
+      },
+      "classify_gpu_offload_lines": {
+        "kind": "def"
+      },
+      "detect_reasoning_flags": {
+        "kind": "def"
+      },
+      "gguf_load_in_flight": {
+        "kind": "def"
+      },
+      "hf_gguf_load_in_flight": {
+        "kind": "def"
+      },
+      "logger": {
+        "kind": "assign"
+      },
+      "paravirtual_normalized_request": {
+        "kind": "def"
+      },
+      "zero_vram_chat_load": {
+        "kind": "def"
+      }
+    }
+  },
+  "core.inference.safetensors_agentic": {
+    "symbols": {
+      "_FUNCTION_SIGNAL_RE": {
+        "kind": "assign"
+      },
+      "_MAX_BARE_JSON_BUFFER": {
+        "kind": "assign"
+      },
+      "_MAX_BUFFER_CHARS": {
+        "kind": "assign"
+      },
+      "_MAX_TOOL_CALLS_PER_TURN": {
+        "kind": "assign"
+      },
+      "_MISTRAL_RENDER_NAME_RE": {
+        "kind": "assign"
+      },
+      "_REHEARSAL_RENDER_NAME_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_CALL_NAME_RE": {
+        "kind": "assign"
+      },
+      "_UNRESTRICTED_REHEARSAL_RE": {
+        "kind": "assign"
+      },
+      "_accepts_output_callback": {
+        "kind": "def"
+      },
+      "_active_tool_names": {
+        "kind": "def"
+      },
+      "_call_single_turn": {
+        "kind": "def"
+      },
+      "_coerce_arguments": {
+        "kind": "def"
+      },
+      "_coerce_arguments_with_provenance": {
+        "kind": "def"
+      },
+      "_detect_render_html_tool_start": {
+        "kind": "def"
+      },
+      "_earliest_tool_signal": {
+        "kind": "def"
+      },
+      "_has_genuine_tool_signal": {
+        "kind": "def"
+      },
+      "_held_rehearsal_tail_len": {
+        "kind": "def"
+      },
+      "_is_rehearsal_prefix": {
+        "kind": "def"
+      },
+      "_looks_like_enabled_bare_json": {
+        "kind": "def"
+      },
+      "_rehearsal_name_start": {
+        "kind": "def"
+      },
+      "_reprompt_intent_text": {
+        "kind": "def"
+      },
+      "_status_for_tool": {
+        "kind": "def"
+      },
+      "_strip_tool_markup_final": {
+        "kind": "def"
+      },
+      "_tool_event_provenance": {
+        "kind": "def"
+      },
+      "logger": {
+        "kind": "assign"
+      },
+      "run_safetensors_tool_loop": {
+        "kind": "def"
+      },
+      "strip_tool_markup_streaming": {
+        "kind": "def"
+      }
+    }
+  },
+  "core.inference.tool_call_parser": {
+    "compiled": {
+      "INTENT_SIGNAL": "\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b))|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+to\\\\s+(?:do(?:ing)?\\\\s+my\\\\s+best|try\\\\s+my\\\\s+best|be\\\\s+(?:able|happy|glad)\\\\s+to\\\\b|assist\\\\b|help\\\\s+you\\\\b(?!\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render))|give\\\\s+you\\\\s+accurate\\\\b))|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e|review|inspect|read|gather|examine|retrieve|browse|consult|verify|confirm|compute|calculate|determine|identify|render)\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\" flags=42",
+      "_ATTR_FUNC_OPEN_RE": "'<function\\\\s+name=\"' flags=32",
+      "_BARE_JSON_NAME_RE": "'\"name\"\\\\s*:\\\\s*\"([^\"]+)\"' flags=32",
+      "_DEEPSEEK_BEGIN_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>' flags=32",
+      "_DEEPSEEK_R1_CLOSE_RE": "'```[\\\\s\\\\r\\\\n]*<｜tool▁call▁end｜>' flags=32",
+      "_EMBEDDED_MARKER_RE": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>|<\\\\|tool_calls_section_begin\\\\|>|<\\\\|tool_call_begin\\\\|>' flags=32",
+      "_FUNC_CLOSE_TAG_RE": "'</function>' flags=32",
+      "_GEMMA_BARE_TC_PREFIX_RE": "'(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$' flags=32",
+      "_GEMMA_BARE_TC_RE": "'(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
+      "_GEMMA_KEY_RE": "'\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:' flags=32",
+      "_GEMMA_TC_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{' flags=32",
+      "_GLM_JSON_NUMERIC_RE": "'-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?' flags=32",
+      "_GLM_TC_OPEN_RE": "'<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)' flags=32",
+      "_KIMI_ID_RE": "'^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$' flags=32",
+      "_LLAMA3_CALL_CHAIN_RE": "'\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
+      "_LLAMA3_KEY_RE": "'\\\\w+' flags=32",
+      "_LLAMA3_LIT_RE": "'true|false|null' flags=32",
+      "_LLAMA3_NUM_RE": "'-?(?:\\\\d+(?:\\\\.\\\\d*)?|\\\\.\\\\d+)(?:[eE][+-]?\\\\d+)?(?![\\\\w.])' flags=32",
+      "_LLAMA3_PY_CALL_HEAD_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
+      "_LLAMA3_PY_CALL_RE": "'<\\\\|python_tag\\\\|>\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(' flags=32",
+      "_LLAMA3_WS_RE": "'\\\\s*' flags=32",
+      "_MISTRAL_V11_NAME_RE": "'\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*' flags=32",
+      "_OUTER_ENVELOPE_CLOSED_PATS[0]": "'<tool_call>(?:(?!<tool_call>).)*</tool_call>' flags=48",
+      "_OUTER_ENVELOPE_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
+      "_OUTER_ENVELOPE_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_OUTER_ENVELOPE_OPEN_RE": "'<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())' flags=32",
+      "_TC_END_TAG_RE": "'</(?:tool_call|function)>' flags=32",
+      "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
+      "_TC_FUNC_START_RE": "'<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*' flags=32",
+      "_TC_JSON_START_RE": "'<tool_call>\\\\s*\\\\{' flags=32",
+      "_TC_PARAM_CLOSE_RE": "'\\\\s*</(?:parameter|param)>\\\\s*$' flags=32",
+      "_TC_PARAM_START_RE": "'<(?:parameter|param)(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>[^\\\\S\\\\n]*' flags=32",
+      "_TOOL_ALL_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TOOL_ALL_PATS[10]": "'<\\\\|tool_call>(?=\\\\s*call\\\\s*:|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[11]": "'\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[12]": "'<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\()|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[13]": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[14]": "'<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[15]": "'<\\\\|tool_calls_section_begin\\\\|>(?=\\\\s*<\\\\|tool_call_begin\\\\|>|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[16]": "'<\\\\|tool_call_begin\\\\|>(?=\\\\s*[A-Za-z_][\\\\w.\\\\-]*:\\\\d|\\\\s*$).*$' flags=48",
+      "_TOOL_ALL_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
+      "_TOOL_ALL_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_TOOL_ALL_PATS[3]": "'\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?' flags=48",
+      "_TOOL_ALL_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}' flags=48",
+      "_TOOL_ALL_PATS[5]": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>.*?<｜tool▁calls▁end｜>' flags=48",
+      "_TOOL_ALL_PATS[6]": "'<\\\\|tool_calls_section_begin\\\\|>.*?<\\\\|tool_calls_section_end\\\\|>' flags=48",
+      "_TOOL_ALL_PATS[7]": "'<\\\\|tool_call_begin\\\\|>.*?<\\\\|tool_call_end\\\\|>' flags=48",
+      "_TOOL_ALL_PATS[8]": "'<tool_call>.*$' flags=48",
+      "_TOOL_ALL_PATS[9]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$' flags=48",
+      "_TOOL_CLOSED_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TOOL_CLOSED_PATS[1]": "'<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>' flags=48",
+      "_TOOL_CLOSED_PATS[2]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_TOOL_CLOSED_PATS[3]": "'\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?' flags=48",
+      "_TOOL_CLOSED_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}' flags=48",
+      "_TOOL_CLOSED_PATS[5]": "'<｜(?:tool▁calls▁begin|tool_calls_begin|tool calls begin|tool\\\\\\\\_calls\\\\\\\\_begin|tool▁calls)｜>.*?<｜tool▁calls▁end｜>' flags=48",
+      "_TOOL_CLOSED_PATS[6]": "'<\\\\|tool_calls_section_begin\\\\|>.*?<\\\\|tool_calls_section_end\\\\|>' flags=48",
+      "_TOOL_CLOSED_PATS[7]": "'<\\\\|tool_call_begin\\\\|>.*?<\\\\|tool_call_end\\\\|>' flags=48"
+    },
+    "regexes": {
+      "re.compile(\"(?im)(\\\\b(i['\\\\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\\\\b(?!\\\\s+(?:not|never)\\\\b)(?!\\\\s+\" + _HELP_OFFER + ')|\\\\b(?:let me|allow me)\\\\b(?!\\\\s+(?:not|never|know)\\\\b)(?!\\\\s+to\\\\s+' + _HELP_OFFER + \")|(?:^|[.!?]\\\\s+)\\\\s*(?:the\\\\s+)?first\\\\s+step\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:my|our)\\\\s+(?:plan|approach|step)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+(?:i|we|let['’]?s|let us)\\\\b|(?:^|[.!?]\\\\s+)\\\\s*first\\\\s*[,:–—-]?\\\\s+\" + _ACTION_VERB + \"\\\\b|\\\\b(?:step \\\\d+:?|here['\\\\u2019]?s (?:my |the |a )?(?:plan|approach))|\\\\b(?:now i|next i)\\\\b)\")": 1,
+      "re.compile('\"name\"\\\\s*:\\\\s*\"([^\"]+)\"')": 1,
+      "re.compile('(?<!\\\\w)call\\\\s*(?::\\\\s*[\\\\w\\\\.\\\\-]*)?$')": 1,
+      "re.compile('(?<!\\\\w)call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
+      "re.compile('-?(?:\\\\d+(?:\\\\.\\\\d*)?|\\\\.\\\\d+)(?:[eE][+-]?\\\\d+)?(?![\\\\w.])')": 1,
+      "re.compile('-?\\\\d+(?:\\\\.\\\\d+)?(?:[eE][+-]?\\\\d+)?')": 1,
+      "re.compile('<(?:parameter|param)(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>[^\\\\S\\\\n]*')": 1,
+      "re.compile('</(?:tool_call|function)>')": 1,
+      "re.compile('</function>')": 1,
+      "re.compile('<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\()|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('<\\\\|python_tag\\\\|>\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
+      "re.compile('<\\\\|tool_call>(?=\\\\s*call\\\\s*:|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_call>.*?<tool_call\\\\|>', re.DOTALL)": 2,
+      "re.compile('<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\{')": 1,
+      "re.compile('<\\\\|tool_call_begin\\\\|>(?=\\\\s*[A-Za-z_][\\\\w.\\\\-]*:\\\\d|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_call_begin\\\\|>.*?<\\\\|tool_call_end\\\\|>', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_calls_section_begin\\\\|>(?=\\\\s*<\\\\|tool_call_begin\\\\|>|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_calls_section_begin\\\\|>.*?<\\\\|tool_calls_section_end\\\\|>', re.DOTALL)": 1,
+      "re.compile('<function(?:=([\\\\w\\\\.\\\\-]+)|\\\\s+name=\"([\\\\w\\\\.\\\\-]+)\")>\\\\s*')": 1,
+      "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>(?:(?!<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>).)*</function>', re.DOTALL)": 1,
+      "re.compile('<function(?:=[\\\\w.\\\\-]+|\\\\s+name=\"[\\\\w.\\\\-]+\")>.*$', re.DOTALL)": 1,
+      "re.compile('<function\\\\s+name=\"')": 1,
+      "re.compile('<tool_call>(?:(?!<tool_call>).)*</tool_call>', re.DOTALL)": 1,
+      "re.compile('<tool_call>.*$', re.DOTALL)": 1,
+      "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
+      "re.compile('<tool_call>\\\\s*([\\\\w.\\\\-]+)\\\\s*(?=\\\\n|<arg_key>|</tool_call>)')": 1,
+      "re.compile('<tool_call>\\\\s*\\\\{')": 1,
+      "re.compile('<tool_call>|<function(?:=|\\\\s+name=\")|<\\\\|tool_call>|<\\\\|python_tag\\\\|>(?=\\\\s*(?:\\\\{|[A-Za-z_][\\\\w.]*\\\\())')": 1,
+      "re.compile('<｜tool▁call▁begin｜>(?=\\\\s*function|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\](?=\\\\s*(?:[\\\\[{]|[A-Za-z_][\\\\w.\\\\-]*(?:[\\\\[{]|\\\\s*$))|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w\\\\.\\\\-]+\\\\s*(?:\\\\[ARGS\\\\])?\\\\s*\\\\{.*?\\\\}', re.DOTALL)": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*\\\\[.*?\\\\](?:\\\\s*</s>)?', re.DOTALL)": 1,
+      "re.compile('\\\\s*')": 1,
+      "re.compile('\\\\s*([A-Za-z_][\\\\w.\\\\-]*)\\\\s*:')": 1,
+      "re.compile('\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*')": 1,
+      "re.compile('\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
+      "re.compile('\\\\s*;\\\\s*([\\\\w\\\\.\\\\-]+)\\\\s*\\\\.\\\\s*call\\\\s*\\\\(')": 1,
+      "re.compile('\\\\s*</(?:parameter|param)>\\\\s*$')": 1,
+      "re.compile('\\\\w+')": 1,
+      "re.compile('^(?:functions\\\\.)?([\\\\w\\\\.\\\\-]+)(?::(\\\\d+))?$')": 1,
+      "re.compile('```[\\\\s\\\\r\\\\n]*' + re.escape(_DEEPSEEK_CALL_END))": 1,
+      "re.compile('true|false|null')": 1,
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC + '(?=\\\\s*(?:<｜tool▁call▁begin｜>|function)|\\\\s*$).*$', re.DOTALL)": 1,
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC + '.*?<｜tool▁calls▁end｜>', re.DOTALL)": 1,
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC + '|' + re.escape(_KIMI_SECTION_BEGIN) + '|' + re.escape(_KIMI_CALL_BEGIN))": 1,
+      "re.compile(_DEEPSEEK_OPEN_RE_SRC)": 1
+    },
+    "symbols": {
+      "BUDGET_EXHAUSTED_NUDGE": {
+        "kind": "assign"
+      },
+      "DUPLICATE_CALL_NUDGE": {
+        "kind": "assign"
+      },
+      "INTENT_SIGNAL": {
+        "kind": "assign"
+      },
+      "MAX_ACT_REPROMPTS": {
+        "kind": "assign"
+      },
+      "NUDGE_TOOL_CALLS_STATUS": {
+        "kind": "assign"
+      },
+      "RAG_MAX_SEARCHES_PER_TURN": {
+        "kind": "assign"
+      },
+      "RAG_SEARCH_CAP_NUDGE": {
+        "kind": "assign"
+      },
+      "RENDER_HTML_REPEAT_NUDGE": {
+        "kind": "assign"
+      },
+      "REPROMPT_MAX_CHARS": {
+        "kind": "assign"
+      },
+      "StreamingMarkupStripper": {
+        "bases": [],
+        "decorators": [],
+        "kind": "class",
+        "methods": {
+          "__init__": {
+            "decorators": [],
+            "signature": "self, enabled_tool_names: Optional[set]=None, *, seg_final: bool=True"
+          },
+          "_full_strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_is_extension": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_needs_whole_buffer": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_note": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_reset": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "_think_block": {
+            "decorators": [],
+            "signature": "self, text: str, first: int"
+          },
+          "_unchanged": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "reset": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          }
+        }
+      },
+      "TOOL_ERROR_NUDGE": {
+        "kind": "assign"
+      },
+      "TOOL_ERROR_PREFIXES": {
+        "kind": "assign"
+      },
+      "TOOL_XML_SIGNALS": {
+        "kind": "assign"
+      },
+      "_ACTION_VERB": {
+        "kind": "assign"
+      },
+      "_ATTR_FUNC_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_BARE_JSON_NAME_RE": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_BEGIN_RE": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_CALL_BEGIN": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_CALL_END": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_END": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_OPEN_ALT": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_OPEN_RE_SRC": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_R1_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_R1_FENCE": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_R1_FUNC_MARKER": {
+        "kind": "assign"
+      },
+      "_DEEPSEEK_SEP": {
+        "kind": "assign"
+      },
+      "_EMBEDDED_MARKER_RE": {
+        "kind": "assign"
+      },
+      "_EXTENSION_SAMPLE": {
+        "kind": "assign"
+      },
+      "_FUNC_CLOSE_TAG_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_ANCHOR_CLOSERS": {
+        "kind": "assign"
+      },
+      "_GEMMA_BARE_SENTINEL": {
+        "kind": "assign"
+      },
+      "_GEMMA_BARE_TC_PREFIX_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_BARE_TC_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_KEY_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_STR_BEGIN": {
+        "kind": "assign"
+      },
+      "_GEMMA_STR_END": {
+        "kind": "assign"
+      },
+      "_GEMMA_TC_END": {
+        "kind": "assign"
+      },
+      "_GEMMA_TC_RE": {
+        "kind": "assign"
+      },
+      "_GLM_ARG_KEY_CLOSE": {
+        "kind": "assign"
+      },
+      "_GLM_ARG_KEY_OPEN": {
+        "kind": "assign"
+      },
+      "_GLM_ARG_VAL_CLOSE": {
+        "kind": "assign"
+      },
+      "_GLM_ARG_VAL_OPEN": {
+        "kind": "assign"
+      },
+      "_GLM_JSON_NUMERIC_RE": {
+        "kind": "assign"
+      },
+      "_GLM_TC_CLOSE": {
+        "kind": "assign"
+      },
+      "_GLM_TC_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_HELP_OFFER": {
+        "kind": "assign"
+      },
+      "_KIMI_ARG_BEGIN": {
+        "kind": "assign"
+      },
+      "_KIMI_CALL_BEGIN": {
+        "kind": "assign"
+      },
+      "_KIMI_CALL_END": {
+        "kind": "assign"
+      },
+      "_KIMI_ID_RE": {
+        "kind": "assign"
+      },
+      "_KIMI_SECTION_BEGIN": {
+        "kind": "assign"
+      },
+      "_KIMI_SECTION_END": {
+        "kind": "assign"
+      },
+      "_LLAMA3_BARE_JSON_SENTINELS": {
+        "kind": "assign"
+      },
+      "_LLAMA3_CALL_CHAIN_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_HEADER_ROLES": {
+        "kind": "assign"
+      },
+      "_LLAMA3_KEY_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_LIT_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_NUM_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_PYTHON_TAG": {
+        "kind": "assign"
+      },
+      "_LLAMA3_PY_CALL_HEAD_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_PY_CALL_RE": {
+        "kind": "assign"
+      },
+      "_LLAMA3_WS_RE": {
+        "kind": "assign"
+      },
+      "_MISTRAL_ARGS_MARKER": {
+        "kind": "assign"
+      },
+      "_MISTRAL_CALL_ID_MARKER": {
+        "kind": "assign"
+      },
+      "_MISTRAL_THINK_CLOSE": {
+        "kind": "assign"
+      },
+      "_MISTRAL_THINK_OPEN": {
+        "kind": "assign"
+      },
+      "_MISTRAL_TRIGGER": {
+        "kind": "assign"
+      },
+      "_MISTRAL_V11_NAME_RE": {
+        "kind": "assign"
+      },
+      "_OUTER_ENVELOPE_CLOSED_PATS": {
+        "kind": "assign"
+      },
+      "_OUTER_ENVELOPE_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_REPEAT_LEAD_PUNCT": {
+        "kind": "assign"
+      },
+      "_REPEAT_TRAIL_PUNCT": {
+        "kind": "assign"
+      },
+      "_SENTINEL_MAX_LEN": {
+        "kind": "assign"
+      },
+      "_STRIP_SENTINELS": {
+        "kind": "assign"
+      },
+      "_TC_END_TAG_RE": {
+        "kind": "assign"
+      },
+      "_TC_FUNC_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_TC_FUNC_START_RE": {
+        "kind": "assign"
+      },
+      "_TC_JSON_START_RE": {
+        "kind": "assign"
+      },
+      "_TC_PARAM_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_TC_PARAM_START_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_ALL_PATS": {
+        "kind": "assign"
+      },
+      "_TOOL_CLOSED_PATS": {
+        "kind": "assign"
+      },
+      "_balanced_brace_end": {
+        "kind": "assign"
+      },
+      "_balanced_bracket_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str, start: int"
+      },
+      "_bare_json_call_shaped": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "obj"
+      },
+      "_consume_mistral_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "obj_text: str, out: list[dict], id_offset: int"
+      },
+      "_disabled_gemma_call_end_containing_signal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, enabled_tool_names: Optional[set]"
+      },
+      "_find_outside_json_strings": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, needle: str, start: int"
+      },
+      "_first_foreign_tool_signal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "_first_sentinel": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
+      },
+      "_gemma_balanced_brace_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, brace_pos: int, hard_stop: int"
+      },
+      "_gemma_body_brace_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, brace_pos: int"
+      },
+      "_gemma_call_is_anchored": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int, floor: int"
+      },
+      "_gemma_coerce_scalar": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "raw: str"
+      },
+      "_gemma_parse_array": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
+      },
+      "_gemma_parse_mapping": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
+      },
+      "_gemma_parse_stripped_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
+      "_gemma_parse_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, i: int, *, in_mapping: bool=False"
+      },
+      "_gemma_strip_quoted_leaves": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "value: Any"
+      },
+      "_glm_value_close": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, vs: int, *, strict: bool=False"
+      },
+      "_inside_open_parameter": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, pos: int"
+      },
+      "_is_provisional_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, found: int"
+      },
+      "_leading_json_value_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_llama3_kv_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str, p: int, n: int"
+      },
+      "_marker_inside_leading_envelope": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, enabled_tool_names: Optional[set]=None"
+      },
+      "_mistral_region_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, idx: int"
+      },
+      "_normalize_for_repeat": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_parse_bare_rehearsals": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int=0, enabled_tool_names: Optional[set]=None"
+      },
+      "_parse_deepseek_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_function_xml": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_gemma_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "_parse_glm_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_kimi_section_body": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_kimi_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_llama3_bare_json": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "_parse_llama3_kv_args": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
+      "_parse_llama3_python_tag": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_mistral_array": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, start: int, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_mistral_tool_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_parse_tool_call_json": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_safe_cut": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, first: int"
+      },
+      "_signal_inside_leading_wrapperless_gemma": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, enabled_tool_names: Optional[set]"
+      },
+      "_skip_mistral_call_id": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, pos: int"
+      },
+      "_strip_function_xml_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool"
+      },
+      "_strip_gemma_wrapperless_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]=None"
+      },
+      "_strip_glm_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool"
+      },
+      "_strip_mistral_closed_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_strip_mistral_reasoning": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "_top_level_bare_json_name": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "probe: str"
+      },
+      "_trim_param_value": {
+        "kind": "assign"
+      },
+      "_unmatched_think_closer": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int=0"
+      },
+      "_whole_content_is_json_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_xml_signal_inside_leading_bare_json": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "_xml_signal_inside_leading_mistral": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "has_tool_signal": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "is_reprompt_repeat": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, previous: str"
+      },
+      "is_reprompt_restatement": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, previous: str"
+      },
+      "is_short_intent_without_action": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "parse_tool_calls_from_text": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names: Optional[set]=None"
+      },
+      "reprompt_to_act_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "tool_hint: str"
+      },
+      "strip_leading_bare_json_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names: Optional[set]=None"
+      },
+      "strip_llama3_leading_sentinels": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "strip_segment": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "segment: str, *, seg_final: bool, enabled_tool_names: Optional[set]=None"
+      },
+      "strip_tool_markup": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool=False, enabled_tool_names: Optional[set]=None"
+      }
+    }
+  },
+  "core.tool_healing": {
+    "compiled": {
+      "_CODE_SPAN_RE": "'^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`' flags=56",
+      "_GEMMA_NEXT_KEY_RE": "'\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:' flags=32",
+      "_MISTRAL_ARRAY_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)' flags=32",
+      "_MISTRAL_BRACKET_RE": "'\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)' flags=32",
+      "_REHEARSAL_CLOSED_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
+      "_REHEARSAL_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)' flags=32",
+      "_REHEARSAL_TAIL_STRIP_RE": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
+      "_TC_END_TAG_RE": "'</tool_call>|<\\\\|end_message\\\\|>' flags=32",
+      "_TC_FUNC_CLOSED_PAT": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TC_FUNC_CLOSE_RE": "'\\\\s*</function>\\\\s*$' flags=32",
+      "_TC_FUNC_START_RE": "'<function=([\\\\w-]+)>\\\\s*' flags=32",
+      "_TC_GEMMA_CLOSED_PAT": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_TC_GEMMA_END_TAG_RE": "'<tool_call\\\\|>' flags=32",
+      "_TC_GEMMA_START_RE": "'<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w.\\\\-]+)\\\\s*\\\\{' flags=32",
+      "_TC_JSON_CLOSED_PAT": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TC_JSON_START_RE": "'(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{' flags=32",
+      "_TC_PARAM_CLOSE_RE": "'\\\\s*</parameter>\\\\s*$' flags=32",
+      "_TC_PARAM_START_RE": "'<parameter=([\\\\w-]+)>[^\\\\S\\\\n]*' flags=32",
+      "_THINK_CLOSE_RE": "'</think>|\\\\[/THINK\\\\]' flags=32",
+      "_THINK_OPEN_RE": "'<think>|\\\\[THINK\\\\]' flags=32",
+      "_THINK_TAG_RE": "'<think>.*?(?:</think>|$)|\\\\[THINK\\\\].*?(?:\\\\[/THINK\\\\]|$)' flags=48",
+      "_TOOL_ALL_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TOOL_ALL_PATS[10]": "'\\\\[TOOL_CALLS\\\\].*$' flags=48",
+      "_TOOL_ALL_PATS[11]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$' flags=48",
+      "_TOOL_ALL_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_TOOL_ALL_PATS[2]": "'<tool_call\\\\|>' flags=32",
+      "_TOOL_ALL_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_ALL_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
+      "_TOOL_ALL_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
+      "_TOOL_ALL_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
+      "_TOOL_ALL_PATS[7]": "'<tool_call>.*$' flags=48",
+      "_TOOL_ALL_PATS[8]": "'<\\\\|tool_call>.*$' flags=48",
+      "_TOOL_ALL_PATS[9]": "'<function=[\\\\w-]+>.*$' flags=48",
+      "_TOOL_CLOSED_BLOCK_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TOOL_CLOSED_BLOCK_PATS[1]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_PATS[0]": "'<tool_call>.*?</tool_call>' flags=48",
+      "_TOOL_CLOSED_PATS[1]": "'<\\\\|tool_call>.*?<tool_call\\\\|>' flags=48",
+      "_TOOL_CLOSED_PATS[2]": "'<tool_call\\\\|>' flags=32",
+      "_TOOL_CLOSED_PATS[3]": "'<function=[\\\\w-]+>.*?</function>' flags=48",
+      "_TOOL_CLOSED_PATS[4]": "'\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
+      "_TOOL_CLOSED_PATS[5]": "'(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*\\\\{[^{}]*(?:\\\\{[^{}]*\\\\}[^{}]*)*\\\\}' flags=48",
+      "_TOOL_CLOSED_PATS[6]": "'\\\\[/TOOL_CALLS\\\\]' flags=32",
+      "_TOOL_OPEN_XML_TAIL_PATS[0]": "'<tool_call>.*$' flags=48",
+      "_TOOL_OPEN_XML_TAIL_PATS[1]": "'<\\\\|tool_call>.*$' flags=48",
+      "_TOOL_OPEN_XML_TAIL_PATS[2]": "'<function=[\\\\w-]+>.*$' flags=48"
+    },
+    "regexes": {
+      "re.compile('(?:<tool_call>|<\\\\|content_invoke_tool_json\\\\|>)\\\\s*\\\\{')": 1,
+      "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*' + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL)": 1,
+      "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?:\\\\{.*)?$', re.DOTALL)": 1,
+      "re.compile('(?<!\\\\[CALL_ID\\\\])\\\\b([\\\\w-]+)\\\\[ARGS\\\\]\\\\s*(?=\\\\{)')": 1,
+      "re.compile('</think>|\\\\[/THINK\\\\]')": 1,
+      "re.compile('</tool_call>|<\\\\|end_message\\\\|>')": 1,
+      "re.compile('<\\\\|tool_call>.*$', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_call>.*?<tool_call\\\\|>', re.DOTALL)": 1,
+      "re.compile('<\\\\|tool_call>\\\\s*call\\\\s*:\\\\s*([\\\\w.\\\\-]+)\\\\s*\\\\{')": 1,
+      "re.compile('<function=([\\\\w-]+)>\\\\s*')": 1,
+      "re.compile('<function=[\\\\w-]+>.*$', re.DOTALL)": 1,
+      "re.compile('<function=[\\\\w-]+>.*?</function>', re.DOTALL)": 1,
+      "re.compile('<parameter=([\\\\w-]+)>[^\\\\S\\\\n]*')": 1,
+      "re.compile('<think>.*?(?:</think>|$)|\\\\[THINK\\\\].*?(?:\\\\[/THINK\\\\]|$)', re.DOTALL)": 1,
+      "re.compile('<think>|\\\\[THINK\\\\]')": 1,
+      "re.compile('<tool_call>.*$', re.DOTALL)": 1,
+      "re.compile('<tool_call>.*?</tool_call>', re.DOTALL)": 1,
+      "re.compile('<tool_call\\\\|>')": 2,
+      "re.compile('\\\\[/TOOL_CALLS\\\\]')": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\].*$', re.DOTALL)": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*(?=\\\\[)')": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*([\\\\w-]+)(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*(?=\\\\{)')": 1,
+      "re.compile('\\\\[TOOL_CALLS\\\\]\\\\s*[\\\\w-]+(?:\\\\[CALL_ID\\\\][\\\\w-]+)?(?:\\\\[ARGS\\\\])?\\\\s*' + _BRACKETED_JSON_ONE_LEVEL, re.DOTALL)": 1,
+      "re.compile('\\\\s*</function>\\\\s*$')": 1,
+      "re.compile('\\\\s*</parameter>\\\\s*$')": 1,
+      "re.compile('\\\\s*[A-Za-z_][\\\\w.\\\\-]*\\\\s*:')": 1,
+      "re.compile('^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+[^`\\\\n]*|~~~+[^\\\\n]*)$.*?(?:^[ \\\\t]*(?:>[ \\\\t]*)*(?:```+|~~~+)[ \\\\t\\\\r]*$|\\\\Z)|``(?:[^`]|`(?!`))*?``|`[^`\\\\n]*`', re.DOTALL | re.MULTILINE)": 1,
+      "re.match('\\\\s*</tool_call>', content[span_end:])": 1,
+      "re.match('\\\\s*\\\\[/TOOL_CALLS\\\\]', content[end:])": 1,
+      "re.search('<tool_call>\\\\s*$', content[:span_start])": 1
+    },
+    "symbols": {
+      "_BRACKETED_JSON_ONE_LEVEL": {
+        "kind": "assign"
+      },
+      "_CODE_SPAN_RE": {
+        "kind": "assign"
+      },
+      "_FUNC_CLOSE_TAG": {
+        "kind": "assign"
+      },
+      "_GEMMA_NEXT_KEY_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_QUOTE": {
+        "kind": "assign"
+      },
+      "_MAX_BRACKET_SCAN_CHARS": {
+        "kind": "assign"
+      },
+      "_MISTRAL_ARRAY_RE": {
+        "kind": "assign"
+      },
+      "_MISTRAL_BRACKET_RE": {
+        "kind": "assign"
+      },
+      "_PARAM_CLOSE_TAG": {
+        "kind": "assign"
+      },
+      "_PAT_REQUIRED_TOKEN": {
+        "kind": "assign"
+      },
+      "_REHEARSAL_CLOSED_STRIP_RE": {
+        "kind": "assign"
+      },
+      "_REHEARSAL_RE": {
+        "kind": "assign"
+      },
+      "_REHEARSAL_STRIP_PATS": {
+        "kind": "assign"
+      },
+      "_REHEARSAL_TAIL_STRIP_RE": {
+        "kind": "assign"
+      },
+      "_TC_END_TAG_RE": {
+        "kind": "assign"
+      },
+      "_TC_FUNC_CLOSED_PAT": {
+        "kind": "assign"
+      },
+      "_TC_FUNC_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_TC_FUNC_START_RE": {
+        "kind": "assign"
+      },
+      "_TC_GEMMA_CLOSED_PAT": {
+        "kind": "assign"
+      },
+      "_TC_GEMMA_END_TAG_RE": {
+        "kind": "assign"
+      },
+      "_TC_GEMMA_START_RE": {
+        "kind": "assign"
+      },
+      "_TC_JSON_CLOSED_PAT": {
+        "kind": "assign"
+      },
+      "_TC_JSON_START_RE": {
+        "kind": "assign"
+      },
+      "_TC_PARAM_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_TC_PARAM_START_RE": {
+        "kind": "assign"
+      },
+      "_THINK_CLOSE_RE": {
+        "kind": "assign"
+      },
+      "_THINK_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_THINK_TAG_RE": {
+        "kind": "assign"
+      },
+      "_TOOL_ALL_PATS": {
+        "kind": "assign"
+      },
+      "_TOOL_CLOSED_BLOCK_PATS": {
+        "kind": "assign"
+      },
+      "_TOOL_CLOSED_PATS": {
+        "kind": "assign"
+      },
+      "_TOOL_OPEN_XML_TAIL_PATS": {
+        "kind": "assign"
+      },
+      "_balanced_brace_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, brace_start: int, *, gemma_quotes: bool=False"
+      },
+      "_balanced_bracket_end": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str, start: int, *, braces_count: bool=True"
+      },
+      "_balanced_json_span": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
+      },
+      "_build_markers": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "_code_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_decode_array_items": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, body_start: int, body_end: int"
+      },
+      "_func_close_index": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, body_start: int, body: str"
+      },
+      "_gemma_arguments_to_json": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "args_src: str"
+      },
+      "_gemma_span_ranges": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_in_code": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "spans, pos: int"
+      },
+      "_inside_open_parameter": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, pos: int, *, param_start_re=None, param_closers=(_PARAM_CLOSE_TAG,), func_closers=(_FUNC_CLOSE_TAG,)"
+      },
+      "_iter_bracket_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int=0, enabled_tool_names=None"
+      },
+      "_marker_coverage": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, markers"
+      },
+      "_normalise_gemma_quoted_strings": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str"
+      },
+      "_quote_gemma_array_elements": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "body: str"
+      },
+      "_quote_gemma_object_keys": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str"
+      },
+      "_rehearsal_strip": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "m, pat, text, spans, enabled_tool_names"
+      },
+      "_split_top_level_commas": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "src: str"
+      },
+      "_strip_bracket_tag_calls": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, enabled_tool_names=None"
+      },
+      "_strip_closed_blocks_outside_gemma": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_strip_gemma_native_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool"
+      },
+      "_strip_markup_segment": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool, enabled_tool_names=None"
+      },
+      "_think_spans_outside_tool_markup": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_tool_call_markup_spans": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str"
+      },
+      "_trim_param_value": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "val: str"
+      },
+      "apply_tool_strip_patterns": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, patterns, enabled_tool_names=None"
+      },
+      "marker_coverage": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str"
+      },
+      "parse_tool_calls_from_text": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "content: str, *, id_offset: int=0, allow_incomplete: bool=True, enabled_tool_names=None, with_spans: bool=False"
+      },
+      "strip_outside_think": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, strip_segment"
+      },
+      "strip_tool_call_markup": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, *, final: bool=False, enabled_tool_names=None"
+      },
+      "strip_tool_patterns": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, patterns"
+      }
+    }
+  }
+}

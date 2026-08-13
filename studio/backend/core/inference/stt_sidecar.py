@@ -19,7 +19,10 @@ import io
 import json
 import os
 import re
+import socket
+import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,6 +88,91 @@ class _CachedSttSnapshot:
     is_multilingual: Optional[bool]
 
 
+class SttDownloadCacheError(RuntimeError):
+    """The shared Hub cache cannot safely admit an STT HTTP writer."""
+
+
+def _capture_stt_hub_cache() -> Path:
+    """Capture the configured Hub cache once for one STT download run."""
+    from utils.hf_cache_settings import get_hf_cache_paths
+    return Path(get_hf_cache_paths().hub_cache).expanduser()
+
+
+def _claim_stt_repository(repo: str) -> tuple[object, object]:
+    """Reserve *repo* against every Model Hub writer and delete."""
+    from hub.utils.download_registry import get_models_registry
+
+    registry = get_models_registry()
+    owner = object()
+    claimed, state = registry.claim_repository_owner(repo, owner)
+    if not claimed:
+        raise SttDownloadCacheError(
+            f"'{repo}' is already active in the Model Hub ({state}); wait for it to finish."
+        )
+    return registry, owner
+
+
+def _prepare_stt_cache_for_http(repo: str, hub_cache: Path) -> None:
+    """Prepare *repo* for HTTP, rejecting unverified transport markers."""
+    from hub.utils.download_registry import TRANSPORT_HTTP, prepare_cache_for_transport
+    from hub.utils.hf_cache_state import (
+        TRANSPORT_MARKER_NAME,
+        iter_active_repo_cache_dirs,
+        repo_cache_dir_name,
+    )
+
+    canonical = hub_cache / repo_cache_dir_name("model", repo)
+    try:
+        canonical.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        raise SttDownloadCacheError(
+            f"Could not make the Hugging Face cache safe for '{repo}'. "
+            "Close other programs using that cache and try again."
+        ) from exc
+    prepare_cache_for_transport("model", repo, TRANSPORT_HTTP, root = hub_cache)
+    entries = list(iter_active_repo_cache_dirs("model", repo, root = hub_cache))
+    try:
+        all_marked_http = bool(entries) and all(
+            (entry / TRANSPORT_MARKER_NAME).read_text(encoding = "utf-8").strip() == TRANSPORT_HTTP
+            for entry in (*entries, canonical)
+        )
+    except (OSError, UnicodeDecodeError):
+        all_marked_http = False
+    if not all_marked_http:
+        raise SttDownloadCacheError(
+            f"Could not make the Hugging Face cache safe for '{repo}'. "
+            "Close other programs using that cache and try again."
+        )
+
+
+def _downloaded_file_bytes(
+    *,
+    hub_cache: Path,
+    repo: str,
+    filename: str,
+    size: int,
+    blob_key: Optional[str],
+    revision: Optional[str],
+) -> int:
+    """Count one selected file across partial, finalized, and snapshot forms."""
+    repo_cache = _repo_cache_dir(repo, hub_cache = hub_cache)
+    candidates: list[Path] = []
+    if blob_key:
+        blobs = repo_cache / "blobs"
+        candidates.extend((blobs / f"{blob_key}.incomplete", blobs / blob_key))
+    if revision:
+        candidates.append(repo_cache / "snapshots" / revision / filename)
+    sizes: list[int] = []
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                sizes.append(max(0, int(candidate.stat().st_size)))
+        except OSError:
+            continue
+    done = max(sizes, default = 0)
+    return min(done, max(0, int(size)))
+
+
 class SttUnavailableError(RuntimeError):
     """The STT backend (PyTorch/Transformers or PyAV) is not installed."""
 
@@ -93,8 +181,16 @@ class SttLoadCancelledError(RuntimeError):
     """An in-flight STT model load was cancelled for training."""
 
 
+class SttTranscriptionCancelledError(RuntimeError):
+    """An in-flight transcription was cancelled by its client."""
+
+
 class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
+
+
+class SttModelBusyError(RuntimeError):
+    """A switch was asked for while the current model is mid-transcription."""
 
 
 class SttModelIdError(ValueError):
@@ -115,6 +211,29 @@ class SttAudioTooLongError(ValueError):
 
 class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
+
+
+def _close_connection_on_cancel(connection, cancel_event, done_event) -> None:
+    """Abandon one blocked sidecar HTTP request, leaving its server resident.
+
+    Shutting the socket unblocks the read without touching the process, so a cancelled
+    dictation does not cost the next one a server relaunch and model load. Shared by the
+    whisper.cpp and llama.cpp sidecars.
+    """
+    while not done_event.is_set():
+        if not cancel_event.wait(0.05):
+            continue
+        while not done_event.is_set():
+            sock = connection.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+                return
+            time.sleep(0.01)
+        return
 
 
 _WHISPER_LANGUAGE_ALIASES = {
@@ -217,20 +336,36 @@ def _read_json_object(path: Path) -> dict:
 
 
 def _active_hf_hub_cache() -> Path:
-    """Return the active Hub cache while respecting runtime test overrides."""
-    explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    hf_home = (os.environ.get("HF_HOME") or "").strip()
-    if hf_home:
-        return Path(hf_home).expanduser() / "hub"
-    from huggingface_hub.constants import HF_HUB_CACHE
+    """Return the currently configured Hub cache, including live relocation."""
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
 
-    return Path(HF_HUB_CACHE)
+        paths = get_hf_cache_paths()
+        # Studio's live cache setting takes precedence over environment defaults.
+        if paths.source == "studio":
+            return Path(paths.hub_cache)
+        explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        hf_home = (os.environ.get("HF_HOME") or "").strip()
+        if hf_home:
+            return Path(hf_home).expanduser() / "hub"
+        return Path(paths.hub_cache)
+    except Exception:
+        explicit = (os.environ.get("HF_HUB_CACHE") or "").strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        hf_home = (os.environ.get("HF_HOME") or "").strip()
+        if hf_home:
+            return Path(hf_home).expanduser() / "hub"
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        return Path(HF_HUB_CACHE)
 
 
-def _repo_cache_dir(repo: str) -> Path:
-    return _active_hf_hub_cache() / f"models--{repo.replace('/', '--')}"
+def _repo_cache_dir(repo: str, *, hub_cache: Optional[Path] = None) -> Path:
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+    return root / f"models--{repo.replace('/', '--')}"
 
 
 def _revision_record_path(repo: str) -> Path:
@@ -273,6 +408,32 @@ def _read_revision_record(repo: str) -> Optional[str]:
         return None
     revision = payload.get("revision")
     return revision if isinstance(revision, str) and _HF_COMMIT_SHA.fullmatch(revision) else None
+
+
+def _fallback_revisions(repo: str, *, hub_cache: Optional[Path] = None) -> list[str]:
+    """Cached commits to try when no revision record survives, newest first.
+
+    Pinned downloads never write refs/main, so without this a lost record would
+    hide an already downloaded model and re-download it on every launch.
+    """
+    repo_cache = _repo_cache_dir(repo, hub_cache = hub_cache)
+    candidates: list[str] = []
+    try:
+        main_revision = (repo_cache / "refs" / "main").read_text(encoding = "utf-8").strip()
+        if _HF_COMMIT_SHA.fullmatch(main_revision):
+            candidates.append(main_revision)
+    except OSError:
+        pass
+    try:
+        snapshots = sorted(
+            (p for p in (repo_cache / "snapshots").iterdir() if _HF_COMMIT_SHA.fullmatch(p.name)),
+            key = lambda p: p.stat().st_mtime,
+            reverse = True,
+        )
+    except OSError:
+        snapshots = []
+    candidates.extend(p.name for p in snapshots if p.name not in candidates)
+    return candidates
 
 
 def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
@@ -499,53 +660,122 @@ class _SnapshotDownloadState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._repo: Optional[str] = None
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._selected_files: tuple[_SelectedHubFile, ...] = ()
         self._complete = False
+        self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
             show_progress = downloading or self._complete
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
+                "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if show_progress else None,
-                "bytes_done": self._blob_bytes() if show_progress else None,
             }
+            captured = (
+                self._repo,
+                self._revision,
+                self._hub_cache,
+                self._selected_files,
+                self._total_bytes,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
+        return snapshot
 
-    def _blob_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in the repo's HF cache blobs.
+    def cancel(self) -> bool:
+        """Stop an in-flight download. False when none was running.
 
-        Counts only the selected support files and one selected weight format,
-        including in-progress ``.incomplete`` blobs.
+        Partial blobs stay cached, so a restart resumes from them.
+        """
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                return False
+            self._cancelled = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
+        return True
+
+    def _downloaded_bytes(
+        self,
+        repo: Optional[str] = None,
+        revision: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
+        selected_files: Optional[tuple[_SelectedHubFile, ...]] = None,
+        total: Optional[int] = None,
+    ) -> Optional[int]:
+        """Count selected files across partial, blob, and snapshot locations.
+
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
         """
         try:
-            # Caller may hold the non-reentrant self._lock; a bare read is safe.
-            repo = self._repo
-            selected_files = self._selected_files
-            if not repo or not selected_files:
+            repo = repo if repo is not None else self._repo
+            revision = revision if revision is not None else self._revision
+            hub_cache = hub_cache or self._hub_cache or _active_hf_hub_cache()
+            selected_files = selected_files if selected_files is not None else self._selected_files
+            total = total if total is not None else self._total_bytes
+            if not repo or hub_cache is None or not selected_files:
                 return None
-            blobs = _repo_cache_dir(repo) / "blobs"
-            if not blobs.is_dir():
-                return 0
-            done = 0
-            for selected in selected_files:
-                if not selected.blob_key:
-                    continue
-                complete = blobs / selected.blob_key
-                incomplete = blobs / f"{selected.blob_key}.incomplete"
-                candidate = complete if complete.is_file() else incomplete
-                if candidate.is_file():
-                    done += min(candidate.stat().st_size, selected.size)
-            total = self._total_bytes
+            done = sum(
+                _downloaded_file_bytes(
+                    hub_cache = hub_cache,
+                    repo = repo,
+                    filename = selected.path,
+                    size = selected.size,
+                    blob_key = selected.blob_key,
+                    revision = revision,
+                )
+                for selected in selected_files
+            )
             return min(done, total) if total is not None else done
         except Exception:
             return None
+
+    def _run_worker(
+        self, args: list[str], hf_token: Optional[str], hub_cache: Path
+    ) -> tuple[bool, bytes]:
+        from core.inference.stt_download_worker import (
+            reap_download,
+            spawn_download,
+            terminate_download,
+        )
+
+        process = spawn_download(args, hf_token = hf_token or None, hub_cache = hub_cache)
+        with self._lock:
+            if self._cancelled:
+                terminate_download(process)
+            self._process = process
+        stderr = reap_download(process)
+        with self._lock:
+            if self._process is process:
+                self._process = None
+            cancelled = self._cancelled
+        if process.returncode == 0 and not cancelled:
+            return True, stderr
+        if cancelled or process.returncode < 0:
+            with self._lock:
+                self._cancelled = True
+            return False, stderr
+        detail = stderr.decode("utf-8", "replace").strip()
+        raise SttModelCompatibilityError(f"Download worker failed for '{self._repo}': {detail}")
 
     def start(
         self,
@@ -554,22 +784,34 @@ class _SnapshotDownloadState:
         revision: Optional[str] = None,
     ) -> None:
         model_id = resolve_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
             self._repo = resolve_model_repo(model_id)
+            self._revision = None
+            self._hub_cache = hub_cache
             self._error = None
             self._total_bytes = None
             self._selected_files = ()
             self._complete = False
+            self._cancelled = False
+            self._process = None
             thread = threading.Thread(
-                target = self._run, args = (self._repo, hf_token, revision), daemon = True
+                target = self._run,
+                args = (self._repo, hf_token, revision),
+                daemon = True,
             )
             self._thread = thread
             thread.start()
@@ -579,9 +821,13 @@ class _SnapshotDownloadState:
         repo: str,
         hf_token: Optional[str],
         revision: Optional[str] = None,
+        hub_cache: Optional[Path] = None,
     ) -> None:
+        hub_cache = hub_cache or self._hub_cache or _active_hf_hub_cache()
+        registry = None
+        owner = None
         try:
-            from huggingface_hub import HfApi, hf_hub_download, snapshot_download
+            from huggingface_hub import HfApi, hf_hub_download
 
             info = HfApi(token = hf_token or None).model_info(
                 repo,
@@ -596,12 +842,33 @@ class _SnapshotDownloadState:
                     f"Could not resolve an immutable revision for STT model '{repo}'."
                 )
 
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(repo)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(repo, hub_cache)
+            with self._lock:
+                self._revision = revision
+
             def load_index(filename: str) -> dict:
+                completed, _stderr = self._run_worker(
+                    ["--repo-id", repo, "--revision", revision, "--filename", filename],
+                    hf_token,
+                    hub_cache,
+                )
+                if not completed:
+                    return {}
                 path = hf_hub_download(
                     repo_id = repo,
                     filename = filename,
                     revision = revision,
-                    token = hf_token or None,
+                    local_files_only = True,
+                    cache_dir = str(hub_cache),
                 )
                 return _read_json_object(Path(path))
 
@@ -610,14 +877,13 @@ class _SnapshotDownloadState:
             with self._lock:
                 self._selected_files = selected_files
                 self._total_bytes = total or None
-            snapshot = Path(
-                snapshot_download(
-                    repo_id = repo,
-                    revision = revision,
-                    allow_patterns = [selected.path for selected in selected_files],
-                    token = hf_token or None,
-                )
-            )
+            args = ["--repo-id", repo, "--revision", revision]
+            for selected in selected_files:
+                args += ["--filename", selected.path]
+            completed, _stderr = self._run_worker(args, hf_token, hub_cache)
+            if not completed:
+                return
+            snapshot = _repo_cache_dir(repo, hub_cache = hub_cache) / "snapshots" / revision
             if not _snapshot_is_complete(snapshot):
                 raise SttModelCompatibilityError(
                     f"Downloaded STT snapshot for '{repo}' is incomplete."
@@ -626,9 +892,13 @@ class _SnapshotDownloadState:
             with self._lock:
                 self._complete = True
         except Exception as exc:
-            logger.warning("STT snapshot download failed for %s: %s", repo, exc)
             with self._lock:
-                self._error = f"Download failed for '{repo}'."
+                if not self._cancelled:
+                    logger.warning("STT snapshot download failed for %s: %s", repo, exc)
+                    self._error = f"Download failed for '{repo}'."
+        finally:
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(repo, owner)
 
 
 _download_state = _SnapshotDownloadState()
@@ -646,6 +916,10 @@ def download_status() -> dict:
     return _download_state.status()
 
 
+def cancel_model_download() -> bool:
+    return _download_state.cancel()
+
+
 def _training_active() -> bool:
     try:
         from core.training import get_training_backend
@@ -654,8 +928,15 @@ def _training_active() -> bool:
         return False
 
 
-def _clear_device_cache(device: Optional[str]) -> None:
-    gc.collect()
+def _clear_device_cache(device: Optional[str], collect: bool = True) -> None:
+    """Drop the unreferenced model, then hand its blocks back to the allocator.
+
+    ``collect = False`` for a caller that has just collected and dropped nothing since: a full
+    collection is not free (a long-lived backend reaches millions of tracked objects, where one
+    pass costs about a second), and the cancel path below runs this twice in a row while it
+    holds the model lock that ``wait_for_load_to_settle`` waits on."""
+    if collect:
+        gc.collect()
     try:
         import torch
         if device == "cuda":
@@ -664,6 +945,20 @@ def _clear_device_cache(device: Optional[str]) -> None:
             torch.mps.empty_cache()
     except Exception:
         pass
+
+
+def _reported_device(device: Optional[str]) -> Optional[str]:
+    """Device name for status. Torch calls the HIP device "cuda", which is right for the
+    API and wrong on screen: an AMD card reported as cuda reads like a bug."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+        if getattr(torch.version, "hip", None):
+            return "rocm"
+    except Exception:  # noqa: BLE001 - a label must never fail a status call
+        pass
+    return device
 
 
 def _pick_device():
@@ -693,12 +988,16 @@ def _pick_device():
         return "cpu", torch.float32
 
 
-def _decode_audio_bounded(audio: bytes):
+def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
     A small, highly-compressed upload can expand far past the encoded request
     limit once decoded, so decode frame-by-frame and enforce the sample cap as
     frames arrive, then hand the array straight to Whisper.
+
+    ``cancel_event`` is polled inside the frame loop: checking only after the decode
+    returned let an abandoned upload run to EOF or the sample cap, and several of them
+    could do that at once.
     """
     try:
         import av
@@ -745,6 +1044,8 @@ def _decode_audio_bounded(audio: bytes):
                 except InvalidDataError:
                     # Skip a corrupt frame rather than fail the whole transcription.
                     continue
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 frame.pts = None
                 fifo.write(frame)
                 if fifo.samples >= 500000:
@@ -755,7 +1056,7 @@ def _decode_audio_bounded(audio: bytes):
                     write_frame(resampled)
             for resampled in resampler.resample(None):
                 write_frame(resampled)
-    except (SttAudioDecodeError, SttAudioTooLongError):
+    except (SttAudioDecodeError, SttAudioTooLongError, SttTranscriptionCancelledError):
         raise
     except (FFmpegError, ValueError, RuntimeError) as exc:
         raise SttAudioDecodeError("Could not decode the audio.") from exc
@@ -780,6 +1081,7 @@ class WhisperSttSidecar:
         self._load_state_lock = threading.Lock()
         self._loading = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -790,7 +1092,9 @@ class WhisperSttSidecar:
 
     @property
     def device(self) -> Optional[str]:
-        return self._device
+        # Reported, so name the backend a user recognises. Torch's ROCm build keeps the
+        # "cuda" device name for HIP, which made an AMD box report "Transformers - cuda".
+        return _reported_device(self._device)
 
     def is_loading(self) -> bool:
         with self._load_state_lock:
@@ -805,6 +1109,15 @@ class WhisperSttSidecar:
             event.set()
             return True
 
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            return True
+
     def wait_for_load_to_settle(self) -> None:
         """Block until any in-flight load() has exited and freed its memory.
 
@@ -815,10 +1128,11 @@ class WhisperSttSidecar:
         with self._lock:
             pass
 
-    def _begin_load(self) -> threading.Event:
-        event = threading.Event()
+    def _begin_load(self, owner: Optional[threading.Event] = None) -> threading.Event:
+        event = owner if owner is not None else threading.Event()
         with self._load_state_lock:
             self._load_cancel_event = event
+            self._load_owner_cancel_event = owner
             self._loading = True
         return event
 
@@ -826,6 +1140,7 @@ class WhisperSttSidecar:
         with self._load_state_lock:
             if self._load_cancel_event is event:
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._loading = False
 
     @staticmethod
@@ -946,23 +1261,33 @@ class WhisperSttSidecar:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = False)
         return _CachedSttSnapshot(path = snapshot_path, is_multilingual = None)
 
-    def load(self, model: Optional[str] = None):
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ):
         """Load (or switch to) a model, reusing it if already resident.
 
         Returns a ``(model, processor)`` pair.
         """
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         with self._lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch
 
-            cancel_event = self._begin_load()
+            cancel_event = self._begin_load(request_cancel_event)
             candidate = None
             device: Optional[str] = None
+            resident_released = False
             try:
+                self._raise_if_load_cancelled(cancel_event)
                 cached = self._ensure_model_downloaded(model_id)
                 snapshot_path = cached.path
                 if snapshot_path is None:
@@ -973,6 +1298,7 @@ class WhisperSttSidecar:
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
                 self._release_engine_locked()
+                resident_released = True
                 logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
@@ -1020,19 +1346,33 @@ class WhisperSttSidecar:
                     self._model_id = model_id
                     self._device = device
                     self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
                     self._loading = False
                 self._schedule_idle_unload_locked()
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
                 candidate = None
-                self._release_engine_locked()
-                _clear_device_cache(device)
+                if resident_released:
+                    # _release_engine_locked already collected, and the candidate was dropped
+                    # before it ran, so nothing has become garbage since. This second call is
+                    # only here to empty the cache of the device this LOAD picked, which need
+                    # not be the resident's, so it keeps the sweep and skips the collection.
+                    self._release_engine_locked()
+                    _clear_device_cache(device, collect = False)
+                else:
+                    _clear_device_cache(device)
                 raise
             finally:
                 self._end_load(cancel_event)
 
-    def _transcribe_decoded(self, model_id: str, decoded_audio, generate_kwargs: dict) -> str:
+    def _transcribe_decoded(
+        self,
+        model_id: str,
+        decoded_audio,
+        generate_kwargs: dict,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
         Feeds a pre-decoded array so nothing here touches the Transformers audio
@@ -1041,8 +1381,22 @@ class WhisperSttSidecar:
         """
         import torch
 
-        model, processor = self.load(model_id)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
+        if cancel_event is None:
+            model, processor = self.load(model_id)
+        else:
+            model, processor = self.load(model_id, request_cancel_event = cancel_event)
         effective_generate_kwargs = dict(generate_kwargs)
+        if cancel_event is not None:
+            from transformers import StoppingCriteriaList
+            class _CancelCriteria:
+                def __call__(self, *_args, **_kwargs):
+                    return cancel_event.is_set()
+
+            effective_generate_kwargs["stopping_criteria"] = StoppingCriteriaList(
+                [_CancelCriteria()]
+            )
         generation_config = getattr(model, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
             # English-only checkpoints fix language and task in their generation
@@ -1054,6 +1408,8 @@ class WhisperSttSidecar:
         parts: list[str] = []
         with torch.no_grad():
             for start in range(0, max(len(decoded_audio), 1), window):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 segment = decoded_audio[start : start + window]
                 if segment.size == 0:
                     continue
@@ -1066,6 +1422,8 @@ class WhisperSttSidecar:
                 if target_dtype is not None:
                     features = features.to(target_dtype)
                 generated = model.generate(features, **effective_generate_kwargs)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 text = processor.batch_decode(generated, skip_special_tokens = True)
                 parts.append(text[0] if text else "")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
@@ -1076,6 +1434,7 @@ class WhisperSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
@@ -1084,6 +1443,8 @@ class WhisperSttSidecar:
         """
         # Reject a missing runtime up front, before the cache and bounded decode.
         ensure_stt_available()
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # A set language beats auto-detect. API takes BCP-47; Whisper wants short
         # codes like en or fr.
         lang = normalize_whisper_language(language)
@@ -1100,7 +1461,9 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by English-only STT model '{model_id}'."
             )
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior
         # context, which causes runaway repeats.
         generate_kwargs = {
@@ -1116,7 +1479,15 @@ class WhisperSttSidecar:
         # Serialize inference with model switches and unloads.
         with self._lock:
             try:
-                text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+                if cancel_event is None:
+                    text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+                else:
+                    text = self._transcribe_decoded(
+                        model_id,
+                        decoded_audio,
+                        generate_kwargs,
+                        cancel_event,
+                    )
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
@@ -1127,9 +1498,51 @@ class WhisperSttSidecar:
             "model": model_id,
         }
 
-    def unload(self) -> None:
-        with self._lock:
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        """Ask this request's Transformers generation or load to stop."""
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar, and the queued unload then tears down a model
+        it never owned.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        A transcription holds ``_lock`` throughout, so a caller releasing engines it does
+        not own must be able to leave a busy one alone. ``expected_model`` scopes the
+        release to one model, compared under the lock.
+        """
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
+            if not self._holds_expected_model(expected_model):
+                return
             self._release_engine_locked()
+        finally:
+            self._lock.release()
 
 
 _sidecar: Optional[WhisperSttSidecar] = None

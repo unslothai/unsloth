@@ -3,6 +3,7 @@
 
 import type { DownloadJob } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DownloadStopMode } from "./download-cancel-indicator";
 
 export function partialResumeLabel(transport: string | null | undefined): string {
   if (transport === "xet") return "Redownload";
@@ -10,11 +11,33 @@ export function partialResumeLabel(transport: string | null | undefined): string
   return "Retry";
 }
 
+/** Stopping an HTTP download leaves a partial to continue from, so it is a
+ * pause. Xet has to start over, so it is a cancel. Unknown assumes the costlier
+ * one rather than promising a resume that may not exist.
+ *
+ * Reads the running job's transport, not the partial's: a fresh HTTP download
+ * has no partial yet, and a restarted conflict switches transport, so the
+ * partial describes neither. */
+export function downloadStopMode(
+  activeTransport: string | null | undefined,
+  partialTransport?: string | null,
+  cancelTransport?: string | null,
+): DownloadStopMode {
+  // The cancel marker wins where there is one: a Xet run that fell back to
+  // HTTP still cancels into a restart-only partial, so Pause would promise a
+  // resume the marker does not allow.
+  const transport = cancelTransport ?? activeTransport ?? partialTransport;
+  return transport === "http" ? "pause" : "cancel";
+}
+
 export function downloadActionAriaLabel(
   downloading: boolean,
   cancelling: boolean,
+  stopMode: DownloadStopMode = "cancel",
 ): string | undefined {
-  return cancelling ? "Cancelling…" : downloading ? "Cancel download" : undefined;
+  if (cancelling) return "Cancelling…";
+  if (!downloading) return undefined;
+  return stopMode === "pause" ? "Pause download" : "Cancel download";
 }
 
 export function downloadActionLabel(
@@ -80,6 +103,11 @@ export function useDownloadCardState({
     starting,
     variant,
   ]);
+  const stopMode = downloadStopMode(
+    job.transport,
+    partialTransport,
+    job.cancelTransport,
+  );
   return {
     downloading,
     cancelling,
@@ -87,8 +115,9 @@ export function useDownloadCardState({
     isPartial,
     partialTransport,
     progressPercent,
+    stopMode,
     disabled: effectiveDisabled,
-    ariaLabel: downloadActionAriaLabel(downloading, cancelling),
+    ariaLabel: downloadActionAriaLabel(downloading, cancelling, stopMode),
     downloadLabel: downloadActionLabel(isPartial, partialTransport),
     onClick,
   };

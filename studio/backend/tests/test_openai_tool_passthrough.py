@@ -74,6 +74,7 @@ from routes.inference import (
     _SameTaskStreamingResponse,
     _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV,
     _set_or_prepend_system_message,
+    _strip_provider_synthetic_tool_history,
     openai_completions,
     openai_embeddings,
     openai_chat_completions,
@@ -517,6 +518,35 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
+
+    def test_confirm_tool_calls_allowed_for_codex_studio_tools(self, monkeypatch):
+        from routes import inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+
+        async def fake_proxy(*_args, **_kwargs):
+            return {"ok": True}
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", fake_proxy)
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "search docs"}],
+                "provider_type": "openai_codex",
+                "external_model": "gpt-5.6-sol",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "permission_mode": "ask",
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
 
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
@@ -1864,6 +1894,160 @@ class TestDropEmptyAssistantSentinels:
         for m in out:
             assert m.get("content"), m
 
+    def test_local_message_builders_preserve_assistant_reasoning(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "hello back",
+                    "reasoning_content": "Answer the greeting briefly.",
+                },
+                {"role": "user", "content": "why is quantum mechanics random?"},
+            ],
+        )
+
+        assert req.messages[1].reasoning_content == "Answer the greeting briefly."
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        _, standard_local, _ = _extract_content_parts(req.messages)
+        assert passthrough[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert gguf[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert standard_local[1]["reasoning_content"] == "Answer the greeting briefly."
+
+    def test_standard_local_builder_preserves_reasoning_only_assistant_turn(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "What is the answer?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "The answer is forty-two.",
+                },
+                {"role": "user", "content": "Explain why."},
+            ],
+        )
+
+        _, messages, _ = _extract_content_parts(req.messages)
+
+        assert messages == [
+            {"role": "user", "content": "What is the answer?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "The answer is forty-two.",
+            },
+            {"role": "user", "content": "Explain why."},
+        ]
+
+    def test_reasoning_only_assistant_turn_is_not_treated_as_a_stop_sentinel(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The response stopped before its final answer.",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        )
+
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [message["role"] for message in passthrough] == ["user", "assistant", "user"]
+        assert [message["role"] for message in gguf] == ["user", "assistant", "user"]
+        assert passthrough[1]["content"] == ""
+        assert gguf[1]["content"] == ""
+
+    def test_reasoning_only_dict_gains_llama_cpp_content_key(self):
+        messages = _drop_empty_assistant_sentinels(
+            [{"role": "assistant", "reasoning_content": "A completed answer."}]
+        )
+        assert messages == [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "A completed answer.",
+            }
+        ]
+
+    def test_chained_synthetic_tool_fragments_collapse_into_visible_answer(self):
+        def _synthetic_call(call_id: str) -> dict:
+            return {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "arguments": '{"_server_tool": true}',
+                },
+            }
+
+        messages = [
+            {"role": "user", "content": "Find it."},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Searching first."}],
+                "reasoning_content": "first trace",
+                "tool_calls": [_synthetic_call("call-1")],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "first result"},
+            {
+                "role": "assistant",
+                "reasoning_content": "second trace",
+                "tool_calls": [_synthetic_call("call-2")],
+            },
+            {"role": "tool", "tool_call_id": "call-2", "content": "second result"},
+            {
+                "role": "assistant",
+                "content": "Here is the answer.",
+                "reasoning_content": "final trace",
+            },
+            {"role": "user", "content": "Thanks."},
+        ]
+
+        out = _strip_provider_synthetic_tool_history(messages)
+
+        assert [message["role"] for message in out] == ["user", "assistant", "user"]
+        assert out[1]["content"] == [
+            {"type": "text", "text": "Searching first."},
+            {"type": "text", "text": "Here is the answer."},
+        ]
+        assert out[1]["reasoning_content"] == "first trace\n\nsecond trace\n\nfinal trace"
+
+    def test_synthetic_reasoning_fragment_before_user_stays_valid(self):
+        messages = [
+            {"role": "user", "content": "Find it."},
+            {
+                "role": "assistant",
+                "reasoning_content": "I should search.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+            {"role": "user", "content": "Try another query."},
+        ]
+
+        out = _strip_provider_synthetic_tool_history(messages)
+
+        assert [message["role"] for message in out] == ["user", "assistant", "user"]
+        assert out[1] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "I should search.",
+        }
+
 
 class TestGgufVisionMessages:
     _PNG_B64 = (
@@ -2323,7 +2507,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2512,7 +2696,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -5168,10 +5352,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
+                # The lease is announced before handover, so drain that marker first.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
                 pending = asyncio.create_task(iterator.__anext__())
                 for _ in range(100):
                     if "body" in body_holder:
@@ -5275,10 +5464,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                # The lease is announced before handover, so the payload is the next chunk.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
+                first = await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                 assert "hello" in first
 
                 pending = asyncio.create_task(iterator.__anext__())
@@ -5454,7 +5648,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -6997,7 +7191,7 @@ class TestResponsesChatTemplateKwargs:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1

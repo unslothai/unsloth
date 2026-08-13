@@ -46,7 +46,8 @@ def stub_audio_decoder(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module,
         "_decode_audio_bounded",
-        lambda _audio: np.zeros(8000, dtype = np.float32),
+        # Second arg is the cancel event the real decoder polls in its frame loop.
+        lambda _audio, _cancel_event = None: np.zeros(8000, dtype = np.float32),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -480,9 +481,11 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
 
     WhisperSttSidecar(keep_alive_seconds = 0).load("small")
 
+    # str(Path(...)), so the separator is the platform's.
+    cached = str(Path("/cached/model"))
     assert {(kind, repo) for kind, repo, _ in calls} == {
-        ("processor", "/cached/model"),
-        ("model", "/cached/model"),
+        ("processor", cached),
+        ("model", cached),
     }
     # Never fetch weights implicitly; the Model Hub owns downloads.
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
@@ -772,6 +775,14 @@ def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
 
 
 def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatch):
+    # The bound that carries the contract is the CANCEL thread's: it must come back while the
+    # build still holds the model lock, so two seconds against an indefinite wait is the whole
+    # question. The other waits below are liveness only -- they say "this must happen", and the
+    # assertion after each is what fails if it does not. Two seconds there was a budget on
+    # runner speed instead: after the build is released the load thread still has to be
+    # scheduled and run the cancel path's two full gc.collect()s, which a loaded two-core CI
+    # runner did not finish inside it.
+    settle = 30.0
     _install_fake_torch(monkeypatch)
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
     build_started = threading.Event()
@@ -780,7 +791,7 @@ def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatc
 
     def build(_repo, _device, _dtype, _cancel_event):
         build_started.set()
-        assert release_build.wait(timeout = 2)
+        assert release_build.wait(timeout = settle)
         return object(), object()
 
     def run_load():
@@ -795,19 +806,19 @@ def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatc
 
     load_thread = threading.Thread(target = run_load)
     load_thread.start()
-    assert build_started.wait(timeout = 2)
+    assert build_started.wait(timeout = settle)
 
     result = []
     cancel_thread = threading.Thread(target = lambda: result.append(sidecar.cancel_pending_load()))
     cancel_thread.start()
-    cancel_thread.join(timeout = 2)
+    cancel_thread.join(timeout = 2)  # the contract: back while the build still holds the lock
 
     assert not cancel_thread.is_alive()
     assert result == [True]
     assert load_thread.is_alive()
 
     release_build.set()
-    load_thread.join(timeout = 2)
+    load_thread.join(timeout = settle)
 
     assert not load_thread.is_alive()
     assert len(errors) == 1
@@ -1108,6 +1119,33 @@ def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypat
     assert status["bytes_done"] == 30
 
 
+class _FakeDownloadProcess:
+    """Stands in for the worker subprocess: immediate success."""
+
+    returncode = 0
+
+    def poll(self):
+        return 0
+
+    def communicate(self):
+        return (None, b"")
+
+
+def _worker_args(args) -> dict:
+    """Parse the download worker's argv into the fields tests assert on."""
+    parsed: dict = {"filenames": []}
+    remaining = iter(args)
+    for flag in remaining:
+        value = next(remaining)
+        if flag == "--repo-id":
+            parsed["repo_id"] = value
+        elif flag == "--revision":
+            parsed["revision"] = value
+        elif flag == "--filename":
+            parsed["filenames"].append(value)
+    return parsed
+
+
 def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_path):
     revision = "e" * 40
     calls = []
@@ -1127,12 +1165,18 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
             calls.append(("info", repo, kwargs))
             return SimpleNamespace(sha = revision, siblings = siblings)
 
-    def fake_snapshot_download(**kwargs):
-        calls.append(("snapshot", kwargs))
-        return str(tmp_path)
+    def fake_spawn_download(
+        args,
+        hf_token = None,
+        *,
+        hub_cache = None,
+    ):
+        calls.append(("snapshot", _worker_args(args)))
+        return _FakeDownloadProcess()
 
     monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    # The transfer runs in a worker process, so assert on its argv.
+    monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
         lambda **_kwargs: pytest.fail("unsharded selection must not load an index"),
@@ -1150,8 +1194,8 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
     )
     assert calls[1][0] == "snapshot"
     assert calls[1][1]["revision"] == revision
-    assert "model.safetensors" in calls[1][1]["allow_patterns"]
-    assert "pytorch_model.bin" not in calls[1][1]["allow_patterns"]
+    assert "model.safetensors" in calls[1][1]["filenames"]
+    assert "pytorch_model.bin" not in calls[1][1]["filenames"]
 
 
 def test_download_status_is_idle_before_any_download():
@@ -1163,6 +1207,10 @@ def test_download_status_is_idle_before_any_download():
         "downloading": False,
         "model": None,
         "error": None,
+        "cancelled": False,
+        # Only set alongside cancelled: "model" goes None once the download thread stops, so
+        # this is what tells a settled cancellation from an unrelated one.
+        "cancelled_model": None,
         "bytes_total": None,
         "bytes_done": None,
     }
@@ -1300,3 +1348,22 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
     # its accelerator memory stays stranded for the whole retry.
     assert seen["alive_during_retry"] is False
     assert sidecar.device == "cpu"
+
+
+def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
+    """Checking only after the decode returned let an abandoned upload run to EOF or the
+    30-minute cap, and several could do that at once."""
+    import threading
+
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((np.zeros(16000 * 5, dtype = np.int16)).tobytes())
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
+        stt_sidecar_module._decode_audio_bounded(buf.getvalue(), cancelled)

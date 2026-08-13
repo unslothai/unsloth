@@ -119,3 +119,26 @@ export function reconcileGpuSelection(
     ? { ids: kept, indexKind: currentIndexKind }
     : { ids: null, indexKind: null };
 }
+
+/** The device a bare "cuda" load lands on: visible ordinal 0, i.e. torch's current device.
+ * `index` stays PHYSICAL on the nvidia-smi path (index_kind "physical"), and a reordering
+ * CUDA_VISIBLE_DEVICES such as "3,1" maps ordinal 0 to physical GPU 3 while the minimum
+ * physical index is GPU 1, so ranking by `index` sizes the pick against the wrong card on a
+ * heterogeneous host. Only an older backend that omits visible_ordinal falls back to `index`. */
+export function pickLoadDevice<
+  T extends { index?: number; visible_ordinal?: number },
+>(devices: T[]): T | undefined {
+  const ordered = devices.filter((d) => typeof d.visible_ordinal === "number");
+  if (ordered.length > 0) {
+    return ordered.reduce((pick, d) =>
+      (d.visible_ordinal as number) < (pick.visible_ordinal as number)
+        ? d
+        : pick,
+    );
+  }
+  if (devices.length === 0) return undefined;
+  return devices.reduce(
+    (pick, d) => ((d.index ?? 0) < (pick.index ?? 0) ? d : pick),
+    devices[0],
+  );
+}

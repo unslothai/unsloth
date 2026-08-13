@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from loggers import get_logger
@@ -69,7 +70,12 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "granite-4.0-h",
     "granitemoehybrid",
     "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
 )
+_TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[str, bool | None] = {}
 
 
 def model_is_ssm(model_name: str) -> bool:
@@ -83,6 +89,105 @@ def model_wants_causal_conv1d(model_name: str) -> bool:
     hybrids like Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
     name = (model_name or "").lower()
     return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+
+
+def _normalized_model_identifier(value: str) -> str:
+    return "".join(
+        character for character in value.lower() if character.isascii() and character.isalnum()
+    )
+
+
+def _transformers_model_type_uses_causal_conv1d(model_type: str) -> bool | None:
+    candidate = model_type.strip().lower().replace("-", "_")
+    if not candidate or any(
+        not (character.isascii() and (character.isalnum() or character == "_"))
+        for character in candidate
+    ):
+        return None
+    if candidate in _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE:
+        return _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE[candidate]
+
+    result: bool | None = None
+    try:
+        import transformers
+        model_dir = Path(transformers.__file__).parent / "models" / candidate
+        if model_dir.is_dir():
+            for modeling_file in model_dir.glob("modeling_*.py"):
+                try:
+                    source = modeling_file.read_text(encoding = "utf-8", errors = "ignore")
+                except OSError:
+                    continue
+                result = False
+                if "causal_conv1d" in source:
+                    result = True
+                    break
+    except Exception as exc:
+        logger.debug("causal-conv1d model-type inspection skipped: %s", exc)
+
+    _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE[candidate] = result
+    return result
+
+
+def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
+    model_types: set[str] = set()
+    architectures: set[str] = set()
+    pending: list[Any] = [model_config]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            model_type = value.get("model_type")
+            if isinstance(model_type, str):
+                model_types.add(model_type)
+            model_architectures = value.get("architectures")
+            if isinstance(model_architectures, (list, tuple)):
+                architectures.update(
+                    architecture
+                    for architecture in model_architectures
+                    if isinstance(architecture, str)
+                )
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple)):
+            pending.extend(value)
+
+    source_requirements = {
+        _transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types
+    }
+    if True in source_requirements:
+        return True
+    config_identifiers = model_types | architectures
+    normalized_needles = {
+        _normalized_model_identifier(value) for value in CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    }
+    if any(
+        needle in _normalized_model_identifier(identifier)
+        for identifier in config_identifiers
+        for needle in normalized_needles
+    ):
+        return True
+    if False in source_requirements:
+        return False
+    return None
+
+
+def resolved_model_wants_causal_conv1d(
+    model_name: str, model_load_target: str, hf_token: str | None
+) -> bool:
+    try:
+        from utils.transformers_version import _load_config_json
+        model_config = _load_config_json(model_load_target, hf_token)
+    except Exception as exc:
+        logger.debug("Could not inspect model config for causal-conv1d: %s", exc)
+        model_config = None
+
+    if isinstance(model_config, dict):
+        requirement = model_config_wants_causal_conv1d(model_config)
+        if requirement is not None:
+            logger.info(
+                "causal-conv1d requirement resolved from model architecture: %s",
+                requirement,
+            )
+            return requirement
+    return model_wants_causal_conv1d(model_name)
 
 
 def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
@@ -172,6 +277,12 @@ def _install_kernel(
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
+
+    from utils.utils import hf_env_offline
+
+    if hf_env_offline():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
 
     env = probe_torch_wheel_env(timeout = 30)
     wheel_url = direct_wheel_url(

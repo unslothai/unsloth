@@ -42,19 +42,14 @@ dependencies = [
 unsloth = "unsloth_cli:app"
 
 [tool.setuptools.dynamic]
-version = {attr = "unsloth.models._utils.__version__"}
+version = {attr = "unsloth._version.__version__"}
 
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.cmdclass]
-# Snapshots CHANGELOG.md into studio/ so every build path ships it.
-build_py = "_changelog_build.build_py"
-
 [tool.setuptools.package-data]
 unsloth_cli = ["codex_fallback_prompt.md", "pi_subagent.ts"]
 studio = [
-    "CHANGELOG.md",
     "*.sh",
     "*.ps1",
     "*.bat",
@@ -69,39 +64,60 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
+    # Vendored truststore: not a package (no __init__.py), so it ships as data.
+    "backend/vendor/**/*",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
+    # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
+    # /docs and /redoc pages render blank in an installed Studio.
+    "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
 
 [tool.setuptools.packages.find]
 include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
-exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
+exclude = [
+    "images*",
+    "tests*",
+    "unsloth_compiled_cache*",
+    "*.unsloth_compiled_cache*",
+    "*.node_modules",
+    "*.node_modules.*",
+]
 
 [project.optional-dependencies]
 # Studio's server stack, mirroring studio/backend/requirements/studio.txt.
 # test_studio_extra_matches_requirements.py catches drift.
 studio = [
-    "typer",
-    "fastapi",
-    "uvicorn",
-    "pydantic",
-    "packaging",
+    "typer==0.27.1 ; python_version >= '3.10'",
+    "typer==0.23.2 ; python_version < '3.10'",
+    "fastapi==0.141.1 ; python_version >= '3.10'",
+    "fastapi==0.128.8 ; python_version < '3.10'",
+    "uvicorn==0.52.1 ; python_version >= '3.10'",
+    "uvicorn==0.39.0 ; python_version < '3.10'",
+    "pydantic==2.13.4",
+    "packaging==26.3",
     "matplotlib==3.10.9",
-    "pandas",
-    "nest_asyncio",
+    "pandas==2.3.3",
+    "nest_asyncio==1.6.0",
     "datasets==4.3.0",
-    "pyjwt",
-    "huggingface-hub==0.36.2",
+    "pyjwt==2.13.0",
+    "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
+    "huggingface-hub==0.36.2 ; python_version < '3.10'",
+    "urllib3>=2.3.0",
     "structlog>=24.1.0",
-    "diceware",
-    "ddgs",
+    "diceware==1.0.1",
+    "ddgs==9.14.4 ; python_version >= '3.10'",
+    "ddgs==9.8.0 ; python_version < '3.10'",
     "cryptography>=42.0.0",
     "boto3>=1.34.0",
     "httpx>=0.27.0",
     "fastmcp>=3.0.2",
+    "gguf==0.19.0 ; python_version >= '3.10'",
+    "gguf==0.18.0 ; python_version < '3.10'",
+    "av>=12.0.0",
     "sqlite-vec==0.1.9",
     "pymupdf==1.27.2.3",
     "pymupdf4llm==0.3.4",
@@ -114,7 +130,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.8.2",
+    "unsloth_zoo>=2026.8.10",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -128,7 +144,17 @@ huggingfacenotorch = [
     "peft>=0.18.0,!=0.11.0",
     "huggingface_hub>=0.34.0",
     "hf_transfer",
-    "diffusers",
+    # 0.39 is the floor the diffusion stack already assumes: Krea2Pipeline (the Krea 2
+    # workflow raises without it), the cache_context child-registry behavior, and the
+    # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
+    # diffusers, so advertised models failed to load until the user upgraded by hand.
+    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
+    # diffusers dropped 3.9 in 0.37, and we still support it (requires-python >= 3.9),
+    # so the floor is conditional: pinning it outright leaves pip no candidate at all
+    # on 3.9 and the whole extra becomes unresolvable.
+    "diffusers>=0.39.0 ; python_version >= '3.10'",
+    "diffusers ; python_version < '3.10'",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",
     "sentence-transformers",
@@ -151,10 +177,46 @@ audio-torch280 = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.8.2",
+    "unsloth_zoo>=2026.8.10",
     "torchvision",
     "unsloth[triton]",
 ]
+# xFormers' win_amd64 wheels are per-CUDA-family, not just per-torch: the
+# xformers/_C.pyd is linked against ONE exact (torch, CUDA) pair, and next to any
+# other pair torch.ops.load_library raises and xformers/_cpp_lib.py downgrades to
+# "xFormers can't load C++/CUDA extensions", losing memory-efficient attention,
+# SwiGLU and the sparse ops for the rest of the process -- a silent warning, not
+# an install failure. PyPI publishes only the CUDA-12.8 flavour (0.0.34's
+# win_amd64 cpp_lib.json reads torch 2.10.0+cu128), which is wrong next to the
+# cu126 / cu130 torch install.ps1 pulls from download.pytorch.org -- and cannot
+# be right on a plain PyPI install either, because PyPI's WINDOWS torch carries
+# no CUDA at all (torch 2.10.0's win_amd64 wheel reports __version__
+# '2.10.0+cpu' with cuda = None; only the Linux wheel is +cu128).
+#
+# There is no PEP 508 marker for "which CUDA build of torch is resident", so a
+# single static extra cannot pick the right wheel. The CUDA-matched route on
+# Windows is therefore the same one Linux uses -- the cuXXX-torchYYY extras. Not
+# every one of them carries a win_amd64 row (the cu118 and cu121 rows do not, and
+# cu130onlytorch280 is empty), but the cu126 / cu128 / cu130 rows a current torch
+# resolves to all do:
+#     pip install --index-url https://download.pytorch.org/whl/cu130 "unsloth[cu130-torch2100]"
+#     pip install --index-url https://download.pytorch.org/whl/cu128 "unsloth[cu128-torch2100]"
+# The index is not optional. Those extras pin xFormers by direct URL but pin no
+# torch, and PyPI's Windows torch is CPU-only, so without it pip lands a cu130
+# extension beside a '2.10.0+cpu' torch -- the same silent mismatch, inverted.
+# install.ps1 needs none of this: it picks the wheel from the index it installed
+# torch from, so Studio never reaches the extra below.
+#
+# The extra below is what a `pip install "unsloth[windows]"` resolves, and it
+# stays CUDA-agnostic because it has nothing to key off. It is deliberately NOT
+# capped. An earlier revision bounded it at <0.0.35 on the reasoning that 0.0.35
+# declares only torch>=2.10 while its extension is built for 2.10.0. Upstream says
+# that pairing is supported: v0.0.34's notes record the migration to the PyTorch
+# stable API/ABI, "which means that binary builds targeting PyTorch 2.10+ will be
+# compatible with any later version". Capping also has a cost -- 0.0.34 pins
+# torch==2.10.0 EXACTLY, so a cap strands anyone on 2.10.1. The axis that actually
+# has to match is the CUDA family, which this extra cannot see and install.ps1
+# handles instead.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",
@@ -639,7 +701,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.8.2",
+    "unsloth_zoo>=2026.8.10",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -1156,14 +1218,14 @@ intelgputorch210 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp310-cp310-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp311-cp311-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.11' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp312-cp312-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp313-cp313-win_amd64.whl ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=d133d858d4f2a51f26f36662023ad6efcbfb4b4919b3f15b1fbdfb71cb77700c ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=28f0d5a1ea08dc13f967f4aa31702cb08b561437aaac195f2eb7100721cb5d7f ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=7ba9de96e5d36400b996b9fb9eb38443196453aefc11fafe1a7bb226bc5fb8bb ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=6f68b4193109900080e88f08ee35d5fe27dba0cf7504ebbeec74bfeac066ac95 ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp310-cp310-win_amd64.whl#sha256=4341e829e54a778ea9d71593bb967d8df4a840e15d247194607ac4d85a516bb8 ; sys_platform == 'win32' and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp311-cp311-win_amd64.whl#sha256=1d4494e959b32ec78ce0dfc389cf68046433624aa7153b4e73dd313431c23c0e ; sys_platform == 'win32' and python_version == '3.11' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp312-cp312-win_amd64.whl#sha256=ea6bdf88f781e12fcd8c0c21ad8b5753282a2e8220e95203138aadf52388330c ; sys_platform == 'win32' and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.6.0-cp313-cp313-win_amd64.whl#sha256=ef733f3dd2a0aa5d33cf8af6f34ea4e1614f3189fe7d76a920f4b1a15d1eee09 ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.10.0%2Bxpu-cp310-cp310-linux_x86_64.whl#sha256=abb1d1ec1ac672bac0ff35420c965f2df0c636ef9d94e2a830e34578489d0a57 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.10.0%2Bxpu-cp311-cp311-linux_x86_64.whl#sha256=71ad2f82da0f41eaec159f39fc85854e27c2391efa91b373e550648a6f4aaad3 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
@@ -1381,6 +1443,8 @@ extend-exclude = [
     "*ollama_template_mappers.py",
     "*_auto_install.py",
     "*mapper.py",
+    # Vendored upstream source: reformatting it would break the digest test.
+    "studio/backend/vendor/",
 ]
 
 [tool.ruff.lint]

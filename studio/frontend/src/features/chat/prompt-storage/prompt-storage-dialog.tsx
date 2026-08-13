@@ -56,9 +56,14 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { isMcpImageToolResult } from "../api/chat-adapter";
+import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
+import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
+import {
+  contentBlocksToMarkdownBlocks,
+  renderConversationBlocks,
+} from "../utils/conversation-markdown";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -161,9 +166,12 @@ function contentBlocksToText(content: unknown): string {
           parts.push("[thinking]\n" + thinkText + "\n[/thinking]");
         }
       } else if (p.type === "tool-call") {
-        // Keep base64 image payloads out of every export format: use the
-        // model-visible text for MCP image results (matches chat replay).
-        const result = isMcpImageToolResult(p.result) ? p.result.text : p.result;
+        // Keep base64 image payloads and sandbox card metadata out of every
+        // export format: use the model-visible text (matches chat replay).
+        const result = toolResultModelText(
+          p.result,
+          typeof p.toolName === "string" ? p.toolName : undefined,
+        );
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
@@ -253,6 +261,25 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
   return parts.join("\n\n");
 }
 
+// Markdown counterpart to messageToText: same content and attachments, but each
+// part keeps its shape so the renderer can fence tool calls and collapse thinking.
+function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
+  const normalizeToolResult = toolResultModelText;
+  const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
+  if (Array.isArray(msg.attachments)) {
+    for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
+      if (!attachment?.content) continue;
+      blocks.push(
+        ...contentBlocksToMarkdownBlocks(
+          attachment.content,
+          normalizeToolResult,
+        ),
+      );
+    }
+  }
+  return renderConversationBlocks(blocks);
+}
+
 // OpenAI messages array (tool-calling + multimodal fine-tuning): tool calls →
 // "tool_calls" + separate "role":"tool" messages; images → "image_url" parts;
 // audio dropped; thinking kept as a text part.
@@ -307,12 +334,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           // Keep base64 image payloads out of exports: MCP image results carry
           // their model-visible text alongside the data, so serialize the text
           // (matching chat replay) instead of the full object.
+          const modelText = toolResultModelText(p.result, name);
           const resultStr =
-            typeof p.result === "string"
-              ? p.result
-              : isMcpImageToolResult(p.result)
-                ? p.result.text
-                : JSON.stringify(p.result);
+            typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
         }
       }
@@ -401,6 +425,14 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
     "text/csv",
   );
 }
+
+export const exportConversationMarkdown = createConversationMarkdownExporter({
+  loadMessages: loadConversationMessages,
+  renderMessage: messageToMarkdown,
+  download: downloadBlob,
+  exportTimestamp: exportTs,
+  notifyNoContent: () => toast.info("No exportable content."),
+});
 
 export type ConvExportFormat = "jsonl-raw" | "csv" | "sharegpt";
 
@@ -1523,7 +1555,7 @@ function PromptCard({
           <BookmarkIcon className="size-3.5 shrink-0 fill-primary text-primary" />
         ) : null}
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           <button
             type="button"
             onClick={() => onUse(entry.text)}
@@ -1733,7 +1765,7 @@ function PromptListCard({
         <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
           {entry.items.length}
         </span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           {onRunList && (
             <button
               type="button"
@@ -2036,7 +2068,7 @@ export function PromptStorageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94dvh] flex flex-col gap-0 p-0 overflow-hidden">
           {/* */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">

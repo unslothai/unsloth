@@ -25,10 +25,12 @@ function encodeNativeFilename(filename: string): string {
   return btoa(binary);
 }
 
-export interface NativeChatImport {
+export interface NativeImportedTextFile {
   name: string;
   content: string;
 }
+
+export type NativeChatImport = NativeImportedTextFile;
 
 function browserDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -103,6 +105,29 @@ export async function urlToBlob(url: string): Promise<Blob> {
   return (await fetchDownload(url)).blob();
 }
 
+/**
+ * Save a local backend URL without holding it in memory. `downloadUrl` buffers the body
+ * to cross the IPC boundary, which is the wrong shape for a gallery clip: here the
+ * chooser opens first and Rust streams to the chosen path. The browser keeps its anchor.
+ */
+export async function downloadUrlStreaming(
+  url: string,
+  filename: string,
+): Promise<void> {
+  if (!isTauri) {
+    browserUrlDownload(url, filename);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const savedPath = await invoke<string | null>("save_native_file_from_url", {
+    url,
+    fileName: filename,
+  });
+  if (savedPath === null) {
+    throw new DownloadCancelledError();
+  }
+}
+
 /** Resolve media before crossing the native save boundary. */
 export async function downloadUrl(
   url: string,
@@ -133,4 +158,12 @@ export async function pickNativeChatImport(): Promise<NativeChatImport | null> {
   }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<NativeChatImport | null>("pick_native_chat_import");
+}
+
+export async function pickNativeTrainingConfig(): Promise<NativeImportedTextFile | null> {
+  if (!isTauri) {
+    return null;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<NativeImportedTextFile | null>("pick_native_training_config");
 }

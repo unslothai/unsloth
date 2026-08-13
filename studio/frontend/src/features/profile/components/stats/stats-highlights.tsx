@@ -20,12 +20,12 @@ export function StatsHighlights({ stats }: { stats: ProfileStats }) {
   return (
     <div className="grid grid-cols-2 gap-y-5 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-white/[0.06] px-4 py-5 sm:grid-cols-3 lg:grid-cols-5">
       <StatTile
-        value={formatCompactNumber(totals.totalTokens)}
+        value={formatCompactNumber(totals.totalTokens, locale)}
         label={t("settings.profile.stats.lifetimeTokens")}
-        hint={formatFullNumber(totals.totalTokens)}
+        hint={formatFullNumber(totals.totalTokens, locale)}
       />
       <StatTile
-        value={peakDay ? formatCompactNumber(peakDay.tokens) : "—"}
+        value={peakDay ? formatCompactNumber(peakDay.tokens, locale) : "—"}
         label={t("settings.profile.stats.peakTokens")}
         {...(peakDay ? { hint: peakDay.date } : {})}
       />

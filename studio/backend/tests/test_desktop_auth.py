@@ -26,6 +26,8 @@ def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
+
+    monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)
     yield
 
 
@@ -504,6 +506,97 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     assert [row["name"] for row in rows] == ["desktop"]
 
 
+def web_bearer(client) -> str:
+    payload = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "human-password-123"}
+    return client.post("/api/auth/login", json = payload).json()["access_token"]
+
+
+def is_desktop_token(token: str) -> bool:
+    payload = jwt.decode(
+        token, storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME), algorithms = ["HS256"]
+    )
+    return payload.get("desktop") is True
+
+
+def test_desktop_sets_the_remote_password_without_the_seeded_one():
+    seed_user(must_change_password = True)
+    raw = storage.create_desktop_secret()
+    client = auth_client()
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {"new_password": "remote-password-123"}
+
+    response = client.post("/api/auth/desktop-initial-password", headers = headers, json = body)
+
+    assert response.status_code == 200
+    assert response.json()["must_change_password"] is False
+    assert is_desktop_token(response.json()["access_token"])
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is False
+    # Desktop auto-auth survives the change the desktop itself made.
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+    remote_login = client.post(
+        "/api/auth/login",
+        json = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "remote-password-123"},
+    )
+    assert remote_login.status_code == 200
+    # The seeded credential is gone, so change-password owns every later change.
+    repeat = client.post(
+        "/api/auth/desktop-initial-password",
+        headers = {"Authorization": f"Bearer {response.json()['access_token']}"},
+        json = body,
+    )
+    assert repeat.status_code == 409
+
+
+def test_remote_password_refuses_credentials_that_are_not_the_desktop_app():
+    seed_user(must_change_password = True)
+    client = auth_client()
+    api_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, "cli")
+
+    for bearer in (web_bearer(client), api_key):
+        response = client.post(
+            "/api/auth/desktop-initial-password",
+            headers = {"Authorization": f"Bearer {bearer}"},
+            json = {"new_password": "remote-password-123"},
+        )
+        # Distinguishable from the pre-existing "Password change required" refusal.
+        assert response.status_code == 403
+        assert response.json()["detail"] == "This action requires the Unsloth desktop app."
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is True
+
+
+@pytest.mark.parametrize("desktop", [True, False])
+def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    client = auth_client()
+    bearer = (
+        client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
+        if desktop
+        else web_bearer(client)
+    )
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    credential_key = storage.get_or_create_credential_encryption_key()
+    nonce = os.urandom(12)
+    encrypted = AESGCM(credential_key).encrypt(nonce, b"hf-survives-password-change", b"test")
+
+    response = client.post(
+        "/api/auth/change-password",
+        headers = {"Authorization": f"Bearer {bearer}"},
+        json = {"current_password": "human-password-123", "new_password": "remote-password-123"},
+    )
+
+    assert response.status_code == 200
+    assert is_desktop_token(response.json()["access_token"]) is desktop
+    assert (storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME) is desktop
+
+    storage._credential_encryption_key_cache = None
+    reloaded_key = storage.get_or_create_credential_encryption_key()
+    assert AESGCM(reloaded_key).decrypt(nonce, encrypted, b"test") == b"hf-survives-password-change"
+
+
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
     # _inject_local_providers mints an internal sk-unsloth-* API key (not a
     # forwarded JWT) that validates as admin whether the session was desktop or web.
@@ -601,10 +694,26 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from unsloth_cli.commands import studio as studio_cli
 
+    from auth import storage as auth_storage
+    from storage import credential_secrets
+
     auth_dir = tmp_path / "auth"
+    studio_db = tmp_path / "studio.db"
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(auth_storage, "DB_PATH", auth_dir / "auth.db")
+    monkeypatch.setattr(auth_storage, "_credential_encryption_key_cache", None)
+    monkeypatch.setattr(credential_secrets, "studio_db_path", lambda: studio_db)
+    monkeypatch.setattr(credential_secrets, "ensure_dir", lambda _path: None)
+    monkeypatch.setattr(
+        credential_secrets,
+        "get_or_create_credential_encryption_key",
+        auth_storage.get_or_create_credential_encryption_key,
+    )
+    credential_secrets._schema_ready = False
+
     secret = studio_cli._create_desktop_secret_in_cli()
     studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    credential_secrets.save_hf_token("hf_survives_reset")
     (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
@@ -624,9 +733,20 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
                 studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
             ),
         ).fetchone()[0]
+
+        credential_key = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("credential_encryption_key_v1",),
+        ).fetchone()
     finally:
         conn.close()
     assert surviving == 0
+
+    assert credential_key is not None
+    auth_storage._credential_encryption_key_cache = None
+    assert credential_secrets.get_hf_token() == "hf_survives_reset"
+    credential_secrets._schema_ready = False
+    auth_storage._credential_encryption_key_cache = None
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):
@@ -670,6 +790,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_module.router = APIRouter()
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    preview_module = ModuleType("routes.preview")
+    preview_module.router = APIRouter()
+    whisper_module = ModuleType("routes.whisper")
+    whisper_module.router = APIRouter()
+    profile_stats_module = ModuleType("routes.profile_stats")
+    profile_stats_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -681,12 +807,14 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "inference_studio_router": APIRouter(),
         "mcp_servers_router": APIRouter(),
         "models_router": APIRouter(),
+        "openai_codex_auth_router": APIRouter(),
         "providers_router": APIRouter(),
         "rag_router": APIRouter(),
         "research_runs_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
+        "video_router": APIRouter(),
     }.items():
         setattr(routes_module, name, router)
     routes_module.settings = settings_module
@@ -696,6 +824,9 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
+    monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
+    monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
 
     import studio.backend.main as backend_main
 
@@ -704,6 +835,14 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
+    # _hardware_snapshot() returns None until detection settles, so chat_only never publishes.
+    import threading
+
+    _settled = threading.Event()
+    _settled.set()
+    monkeypatch.setattr(backend_main._hw_module, "DETECTION_COMPLETE", _settled)
+    # On a Mac the MLX self-heal overturns "mlx_unavailable" and health_check() drops the snapshot.
+    monkeypatch.setattr(backend_main._hw_module, "is_apple_silicon", lambda: False)
 
     seed_user()
     from auth.authentication import create_access_token
@@ -924,3 +1063,41 @@ def test_desktop_auth_provision_has_bounded_timeout():
     assert m is not None
     seconds = int(m.group(1))
     assert 5 <= seconds <= 120
+
+
+def test_the_router_stub_covers_every_router_main_imports():
+    """The fake ``routes`` module above is a hardcoded dict, so a router added to main.py's
+    ``from routes import (...)`` block without a matching stub entry kills every test in this
+    file with an ImportError rather than a useful message, as ``openai_codex_auth_router`` did
+    after #8511. Comparing the two lists keeps that omission local to this assertion."""
+    import inspect
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    block = re.search(r"from routes import \(([^)]*)\)", main_src, re.S)
+    assert block is not None, "main.py no longer has a parenthesised routes import; re-derive this"
+    imported = set(re.findall(r"(\w+_router)", block.group(1)))
+    assert imported, "the routes import block named no routers; re-derive this"
+
+    # The health test's own stub only: another fixture's stubs would count as coverage here.
+    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
+    stubbed = set(re.findall(r'"(\w+_router)":', own_src))
+    assert stubbed, "the health test's stub dict named no routers; re-derive this"
+    missing = sorted(imported - stubbed)
+    assert not missing, (
+        f"main.py imports {missing} from routes, but the stub dict in this file does not "
+        f"define them, so the routes stand-in will not satisfy that import"
+    )
+
+    # Same drift for submodule imports, which need a sys.modules entry rather than a dict key.
+    submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
+    assert submodules, "main.py imports no routes submodule; re-derive this"
+    registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))
+    assert registered, "the health test registered no routes submodule; re-derive this"
+    unstubbed = sorted(submodules - registered)
+    assert not unstubbed, (
+        f"main.py imports from routes.{{{','.join(unstubbed)}}}, which this file never "
+        f"registers in sys.modules, so the real package would be imported instead"
+    )

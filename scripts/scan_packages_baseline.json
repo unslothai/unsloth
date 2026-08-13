@@ -139,6 +139,14 @@
       "evidence_hash": "512ecbb7539ddfd5296f8ea2d132ef4000a71033fd444d8a7539f6936dc9ad01"
     },
     {
+      "package": "gguf",
+      "file": "gguf/utility.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L268:         if os.environ.get(\"HF_TOKEN\"): | L269:             headers[\"Authorization\"] = f\"Bearer {os.environ['HF_TOKEN']}\"\nNetwork: L236:         response = requests.get(url, allow_redirects=True, headers=headers) | L258:             response = requests.head(url, allow_redirects=True, headers=headers)",
+      "evidence_hash": "231235fe72f6c47331494b67dd0cba2bdb7b75b901f4fe59b434ce9a1ffbd50e"
+    },
+    {
       "package": "httpx",
       "file": "httpx/_models.py",
       "check": "Enumerates filesystem AND makes network calls",
@@ -201,6 +209,14 @@
       "severity": "CRITICAL",
       "evidence": "L298:     while True: sha256:6b8e5e569594caf7c4eca6137646dae471a7c3aae7294096cf876f30b5f90306",
       "evidence_hash": "c066cc27bce31ee7b6ce07411ee7a7d9ecfbf3aafc8848f6641fabfe522a7703"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:0c9641548adea74be4a8b0e86e8b75cc937a2b0f833b57dfa3d30d3e24d2537a",
+      "evidence_hash": "70d25136ca2a91d192bd816706db7113a2ad0f96bc1b2381d0d4747a5ff1925d"
     },
     {
       "package": "ipython",
@@ -313,38 +329,6 @@
       "severity": "CRITICAL",
       "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
       "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
-    },
-    {
-      "package": "openai",
-      "file": "openai/_client.py",
-      "check": "Harvests environment variables/secrets AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "Env: L209:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L219:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L243:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L805:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L815:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L839:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L144:         http_client: httpx.Client | None = None, | L586:         http_client: httpx.Client | None = None, | L740:         http_client: httpx.AsyncClient | None = None, | L1193:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "d806c1e5eedb1eba7e2d9e6f31f3cc59b1882c8e843dfa3f5eac1fe7abdf296d"
-    },
-    {
-      "package": "openai",
-      "file": "openai/auth/_workload.py",
-      "check": "Accesses cloud metadata/IMDS AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
-      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
-    },
-    {
-      "package": "openai",
-      "file": "openai/lib/azure.py",
-      "check": "Harvests environment variables/secrets AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "Env: L214:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L217:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L538:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L541:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L37: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx.Client, httpx.AsyncClient]) | L100: class AzureOpenAI(BaseAzureClient[httpx.Client, Stream[Any]], OpenAI): | L119:         http_client: httpx.Client | None = None, | L141:         http_client: httpx.Client | None = None, | L163:         http_client: httpx.Client | None = None, | L189:         http_client: httpx.Client | None = None, | L297:         http_client: httpx.Client | None = None, | L421: class AsyncAzureOpenAI(BaseAzureClient[httpx.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L441:         http_client: httpx.AsyncClient | None = None, | L464:         http_client: httpx.AsyncClient | None = None, | L487:         http_client: httpx.AsyncClient | None = None, | L513:         http_client: httpx.AsyncClient | None = None, | L621:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "a81d958bdcc6c2e98290a6592a9d52f8fc44e6ce4ac983301840136464779923"
-    },
-    {
-      "package": "openai",
-      "file": "openai/lib/bedrock.py",
-      "check": "Harvests environment variables/secrets AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "Env: L105:     token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L150:     environment_token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L415:         http_client: httpx.Client | None = None, | L531:         http_client: httpx.Client | None = None, | L649:         http_client: httpx.AsyncClient | None = None, | L767:         http_client: httpx.AsyncClient | None = None,",
-      "evidence_hash": "92dbec8ccd79c1e0bc41e93cdd0bdbb091220616c6a1352873196e9dda6bd85c"
     },
     {
       "package": "openai",
@@ -1571,46 +1555,6 @@
       "evidence_hash": "d416b79dd17b24214f3f7653ac01354507d7bf0fc464dee30a4a4b8998f063ba"
     },
     {
-      "package": "openai",
-      "file": "openai/_base_client.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
-      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
-    },
-    {
-      "package": "openai",
-      "file": "openai/auth/_workload.py",
-      "check": "Accesses cloud metadata/IMDS AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
-      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/beta/responses/responses.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
-      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/realtime/realtime.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
-      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
-    },
-    {
-      "package": "openai",
-      "file": "openai/resources/responses/responses.py",
-      "check": "C2 polling/beaconing loop detected",
-      "severity": "CRITICAL",
-      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
-      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
-    },
-    {
       "package": "unsloth-zoo",
       "file": "tests/test_gemma4_forced_float32_ple_dtype.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
@@ -1713,6 +1657,139 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L4096:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L3744:         model.eval() | L4483:         mx.eval(model.parameters()) | L4598:         mx.eval(module.weight) | L7241:                     lambda: mx.eval(model.parameters()), | L7301:                     lambda: mx.eval(model.parameters()), | L7463:                 mx.eval(model.parameters())",
       "evidence_hash": "99be0b8b885c428ef382cdf98fe5cc7691a3fe65fdf2ff2d1ebfb3a152711dc0"
+    },
+    {
+      "package": "torchao",
+      "file": "torchao/prototype/gptq/gptq_example.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L257:         help=\"Prefix for the output directory (e.g. /home/user/tmp/20260420)\", sha256:cc135b7062e314555a72098d50c6bbf221fe2993cc195b91de2256cb4ba59f9d",
+      "evidence_hash": "1c6a8785e5b4d45928f0d8e0c8c4830827cfc772454dfb8074793e8faa441552"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_hf_xet_fallback.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L2083:     monkeypatch.setattr(xf, \"_run_download_attempt\", lambda *a, **k: (\"ok\", \"/tmp/warm\")) sha256:26b4d56964a6943851ad6d051f2833aa9bfee07e9d16e653cd1ee671412c326b",
+      "evidence_hash": "ab5ed5653a9f71d30233ab891edefb1a5e39b3d083a9019a23f3b82a32e02bad"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/hf_xet_health.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L317:         token = os.environ.get(\"HF_TOKEN\")\nNetwork: L313:         import urllib.request | L316:         request = urllib.request.Request(url, headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L329:         with urllib.request.urlopen(request, timeout = PROBE_TIMEOUT_SECONDS) as response: | L342:         head = urllib.request.Request(cas, method = \"HEAD\", headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L344:             urllib.request.urlopen(head, timeout = remaining)",
+      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654",
+      "file_sha256": "e0b53dbc7749ab7528211ccc87e56a56093b488c5e6efc1445c84c06ff5243db"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_vlm_label_masks.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L3267:             self._lock = __import__(\"threading\").Lock()\nExec: L1479:     mx.eval(batch[\"input_ids\"], batch[\"labels\"])",
+      "evidence_hash": "02e040f3f25ec6bfebb609f2ba68ea037cb0386b6ab74d6fcaba1a78ad5bb3b1"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/compiler.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1206:             _mod = __import__(model_location, fromlist=items) | L4946:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL4949:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nL4949:         f' \"-____-\"     Trainable parameters = {get_model_param_count(model, trainable_only=True):,} of {get_model_param_count(model):,} ({get_model_param_count(model, trainable_only=True)/get_model_p sha256:9e832c1e7b2815aa44dc42638d821cb9df22550db88d85bd4bfb29c13f984b53 | L4946:         f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\\nL4947:         f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nL4948:         f\"{chr(92)}        /    Data Parallel GPUs = {args.world_size} | Total batch size ({self._train_batch_size} x {args.gradient_accumulation_steps} x {args.world_size}) = {total_train_batch_size: sha256:b7ea9cdbe360ad323911014caf12a9d4ec87cb36195a511080e4e484c2fb80d2\nExec: L802:                 if eval(_dtype) is not None: | L803:                     dtype = eval(_dtype) | L1145:         _modeling_file = eval(model_location) | L1585:     f = eval(f\"{model_location}.{module}\") | L1914:         exec(f\"def raise_{j}(*args, **kwargs): print('{function}')\", globals(), locals()) | L1915:         try: exec(f\"EMPTY_LOGITS.{function} = raise_{j}\", globals(), locals()) | L3050:         exec(f\"import {parent}\", locals(), globals()) | L3181:                 dir(eval(parent)), | L3185:             exec(f\"{parent}.{child}.forward = forward\", globals(), locals()) | L3259:         module = eval(f\"modeling_file.{module}\") | L3286:             inner_class = eval(f\"modeling_file.{inner_class}\") | L3416:                 exec(f\"from timm.layers.norm_act import {norm}\") | L3424:             forward = eval(norm).forward | L3430:             exec(f\"timm.layers.norm_act.{norm}.forward = forward\") | L3447:                 exec(f\"from timm.models._efficientnet_blocks import {block}\") | L3455:             forward = eval(block).forward | L3461:             exec(f\"timm.models._efficientnet_blocks.{block}.forward = forward\") | L3695:     exec(\nL3696:         f\"{model_location}.torch.nn.{module}.forward = forward\",\nL3697:         globals(),\nL3698:         locals(),\nL3699:     ) | L3701:         exec(f\"{model_location}.nn.{module}.forward = forward\", globals(), locals()) | L3705:         exec(\nL3706:             f\"combined_module.torch.nn.{module}.forward = forward\",\nL3707:             globals(),\nL3708:             locals(),\nL3709:         ) | L3711:             exec(f\"combined_module.nn.{module}.forward = forward\", globals(), locals()) | L3788:                 source = eval(f\"{model_location}.torch\") | L3795:             function = eval(f\"source.nn.{module}\") | L3950:         exec(f\"import {model_location}\", globals()) | L3953:     modeling_file = eval(model_location) | L3966:     exec(\nL3967:         \"model_logger.addFilter(HideLoggingMessage('`use_cache`'))\", globals(), locals()\nL3968:     ) | L3970:     exec(\nL3971:         \"model_logger.addFilter(HideLoggingMessage('compile_config'))\",\nL3972:         globals(),\nL3973:         locals(),\nL3974:     ) | L4206:         source = eval(f\"modeling_file.{module}\") | L4220:         source = eval(f\"modeling_file.{module}\") | L4321:         source = eval(f\"modeling_file.{module}\") | L4359:             source = eval(f\"{model_location}.{module}\") | L4439:                 source = eval(f\"{model_location}.{module}\") | L4487:             source = eval(f\"{model_location}.{module}\") | L4709:         source = eval(f\"{model_location}.{module}\") | L4720:         exec(\nL4721:             f\"{model_location}.{module}._update_causal_mask = no_update_causal_mask\",\nL4722:             globals(),\nL4723:         ) | L4786:                 source = eval(f\"{model_location}.{module}\") | L4827:                 module_cls = eval(f\"{model_location}.{module}\") | L4864:                 module_cls = eval(f\"{model_location}.{module}\") | L4931:     exec(\nL4932:         \"from transformers.trainer import (\" + \", \".join(x for x in good_items) + \")\",\nL4933:         globals(),\nL4934:     ) | L4996:     exec(inner_training_loop, globals()) | L5004:             function = eval(f\"{model_location}.{module}\") | L5082:             function = eval(f\"{model_location}.{module}\") | L5220:             exec(\nL5221:                 f\"{model_location}.{module} = combined_module.{module}\",\nL5222:                 globals(),\nL5223:                 locals(),\nL5224:             ) | L5234:     check_dicts = dir(eval(f\"{model_location}\")) | L5236:         item = eval(f\"{model_location}.{check}\") | L5246:                         exec(\nL5247:                             f\"{model_location}.{check}['{key}'] = combined_module.{replaced_class}\",\nL5248:                             globals(),\nL5249:                             locals(),\nL5250:                         )",
+      "evidence_hash": "d8dabff7099fd84e1276c932c7bb70ba273333e5708eb149fec6a6130856085d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4290:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2382:         mx.eval(altup.correct(predictions, activated)) | L3938:         model.eval() | L4677:         mx.eval(model.parameters()) | L4792:         mx.eval(module.weight) | L7437:                     lambda: mx.eval(model.parameters()), | L7497:                     lambda: mx.eval(model.parameters()), | L7650:                 mx.eval(model.parameters())",
+      "evidence_hash": "511d74ad8e4d5a219b0485b23f295fb1b27ba49b734cbb664225f20a996f426d"
+    },
+    {
+      "package": "caio",
+      "file": "tests/test_raw_low_level.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L747:         os.dup2(good_fd, closed_fd)",
+      "evidence_hash": "7eb34f0b046a377f38f3d1a66daadce492c43cda85b7967f66c7ad62f0ca4169"
+    },
+    {
+      "package": "httpx2",
+      "file": "httpx2/_models.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L534:         history: list[Response] | None = None, sha256:934ed9b3eb1a374f2ff77800fa760232842538d1d487e87e1411d764314bf086\nNetwork: L9: import urllib.request | L1228:     class _CookieCompatRequest(urllib.request.Request):",
+      "evidence_hash": "c1faa319a4a8b53e133819b90be51fb12aae77477ae5ceda22d0f9930e646130"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L281:         while True: sha256:fbefef3c441ac4aad2220118629caaf5947f6e5ce919b5d22696559b78cefe34",
+      "evidence_hash": "6db10c4435d07c75201311256c6e35d807a271250d9d1520ac00b3622e8daebb"
+    },
+    {
+      "package": "botocore",
+      "file": "botocore/httpsession.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L186:         sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L509:             urllib_response = conn.urlopen(\nL510:                 method=request.method,\nL511:                 url=request_target,\nL512:                 body=request.body,\nL513:                 headers=request.headers,\nL514:                 retries=Retry(False),\nL515:                 assert_same_host=False,\nL516:                 preload_content=False,\nL517:                 decode_content=False,\nL518:                 chunked=self._chunked(request.headers),\nL519:                 **extra_kwargs,\nL520:             )",
+      "evidence_hash": "9240e223b1ffd4e599ec84c457bde659bd1f7e4d075e77b220f592e02b462a22"
+    },
+    {
+      "package": "pandas",
+      "file": "pandas/tests/io/test_pickle.py",
+      "check": "Creates archive with sensitive data AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Archive: L270:                 with tarfile.open(dest_path, mode=\"w\") as tar:\nNetwork: L502:         monkeypatch.setattr(\"urllib.request.urlopen\", mock_urlopen_read)",
+      "evidence_hash": "1493feaf122ac84c21097206624c3dad13814a6c24f2c3f1b03581879b2d5f2d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/device_map_planner.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L530:             module = __import__(mod_path, fromlist=[\"compute_module_sizes\"])\nExec: L1366:     model.eval()",
+      "evidence_hash": "d11a00fda9ab43a1390c5a10cf09f760efcbacd26c89fc18b359f063ee167135"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_client.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L210:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L220:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L244:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\") | L816:                 api_key = os.environ.get(\"OPENAI_API_KEY\") | L826:             admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L850:             webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L147:         http_client: httpx2.Client | None = None, | L599:         http_client: httpx2.Client | None = None, | L753:         http_client: httpx2.AsyncClient | None = None, | L1216:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "ee8e7ed79d2bfe99f85f53b1bff3d0f59cfc0de3393ab31a2955ef4365005e3c",
+      "file_sha256": "389ea48de3b3c46a9048d6636ca19e43533bda98e4dccde2d7f96037d0c82817"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx2.Client | None = None, | L109:                 with httpx2.Client() as client: | L134:     http_client: httpx2.Client | None = None, | L156:                 with httpx2.Client() as client:",
+      "evidence_hash": "a4b0fb17867ab99605026f7d5d753ba2d3cd0a79f5fab6d77521ec251c256a4c",
+      "file_sha256": "6a01858ee5a351df969067995bde0a97d4762455468f24c116f818db3aaec95d"
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/azure.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L215:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L218:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L539:             api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L542:             azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\")\nNetwork: L38: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx2.Client, httpx2.AsyncClient]) | L101: class AzureOpenAI(BaseAzureClient[httpx2.Client, Stream[Any]], OpenAI): | L120:         http_client: httpx2.Client | None = None, | L142:         http_client: httpx2.Client | None = None, | L164:         http_client: httpx2.Client | None = None, | L190:         http_client: httpx2.Client | None = None, | L298:         http_client: httpx2.Client | None = None, | L422: class AsyncAzureOpenAI(BaseAzureClient[httpx2.AsyncClient, AsyncStream[Any]], AsyncOpenAI): | L442:         http_client: httpx2.AsyncClient | None = None, | L465:         http_client: httpx2.AsyncClient | None = None, | L488:         http_client: httpx2.AsyncClient | None = None, | L514:         http_client: httpx2.AsyncClient | None = None, | L622:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "a2048fafc6303825095270dc766eb7630cdf9b0fb2e6eb0272695dbe9cd185c1",
+      "file_sha256": "b031fc8ab1d1d7865cd7f09e07a8cb08ea15b9269c710df62b1bb505d0920ed2"
+    },
+    {
+      "package": "openai",
+      "file": "openai/lib/bedrock.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L105:     token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L150:     environment_token = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L415:         http_client: httpx2.Client | None = None, | L531:         http_client: httpx2.Client | None = None, | L649:         http_client: httpx2.AsyncClient | None = None, | L767:         http_client: httpx2.AsyncClient | None = None,",
+      "evidence_hash": "ed7177e905325f49fc00b6329c7b4c18436af60fa52a559251a3a54618715873",
+      "file_sha256": "9d38c8b3d410100ea7d63d17eac2e92d71a2916305586c244a06111e99da7704"
     }
   ]
 }

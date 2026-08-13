@@ -288,3 +288,34 @@ def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):
     assert row.model_id == "org/model"
     assert row.active_cache is False
     assert row.load_id == str(snapshot)
+
+
+def test_diffusion_cache_root_follows_a_live_switch(settings_store, tmp_path):
+    # The image/video backends used huggingface_hub's import-time HF_HUB_CACHE constant, which set_hf_cache_home does not
+    # update, so the download wrote to the new root while progress counted the old one and a load could split across both.
+    import core.inference.diffusion as diffusion
+
+    moved = tmp_path / "external-c" / "huggingface"
+    # Write the setting straight into the store: set_hf_cache_home's folder validation is not under test and it rejects the pytest tmp root on macOS.
+    settings_store[hf_cache_settings.CACHE_HOME_SETTING_KEY] = str(moved)
+
+    assert diffusion.hub_cache_dir() == str(moved / "hub")
+    assert diffusion.DiffusionBackend._hub_cache_repo_dir("org/model") == (
+        moved / "hub" / "models--org--model"
+    )
+
+
+def test_diffusion_loader_calls_pin_the_cache_dir():
+    # Every from_pretrained / from_single_file must carry cache_dir, else diffusers resolves it through the stale constant.
+    for rel in ("core/inference/diffusion.py", "core/inference/video.py"):
+        source = (Path(_BACKEND_DIR) / rel).read_text(encoding = "utf-8")
+        for call in ("from_pretrained(", "from_single_file("):
+            for index, line in enumerate(source.splitlines(), start = 1):
+                if not line.strip().startswith(("pipe = ", "transformer = ", "cn_model = ")):
+                    continue
+                if call not in line:
+                    continue
+                window = "\n".join(source.splitlines()[index - 1 : index + 8])
+                assert (
+                    "cache_dir" in window or "kwargs" in window
+                ), f"{rel}:{index} calls {call} without a pinned cache_dir"
