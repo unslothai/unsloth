@@ -514,3 +514,45 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
         assert LlamaCppBackend._exec_path_for_launch(str(link)) == str(real.resolve())
+
+
+class TestPinningTheInstallersOwnEntrypoint:
+    """Pointing LLAMA_SERVER_PATH at our own wrapper is a supported setup.
+
+    An earlier fix made an exact pin short-circuit resolution outright, to
+    protect a custom wrapper's setup. That was too broad: pinning the
+    installer's own entrypoint then launched through /bin/sh, SIP dropped
+    DYLD_*, and #8566 came back for that configuration. The wrapper's shape
+    decides now, so a template wrapper resolves however it was reached and a
+    custom one is preserved however it was reached.
+    """
+
+    @staticmethod
+    def _managed_tree(tmp_path, body):
+        root = tmp_path / "llama.cpp"
+        (root / "build" / "bin").mkdir(parents = True)
+        (root / "build" / "bin" / "llama-server").write_bytes(b"\xcf\xfa\xed\xfe")
+        for marker in ("UNSLOTH_PREBUILT_INFO.json", ".unsloth_llama_install", "unsloth_install.json"):
+            (root / marker).write_text("{}")
+        entry = root / "llama-server"
+        entry.write_text(body)
+        entry.chmod(0o755)
+        return root, entry
+
+    _INSTALLER = '#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+    _CUSTOM = '#!/bin/sh\nexport MY_TUNING=1\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
+
+    def test_a_pinned_installer_wrapper_still_resolves(self, monkeypatch, tmp_path):
+        root, entry = self._managed_tree(tmp_path, self._INSTALLER)
+        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+        monkeypatch.setenv("LLAMA_SERVER_PATH", str(entry))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        got = LlamaCppBackend._exec_path_for_launch(str(entry))
+        assert got == str((root / "build" / "bin" / "llama-server").resolve())
+
+    def test_a_pinned_custom_wrapper_is_still_preserved(self, monkeypatch, tmp_path):
+        _root, entry = self._managed_tree(tmp_path, self._CUSTOM)
+        monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
+        monkeypatch.setenv("LLAMA_SERVER_PATH", str(entry))
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)

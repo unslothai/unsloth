@@ -9601,32 +9601,25 @@ class LlamaCppBackend:
         SIP purges DYLD_* while starting the protected /bin/sh a shell
         entrypoint runs under, so the loader path we build for the child would
         not survive the wrapper's own exec (#8566). Only OUR entrypoint is
-        resolved: a user's own LLAMA_SERVER_PATH wrapper may export backend
-        variables or do other setup before its exec line, and skipping past it
-        would silently drop that.
+        resolved: someone's own wrapper may export backend variables or do
+        other setup before its exec line, and skipping past it would silently
+        drop that.
+
+        The test is the wrapper's shape, not where it came from. Provenance is
+        not enough (_llama_install_root treats the directory named by
+        UNSLOTH_LLAMA_CPP_PATH as the active install with no marker file
+        needed, so somebody's own checkout reads as managed), and neither is an
+        explicit LLAMA_SERVER_PATH pin: pointing that at the installer's own
+        entrypoint is a supported configuration, and refusing to resolve it
+        just because it was named put the launch back through /bin/sh and
+        reproduced the very bug this fixes. An installer-template wrapper does
+        nothing but exec its target, so resolving past one is never a loss,
+        however it was reached.
         """
         if not binary or sys.platform != "darwin":
             return binary
-        # An exact LLAMA_SERVER_PATH pin outranks provenance. Ownership is
-        # inferred from an install marker somewhere above the file, so a
-        # wrapper the user pinned INSIDE a managed tree reads as ours and its
-        # setup would be skipped. Naming the file is unambiguous intent: launch
-        # what they named.
-        pinned = os.environ.get("LLAMA_SERVER_PATH", "")
-        if pinned:
-            try:
-                if os.path.realpath(os.path.expanduser(pinned)) == os.path.realpath(binary):
-                    return binary
-            except OSError:
-                pass
         if not LlamaCppBackend._is_unsloth_managed_binary(binary):
             return binary
-        # Provenance is not enough on its own. _llama_install_root treats the
-        # directory named by UNSLOTH_LLAMA_CPP_PATH as the active install with
-        # no marker file needed, so a user's own checkout reads as managed and
-        # a wrapper of theirs at its root would be resolved past, losing
-        # whatever it exports. Only skip an entrypoint we recognise as one the
-        # installer wrote.
         if not _is_installer_entrypoint(binary):
             return binary
         return str(_resolve_llama_binary(binary))
