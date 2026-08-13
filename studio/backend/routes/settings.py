@@ -986,6 +986,11 @@ class LastLocalModelPayload(BaseModel):
     # shadow whose fire-and-forget PUT was dropped compares against this to decide
     # whether it is actually newer than what another surface stored since.
     loaded_at: Optional[int] = Field(default = None, ge = 0)
+    # The client clock's reading when the request was sent: both stamps come from
+    # the same clock, so the request's skew (server_now - client_now) translates
+    # loaded_at into the server frame -- a fast or slow client clock can neither
+    # freeze the record nor strand its own device. Never persisted.
+    client_now: Optional[int] = Field(default = None, ge = 0)
 
 
 class LastLocalModelResponse(BaseModel):
@@ -993,6 +998,9 @@ class LastLocalModelResponse(BaseModel):
     kind: Optional[Literal["gguf", "model"]] = None
     gguf_variant: Optional[str] = None
     loaded_at: Optional[int] = None
+    # Lets the client translate loaded_at back into its own frame when comparing
+    # against its local shadow stamps.
+    server_now: Optional[int] = None
 
 
 @router.get("/last-local-model", response_model = LastLocalModelResponse)
@@ -1002,13 +1010,14 @@ def get_last_local_model(
     from storage.studio_db import get_app_setting
 
     stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    _now = int(time.time() * 1000)
     if not isinstance(stored, dict):
-        return LastLocalModelResponse()
+        return LastLocalModelResponse(server_now = _now)
     try:
         payload = LastLocalModelPayload(**stored)
     except Exception:
-        return LastLocalModelResponse()
-    return LastLocalModelResponse(**payload.model_dump())
+        return LastLocalModelResponse(server_now = _now)
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
 
 
 @router.put("/last-local-model", response_model = LastLocalModelResponse)
@@ -1021,9 +1030,15 @@ def update_last_local_model(
     # load from another surface: loaded_at orders stamped writes, and the stored
     # record is returned so the caller sees the authoritative state. Unstamped
     # writes come from pre-loaded_at clients and keep last-write-wins.
+    _server_now = int(time.time() * 1000)
     with _LAST_LOCAL_MODEL_LOCK:
         if payload.loaded_at is not None:
-            _cap = int(time.time() * 1000) + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.client_now is not None:
+                # translate into the server frame: fresh loads land near now,
+                # reconcile re-issues of old shadows stay proportionally old
+                _shifted = payload.loaded_at + (_server_now - payload.client_now)
+                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+            _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
             if payload.loaded_at > _cap:
                 payload = payload.model_copy(update = {"loaded_at": _cap})
             stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
@@ -1037,9 +1052,11 @@ def update_last_local_model(
                     and current.loaded_at is not None
                     and payload.loaded_at < current.loaded_at
                 ):
-                    return LastLocalModelResponse(**current.model_dump())
-        upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump()})
-    return LastLocalModelResponse(**payload.model_dump())
+                    return LastLocalModelResponse(
+                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                    )
+        upsert_app_settings({LAST_LOCAL_MODEL_SETTING_KEY: payload.model_dump(exclude = {"client_now"})})
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _server_now)
 
 
 @router.get("/vram-budget", response_model = VramBudgetResponse)

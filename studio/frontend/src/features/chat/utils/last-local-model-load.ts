@@ -119,6 +119,8 @@ export async function readLastLocalModelLoad(
         gguf_variant?: unknown;
         // biome-ignore lint/style/useNamingConvention: API schema
         loaded_at?: unknown;
+        // biome-ignore lint/style/useNamingConvention: API schema
+        server_now?: unknown;
       };
       const record = toRecord({
         id: data.id,
@@ -127,8 +129,12 @@ export async function readLastLocalModelLoad(
       });
       if (record) {
         const legacy = readLegacyEntry();
-        const backendLoadedAt =
+        let backendLoadedAt =
           typeof data.loaded_at === "number" ? data.loaded_at : null;
+        if (backendLoadedAt !== null && typeof data.server_now === "number") {
+          // Shadow stamps live in this clock's frame: compare like with like.
+          backendLoadedAt -= data.server_now - Date.now();
+        }
         if (
           legacy &&
           legacy.loadedAt !== null &&
@@ -192,6 +198,11 @@ export function recordLastLocalModelLoad(input: {
       gguf_variant: record.ggufVariant,
       // biome-ignore lint/style/useNamingConvention: API schema
       loaded_at: loadedAt,
+      // The server translates loaded_at into its own clock frame using this
+      // (skew = server_now - client_now), so slow or fast local clocks cannot
+      // strand or freeze the shared record.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      client_now: Date.now(),
     }),
   })
     .then(async (res) => {
@@ -211,6 +222,8 @@ export function recordLastLocalModelLoad(input: {
           gguf_variant?: unknown;
           // biome-ignore lint/style/useNamingConvention: API schema
           loaded_at?: unknown;
+        // biome-ignore lint/style/useNamingConvention: API schema
+          server_now?: unknown;
         };
         serverRecord = toRecord({
           id: body.id,
@@ -219,6 +232,11 @@ export function recordLastLocalModelLoad(input: {
         });
         serverLoadedAt =
           typeof body.loaded_at === "number" ? body.loaded_at : null;
+        if (serverLoadedAt !== null && typeof body.server_now === "number") {
+          // Shadow stamps live in this clock's frame: translate the server's
+          // answer back before storing it next to locally stamped values.
+          serverLoadedAt -= body.server_now - Date.now();
+        }
       } catch {
         // Pre-loaded_at backend or opaque response: fall back to our stamp.
       }

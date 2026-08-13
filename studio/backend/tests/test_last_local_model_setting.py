@@ -45,7 +45,9 @@ def test_get_with_nothing_stored(client):
     c, _ = client
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    body = r.json()
+    assert isinstance(body.pop("server_now"), int)
+    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
 
 def test_put_then_get_round_trips(client):
@@ -53,12 +55,16 @@ def test_put_then_get_round_trips(client):
     payload = {"id": "unsloth/gemma-4-E2B-it-GGUF", "kind": "gguf", "gguf_variant": "UD-Q4_K_XL"}
     r = c.put("/last-local-model", json = payload)
     assert r.status_code == 200
-    assert r.json() == {**payload, "loaded_at": None}
+    body = r.json()
+    body.pop("server_now")
+    assert body == {**payload, "loaded_at": None}
     assert store[settings.LAST_LOCAL_MODEL_SETTING_KEY] == {**payload, "loaded_at": None}
 
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {**payload, "loaded_at": None}
+    body = r.json()
+    body.pop("server_now")
+    assert body == {**payload, "loaded_at": None}
 
 
 def test_put_accepts_path_qualified_variant(client):
@@ -83,7 +89,9 @@ def test_put_without_variant(client):
     c, _ = client
     r = c.put("/last-local-model", json = {"id": "unsloth/Qwen3-4B", "kind": "model"})
     assert r.status_code == 200
-    assert r.json() == {
+    body = r.json()
+    body.pop("server_now")
+    assert body == {
         "id": "unsloth/Qwen3-4B",
         "kind": "model",
         "gguf_variant": None,
@@ -131,6 +139,30 @@ def test_put_clamps_future_dated_stamps(client):
     assert r.json()["loaded_at"] <= cap
 
 
+def test_put_normalizes_slow_client_clocks(client):
+    c, store = client
+    import time as _time
+    now = int(_time.time() * 1000)
+    assert c.put(
+        "/last-local-model",
+        json = {"id": "unsloth/Qwen3-4B", "kind": "model", "loaded_at": now, "client_now": now},
+    ).status_code == 200
+    # a clock hours behind: a genuinely later load still lands after the stored one
+    slow_now = now - 7_200_000
+    r = c.put(
+        "/last-local-model",
+        json = {
+            "id": "unsloth/OLMo-4-13B",
+            "kind": "model",
+            "loaded_at": slow_now + 60_000,
+            "client_now": slow_now,
+        },
+    )
+    assert r.status_code == 200
+    assert c.get("/last-local-model").json()["id"] == "unsloth/OLMo-4-13B"
+    assert "client_now" not in store[settings.LAST_LOCAL_MODEL_SETTING_KEY]
+
+
 def test_put_rejects_bad_payloads(client):
     c, _ = client
     assert c.put("/last-local-model", json = {"id": "x", "kind": "lora"}).status_code == 422
@@ -143,9 +175,13 @@ def test_get_tolerates_corrupt_stored_value(client):
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = {"id": "x", "kind": "lora"}
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    body = r.json()
+    body.pop("server_now")
+    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
 
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = "not-a-dict"
     r = c.get("/last-local-model")
     assert r.status_code == 200
-    assert r.json() == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    body = r.json()
+    body.pop("server_now")
+    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
