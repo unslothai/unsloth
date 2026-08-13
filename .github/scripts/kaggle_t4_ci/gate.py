@@ -134,6 +134,26 @@ LOOKBACK_HOURS = MAX_SESSION_HOURS + CLOCK_SKEW_HOURS
 KERNELS_PAGE_SIZE = 100
 MAX_KERNEL_PAGES = 5
 
+# The two ways a status lookup can fail, and why only one of them is benign.
+#
+# A kernel this account deleted still shows up in the listing for a while and
+# then answers its status call with a 404. That is not an unknown state: it is
+# a kernel that is definitively not running, and blocking on it would wedge the
+# gate shut, since the launcher deletes every kernel it pushes.
+#
+# Anything else -- a 5xx, a socket timeout, a client bug -- says nothing at all
+# about the kernel. It may be a human's session that is RUNNING right now, and
+# proceeding on it can take the last slot from the person the zero-foreign
+# policy exists to protect. So a 404 is counted as "gone" and everything else
+# as "unreadable", and only the second one stands the job down.
+GONE_MARKERS = ("404", "not found", "notfound", "does not exist")
+
+
+def _looks_gone(exc: BaseException) -> bool:
+    """Did this status lookup fail because the kernel no longer exists?"""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in GONE_MARKERS)
+
 
 def _out(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
@@ -226,10 +246,12 @@ def survey_kernels(
         the walk either ran off the end of the listing or reached an entry
         outside the window. False means the page cap was hit first and some
         candidate kernels were never looked at.
-    ``surveyed`` / ``unreadable``
-        how many in-window kernels were status-checked, and how many of
-        those answers came back as an error. All of them unreadable means
-        the status API is down, which is not evidence of an idle account.
+    ``surveyed`` / ``unreadable`` / ``gone``
+        how many in-window kernels were status-checked; how many answered
+        with an error that leaves their state genuinely unknown; and how many
+        answered 404, which is a deleted kernel rather than an unknown one.
+        A single unreadable status is not evidence of an idle account, so it
+        is counted separately from the benign kind. See GONE_MARKERS.
     """
     # Naive UTC, to match what Kaggle returns. utcnow() would do the same
     # thing and is deprecated from 3.12.
@@ -240,6 +262,7 @@ def survey_kernels(
     foreign: list[str] = []
     surveyed = 0
     unreadable = 0
+    gone = 0
     complete = False
 
     for page in range(1, max_pages + 1):
@@ -260,8 +283,13 @@ def survey_kernels(
             try:
                 status = str(getattr(api.kernels_status(ref), "status", ""))
             except Exception as exc:  # noqa: BLE001
-                # An unreadable status is not evidence of an idle account.
-                # Count it, say so, and keep going.
+                # A 404 is a deleted kernel and says the slot is free. Any
+                # other error leaves the state unknown, and an unknown state
+                # is not evidence of an idle account. See GONE_MARKERS.
+                if _looks_gone(exc):
+                    gone += 1
+                    print(f"[gate] status 404 for {ref}: already deleted", flush = True)
+                    continue
                 unreadable += 1
                 print(f"[gate] status unreadable for {ref}: " f"{type(exc).__name__}", flush = True)
                 continue
@@ -288,6 +316,7 @@ def survey_kernels(
         "foreign": foreign,
         "surveyed": surveyed,
         "unreadable": unreadable,
+        "gone": gone,
         "complete": complete,
         "window_hours": lookback_hours,
     }
@@ -348,11 +377,17 @@ def concurrency_verdict(
             "pages, so an older kernel of this account could still be "
             "running unseen"
         )
-    if survey["surveyed"] and survey["unreadable"] == survey["surveyed"]:
+    # ANY unreadable candidate, not just all of them. One in-window kernel
+    # whose status could not be read may be the human session this job is
+    # supposed to yield to, and "the ones we could read were idle" is not an
+    # answer about the one we could not. Deleted kernels answer 404 and are
+    # counted as `gone` rather than unreadable, so the routine case does not
+    # wedge the gate shut; see GONE_MARKERS.
+    if survey.get("unreadable"):
         return False, (
-            f"no kernel status could be read at all ({survey['unreadable']} "
-            f"of {survey['surveyed']} unreadable), so whether the account is "
-            "busy is unknown"
+            f"{survey['unreadable']} of {survey['surveyed']} in-window kernel "
+            "status(es) could not be read, so whether the account is busy is "
+            "unknown; standing down rather than assuming it is idle"
         )
     return True, ""
 
