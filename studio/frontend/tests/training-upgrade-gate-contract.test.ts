@@ -41,7 +41,10 @@ test("the upgrade dialog is raised before the custom-code dialog", () => {
     const remoteCodeAt = source.indexOf("confirmRemoteCodeIfNeeded(");
     // Both must be present: a missing call indexes to -1, which would otherwise
     // satisfy the ordering assertion without either gate existing.
-    assert.ok(upgradeAt >= 0 && remoteCodeAt >= 0, `${file} must run both gates`);
+    assert.ok(
+      upgradeAt >= 0 && remoteCodeAt >= 0,
+      `${file} must run both gates`,
+    );
     assert.ok(
       upgradeAt < remoteCodeAt,
       `${file} must raise the upgrade dialog before the custom-code dialog`,
@@ -49,9 +52,42 @@ test("the upgrade dialog is raised before the custom-code dialog", () => {
   }
 });
 
+test("both gates on a start path inspect the same copy of the model", () => {
+  // The upgrade check used to be handed the Hub identifier while the custom-code gate
+  // resolved the pinned snapshot, so a cached model could be judged on the repo's
+  // current config.json and the snapshot's -- two different architectures. One resolver
+  // per start path is what keeps them from drifting apart again.
+  for (const [file, resolver] of [
+    [
+      "../src/features/training/lib/start-fresh-training-run.ts",
+      "freshModelCachePin(",
+    ],
+    [
+      "../src/features/training/lib/resume-training-run.ts",
+      "resumeModelCachePin(",
+    ],
+  ] as const) {
+    const source = read(file);
+    assert.equal(
+      source.split(resolver).length - 1,
+      3,
+      `${file} must resolve the cache pin once and pass it to both gates`,
+    );
+  }
+});
+
+test("the resume gate names the run it precedes", () => {
+  // Without the run id the check cannot tell that installing would permanently strand
+  // a checkpoint attested against a 4-bit model load the latest sidecar refuses.
+  const source = read("../src/features/training/lib/resume-training-run.ts");
+  assert.ok(source.includes("resumeRunId"));
+});
+
 test("the gate reaches the install through the shared consent dialog", () => {
   // Not a second implementation of the flow chat already owns.
-  const gate = read("../src/features/training/lib/training-transformers-upgrade.ts");
+  const gate = read(
+    "../src/features/training/lib/training-transformers-upgrade.ts",
+  );
   assert.ok(gate.includes("confirmTransformersUpgradeIfNeeded"));
   assert.ok(gate.includes("checkTransformersUpgrade"));
 });

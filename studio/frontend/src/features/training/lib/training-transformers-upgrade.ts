@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  type ModelCachePin,
   type TransformersUpgradeCheck,
   checkTransformersUpgrade,
   confirmTransformersUpgradeIfNeeded,
@@ -38,18 +39,41 @@ export function getTrainingTransformersUpgradeRequiredMessage(
 export async function confirmTrainingTransformersUpgrade({
   modelName,
   hfToken,
+  modelCachePin,
+  resumeRunId,
 }: {
   modelName: string;
   hfToken?: string | null;
+  /** Which copy of the model the run will load, resolved exactly as the custom-code
+   *  gate resolves it: a repo's current config.json describes a different architecture
+   *  than the pinned snapshot on disk often enough to gate on the wrong one. */
+  modelCachePin?: ModelCachePin;
+  /** Set on the resume path, so the check can say whether installing would strand
+   *  this checkpoint. */
+  resumeRunId?: string | null;
 }): Promise<TrainingTransformersUpgradeOutcome> {
   let check: TransformersUpgradeCheck;
   try {
-    check = await checkTransformersUpgrade(modelName, hfToken);
+    check = await checkTransformersUpgrade(modelName, hfToken, {
+      ...modelCachePin,
+      resumeRunId,
+    });
   } catch {
     return { proceed: true, error: null, forces16Bit: false };
   }
   if (!check.upgrade) {
     return { proceed: true, error: null, forces16Bit: check.forces16Bit };
+  }
+  if (check.installBreaksExactResume && check.requiresTrustRemoteCode) {
+    // This resume is attested against a 4-bit model load the latest sidecar refuses,
+    // and that sidecar is a persistent overlay: consenting here would strand the
+    // checkpoint for good. The model ships its own modeling code, so the custom-code
+    // gate that runs next loads it on the CURRENT transformers, in the 4-bit mode the
+    // checkpoint needs. Nothing to offer, so offer nothing.
+    //
+    // Without that fallback the install is the only way the resume runs at all (a fresh
+    // venv that lost the sidecar), so the dialog is still raised below.
+    return { proceed: true, error: null, forces16Bit: false };
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({

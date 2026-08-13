@@ -105,6 +105,38 @@ def effective_training_load_in_4bit(
     return not latest_tier_active
 
 
+def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
+    """Would activating the latest-transformers sidecar strand this stored run?
+
+    ``effective_training_load_in_4bit`` raises ``ExactResumeResourcesUnavailable`` for a
+    4-bit run with exact-resource provenance the moment ``latest_tier_active_for`` turns
+    true, and that sidecar is a persistent overlay: once installed, the checkpoint can
+    never resume in the 4-bit load mode it was attested with. Callers offering the
+    install ahead of a resume ask this first, so they do not trade a working resume for
+    an upgrade the run does not need.
+
+    Takes the run's STORED config (``config_json``), which is why it recomputes the
+    requirement from the provenance marker: ``require_exact_resume_resources`` and
+    ``require_exact_model_resource`` are stripped before persistence and only exist on
+    the live worker config that ``/train/start`` assembles.
+
+    Never raises. A provenance that is already refusing a resume returns False: nothing
+    the install does makes that checkpoint any less resumable.
+    """
+    if not bool(config.get("load_in_4bit")):
+        return False
+    try:
+        requires_exact_model, _ = exact_resume_resource_requirements(config)
+    except ExactResumeResourcesUnavailable:
+        return False
+    except Exception:
+        return False
+    # The same disjunction effective_training_load_in_4bit tests: routes/training.py
+    # fills require_exact_model_resource from exact_resume_resource_requirements and
+    # require_exact_resume_resources from resource_provenance_is_complete.
+    return bool(requires_exact_model or resource_provenance_is_complete(config))
+
+
 def _normalized_repo_id(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None

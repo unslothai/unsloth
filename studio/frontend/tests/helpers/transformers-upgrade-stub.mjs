@@ -17,6 +17,7 @@ export const state = {
     requiresTrustRemoteCode: false,
     latestTierActive: false,
     forces16Bit: false,
+    installBreaksExactResume: false,
   },
   consentResult: true,
   installRan: false,
@@ -30,14 +31,18 @@ export function resetStub() {
     requiresTrustRemoteCode: false,
     latestTierActive: false,
     forces16Bit: false,
+    installBreaksExactResume: false,
   };
   state.consentResult = true;
   state.installRan = false;
   state.serverUnloadedChat = false;
 }
 
-export async function checkTransformersUpgrade(modelName, hfToken) {
-  calls.push({ name: "checkTransformersUpgrade", args: [modelName, hfToken] });
+export async function checkTransformersUpgrade(modelName, hfToken, options) {
+  calls.push({
+    name: "checkTransformersUpgrade",
+    args: [modelName, hfToken, options],
+  });
   if (state.checkResult instanceof Error) {
     throw state.checkResult;
   }

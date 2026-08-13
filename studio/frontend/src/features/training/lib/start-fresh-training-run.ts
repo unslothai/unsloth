@@ -33,7 +33,6 @@ import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
-import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
   type TrainingStartLease,
@@ -44,6 +43,7 @@ import {
   settleUnconfirmedTrainingStart,
   tryAcquireTrainingStart,
 } from "./training-start-runtime";
+import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 import {
   hasIncompatibleTrainingModalities,
   validateTrainingConfig,
@@ -450,11 +450,27 @@ async function confirmSelectedModelTransformersUpgrade(
   const outcome = await confirmTrainingTransformersUpgrade({
     modelName,
     hfToken,
+    // Same pin the custom-code gate resolves, so both read one config.json: a cached
+    // model loads from its pinned snapshot, whose architecture can differ from the
+    // one the repo publishes today.
+    modelCachePin: freshModelCachePin(attempt),
   });
   if (attempt.abortIfInputsChanged()) {
     return false;
   }
   return outcome.proceed || attempt.cancel(outcome.error);
+}
+
+/** The copy of the model this start loads, for every gate that has to inspect it. */
+function freshModelCachePin(attempt: FreshTrainingStartAttempt): {
+  preferLocalCache: boolean;
+  modelLocalPath: string | null;
+} {
+  const preferLocalCache = attempt.config.modelKnownCached;
+  return {
+    preferLocalCache,
+    modelLocalPath: preferLocalCache ? attempt.config.modelLocalPath : null,
+  };
 }
 
 async function confirmSelectedModelRemoteCode(
@@ -466,13 +482,11 @@ async function confirmSelectedModelRemoteCode(
     return true;
   }
 
-  const preferLocalCache = attempt.config.modelKnownCached;
   let approvalApplied = true;
   const approved = await confirmRemoteCodeIfNeeded({
     modelName,
     hfToken,
-    preferLocalCache,
-    modelLocalPath: preferLocalCache ? attempt.config.modelLocalPath : null,
+    ...freshModelCachePin(attempt),
     requiresTrustRemoteCode: attempt.config.trustRemoteCode,
     onApprove: (fingerprint) => {
       approvalApplied = attempt.updateConfig({

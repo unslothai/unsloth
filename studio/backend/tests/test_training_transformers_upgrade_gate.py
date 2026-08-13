@@ -40,20 +40,39 @@ def _stub(
     upgrade = None,
     latest_tier = False,
     trust_remote_code = False,
+    inspected = None,
 ):
-    """Answer the three preflights the route composes, and nothing else."""
+    """Answer the three preflights the route composes, and nothing else.
+
+    ``inspected`` collects every target the preflights were pointed at, so a test can
+    assert WHICH copy of the model was read.
+    """
     inf_mod = _route()
     import utils.transformers_latest as latest_mod
     import utils.transformers_version as tv
 
-    monkeypatch.setattr(
-        inf_mod, "_requires_trust_remote_code_for_model", lambda *a, **k: trust_remote_code
-    )
+    def _record(target):
+        if inspected is not None:
+            inspected.append(target)
+
+    def _trust_remote_code(target, *args, **kwargs):
+        _record(target)
+        return trust_remote_code
+
+    def _check_upgrade(target, *args, **kwargs):
+        _record(target)
+        return upgrade
+
+    def _latest_tier(target, *args, **kwargs):
+        _record(target)
+        return latest_tier
+
+    monkeypatch.setattr(inf_mod, "_requires_trust_remote_code_for_model", _trust_remote_code)
     monkeypatch.setattr(
         inf_mod, "_hf_offline_if_unreachable", lambda: __import__("contextlib").nullcontext()
     )
-    monkeypatch.setattr(latest_mod, "check_upgrade_for_model", lambda *a, **k: upgrade)
-    monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **k: latest_tier)
+    monkeypatch.setattr(latest_mod, "check_upgrade_for_model", _check_upgrade)
+    monkeypatch.setattr(tv, "latest_tier_active_for", _latest_tier)
     monkeypatch.setattr(
         "utils.models.model_config.get_base_model_from_lora_identifier", lambda *a, **k: None
     )
@@ -64,11 +83,12 @@ def _call(
     inf_mod,
     model = MODEL,
     hf_token = None,
+    **fields,
 ):
     from models.inference import TransformersUpgradeCheckRequest
     return asyncio.run(
         inf_mod.check_transformers_upgrade_route(
-            TransformersUpgradeCheckRequest(model_name = model, hf_token = hf_token),
+            TransformersUpgradeCheckRequest(model_name = model, hf_token = hf_token, **fields),
             "tester",
         )
     )
@@ -121,6 +141,25 @@ def test_custom_code_fallback_is_reported(monkeypatch):
     assert _call(inf_mod).requires_trust_remote_code is True
 
 
+def test_a_merely_offered_upgrade_keeps_4bit_when_custom_code_can_load_it(monkeypatch):
+    # The dialog offers "continue with custom code" for these, and taking it installs
+    # nothing: the worker runs on the CURRENT transformers and loads bnb 4-bit. Claiming
+    # 16-bit here tells the Configure preview that 4-bit is unavailable when it is not,
+    # and oversizes the run's VRAM. /validate applies the same exemption
+    # (_install_only_upgrade is gated on `not requires_trust_remote_code`).
+    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
+    response = _call(inf_mod)
+    assert response.requires_transformers_upgrade is True
+    assert response.forces_16bit is False
+
+
+def test_an_active_sidecar_forces_16bit_even_with_custom_code(monkeypatch):
+    # No install to decline: the sidecar already routes this model, and it trains 16-bit
+    # whatever the repo ships.
+    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True, latest_tier = True)
+    assert _call(inf_mod).forces_16bit is True
+
+
 def test_a_failing_preflight_never_fails_the_start(monkeypatch):
     # This gate is additive. If it raised, it would block starts that work today.
     inf_mod = _stub(monkeypatch)
@@ -137,6 +176,125 @@ def test_a_failing_preflight_never_fails_the_start(monkeypatch):
     response = _call(inf_mod)
     assert response.requires_transformers_upgrade is False
     assert response.forces_16bit is False
+
+
+def _cached_snapshot(
+    monkeypatch,
+    root,
+    repo_id = "org/model",
+    commit = "commit-a",
+):
+    """A real HF-layout cache entry: the pin resolvers validate the layout AND the root."""
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kwargs: [root])
+    snapshot = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}", encoding = "utf-8")
+    (snapshot / "model.safetensors").write_bytes(b"weights")
+    return snapshot
+
+
+def test_a_pinned_snapshot_is_what_gets_inspected(monkeypatch, tmp_path):
+    # The gate used to be handed the Hub identifier for a cached model, while the
+    # remote-code gate and the worker both load the pinned snapshot
+    # (resolve_training_model_load_target returns model_snapshot_path or model_name). A
+    # repo whose CURRENT config.json names a brand-new architecture says nothing about
+    # the snapshot on disk this run will actually open.
+    inspected: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    snapshot = _cached_snapshot(monkeypatch, tmp_path)
+
+    response = _call(
+        inf_mod,
+        model = "org/model",
+        model_snapshot_path = str(snapshot),
+        model_snapshot_repo_id = "org/model",
+        prefer_local_cache = True,
+    )
+
+    assert inspected, "the route must inspect something"
+    assert all(target == str(snapshot) for target in inspected), inspected
+    # The identifier still names the answer, for display and base-model resolution.
+    assert response.model_name == "org/model"
+
+
+def test_a_selected_cache_directory_resolves_to_its_snapshot(monkeypatch, tmp_path):
+    # prefer_local_cache without an exact pin, the second branch of the scan route's
+    # precedence: the selected cache directory resolves to the snapshot inside it.
+    inspected: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    snapshot = _cached_snapshot(monkeypatch, tmp_path)
+
+    _call(
+        inf_mod,
+        model = "org/model",
+        prefer_local_cache = True,
+        model_local_path = str(snapshot.parent.parent),
+    )
+
+    assert all(target == str(snapshot) for target in inspected), inspected
+
+
+def test_an_unpinned_model_is_still_checked_by_identifier(monkeypatch):
+    inspected: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+    _call(inf_mod)
+    assert all(target == MODEL for target in inspected), inspected
+
+
+def test_an_unresolvable_pin_falls_back_to_the_identifier(monkeypatch, tmp_path):
+    # _model_config_inspection_target 404s for a snapshot that is gone. This preflight is
+    # additive, so it answers about the identifier rather than failing the start.
+    inspected: list = []
+    inf_mod = _stub(monkeypatch, upgrade = None, inspected = inspected)
+
+    _call(
+        inf_mod,
+        model = "org/model",
+        prefer_local_cache = True,
+        model_snapshot_path = str(tmp_path / "models--org--model" / "snapshots" / "gone"),
+        model_snapshot_repo_id = "org/model",
+    )
+
+    assert all(target == "org/model" for target in inspected), inspected
+
+
+def test_an_exact_4bit_resume_is_flagged_before_the_install_is_offered(monkeypatch):
+    # effective_training_load_in_4bit RAISES for this config once the latest sidecar
+    # routes the model, and that sidecar is a persistent overlay: consenting to the
+    # install on the way into a resume strands the checkpoint for good. The caller needs
+    # to know before it shows the dialog.
+    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, trust_remote_code = True)
+    monkeypatch.setattr(
+        "storage.studio_db.get_run",
+        lambda run_id: {"config_json": {"load_in_4bit": True}} if run_id == "run-42" else None,
+    )
+    monkeypatch.setattr(
+        "core.training.provenance.exact_resume_resource_requirements",
+        lambda config: (True, True),
+    )
+
+    assert _call(inf_mod, resume_run_id = "run-42").install_breaks_exact_resume is True
+    # No run named, no claim: a fresh start has no checkpoint to strand.
+    assert _call(inf_mod).install_breaks_exact_resume is False
+    # An unknown run is not one to suppress an install for.
+    assert _call(inf_mod, resume_run_id = "missing").install_breaks_exact_resume is False
+
+
+def test_an_already_active_sidecar_is_not_blamed_on_the_install(monkeypatch):
+    # The overlay is already installed, so the resume is refused (or 16-bit) whatever
+    # this route answers; suppressing the dialog would change nothing for the better.
+    inf_mod = _stub(monkeypatch, upgrade = UPGRADE, latest_tier = True)
+    monkeypatch.setattr(
+        "storage.studio_db.get_run", lambda run_id: {"config_json": {"load_in_4bit": True}}
+    )
+    monkeypatch.setattr(
+        "core.training.provenance.exact_resume_resource_requirements",
+        lambda config: (True, True),
+    )
+
+    assert _call(inf_mod, resume_run_id = "run-42").install_breaks_exact_resume is False
 
 
 def test_route_is_off_the_openai_compatible_mount():

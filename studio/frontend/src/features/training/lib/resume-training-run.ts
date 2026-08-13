@@ -16,7 +16,6 @@ import {
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingStartRequest } from "../types/api";
 import { resolveResumeRemoteCodeCache } from "./resume-remote-code-cache";
-import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import {
   TRAINING_SETUP_CHANGED_ERROR,
@@ -28,6 +27,7 @@ import {
   settleUnconfirmedTrainingStart,
   tryAcquireTrainingStart,
 } from "./training-start-runtime";
+import { confirmTrainingTransformersUpgrade } from "./training-transformers-upgrade";
 
 const RESUME_UNAVAILABLE_ERROR =
   "studio.training.resumeUnavailable" satisfies TranslationKey;
@@ -58,7 +58,7 @@ export async function resumeTrainingRun(runId: string): Promise<boolean> {
 
     // Upgrade consent first, then the custom-code gate, like a fresh start: a resume
     // after a reinstall can face the same unknown architecture the first run installed for.
-    if (!(await confirmResumeTransformersUpgrade(payload, attempt))) {
+    if (!(await confirmResumeTransformersUpgrade(runId, payload, attempt))) {
       return false;
     }
     if (!(await confirmResumeRemoteCode(payload, attempt))) {
@@ -243,6 +243,7 @@ async function prepareResumeHfToken(
 }
 
 async function confirmResumeTransformersUpgrade(
+  runId: string,
   payload: TrainingStartRequest,
   attempt: ResumeTrainingStartAttempt,
 ): Promise<boolean> {
@@ -252,11 +253,29 @@ async function confirmResumeTransformersUpgrade(
   const outcome = await confirmTrainingTransformersUpgrade({
     modelName: payload.model_name,
     hfToken: payload.hf_token ?? null,
+    // Same pin the custom-code gate below resolves, so both read one config.json.
+    modelCachePin: resumeModelCachePin(payload),
+    // The stored run decides whether an install is even offerable: this checkpoint may
+    // be attested against a 4-bit load the latest sidecar permanently refuses.
+    resumeRunId: runId,
   });
   if (!attempt.isPreflightActive()) {
     return false;
   }
   return outcome.proceed || attempt.cancel(outcome.error);
+}
+
+/** The copy of the model this resume loads, for every gate that has to inspect it.
+ *
+ * One resolution, so the upgrade check and the custom-code scan can never end up
+ * reading different config.json files for the same start. */
+function resumeModelCachePin(payload: TrainingStartRequest) {
+  return resolveResumeRemoteCodeCache({
+    actualModelRepoId: payload.actual_model_repo_id,
+    modelKnownCached: payload.model_known_cached,
+    modelLocalPath: payload.model_local_path,
+    modelSnapshotPath: payload.model_snapshot_path,
+  });
 }
 
 async function confirmResumeRemoteCode(
@@ -270,16 +289,10 @@ async function confirmResumeRemoteCode(
   let trustRemoteCode = Boolean(payload.trust_remote_code);
   let approvedRemoteCodeFingerprint =
     payload.approved_remote_code_fingerprint ?? null;
-  const remoteCodeCache = resolveResumeRemoteCodeCache({
-    actualModelRepoId: payload.actual_model_repo_id,
-    modelKnownCached: payload.model_known_cached,
-    modelLocalPath: payload.model_local_path,
-    modelSnapshotPath: payload.model_snapshot_path,
-  });
   const remoteCodeOk = await confirmRemoteCodeIfNeeded({
     modelName: payload.model_name,
     hfToken: payload.hf_token ?? null,
-    ...remoteCodeCache,
+    ...resumeModelCachePin(payload),
     requiresTrustRemoteCode: trustRemoteCode,
     onApprove: (fingerprint) => {
       trustRemoteCode = true;

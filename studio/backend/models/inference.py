@@ -456,6 +456,35 @@ class TransformersUpgradeCheckRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description = "HuggingFace token, so gated repos resolve their config.json"
     )
+    # Cache pin, in the same four fields /models/remote-code-scan takes and resolved by the
+    # same precedence: a cached model is loaded from its pinned snapshot, whose config.json
+    # can name a different architecture than the repo's current one.
+    prefer_local_cache: bool = Field(
+        False,
+        description = "Inspect the cached snapshot rather than the Hub repo, when one is pinned.",
+    )
+    model_local_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Cache directory the caller selected for this model, if any.",
+    )
+    model_snapshot_path: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Exact snapshot the load is pinned to; takes precedence over "
+        "model_local_path, as it does for the remote-code scan.",
+    )
+    model_snapshot_repo_id: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "Repository the pinned snapshot belongs to, when it differs from model_name.",
+    )
+    resume_run_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Run this check precedes a resume of. Lets the answer say whether "
+        "installing would strand that checkpoint's exact 4-bit resume.",
+    )
 
 
 class TransformersUpgradeCheckResponse(BaseModel):
@@ -491,8 +520,15 @@ class TransformersUpgradeCheckResponse(BaseModel):
     forces_16bit: bool = Field(
         False,
         description = "Whether a run started now would load 16-bit rather than bnb 4-bit: true "
-        "when the latest sidecar already routes the model, and when an installable upgrade "
+        "when the latest sidecar already routes the model, and when an install-only upgrade "
         "would put it there. Lets the UI state the real precision before the run starts.",
+    )
+    install_breaks_exact_resume: bool = Field(
+        False,
+        description = "Set only for a resume_run_id: installing the offered release would "
+        "activate the latest sidecar, which permanently refuses that checkpoint's attested "
+        "4-bit model load mode. The caller must not offer the install when the run can "
+        "start without it.",
     )
 
 

@@ -9071,6 +9071,75 @@ async def validate_model(
         )
 
 
+def _upgrade_check_config_target(request: TransformersUpgradeCheckRequest) -> str:
+    """The config.json this load will actually read, by the remote-code scan's precedence.
+
+    ``routes/models.py::scan_model_remote_code`` picks its target as: a local identifier
+    stands for itself (resolved); else an exact ``model_snapshot_path`` pin wins; else
+    ``prefer_local_cache`` resolves the selected cache directory to a snapshot; else the
+    repository identifier. The training worker agrees --
+    ``resolve_training_model_load_target`` returns ``model_snapshot_path or model_name``
+    -- so the upgrade check must read the same directory. A repo whose CURRENT
+    config.json names an architecture no installed transformers ships says nothing about
+    the pinned snapshot on disk that this run will load, and vice versa.
+
+    The identifier itself stays the response's ``model_name`` and the input to the LoRA
+    base resolve, which is what the scan route does with it too.
+
+    Falls back to the identifier on any resolution failure: this route never raises.
+    """
+    from utils.paths import is_local_path, normalize_path
+
+    model_name = request.model_name
+    try:
+        if is_local_path(model_name):
+            normalized = normalize_path(model_name)
+            try:
+                return str(Path(normalized).expanduser().resolve(strict = False))
+            except (OSError, RuntimeError, ValueError):
+                return normalized
+        snapshot_path = (request.model_snapshot_path or "").strip()
+        if snapshot_path:
+            from routes.models import _model_config_inspection_target
+            return _model_config_inspection_target(
+                (request.model_snapshot_repo_id or "").strip() or model_name,
+                True,
+                normalize_path(snapshot_path),
+            )
+        local_path = (request.model_local_path or "").strip()
+        if request.prefer_local_cache and local_path:
+            from core.training.training import _resolve_model_snapshot
+            return _resolve_model_snapshot(model_name, normalize_path(local_path)) or model_name
+    except Exception as exc:
+        logger.debug("Cache pin resolution failed for '%s': %s", model_name, exc)
+    return model_name
+
+
+def _install_breaks_exact_resume(run_id: str) -> bool:
+    """Would installing the offered release strand the checkpoint of ``run_id``?
+
+    The latest sidecar is a persistent overlay, and a 4-bit run with attested exact
+    resource provenance can only resume in the model load mode it was attested with --
+    ``effective_training_load_in_4bit`` raises the moment the sidecar routes it. So an
+    install consented to on the way into a resume is not undoable.
+
+    Answers False for an unknown run: a resume that cannot find its own row is not one
+    this route should be suppressing an install for.
+    """
+    from core.training.provenance import exact_resume_requires_current_4bit
+    from core.training.resume import training_run_config
+    from storage.studio_db import get_run
+
+    try:
+        run = get_run(run_id)
+        if run is None:
+            return False
+        return exact_resume_requires_current_4bit(training_run_config(run))
+    except Exception as exc:
+        logger.debug("Exact-resume check failed for run '%s': %s", run_id, exc)
+        return False
+
+
 # studio_router only: a Studio preflight, kept off the OpenAI-compatible /v1 mount.
 @studio_router.post("/transformers-upgrade-check", response_model = TransformersUpgradeCheckResponse)
 async def check_transformers_upgrade_route(
@@ -9095,7 +9164,9 @@ async def check_transformers_upgrade_route(
     from utils.transformers_version import latest_tier_active_for
 
     model_name = request.model_name
-    targets = [model_name]
+    # Inspect what the load will open, not what the identifier resolves to today.
+    load_target = await asyncio.to_thread(_upgrade_check_config_target, request)
+    targets = [load_target]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
@@ -9150,7 +9221,7 @@ async def check_transformers_upgrade_route(
             _offline_guarded,
             targets,
             latest_tier_active_for,
-            model_name,
+            load_target,
             request.hf_token,
         )
     except Exception as exc:
@@ -9159,18 +9230,31 @@ async def check_transformers_upgrade_route(
     # An offered install lands the model on the latest sidecar, and that sidecar forces
     # 16-bit (bnb 4-bit feeds quantized experts into unvalidated paths for brand-new
     # architectures). A dev-only upgrade is never installed, so it changes nothing here.
-    installable_upgrade = bool(
+    # Same rule /validate applies, and for the same reason: a model with a custom-code
+    # fallback still loads 4-bit on the CURRENT transformers, and the dialog offers that
+    # way out, so an upgrade that is merely offered cannot be claimed as 16-bit. Only an
+    # install-only upgrade -- or a sidecar already routing the model -- forces it.
+    install_only_upgrade = bool(
         transformers_upgrade is not None
         and transformers_upgrade.supported_in_pypi
         and transformers_upgrade.pypi_version
+        and not requires_trust_remote_code
     )
+    # Already on the sidecar: the install is not what would strand the checkpoint, and
+    # the resume is refused (or 16-bit) whatever this route answers.
+    install_breaks_exact_resume = False
+    if request.resume_run_id and not latest_tier_active:
+        install_breaks_exact_resume = await asyncio.to_thread(
+            _install_breaks_exact_resume, request.resume_run_id
+        )
     return TransformersUpgradeCheckResponse(
         model_name = model_name,
         requires_transformers_upgrade = transformers_upgrade is not None,
         transformers_upgrade = transformers_upgrade,
         requires_trust_remote_code = bool(requires_trust_remote_code),
         latest_tier_active = bool(latest_tier_active),
-        forces_16bit = bool(latest_tier_active) or installable_upgrade,
+        forces_16bit = bool(latest_tier_active) or install_only_upgrade,
+        install_breaks_exact_resume = install_breaks_exact_resume,
     )
 
 

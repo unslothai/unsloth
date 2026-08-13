@@ -12,6 +12,11 @@ export interface RecordedArgs {
   upgrade?: unknown;
   trustRemoteCodeFallback?: unknown;
   forceCancelActive?: unknown;
+  preferLocalCache?: unknown;
+  modelLocalPath?: unknown;
+  modelSnapshotPath?: unknown;
+  modelSnapshotRepoId?: unknown;
+  resumeRunId?: unknown;
 }
 
 export declare const calls: { name: string; args: RecordedArgs[] }[];
@@ -24,6 +29,7 @@ export declare const state: {
         requiresTrustRemoteCode: boolean;
         latestTierActive: boolean;
         forces16Bit: boolean;
+        installBreaksExactResume?: boolean;
       }
     | Error;
   /** What the consent dialog resolves to. */
@@ -39,6 +45,7 @@ export declare function resetStub(): void;
 export declare function checkTransformersUpgrade(
   modelName: string,
   hfToken?: string | null,
+  options?: unknown,
 ): Promise<unknown>;
 
 export declare function confirmTransformersUpgradeIfNeeded(

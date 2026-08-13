@@ -49,10 +49,8 @@ test("a model no installed transformers ships pauses the start on the dialog", a
   });
 
   assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
-  assert.deepEqual(stub.calls[0], {
-    name: "checkTransformersUpgrade",
-    args: [MODEL, "hf_token"],
-  });
+  assert.equal(stub.calls[0]?.name, "checkTransformersUpgrade");
+  assert.deepEqual(stub.calls[0]?.args.slice(0, 2), [MODEL, "hf_token"]);
   assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
   assert.equal(stub.calls[1]?.args[0].modelName, MODEL);
   assert.equal(stub.calls[1]?.args[0].upgrade, UPGRADE);
@@ -113,7 +111,9 @@ test("a resolved custom-code fallback still loads 4-bit", async () => {
   stub.state.consentResult = true;
   stub.state.installRan = false;
 
-  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
 
   assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
 });
@@ -127,7 +127,9 @@ test("an already-routed model reports 16-bit without a dialog", async () => {
     forces16Bit: true,
   };
 
-  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
 
   assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
   assert.equal(
@@ -137,11 +139,89 @@ test("an already-routed model reports 16-bit without a dialog", async () => {
   );
 });
 
+test("an exact 4-bit resume is never offered an install that strands it", async () => {
+  // The latest sidecar is a persistent overlay, and this checkpoint is attested against
+  // a 4-bit model load that sidecar permanently refuses (effective_training_load_in_4bit
+  // raises ExactResumeResourcesUnavailable). The model ships its own code, so the resume
+  // works today: consenting here would trade a working resume for an upgrade it does
+  // not need, and there is no way back.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: UPGRADE,
+    requiresTrustRemoteCode: true,
+    latestTierActive: false,
+    forces16Bit: false,
+    installBreaksExactResume: true,
+  };
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    resumeRunId: "run-42",
+  });
+
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
+  assert.equal(
+    stub.calls.length,
+    1,
+    "no install may be offered when accepting it would strand the checkpoint",
+  );
+  assert.equal(stub.calls[0]?.args[2]?.resumeRunId, "run-42");
+});
+
+test("a resume with no custom-code way out can still install", async () => {
+  // The case the gate exists for: a fresh venv that lost the sidecar. Without the
+  // install this resume cannot load the model at all, so the dialog is still raised.
+  stub.resetStub();
+  stub.state.checkResult = {
+    upgrade: UPGRADE,
+    requiresTrustRemoteCode: false,
+    latestTierActive: false,
+    forces16Bit: true,
+    installBreaksExactResume: true,
+  };
+  stub.state.consentResult = true;
+  stub.state.installRan = true;
+
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    resumeRunId: "run-42",
+  });
+
+  assert.equal(stub.calls[1]?.name, "confirmTransformersUpgradeIfNeeded");
+  assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: true });
+});
+
+test("the check is asked about the copy the run will load", async () => {
+  // A cached model loads from its pinned snapshot; the repo's current config.json can
+  // name a different architecture, and gating on that one gates on the wrong model.
+  stub.resetStub();
+
+  await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+    modelCachePin: {
+      preferLocalCache: true,
+      modelLocalPath: "/cache/models--org--model",
+      modelSnapshotPath: "/cache/models--org--model/snapshots/abc",
+      modelSnapshotRepoId: "org/model",
+    },
+  });
+
+  assert.deepEqual(stub.calls[0]?.args[2], {
+    preferLocalCache: true,
+    modelLocalPath: "/cache/models--org--model",
+    modelSnapshotPath: "/cache/models--org--model/snapshots/abc",
+    modelSnapshotRepoId: "org/model",
+    resumeRunId: undefined,
+  });
+});
+
 test("a backend without the check leaves the start exactly as it was", async () => {
   stub.resetStub();
   stub.state.checkResult = new Error("404 Not Found");
 
-  const outcome = await confirmTrainingTransformersUpgrade({ modelName: MODEL });
+  const outcome = await confirmTrainingTransformersUpgrade({
+    modelName: MODEL,
+  });
 
   assert.deepEqual(outcome, { proceed: true, error: null, forces16Bit: false });
   assert.equal(stub.calls.length, 1);

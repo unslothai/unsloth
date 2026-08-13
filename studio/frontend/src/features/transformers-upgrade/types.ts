@@ -25,4 +25,17 @@ export interface TransformersUpgradeCheck {
   latestTierActive: boolean;
   /** A run started now loads 16-bit, not bnb 4-bit: the latest sidecar forces it. */
   forces16Bit: boolean;
+  /** Installing would permanently strand the resume this check was asked for: the
+   *  checkpoint can only resume in the 4-bit load mode the current runtime still
+   *  gives it. Only ever set when a resume run was named in the request. */
+  installBreaksExactResume: boolean;
+}
+
+/** Which copy of a model to inspect, in the four fields the remote-code scan takes.
+ *  Kept identical to that gate's arguments so both read the same config.json. */
+export interface ModelCachePin {
+  preferLocalCache?: boolean;
+  modelLocalPath?: string | null;
+  modelSnapshotPath?: string | null;
+  modelSnapshotRepoId?: string | null;
 }

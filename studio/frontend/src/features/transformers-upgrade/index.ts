@@ -9,6 +9,7 @@ export {
 } from "./api/transformers-upgrade-api";
 export { useTransformersUpgradeDialogStore } from "./stores/transformers-upgrade-dialog-store";
 export type {
+  ModelCachePin,
   TransformersUpgradeCheck,
   TransformersUpgradeInfo,
 } from "./types";
