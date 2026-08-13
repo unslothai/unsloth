@@ -2568,8 +2568,16 @@ const Composer: FC<{
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
+    if (composer.getState().isEditing) {
+      composer.setText(draft);
+    }
+  }, [draftKey, aui]);
+  // Separate from the text restore above, which must stay keyed on the draft
+  // alone: this one retries on attachment changes, and rewriting the composer
+  // text on those would drop whatever had been typed since the last autosave.
+  useEffect(() => {
+    const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    composer.setText(draft);
     if (restoredPasteKeyRef.current === pasteDraftKey) return;
     // The composer outlives a thread switch, so wait for the outgoing paste to
     // clear rather than stacking this thread's draft on top of it. Changing
@@ -2595,7 +2603,7 @@ const Composer: FC<{
     ).finally(() => {
       restoredPasteKeyRef.current = pasteDraftKey;
     });
-  }, [draftKey, pasteDraftKey, pastedTextDraftSignature, aui]);
+  }, [pasteDraftKey, pastedTextDraftSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
