@@ -319,7 +319,7 @@ def run() -> dict:
 def main() -> int:
     results = run()
     out = OUT / f"{LABEL}.json"
-    out.write_text(json.dumps(results, indent = 2))
+    out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
     info(json.dumps(results, indent = 2))
     info(f"wrote {out}")
 

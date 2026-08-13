@@ -250,7 +250,7 @@ def main() -> int:
     raf_rate = results["stream"]["raf_callbacks"] / stream_seconds
     results["stream"]["raf_per_second"] = round(raf_rate, 1)
     out = OUT / f"{LABEL}.json"
-    out.write_text(json.dumps(results, indent = 2))
+    out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
     info(json.dumps(results, indent = 2))
     info(f"wrote {out}")
 
