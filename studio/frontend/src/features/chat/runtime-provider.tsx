@@ -82,6 +82,11 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import {
+  attachmentContentText,
+  attachmentsSample,
+  isPastedTextFile,
+} from "./utils/pasted-text";
+import {
   refreshContextUsage,
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
@@ -328,7 +333,14 @@ class TextAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: "text",
-          text: `<attachment name=${attachment.name}>\n${text}\n</attachment>`,
+          // A pasted file gets its own tag and size, the markers that outlive
+          // the File once the message is stored.
+          text: attachmentContentText(
+            attachment.name,
+            text,
+            isPastedTextFile(attachment.file),
+            attachment.file.size,
+          ),
         },
       ],
       status: { type: "complete" },
@@ -518,6 +530,17 @@ function extractTextParts(m: ThreadMessage | undefined): string {
     .map((p) => p.text)
     .join("")
     .trim();
+}
+
+// A paste leaves the message's text in an attachment, so a title built from
+// inline text alone is "New Chat" for a paste-only turn and the bare
+// instruction for "summarise this" plus a paste. The sample is bounded.
+function titleTextOf(m: ThreadMessage | undefined): string {
+  const text = extractTextParts(m);
+  if (m?.role !== "user") return text;
+  const sample = attachmentsSample(m.attachments);
+  if (sample.length === 0) return text;
+  return text.length > 0 ? `${text}\n\n${sample}` : sample;
 }
 
 async function generateTitleWithModel(payload: {
@@ -871,7 +894,7 @@ function createStudioDbAdapter(
         firstUserIndex === -1
           ? undefined
           : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
-      const userText = extractTextParts(firstUser) || defaultTitle;
+      const userText = titleTextOf(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
       if (!autoTitle) {

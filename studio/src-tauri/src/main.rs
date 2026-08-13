@@ -1519,6 +1519,7 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
             set_renderer_activity,
@@ -1552,6 +1553,7 @@ fn main() {
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,

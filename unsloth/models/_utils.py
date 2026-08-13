@@ -2115,7 +2115,16 @@ SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
-if DEVICE_TYPE == "cuda":
+if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
+    # UNSLOTH_ALLOW_CPU=1 keeps DEVICE_TYPE "cuda" on driverless hosts, so ask
+    # whether a device is present before asking what it can do. The three flags
+    # keep the defaults set just above: no device means no bfloat16 support to
+    # claim (False only costs float32, True fails at the first cast) and Flash
+    # Attention is a CUDA kernel that could not run here anyway.
+    SUPPORTS_BFLOAT16 = False
+    HAS_FLASH_ATTENTION = False
+    HAS_FLASH_ATTENTION_SOFTCAPPING = False
+elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
 
