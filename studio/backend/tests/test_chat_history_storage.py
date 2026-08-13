@@ -483,15 +483,10 @@ def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypat
         {"inferenceParamsByModel": {"llama": {"temperature": 0.9}}}
     )
     # A second edit to the first model merges into its own entry.
-    studio_db.upsert_chat_settings_merge(
-        {"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}}
-    )
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}})
 
     by_model = studio_db.list_chat_settings()["inferenceParamsByModel"]
-    assert by_model == {
-        "qwen": {"temperature": 0.4, "topP": 0.8},
-        "llama": {"temperature": 0.9},
-    }
+    assert by_model == {"qwen": {"temperature": 0.4, "topP": 0.8}, "llama": {"temperature": 0.9}}
 
 
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
