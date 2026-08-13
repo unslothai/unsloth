@@ -692,9 +692,7 @@ def _run_setup_report(tmp_path, lspci_lines: "list[str]") -> str:
     """setup.sh's lookup on the KFD path, where no market name is available and the
     lookup falls back to lspci. Same fixtures as the install.sh summary above."""
     source = _SETUP_SH.read_text(encoding = "utf-8")
-    funcs = "\n".join(
-        textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS
-    )
+    funcs = "\n".join(textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok = True)
     fixture = tmp_path / "lspci.txt"
@@ -735,18 +733,17 @@ class TestSetupShReportBlamesTheRightCard:
         ids = ["5700-first", "7900-first", "580-plus-7900"],
     )
     def test_a_covered_peer_keeps_the_report_quiet(self, tmp_path, lines):
-        assert _run_setup_report(tmp_path, lines) == "GENERIC", (
-            "setup.sh named an uncovered card on a host that also carries a covered one"
-        )
+        assert (
+            _run_setup_report(tmp_path, lines) == "GENERIC"
+        ), "setup.sh named an uncovered card on a host that also carries a covered one"
 
     def test_the_supported_matcher_still_answers(self, tmp_path):
         """Positive control on the extracted table: without it the guard above would be
         vacuous, since a matcher that never matches also keeps the report quiet."""
         source = _SETUP_SH.read_text(encoding = "utf-8")
-        script = textwrap.dedent(
-            _sh_function_body(source, "_setup_supported_gfx_from_name")
-        ) + '\n_setup_supported_gfx_from_name "AMD Radeon RX 7900 XTX"\n'
-        out = subprocess.run(
-            ["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30
+        script = (
+            textwrap.dedent(_sh_function_body(source, "_setup_supported_gfx_from_name"))
+            + '\n_setup_supported_gfx_from_name "AMD Radeon RX 7900 XTX"\n'
         )
+        out = subprocess.run(["sh", "-c", script], stdout = subprocess.PIPE, text = True, timeout = 30)
         assert out.stdout.strip() == "gfx1100"

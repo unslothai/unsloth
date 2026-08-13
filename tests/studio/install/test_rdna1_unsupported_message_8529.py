@@ -208,9 +208,7 @@ class TestExplicitIndexPinIsHonoured:
         with patch.dict(os.environ, {"UNSLOTH_TORCH_INDEX_URL": "https://example/gfx1010"}):
             _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert "gfx1010" in out, "the card is still named"
-        assert self._CPU_CLAIM not in out, (
-            f"a pinned index still gets the CPU-only verdict:\n{out}"
-        )
+        assert self._CPU_CLAIM not in out, f"a pinned index still gets the CPU-only verdict:\n{out}"
 
     def test_the_claim_is_there_without_a_pin(self):
         """The positive control: without it the test above passes on any wording."""
@@ -220,9 +218,7 @@ class TestExplicitIndexPinIsHonoured:
             _arch, out = _wmi_detect(["AMD Radeon RX 5700 XT"])
         assert self._CPU_CLAIM in out
 
-    @pytest.mark.parametrize(
-        "path", [_INSTALL_PS1, _SETUP_PS1, _SETUP_SH], ids = lambda p: p.name
-    )
+    @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1, _SETUP_SH], ids = lambda p: p.name)
     def test_each_shell_arm_reads_the_pin(self, path):
         """The shell sources cannot be called from here, so require the arm to READ the
         pin: the wording is only correct because it is conditional on it."""
@@ -254,9 +250,9 @@ class TestWindowsArm64GetsNoVulkanAdvice:
 
     def test_the_throw_this_depends_on_is_still_there(self):
         src = _normalised(_SETUP_PS1)
-        assert "no Windows ARM64 Vulkan bundle is published" in src, (
-            "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
-        )
+        assert (
+            "no Windows ARM64 Vulkan bundle is published" in src
+        ), "the ARM64 guard this test is built on was renamed; re-read setup.ps1"
 
     @pytest.mark.parametrize("path", [_INSTALL_PS1, _SETUP_PS1], ids = lambda p: p.name)
     def test_every_vulkan_offer_is_behind_an_arch_check(self, path):
@@ -1111,9 +1107,7 @@ class TestVulkanAdvice:
             # below also appears in the comment explaining the branch, so raw lines
             # stay green after the message is demoted to a comment (observed mutant).
             window = "\n".join(
-                line
-                for line in _arm_window(lines, i)
-                if not line.lstrip().startswith(("#", "//"))
+                line for line in _arm_window(lines, i) if not line.lstrip().startswith(("#", "//"))
             )
             # The offer, not one phrasing of it: these arms are hard-wrapped to different
             # widths. Both halves are required -- a backend without what it buys, or GGUF
