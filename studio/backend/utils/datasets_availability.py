@@ -134,13 +134,18 @@ def datasets_available() -> bool:
     """
     if os.environ.get("UNSLOTH_FORCE_NO_DATASETS") == "1":
         return False
-    global DATASETS_AVAILABLE
     if not DATASETS_AVAILABLE:
         # Re-probed, because the 503 tells the user to install it: without this the
         # gate stays shut for the life of the process and the advice does nothing
         # until Studio is restarted. Two find_spec calls, on the failing path only.
+        #
+        # The answer is deliberately NOT written back: a probe taken while `pip
+        # install datasets` is still unpacking can see the spec before the package
+        # works, and latching that would swap this gate's 503 for a permanent 500.
+        # Unlatched, the next request asks again and a half-finished install closes
+        # the gate again by itself.
         importlib.invalidate_caches()
-        DATASETS_AVAILABLE = _probe()
+        return _probe()
     return DATASETS_AVAILABLE
 
 

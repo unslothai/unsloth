@@ -30,10 +30,13 @@ av>=17.0.0
 scikit-learn>=1.8.0
 
 # cryptography publishes win_arm64 wheels for 46.0.0 through 46.0.3 and nowhere
-# else: 45 and below never had one, and 46.0.4 onwards dropped it again (46.0.7,
-# the current 46.x, has no ARM64 Windows wheel). studio.txt's open
-# `cryptography>=42.0.0` therefore resolves to a release that needs a Rust
-# toolchain to build. This is the one entry here that pins BELOW the newest
-# release rather than above an old pin, and it is on the TLS path, so treat it as
-# a security pin: drop it the moment upstream ships a win_arm64 wheel again.
-cryptography>=46.0.0,<46.0.4
+# else: 45 and below never had one, and 46.0.4 onwards dropped it again. Without a
+# floor, studio.txt's open `cryptography>=42.0.0` resolves to a release that needs a
+# Rust toolchain to build. No ceiling, deliberately: uv skips versions with no
+# compatible wheel, so this lands on the newest ARM64 build there is (46.0.3 today)
+# and will follow upstream the moment a later one ships a win_arm64 wheel. That
+# matters because 46.0.3 is behind several fixed advisories, and a hardcoded ceiling
+# would keep this tier there after the fix became installable. This is the one entry
+# here on the TLS path; native ARM64 Windows is the reduced install, and x64 (the
+# path the installer prefers, emulated) gets the ordinary unpinned resolution.
+cryptography>=46.0.0

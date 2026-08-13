@@ -401,7 +401,12 @@ def test_setup_reads_the_tier_marker_not_just_the_env_var():
 
 
 def _filter_script(requirements: str, host_arch: str, tier: bool) -> str:
-    """The real function and its two tables, over one requirements file."""
+    """The real function and its two tables, over one requirements file.
+
+    `host_arch` names the machine; the venv interpreter follows it, since that is the
+    pairing the filter is about. An emulated x64 venv on an ARM64 host is covered
+    separately below.
+    """
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     skip = _extract(r"\$script:ArmInferenceSkipPackages = .*?\)", source)
     lift = _extract(r"\$script:ArmInferenceLiftPackages = @\{.*?\n    \}", source)
@@ -409,10 +414,13 @@ def _filter_script(requirements: str, host_arch: str, tier: bool) -> str:
     body = "\n".join(line[4:] if line.startswith("    ") else line for line in body.splitlines())
     path = Path(tempfile.mkdtemp()) / "reqs.txt"
     path.write_text(requirements, encoding = "utf-8")
+    tag = "win-arm64" if host_arch == "arm64" else "win-amd64"
     return f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param($m, $c) }}
 function Get-HostMachineArch {{ return "{host_arch}" }}
+$VenvPython = "python.exe"
+function Get-PythonPlatformTag {{ param([string]$Exe) return "{tag}" }}
 {skip}
 {lift}
 {body}
@@ -449,6 +457,16 @@ def test_filter_drops_and_lifts_on_an_arm64_host():
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_lifts_follow_the_venv_interpreter_not_the_host():
+    """An emulated x64 venv on an ARM64 machine has wheels for the pinned versions,
+    and verification judges it by them. Keyed off the host, a tier install into that
+    venv got ARM pins and then reported them missing on every launch."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = _extract(r"    function Get-ArmFilteredRequirements \{.*?\n    \}", source)
+    assert '$applyLifts = ((Get-PythonPlatformTag $VenvPython) -eq "win-arm64")' in body
+    assert "$applyLifts = ((Get-HostMachineArch)" not in body
+
+
 def test_lifts_do_not_apply_on_an_x64_host():
     """UNSLOTH_NO_DATASETS=1 turns the tier on for an x64 install as well. There the
     pinned versions are the tested ones and every one of them has a win_amd64 wheel,

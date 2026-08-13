@@ -435,6 +435,18 @@ class TestTheGateReopensAfterAnInstall:
         monkeypatch.setattr(datasets_availability, "_probe", lambda: True)
         assert datasets_availability.datasets_available() is True
 
+    def test_a_recovery_is_not_latched(self, monkeypatch):
+        """A probe taken mid-install can see the spec before the package works.
+        Latching that would trade this gate's 503 for a permanent 500."""
+        monkeypatch.delenv("UNSLOTH_FORCE_NO_DATASETS", raising = False)
+        monkeypatch.setattr(datasets_availability, "DATASETS_AVAILABLE", False)
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: True)
+        assert datasets_availability.datasets_available() is True
+        assert datasets_availability.DATASETS_AVAILABLE is False
+
+        monkeypatch.setattr(datasets_availability, "_probe", lambda: False)
+        assert datasets_availability.datasets_available() is False
+
     def test_a_true_answer_is_not_reprobed(self, monkeypatch):
         """The cost stays on the failing path: an install that has the library must
         not pay two find_spec calls per gated request."""
