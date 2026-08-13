@@ -816,6 +816,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const modelSeeded = useRef(false);
   const familySeeded = useRef(false);
+  // Whether the user has taken the recipe since the pick that is still waiting for its status.
+  // The seeding effects below ask before applying that pick's model defaults, or a preset selected
+  // while the model downloaded would be replaced the moment the load lands.
+  const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
@@ -824,6 +828,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     setGuidance((cur) => (cur === r.appliedGuidance ? r.guidance : cur));
     if (r.modelSeeded != null) modelSeeded.current = r.modelSeeded;
     if (r.familySeeded != null) familySeeded.current = r.familySeeded;
+    pickRecipeSuperseded.current = null;
     r.releaseRecipeClaim?.();
     r.releaseRecipeClaim = undefined;
   }, []);
@@ -990,6 +995,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
     setCanReapply(false);
+    // Stopping the poll above stops the branch that hands a pick which never became resident back
+    // to the presets. Settle its recipe claim here instead, or hydration deferred behind that pick
+    // waits forever: the stored recipe is never applied and the preset controls stay disabled.
+    if (quantRevert.current) {
+      setPendingModelDefaults(null);
+      pickRecipeSuperseded.current = null;
+      quantRevert.current.releaseRecipeClaim?.();
+      quantRevert.current.releaseRecipeClaim = undefined;
+    }
   }, [dismissLoadToast, pickGuard]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
@@ -1208,6 +1222,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const claim = claimVideoRecipe();
         revert.commitRecipeClaim = claim.commit;
         revert.releaseRecipeClaim = claim.release;
+        pickRecipeSuperseded.current = claim.superseded;
       }
       const recommended = defaultsFor(repoId);
       setPendingModelDefaults(recommended);
@@ -1268,6 +1283,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     const applyFamilyDefault = shouldApplyModelDefaults(
       familySeeded.current,
       videoPresets.storedRecipe,
+      pickRecipeSuperseded.current?.() ?? false,
     );
     if (familyChanged && loadedFamily) familySeeded.current = true;
     if (familyChanged && loadedFamily && familyDefaultFrames && applyFamilyDefault) {
@@ -1316,7 +1332,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const applyDefaults = shouldApplyModelDefaults(
         modelSeeded.current,
         videoPresets.storedRecipe,
+        pickRecipeSuperseded.current?.() ?? false,
       );
+      // This status IS the pending pick's confirmation, so the question is answered for good. Read
+      // after the family effect above, which runs first on the same status and asks the same thing.
+      pickRecipeSuperseded.current = null;
       modelSeeded.current = true;
       if (!applyDefaults) return;
       setSteps(defaultSteps);

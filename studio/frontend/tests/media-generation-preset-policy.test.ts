@@ -42,3 +42,10 @@ test("a stored recipe owns only the first model-default seed", () => {
   assert.equal(shouldApplyModelDefaults(false, false), true);
   assert.equal(shouldApplyModelDefaults(true, true), true);
 });
+
+test("a preset selected while the model loaded outranks that load's defaults", () => {
+  // The pick claimed the recipe, so every other input says "seed". Only the newer claim stops it.
+  assert.equal(shouldApplyModelDefaults(true, false, true), false);
+  assert.equal(shouldApplyModelDefaults(true, true, true), false);
+  assert.equal(shouldApplyModelDefaults(true, false, false), true);
+});

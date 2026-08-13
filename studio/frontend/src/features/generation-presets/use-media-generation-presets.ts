@@ -205,6 +205,10 @@ export function useMediaGenerationPresets<Params extends object>({
     let settled = false;
     const ownsClaim = () => !settled && formClaim.current === claim;
     return {
+      // Whether a newer form action took the recipe after this pick claimed it. A pick's model
+      // defaults arrive with the status that confirms it, long after the user could have selected
+      // a preset, and that selection is the newer choice.
+      superseded: () => formClaim.current !== claim,
       commit: () => {
         if (!ownsClaim()) {
           return;

@@ -1461,6 +1461,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // Leaving this set would let Reapply reload the model that was just freed.
     lastLoad.current = null;
     setCanReapply(false);
+    // Stopping the poll above stops the branch that hands a pick which never became resident back
+    // to the presets. Settle its recipe claim here instead, or hydration deferred behind that pick
+    // waits forever: the stored recipe is never applied and the preset controls stay disabled.
+    if (quantRevert.current) {
+      setPendingModelDefaults(null);
+      quantRevert.current.releaseRecipeClaim?.();
+      quantRevert.current.releaseRecipeClaim = undefined;
+    }
   }, [dismissLoadToast, pickGuard]);
 
   // Mirror to the module cache so a tab switch re-renders instantly.
