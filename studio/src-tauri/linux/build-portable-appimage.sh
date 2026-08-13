@@ -110,8 +110,30 @@ DLOPEN_LIBS=(
   libayatana-appindicator3.so.1
   libappindicator3.so.1
   librsvg-2.so.2
-  libGLESv2.so.2
 )
+# libGLESv2.so.2 is deliberately NOT here. It was packaged for a while, to rescue a
+# host carrying the GPU stack without libgles2, and it does not work: glvnd's
+# libGLESv2 is a dispatch shim that binds a vendor only when the host glvnd is the
+# one it was built against. Measured across a container matrix, artifact built in an
+# ubuntu:22.04 builder, window contents sampled with xwd rather than "the process is
+# still alive" (a blank window survives that check, which is why it went unnoticed):
+#
+#   host          packaged shim      not packaged
+#   ubuntu2204    RENDERS (1141)     RENDERS (1141)   <- the BUILD host
+#   ubuntu2404    BLANK   (2)        RENDERS (1141)
+#   mint22        BLANK   (2)        RENDERS (1141)
+#   debian12      BLANK   (2)        RENDERS (1141)
+#   arch          BLANK   (2)        RENDERS (1142)
+#   minimal       BLANK   (2)        RENDERS (1141)
+#   minimal-nogles BLANK  (2)        RENDERS (1124)
+#
+# (distinct colours in a 1280x800 root capture; an empty X server is 1, a single
+# xclock is ~204, so the two states are three orders of magnitude apart.)
+#
+# It renders on exactly one host: the one it was built on. "No provider of glViewport
+# found" appears verbatim in every BLANK run and never in a RENDERS run. It fails even
+# on a host with no libGLESv2 to shadow -- the one case it was packaged for -- so
+# packaging buys nothing that the DMA-BUF fallback below does not already provide.
 
 stamp_appimage_bundle_type() {
   local binary_path="$1"
@@ -942,53 +964,70 @@ missing=$(
 # ── libGLESv2: the packaged one, or no DMA-BUF renderer ──────────────────────
 # libepoxy opens libGLESv2.so.2 by NAME, so it appears in no DT_NEEDED and the
 # ldd check above is blind to it. The build bundles it (see DLOPEN_LIBS) and
-# libepoxy's own $ORIGIN RUNPATH finds that copy first, so the packaged one is
-# what runs -- deliberately, and not the host's: taking a glvnd shim from the
-# host is the same version-skew bet that produced the GLIBCXX capture, and this
-# bundle exists to stop making that bet.
+# libepoxy dlopens libGLESv2.so.2 by soname and must get the HOST's copy: see the
+# matrix by DLOPEN_LIBS above for why a packaged one renders only on its build host.
+# So the question here is no longer "is the packaged copy usable" but "can this host
+# serve GLES at all".
 #
-# Two ways the packaged copy can still not be usable:
-#   - it was never bundled, because the BUILD host had no libgles2 and an
-#     unresolvable dlopened library is a warning there, not an error
-#   - it is present but cannot be opened on THIS host, e.g. libGLdispatch.so.0
-#     is absent (it stays on the host by design) or does not satisfy it
+# If it can, nothing to do -- epoxy finds it, WebKit's DMA-BUF renderer works, and the
+# hardware path is the host's throughout.
 #
-# The file test only catches the first. So actually load it, with the real
-# loader, and treat either outcome the same way. Without this the failure is a
-# SIGABRT and a bare "Couldn't open libGLESv2.so.2".
-#
-# The fallback is not a refusal to start: WebKit reaches GLES through its
-# DMA-BUF renderer, and with that renderer off it renders without ever opening
-# the library. Measured on a host with libGLESv2 in neither the bundle nor the
-# system:
+# If it cannot, disable the DMA-BUF renderer, which is what reaches for GLES at all.
+# That degrades instead of refusing to start. Measured on a host with libGLESv2 in
+# neither the bundle nor the system:
 #   nothing set                        -> SIGABRT, "Couldn't open libGLESv2.so.2"
 #   WEBKIT_DISABLE_COMPOSITING_MODE=1  -> SIGABRT (composited or not, GLES is opened)
 #   UNSLOTH_SOFTWARE_RENDER=1          -> SIGABRT (llvmpipe still goes through GLES)
-#   WEBKIT_DISABLE_DMABUF_RENDERER=1   -> runs
+#   WEBKIT_DISABLE_DMABUF_RENDERER=1   -> runs, and with the shim unpackaged it also
+#                                         RENDERS (minimal-nogles, 1124 colours)
+# Telling the user to install libgles2 instead would be useless on exactly the hosts
+# this bundle is for: a Deck's /usr is read-only and has no apt.
 #
-# Telling the user to install libgles2 instead would be useless on exactly the
-# hosts this bundle is for: a Deck's /usr is read-only and has no apt.
-_gles="$libdir/libGLESv2.so.2"
-# Resolve it with the loader, the same way this script already checks the main
-# binary. A file test cannot tell whether the object is usable HERE, and
-# LD_PRELOAD is no good either: glibc reports an unloadable preload as a warning
-# and still exits 0, so a corrupt or unsatisfiable library reads as fine and the
-# SIGABRT arrives later anyway. ldd fails outright on a non-ELF and prints
-# "not found" when a dependency (libGLdispatch.so.0, which stays on the host by
-# design) is absent.
+# Ask the loader where the host's copy is, then confirm it actually loads -- a file
+# test cannot tell whether the object is usable HERE, e.g. when libGLdispatch.so.0 is
+# missing. ldd fails outright on a non-ELF and prints "not found" for an unsatisfiable
+# dependency.
+_gles=""
+if command -v ldconfig >/dev/null 2>&1; then
+  _gles=$(ldconfig -p 2>/dev/null | sed -n 's/.*libGLESv2\.so\.2 .*=> \(.*\)$/\1/p' | head -1)
+fi
+if [ -z "$_gles" ]; then
+  for _d in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu /lib64; do
+    if [ -e "$_d/libGLESv2.so.2" ]; then _gles="$_d/libGLESv2.so.2"; break; fi
+  done
+fi
 _gles_ok=0
-if [ -e "$_gles" ]; then
+if [ -n "$_gles" ] && [ -e "$_gles" ]; then
   _gles_ldd=$(ldd "$_gles" 2>&1) && case "$_gles_ldd" in
     *"not found"*|*"not a dynamic"*) ;;
     *) _gles_ok=1 ;;
   esac
 fi
+_why=""
 if [ "$_gles_ok" != 1 ]; then
-  if [ -e "$_gles" ]; then
-    _why="the packaged libGLESv2.so.2 could not be loaded on this system"
+  if [ -n "$_gles" ]; then
+    _why="this system's libGLESv2.so.2 could not be loaded"
   else
-    _why="this AppImage was built without a packaged libGLESv2.so.2"
+    _why="this system has no libGLESv2.so.2"
   fi
+elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  # Second reason, and the one that survives having GLES: on Wayland the DMA-BUF
+  # renderer does not work here even with the host's own libGLESv2 in use. The app
+  # already knows this -- main.rs logs "Wayland detected; set
+  # WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 for WebKitGTK compatibility" at startup -- it
+  # just never acted on it. Measured on a Steam Deck (Wayland, RADV), shim not
+  # packaged so GLES comes from the host either way:
+  #
+  #   DMA-BUF on                          web process dead, "No provider of glViewport"
+  #   WEBKIT_DMABUF_RENDERER_FORCE_SHM=1  web process alive, epoxy still errors once
+  #   WEBKIT_DISABLE_DMABUF_RENDERER=1    web process alive, no epoxy error, paints
+  #
+  # This is a different fault from the packaged-shim one above and produces the same
+  # blank window, which is why dropping the shim alone did not fix this hardware. It
+  # does not reproduce under Xvfb/llvmpipe, so a container matrix cannot see it.
+  _why="WebKit's DMA-BUF renderer does not render on this Wayland session"
+fi
+if [ -n "$_why" ]; then
   printf '%s\n' \
     "Unsloth: $_why, so WebKit's DMA-BUF renderer is being disabled." \
     "The app runs; rendering takes the slower path." >&2

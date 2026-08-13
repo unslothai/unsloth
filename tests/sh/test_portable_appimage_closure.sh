@@ -336,6 +336,25 @@ assert_eq "build fails if a build path survives" "yes" \
 assert_eq "AppRun expands the token at launch" "yes" \
     "$(grep -q 's|@APPDIR@|\$appdir|g' "$BUILD_SH" && echo yes || echo no)"
 
+echo "=== structural: GLES comes from the host, and the fallback has two triggers ==="
+# glvnd's libGLESv2 is a dispatch shim that binds a vendor only when the host glvnd is
+# the one it was built against. A container matrix over seven hosts found the packaged
+# copy renders on exactly one -- its build host -- and fails even where there is no
+# host copy to shadow, so packaging it buys nothing the DMA-BUF fallback does not.
+assert_eq "libGLESv2 is not force-bundled" "yes" \
+    "$(sed -n '/^DLOPEN_LIBS=(/,/^)/p' "$BUILD_SH" | grep -q 'libGLESv2' && echo no || echo yes)"
+assert_eq "the probe asks the host, not the bundle" "yes" \
+    "$(grep -q 'ldconfig -p .*libGLESv2' "$BUILD_SH" && echo yes || echo no)"
+# Two independent faults produce the same blank window: a packaged shim (above), and
+# WebKit's DMA-BUF renderer on Wayland, which fails on a Steam Deck even with the
+# host's own libGLESv2 in use. The second does not reproduce under Xvfb/llvmpipe.
+assert_eq "fallback fires when the host cannot serve GLES" "yes" \
+    "$(grep -q 'this system has no libGLESv2' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "fallback also fires on a Wayland session" "yes" \
+    "$(grep -q 'XDG_SESSION_TYPE:-}" = "wayland"' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "it degrades rather than refusing to start" "yes" \
+    "$(grep -q 'WEBKIT_DISABLE_DMABUF_RENDERER=1' "$BUILD_SH" && echo yes || echo no)"
+
 echo "=== structural: the tauri bundle-type stamp ==="
 assert_eq "tauri bundle-type stamped" "yes" \
     "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"
