@@ -2418,6 +2418,9 @@ if (-not $HasNvidiaSmi) {
     # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
     # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
     # No name here is guessed.
+    # The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
+    # TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
+    # here, and never for gfx803.
     $unsupportedNameArchTable = @(
         @{ P = "Radeon Pro V520|Radeon Pro 5600M";        A = "gfx1011" }  # RDNA 1
         @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700";     A = "gfx1010" }  # RDNA 1 (Navi 10)
@@ -2676,7 +2679,7 @@ if ($HasNvidiaSmi) {
     # unknown" arm below: the arch is known here, and that arm's advice cannot succeed
     # on this GPU (unslothai#8529).
     Write-StudioLine ""
-    step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- not covered by ROCm PyTorch" "Yellow"
+    step "gpu" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
     substep "Detected: $ROCmGpuLabel" "Yellow"
     # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
     # NotImplementedError at import (unsloth/device_type.py) -- no training path at
@@ -2686,7 +2689,7 @@ if ($HasNvidiaSmi) {
     # here, so the user would set nothing. Keep this block above the arm, not between
     # the substeps: the tests read a fixed window from the first one, and comment
     # lines inside it push the later substeps out of view.
-    substep "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
+    substep "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch, so torch stays" "Yellow"
     substep "CPU-only: Unsloth training and GPU inference are unavailable. Installing the" "Yellow"
     substep "HIP SDK or setting UNSLOTH_ROCM_GFX_ARCH will not change that for it." "Yellow"
     substep "GGUF chat can still use this GPU through Vulkan: set" "Yellow"
@@ -3146,7 +3149,7 @@ if ($HasROCm) {
 } elseif ($script:ROCmUnsupportedGfxArch) {
     # Naming the HIP SDK here would read as "install it and this resolves"; on a
     # generation with no ROCm PyTorch wheels it never does (unslothai#8529).
-    step "rocm" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels for this arch" "Yellow"
+    step "rocm" "AMD GPU detected ($script:ROCmUnsupportedGfxArch) -- no ROCm PyTorch wheels Unsloth installs" "Yellow"
 } elseif ($ROCmGpuLabel) {
     step "rocm" "AMD GPU detected -- arch unknown; HIP SDK not found" "Yellow"
 }

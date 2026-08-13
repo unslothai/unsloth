@@ -404,8 +404,8 @@ class TestAdviceIsNotEmittedForRdna1:
         one: a shared needle matches the other site and passes a deleted branch."""
         src = _normalised(_INSTALL_SH)
         unsupported = (
-            'substep "AMD GPU detected ($_unsup_disp_gfx) -- no ROCm PyTorch wheels '
-            'exist for that arch, installing CPU PyTorch." "$C_WARN"'
+            'substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch '
+            'wheels for that arch, installing CPU PyTorch." "$C_WARN"'
         )
         sdk_advice = "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch."
         assert unsupported in src, "install.sh: unsupported arm of the CPU note not found"
@@ -415,8 +415,8 @@ class TestAdviceIsNotEmittedForRdna1:
     def test_install_sh_index_selection_does_not_send_users_to_repair_rocminfo(self):
         src = _normalised(_INSTALL_SH)
         unsupported = (
-            'echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- no ROCm PyTorch wheels '
-            'exist for that arch, installing CPU PyTorch." >&2'
+            'echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch '
+            'wheels for that arch, installing CPU PyTorch." >&2'
         )
         repair_advice = "install or repair rocminfo/amd-smi"
         assert unsupported in src, "install.sh: unsupported arm of the index selector not found"
@@ -470,14 +470,14 @@ class TestAdviceIsNotEmittedForRdna1:
     # makes the same claim for a different card, so a file-wide ban would fail on
     # untouched code and would end up deleted, taking the real assertion with it.
     _TRAINING_ARMS = [
-        (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
+        (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch"),
         (
             _INSTALL_PS1,
-            "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for "
+            "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for "
             "$ROCmUnsupportedGfxArch.",
         ),
-        (_SETUP_PS1, "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch"),
-        (_SETUP_SH, "not covered by ROCm PyTorch"),
+        (_SETUP_PS1, "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch"),
+        (_SETUP_SH, "no ROCm PyTorch wheels Unsloth installs"),
     ]
 
     @pytest.mark.parametrize(
@@ -528,7 +528,7 @@ class TestAdviceIsNotEmittedForRdna1:
 
     def test_setup_sh_names_the_arch_instead_of_claiming_rocm(self):
         src = _normalised(_SETUP_SH)
-        needle = 'step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"'
+        needle = 'step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"'
         fallthrough = 'step "gpu" "AMD ROCm"'
         assert needle in src, "studio/setup.sh: unsupported arm not found"
         assert fallthrough in src, "studio/setup.sh: plain AMD ROCm arm not found"
@@ -862,16 +862,16 @@ class TestVulkanAdvice:
     # anchor names $ROCmUnsupportedGfxArch deliberately: the same sentence four lines
     # earlier is for $ROCmGfxArch, a supported card that must NOT be sent to Vulkan.
     _ADVICE_SITES = [
-        (_INSTALL_SH, "no ROCm PyTorch wheels exist for that arch", 2),
-        (_INSTALL_PS1, "AMD publishes no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
+        (_INSTALL_SH, "Unsloth has no ROCm PyTorch wheels for that arch", 2),
+        (_INSTALL_PS1, "Unsloth installs no ROCm PyTorch wheels for $ROCmUnsupportedGfxArch", 1),
         (
             _INSTALL_PS1,
-            "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for "
+            "Installing CPU PyTorch -- Unsloth has no ROCm PyTorch wheels for "
             "$ROCmUnsupportedGfxArch.",
             1,
         ),
-        (_SETUP_PS1, "AMD publishes no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch", 1),
-        (_SETUP_SH, "not covered by ROCm PyTorch", 1),
+        (_SETUP_PS1, "Unsloth installs no ROCm PyTorch wheels for $script:ROCmUnsupportedGfxArch", 1),
+        (_SETUP_SH, "no ROCm PyTorch wheels Unsloth installs", 1),
     ]
 
     @pytest.mark.parametrize(

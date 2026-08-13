@@ -969,8 +969,8 @@ def _detect_windows_gfx_arch() -> str | None:
                 _unsupported = _unsupported_gfx_arch_from_gpu_name(_names[_sel])
                 if _unsupported:
                     _safe_print(
-                        f"   [WARN] '{_names[_sel]}' is {_unsupported}, which ROCm PyTorch "
-                        f"does not cover, so torch will be CPU-only. No HIP SDK install and "
+                        f"   [WARN] '{_names[_sel]}' is {_unsupported}, which Unsloth's ROCm "
+                        f"PyTorch wheels do not cover, so torch will be CPU-only. No HIP SDK install and "
                         f"no UNSLOTH_ROCM_GFX_ARCH value changes that on this GPU."
                     )
                     # Torch ends here, llama.cpp does not: Vulkan drives these cards
@@ -1052,6 +1052,9 @@ def _gfx_arch_from_gpu_name(name: str) -> "str | None":
 # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
 # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
 # No name here is guessed.
+# The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
+# TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
+# here, and never for gfx803.
 _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
     (r"Radeon Pro V520|Radeon Pro 5600M", "gfx1011"),  # RDNA 1
     (
@@ -1067,7 +1070,7 @@ _UNSUPPORTED_GPU_NAME_ARCH_TABLE: "list[tuple[str, str]]" = [
 
 
 def _unsupported_gfx_arch_from_gpu_name(name: str) -> "str | None":
-    """Name the gfx arch of a GPU whose generation has no ROCm PyTorch wheels.
+    """Name the gfx arch of a GPU whose generation Unsloth has no ROCm wheels for.
 
     Messaging only. Callers must not feed the result into index selection.
     """

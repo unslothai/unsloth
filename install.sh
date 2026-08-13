@@ -2895,6 +2895,9 @@ _infer_amd_gfx_arch_from_gpu_name() {
 # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
 # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
 # No name here is guessed.
+# The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
+# TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
+# here, and never for gfx803.
 # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi,
 # lspci) spells these names as pci.ids does.
 _infer_unsupported_amd_gfx_arch_from_gpu_name() {
@@ -3379,7 +3382,7 @@ get_torch_index_url() {
             if _amd_unsup_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                 # Scoped to the card named, never to the host: a second AMD GPU here
                 # may well have wheels, and nothing has looked at it yet.
-                echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." >&2
+                echo "[WARN] AMD GPU detected ($_amd_unsup_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." >&2
                 echo "[WARN] This is expected on this GPU; repairing rocminfo/amd-smi or setting UNSLOTH_ROCM_GFX_ARCH will not give it ROCm PyTorch." >&2
                 # Torch ends here, llama.cpp does not. Saying WHEN is the whole point:
                 # the variable picks the llama.cpp bundle at install time, so exporting
@@ -4505,7 +4508,7 @@ case "$TORCH_INDEX_URL" in
                 # A generation ROCm never covered is not a missing SDK (unslothai#8529).
                 if _unsup_disp_gfx=$(_infer_linux_unsupported_amd_gfx_arch 2>/dev/null); then
                     # Scoped to the card, as above: the SDK may still help another one.
-                    substep "AMD GPU detected ($_unsup_disp_gfx) -- no ROCm PyTorch wheels exist for that arch, installing CPU PyTorch." "$C_WARN"
+                    substep "AMD GPU detected ($_unsup_disp_gfx) -- Unsloth has no ROCm PyTorch wheels for that arch, installing CPU PyTorch." "$C_WARN"
                     substep "Installing the ROCm/HIP SDK will not give this GPU ROCm PyTorch." "$C_WARN"
                     substep "GGUF chat can still use this GPU through Vulkan: set UNSLOTH_LLAMA_CPP_BACKEND=vulkan and re-run this installer." "$C_WARN"
                     substep "That variable selects the llama.cpp bundle at install time, so setting it afterwards has no effect until you install or update again." "$C_WARN"

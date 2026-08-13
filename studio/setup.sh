@@ -1880,6 +1880,9 @@ elif [ "$_setup_amd_detected" = true ]; then
     # cross-checked against pci.ids for the Navi 10/14 professional parts LLVM
     # omits (W5700, W5500, W5300M, RX 5300, Pro 5700/5700 XT, WX 7100/WX 5100).
     # No name here is guessed.
+    # The wording is scoped to what Unsloth installs, not to ROCm at large: AMD's
+    # TheRock now ships RDNA 1 wheels, but not on the repo.amd.com indexes routed
+    # here, and never for gfx803.
     # Case-sensitive, unlike the regex copies: every source here (WMI, amd-smi,
     # lspci) spells these names as pci.ids does.
     _setup_unsupported_gfx_from_name() {
@@ -1919,7 +1922,7 @@ EOF
     if [ -n "$_setup_gfx" ]; then
         step "gpu" "AMD ROCm ($_setup_gfx)"
     elif _setup_unsup_gfx=$(_setup_unsupported_gfx_any "$_setup_mkt"); then
-        step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- not covered by ROCm PyTorch"
+        step "gpu" "AMD GPU detected ($_setup_unsup_gfx) -- no ROCm PyTorch wheels Unsloth installs"
         # Not "training runs on CPU": with no CUDA/XPU visible, unsloth raises
         # NotImplementedError at import (unsloth/device_type.py). Same wording the XPU
         # and no-GPU arms below already use.
