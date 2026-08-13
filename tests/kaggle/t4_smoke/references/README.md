@@ -174,11 +174,19 @@ reports, so it does not need its own Kaggle session. From the
 ```
 python - <<'PY'
 import json, pathlib
-result = json.loads(pathlib.Path("kaggle_evidence/launch_result.json").read_text())
+evidence = pathlib.Path("kaggle_evidence")
+result = json.loads((evidence / "launch_result.json").read_text())
 control = [r for r in result["reports"] if r.get("label") == "control"]
 assert len(control) == 1, [r.get("label") for r in result["reports"]]
 report = control[0]
 assert report["passed"], report["failures"]
+# The Kaggle kernel it ran on. The evidence directory of each kernel is named
+# after the last segment of its slug and each leg's executed notebook is named
+# after the leg, so this identifies the session rather than guessing at it.
+dirs = {p.parent.name for p in evidence.rglob("t4_control_output.ipynb")}
+slugs = [k["slug"] for k in result["kernels"]
+         if k.get("slug") and k["slug"].rsplit("/", 1)[-1] in dirs]
+assert len(slugs) == 1, (dirs, [k.get("slug") for k in result["kernels"]])
 pathlib.Path("tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json").write_text(
     json.dumps({"metrics": report["metrics"],
                 "environment": report["environment"],
@@ -186,9 +194,15 @@ pathlib.Path("tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json").write_text
                 "model": report["model"],
                 "resolved_checkpoint": report.get("resolved_checkpoint"),
                 "resolved_revision": report.get("resolved_revision"),
-                "source_kernel": report.get("label")}, indent=2))
+                "source_kernel": slugs[0]}, indent=2))
 PY
 ```
+
+`source_kernel` is the one field in the file that points OUTWARDS, at the
+hardware execution the band came from, and it is what makes a suspicious
+recapture auditable while the `kaggle-t4-evidence` artifact is still around
+(14 days). A leg label put there names something every reference has and no
+run in particular.
 
 **Select it by `label`, never by position.** `reports[0]` is not the control
 and never was: `launch.extract_reports` walks `sorted(outdir.rglob(...))` over

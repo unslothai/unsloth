@@ -747,6 +747,69 @@ def test_the_recapture_recipe_selects_the_control_report_by_label():
     assert "label" in recipe
 
 
+def _recapture_recipe() -> str:
+    readme = (SMOKE_DIR / "references" / "README.md").read_text(encoding = "utf-8")
+    body = readme.split("python - <<'PY'\n", 1)[1]
+    return body.split("\nPY\n", 1)[0]
+
+
+def test_the_recapture_recipe_records_the_kernel_it_came_from(tmp_path, monkeypatch):
+    """The recipe is EXECUTED here, against a two-kernel evidence tree.
+
+    `source_kernel` is the only field pointing at the hardware run the band
+    was measured on, and it is what makes a recapture auditable while the
+    evidence artifact is still around. Writing the leg label into it names
+    something every reference has and no run in particular.
+    """
+    evidence = tmp_path / "kaggle_evidence"
+    kernels = [
+        ("danielhanchen/unsloth-t4-ci-9f0e1a2b", ("control", "canary")),
+        ("danielhanchen/unsloth-t4-ci-0a1b2c3d", ("gptoss", "frontier")),
+    ]
+    reports = []
+    for slug, leg_names in kernels:
+        directory = evidence / slug.rsplit("/", 1)[-1]
+        directory.mkdir(parents = True)
+        for leg in leg_names:
+            (directory / f"t4_{leg}_output.ipynb").write_text("{}", encoding = "utf-8")
+            reports.append(
+                {
+                    "label": leg,
+                    "passed": True,
+                    "model": "unsloth/Qwen2.5-0.5B-Instruct",
+                    "metrics": [{"step": 1, "loss": 1.0}],
+                    "environment": {"gpu_name": "Tesla T4"},
+                    "config": {"max_steps": 10},
+                    "resolved_checkpoint": "unsloth/Qwen2.5-0.5B-Instruct-unsloth-bnb-4bit",
+                    "resolved_revision": "0123456789abcdef",
+                }
+            )
+    (evidence / "launch_result.json").write_text(
+        json.dumps({"reports": reports, "kernels": [{"slug": s} for s, _ in kernels]}),
+        encoding = "utf-8",
+    )
+    (tmp_path / "tests" / "kaggle" / "t4_smoke" / "references").mkdir(parents = True)
+
+    monkeypatch.chdir(tmp_path)
+    exec(compile(_recapture_recipe(), "<recapture-recipe>", "exec"), {"__name__": "__main__"})
+
+    written = json.loads(
+        (tmp_path / "tests/kaggle/t4_smoke/references/t4_qwen2.5-0.5b.json").read_text(
+            encoding = "utf-8"
+        )
+    )
+    assert written["source_kernel"] == "danielhanchen/unsloth-t4-ci-9f0e1a2b"
+    assert written["model"] == "unsloth/Qwen2.5-0.5B-Instruct"
+    assert written["resolved_revision"] == "0123456789abcdef"
+
+
+def test_the_committed_reference_names_a_kernel_and_not_a_leg():
+    reference = json.loads(
+        (SMOKE_DIR / "references" / "t4_qwen2.5-0.5b.json").read_text(encoding = "utf-8")
+    )
+    assert "/" in reference["source_kernel"], reference["source_kernel"]
+
+
 def test_reports_are_not_ordered_control_first(tmp_path):
     """The fact behind the item above, driven through the real extractor."""
     from launch import extract_reports
